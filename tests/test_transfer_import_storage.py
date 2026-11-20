@@ -346,19 +346,13 @@ def test_storage_import_inserts_full_inert_history_and_receipt(
             ).fetchone()[0]
             == 1
         )
-        watcher_row = connection.execute(
-            "SELECT * FROM watchers WHERE watcher_id = ?",
-            (capture.records.watchers[0].watcher_id,),
-        ).fetchone()
-        assert watcher_row["next_check_at"] is None
-        assert watcher_row["machine_id"] == ""
-        assert watcher_row["worker_id"] == "history-child-worker"
-        assert watcher_row["cancel_requested_by"] == "source-human"
-        assert watcher_row["cancel_requested_at"] == capture.records.watchers[0].cancel_requested_at
-        assert watcher_row["cancel_error"] == "Scheduler unavailable"
-        assert watcher_row["cancel_command"] is None
-        assert not target.watcher(watcher_row["watcher_id"]).can_cancel
-        assert json.loads(watcher_row["continuation_json"])["provider"] == "history-only"
+        watcher_id = capture.records.watchers[0].watcher_id
+        imported = target.watcher(watcher_id)
+        assert imported is not None and not imported.open
+        assert imported.agent_id == "history-chat" and imported.cancelled_at is None
+        (check,) = imported.checks
+        assert check.next_check_at is None and check.machine_id == ""
+        assert target.due_external_checks(as_of="9999-01-01T00:00:00+00:00") == []
         episode_row = connection.execute(
             "SELECT * FROM episodes WHERE episode_id = ?",
             (capture.records.episodes[0].episode_id,),

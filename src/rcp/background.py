@@ -567,11 +567,11 @@ class BackgroundAgentTasks:
             for project in projects
             for task in self.store.all_project_agent_tasks(project.project_id)
         ]
-        watchers = [
-            watcher
+        watcher_ids = {
+            check.watcher_id
             for project in projects
-            for watcher in self.store.active_graph_watchers(project.project_id)
-        ]
+            for check in self.store.open_graph_checks(project.project_id)
+        }
         return StartupRecoveryPlan(
             active_operation_ids=tuple(sorted(task.operation_id for task in tasks if task.active)),
             stopping_experiment_operation_ids=tuple(
@@ -586,7 +586,7 @@ class BackgroundAgentTasks:
             auto_research_recovery_operation_ids=tuple(
                 sorted(task.operation_id for task in self.store.auto_research_recovery_candidates())
             ),
-            active_watcher_ids=tuple(sorted(watcher.watcher_id for watcher in watchers)),
+            active_watcher_ids=tuple(sorted(watcher_ids)),
         )
 
     def _require_startup_effects_open(self, effect: str) -> None:
@@ -1840,7 +1840,6 @@ class BackgroundAgentTasks:
             if request.trigger == "experiment_run" and parent is None:
                 record = self.store.create_experiment_episode_with_invocation(
                     task_record,
-                    request.watcher_ids,
                     continues_episode_id=continues_episode_id,
                     continuation_request_id=continuation_request_id,
                     graph_base_head=graph_base_head,

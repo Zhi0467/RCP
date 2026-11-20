@@ -76,7 +76,6 @@ from unittest import mock
 
 from rcp.agents import AgentEvent
 from rcp.core.models import Patch
-from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT
 from rcp.machine_upgrade import migrate_machine_identity
 from rcp.runs.shared import _sse
@@ -86,7 +85,7 @@ from rcp.storage import (
     AgentTaskRecord,
     AppStore,
     EpisodeWrapupRecord,
-    WatcherContinuation,
+    WatcherCheckRecord,
     WatcherRecord,
 )
 from rcp.storage.agent_tasks import AgentTaskStoreMixin
@@ -108,11 +107,11 @@ from rcp.storage.models import (
     EpisodeEnding,
     EpisodeStatus,
     EpisodeWrapupState,
-    WatcherStatus,
+    WatcherState,
 )
 from rcp.storage.projects import ProjectStoreMixin
 from rcp.storage.transfer import ProjectTransferStoreMixin
-from rcp.storage.watchers import WatcherStoreMixin
+from rcp.storage.watchers import WatcherStoreMixin, migrate_watcher_checks
 from tests.episode_report_helpers import stored_report
 from tests.helpers import append_fixture_patch, authorized_human, seed_patch, signed_in_client
 from tests.lifecycles.engine import RESTART, Action, Clock, Goal, Memory, Safety, Step
@@ -367,25 +366,6 @@ class Loop:
             context_baseline={},
         )
 
-    def continuation(self, **overrides: object) -> WatcherContinuation:
-        base: dict[str, object] = {
-            "provider": "codex",
-            "model": "gpt-5",
-            "reasoning": "medium",
-            "run_on": "backend",
-            "run_truth_scope": ["repo-a"],
-            "patch_kind": "experiment_loop",
-            "control_node_id": EXPERIMENT_ID,
-            "control_revision": self.control_revision,
-            "control_episode_id": self.episode_id,
-            "control_invocation": 1,
-            "control_invocation_ceiling": self.invocation_ceiling,
-            "control_decision_bundle": [],
-            "control_completion_criteria": ["The detached fixture exits cleanly."],
-        }
-        base.update(overrides)
-        return WatcherContinuation.model_validate(base)
-
     def settle_exhausted_ending(
         self, *, report: bool = False, ending: EpisodeEnding = "exhausted"
     ) -> None:
@@ -480,42 +460,31 @@ class Loop:
             ),
         )
 
-    def _watcher(
-        self,
-        watcher_id: str,
-        *,
-        continuation: WatcherContinuation | None = None,
-        origin_operation_id: str = "loop-root",
-        machine_id: str = "backend",
-        group_id: str | None = None,
-        graph_target: GraphTargetRef | None = None,
-        chat_id: str | None = None,
-    ) -> WatcherRecord:
-        """Storage keeps group identity and label together."""
-        return WatcherRecord(
-            watcher_id=watcher_id,
-            project_id=self.project_id,
-            origin_operation_id=origin_operation_id,
-            origin_task_kind="node_chat",
-            chat_id=chat_id or self.chat_id,
-            node_id=EXPERIMENT_ID,
+    def _check(self, check_id: str, machine_id: str = "backend") -> WatcherCheckRecord:
+        return WatcherCheckRecord(
+            check_id=check_id,
+            watcher_id=check_id,
             machine_id=machine_id,
-            group_id=group_id,
-            group_label=None if group_id is None else f"Array {group_id}",
-            graph_target=graph_target or GraphTargetRef(),
+            definition="external",
             check_command="true",
-            log_path=f"/tmp/{watcher_id}.log",
+            log_path=f"/tmp/{check_id}.log",
             cwd="/tmp",
-            continuation=continuation or self.continuation(),
-            status="active",
             created_at=self.store.now(),
         )
 
-    def arm_watcher_group(self, group_id: str, watcher_ids: list[str]) -> None:
-        """Arm one group in a single write; storage refuses a group of one."""
+    def arm_watcher_group(self, group_id: str, check_ids: list[str]) -> None:
+        """Arm one watcher holding several checks."""
 
-        self.store.create_watchers(
-            [self._watcher(watcher_id, group_id=group_id) for watcher_id in watcher_ids]
+        self.store.arm_watcher(
+            WatcherRecord(
+                watcher_id=group_id,
+                agent_id=self.chat_id,
+                project_id=self.project_id,
+                purpose=f"Array {group_id}",
+                origin_turn_id="loop-root",
+                created_at=self.store.now(),
+                checks=[self._check(check_id) for check_id in check_ids],
+            )
         )
 
     def arm_watcher(
@@ -523,30 +492,27 @@ class Loop:
         watcher_id: str,
         *,
         status: str = "active",
-        continuation: WatcherContinuation | None = None,
         origin_operation_id: str = "loop-root",
         machine_id: str = "backend",
-        graph_target: GraphTargetRef | None = None,
         chat_id: str | None = None,
     ) -> WatcherRecord:
-        self.store.create_watchers(
-            [
-                self._watcher(
-                    watcher_id,
-                    continuation=continuation,
-                    origin_operation_id=origin_operation_id,
-                    machine_id=machine_id,
-                    graph_target=graph_target,
-                    chat_id=chat_id,
-                )
-            ]
+        self.store.arm_watcher(
+            WatcherRecord(
+                watcher_id=watcher_id,
+                agent_id=chat_id or self.chat_id,
+                project_id=self.project_id,
+                purpose=watcher_id,
+                origin_turn_id=origin_operation_id,
+                created_at=self.store.now(),
+                checks=[self._check(watcher_id, machine_id)],
+            )
         )
         if status != "active":
             self.store.record_watcher_check(
                 watcher_id,
                 status=status,
-                exit_code=0,
-                error=None,
+                exit_code=0 if status == "completed" else 2,
+                error=None if status == "completed" else "check failed",
             )
         stored = self.store.watcher(watcher_id)
         assert stored is not None
@@ -564,14 +530,12 @@ class Loop:
         return snapshot["experiment_control"][EXPERIMENT_ID]
 
     def deliver(self, *watcher_ids: str) -> None:
-        deliver = self.app.state.watcher_poller.on_completed
-        assert deliver is not None
-        group = []
+        ready = []
         for watcher_id in watcher_ids:
             record = self.store.watcher(watcher_id)
             assert record is not None
-            group.append(record)
-        deliver(group)
+            ready.append(record)
+        self.app.state.services.watcher_delivery.deliver_ready(ready[0].agent_id, ready)
 
     def loop_task_ids(self) -> set[str]:
         return {
@@ -620,6 +584,7 @@ _MIGRATIONS = (
     _migrate_experiment_episodes,
     _remove_impossible_legacy_experiment_wrapup,
     migrate_machine_identity,
+    migrate_watcher_checks,
 )
 _AUTO_RESEARCH = (
     AutoResearchStoreMixin._insert_paid_auto_research_task,
@@ -643,18 +608,15 @@ _OTHER_MACHINES = {
     ProjectStoreMixin.delete_project_records: "project deletion, a catalog machine",
     ProjectTransferStoreMixin._insert_transfer_episodes: "project transfer, a catalog machine",
     ProjectTransferStoreMixin._insert_transfer_watchers: "project transfer, a catalog machine",
-    WatcherStoreMixin._stop_chat_watchers: "closing an agent thread, the schedules explorer's",
-    WatcherStoreMixin.create_watcher_notification_task: (
-        "generic Work wakes; an Experiment wake is create_experiment_watcher_invocation"
-    ),
-    WatcherStoreMixin.resolve_watcher_delivery_authorizer: (
-        "generic Work wakes; an Experiment wake takes its episode's authorizer"
+    WatcherStoreMixin.close_watcher_delivery: (
+        "plain wakes RCP cannot attribute; an Experiment wake takes its episode's authorizer"
     ),
 }
 _UNMODELED = {
     EpisodeStoreMixin._insert_episode: "start seeds the one episode",
     ExperimentStoreMixin.create_experiment_episode_with_invocation: "start seeds the one episode",
     WatcherStoreMixin._insert_watcher: "start arms the one observer",
+    WatcherStoreMixin._insert_check: "start arms the one observer",
     EpisodeStoreMixin.end_episode_without_report: (
         "an ending with no provider session; the model's episode is bound to one"
     ),
@@ -663,20 +625,13 @@ _UNMODELED = {
     ),
     EpisodeStoreMixin.fail_episode_wrapup_unlaunchable: "wrap-up admission never fails here",
     ExperimentStoreMixin.create_experiment_question_invocation: "human questions are not modeled",
-    WatcherStoreMixin._stop_watcher_for_loop: (
-        "re-arming a stopped observer happens in a turn's handoff, which no action stages"
-    ),
-    WatcherStoreMixin._validate_and_apply_agent_watcher_stops: (
+    WatcherStoreMixin.revise_watcher: (
         "agent stop items come from a turn's handoff, which no action stages"
     ),
-    WatcherStoreMixin._record_graph_watcher_result_locked: "the observer is not a graph condition",
-    WatcherStoreMixin.initialize_graph_watcher_baseline: "the observer is not a graph condition",
+    WatcherStoreMixin._record_graph_result: "the observer is not a graph condition",
+    WatcherStoreMixin.initialize_graph_check_baseline: "the observer is not a graph condition",
     WatcherStoreMixin.initialize_graph_watcher_target_baselines: (
         "the observer is not a graph condition"
-    ),
-    WatcherStoreMixin.record_watcher_wake_error: "delivery never raises in this model",
-    WatcherStoreMixin.stop_watchers: (
-        "the member's retire action is dropped to fit the budget; no rule reads it"
     ),
 }
 
@@ -722,7 +677,7 @@ class World:
     def reconciler(self):
         """The ``EpisodeReconciler`` the app wired into watcher delivery."""
 
-        return self.poller.on_completed.__self__._reconcile_experiment_episode.__self__
+        return self.app.state.services.watcher_delivery._reconcile_experiment_episode.__self__
 
     def episode(self):
         episode = self.store.episode(self.names.episode_id)
@@ -778,13 +733,14 @@ class Episode:
     covers = {
         EpisodeStatus: ("episode", 0),
         EpisodeWrapupState: ("episode", 2),
-        WatcherStatus: ("watcher", 0),
+        WatcherState: ("watcher", 0),
     }
     tables = frozenset(
         {
             "episodes",
             "experiment_episode_state",
             "watchers",
+            "watcher_checks",
             "episode_wrapups",
             "episode_report_attempts",
             "episode_reports",
@@ -801,13 +757,14 @@ class Episode:
         EpisodeStoreMixin.finish_episode_report_ready,
         EpisodeStoreMixin.mark_episode_report_attempt_running,
         EpisodeStoreMixin.retry_episode_report_allocation,
-        ExperimentStoreMixin._claim_experiment_watchers,
         ExperimentStoreMixin._commit_experiment_episode_turn,
         ExperimentStoreMixin._settle_experiment_loop_stop,
         ExperimentStoreMixin.create_experiment_watcher_invocation,
         ExperimentStoreMixin.record_experiment_episode_diagnostic,
         ExperimentStoreMixin.settle_experiment_episode_wrapup,
         ProjectStoreMixin.migrate_legacy_project_data,
+        WatcherStoreMixin._cancel_where,
+        WatcherStoreMixin.claim_watcher_wake,
         WatcherStoreMixin.record_watcher_check,
         *_MIGRATIONS,
         *_AUTO_RESEARCH,
@@ -976,7 +933,7 @@ class Episode:
         if idle and status == "running" and not stop_requested:
             if pollable:
                 found.extend(Action("check", (state,)) for state in _CHECKS)
-            elif watcher == "completed" and not notified:
+            elif watcher == "finished" and not notified:
                 found.append(Action("poll"))
         if stop_requested and not stop_settled:
             if live and not view.outage:
@@ -999,7 +956,7 @@ class Episode:
         elif action.name == "check":
             _check(world, action.args[0])
         elif action.name == "poll":
-            world.poller.poll_once()
+            _poll(world)
         elif action.name == "outage":
             leaf = next(
                 op
@@ -1057,10 +1014,10 @@ class Episode:
         watcher = world.store.watcher(_WATCHER)
         assert isinstance(watcher, WatcherRecord)
         pollable = any(
-            record.watcher_id == _WATCHER
-            for record in world.store.pollable_watchers(as_of="9999-12-31T00:00:00+00:00")
+            check.watcher_id == _WATCHER
+            for check in world.store.due_external_checks(as_of="9999-12-31T00:00:00+00:00")
         )
-        claimed = names.get(watcher.notification_operation_id or "")
+        claimed = names.get(watcher.wake_turn_id or "")
         attempts = tuple(
             (attempt.status,) for attempt in world.store.episode_report_attempts(episode.episode_id)
         )
@@ -1078,9 +1035,9 @@ class Episode:
             tuple(turns),
             (
                 (
-                    watcher.status,
-                    watcher.notified,
-                    watcher.consecutive_error_count,
+                    watcher.state,
+                    watcher.wake_turn_id is not None,
+                    watcher.checks[0].consecutive_error_count,
                     claimed,
                     pollable,
                 ),
@@ -1144,6 +1101,7 @@ def _hand_off(world: World, task: AgentTaskRecord, ending: dict | None) -> None:
     from rcp.agents import AgentProcessControl
     from rcp.background import AgentTaskExecution
     from rcp.runs.experiment_loop import (
+        ExperimentHandoffScope,
         commit_experiment_episode_handoff,
         root_experiment_loop_operation_id,
     )
@@ -1152,6 +1110,7 @@ def _hand_off(world: World, task: AgentTaskRecord, ending: dict | None) -> None:
     store = world.store
     request = world.background._request_from_record(task)
     assert isinstance(request, RunRequest) and request.run_on is not None
+    assert request.chat_id is not None and request.control_episode_id is not None
     execution = AgentTaskExecution(
         operation_id=task.operation_id,
         store=store,
@@ -1161,29 +1120,22 @@ def _hand_off(world: World, task: AgentTaskRecord, ending: dict | None) -> None:
         stage_root=task.stage_root,
         continuation=cast(Any, store.agent_task_continuation_cause(task.operation_id)),
     )
-    values = request.model_dump(mode="json")
-    binding = WatcherBinding(
-        project_id=task.project_id,
-        origin_operation_id=root_experiment_loop_operation_id(execution),
-        origin_task_kind="node_chat",
-        chat_id=request.chat_id or "",
+    scope = ExperimentHandoffScope(
+        binding=WatcherBinding(
+            project_id=task.project_id,
+            agent_id=request.chat_id,
+            origin_turn_id=root_experiment_loop_operation_id(execution),
+            graph_target=task.graph_target,
+            machine_id=request.run_on,
+        ),
         node_id=request.node_id,
         episode_id=request.control_episode_id,
-        graph_target=task.graph_target,
-        machine_id=request.run_on,
-        continuation=WatcherContinuation.model_validate(
-            {
-                name: values[name]
-                for name in WatcherContinuation.model_fields
-                if values.get(name) is not None
-            }
-        ),
     )
     commit_experiment_episode_handoff(
         execution,
         request,
         [],
-        binding,
+        scope,
         native_session_id=task.native_session_id,
         stage_machine_id=execution.stage_machine_id,
         stage_root=execution.stage_root,
@@ -1267,15 +1219,23 @@ def _check(world: World, state: str) -> None:
 
     watcher = world.store.watcher(_WATCHER)
     assert isinstance(watcher, WatcherRecord)
-    if watcher.next_check_at is not None:
-        due = datetime.fromisoformat(watcher.next_check_at)
+    next_check_at = watcher.checks[0].next_check_at
+    if next_check_at is not None:
+        due = datetime.fromisoformat(next_check_at)
         if due > world.clock.now:
             world.clock.advance((due - world.clock.now).total_seconds())
     exit_code, error = _CHECKS[state]
     world.poller.check_runner = lambda _spec, _host, _timeout: WatcherCheckResult(
         state=state, checked_at=world.clock.iso(), exit_code=exit_code, error=error
     )
+    _poll(world)
+
+
+def _poll(world: World) -> None:
+    """One poll pass, then the delivery pass it hands off to."""
+
     world.poller.poll_once()
+    world.app.state.services.watcher_delivery.deliver_ready_watchers(source="explorer poll")
 
 
 def _tasks(world: World) -> dict[str, AgentTaskRecord]:
@@ -1430,22 +1390,23 @@ def _has_attempts(world: World) -> bool:
 
 
 def a_claim_takes_a_ready_unnotified_watcher(before: View, world: World) -> list[str]:
-    """A wake claims only a completed watcher, or a degraded one at the error cap, not yet notified."""
+    """A wake claims only a finished watcher, or one whose check is at the error cap, once."""
 
     watcher = world.store.watcher(_WATCHER)
     assert isinstance(watcher, WatcherRecord)
-    if watcher.notification_operation_id is None:
+    if watcher.wake_turn_id is None:
         return []
-    ready = watcher.status == "completed" or (
-        watcher.status == "degraded"
-        and watcher.consecutive_error_count >= WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT
+    check = watcher.checks[0]
+    ready = (
+        check.completed_at is not None
+        or check.consecutive_error_count >= WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT
     )
     found = []
     if before.watcher[0][1]:
-        found.append("the claimed watcher was already notified")
-    if not ready or not watcher.notified:
+        found.append("the claimed watcher was already claimed")
+    if not ready:
         found.append(
-            f"claimed a {watcher.status} watcher with {watcher.consecutive_error_count} errors"
+            f"claimed a {watcher.state} watcher with {check.consecutive_error_count} errors"
         )
     return found
 
@@ -1463,19 +1424,21 @@ def a_lone_degraded_watcher_wakes_once(world: World) -> list[str]:
 
 def _watcher_degraded(world: World) -> bool:
     watcher = world.store.watcher(_WATCHER)
-    return watcher is not None and watcher.status == "degraded"
+    return watcher is not None and watcher.state == "check_failing"
 
 
 def stop_retires_only_its_episodes_observations(before: View, world: World) -> list[str]:
-    """Settling Stop retires every observer of its episode and no other episode's."""
+    """Settling Stop cancels every open watcher of its agent and no other agent's."""
 
+    state = world.store.experiment_episode(world.names.episode_id)
+    agent_id = state.chat_id if state is not None else None
     found = []
-    for watcher in world.store.watchers(world.names.project_id):
-        ours = watcher.episode_id == world.names.episode_id
-        if ours and watcher.status != "stopped":
-            found.append(f"{watcher.watcher_id} stays {watcher.status} after Stop")
-        if not ours and watcher.stopped_by == "loop":
-            found.append(f"Stop retired {watcher.watcher_id} of another episode")
+    for watcher in world.store.project_watchers(world.names.project_id):
+        ours = watcher.agent_id == agent_id
+        if ours and watcher.open:
+            found.append(f"{watcher.watcher_id} stays {watcher.state} after Stop")
+        if not ours and watcher.cancelled_by == "rcp":
+            found.append(f"Stop cancelled {watcher.watcher_id} of another agent")
     return found
 
 

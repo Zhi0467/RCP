@@ -33,7 +33,12 @@ from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.auto_research_admission import (
     start_auto_research_turn,
 )
-from rcp.storage import EpisodeNotRunning, GraphWatcherRecord, WatcherContinuation
+from rcp.storage import (
+    EpisodeNotRunning,
+    NodeStatusGraphCondition,
+    WatcherCheckRecord,
+    WatcherRecord,
+)
 from tests.helpers import signed_in_client
 
 from .helpers import (
@@ -699,32 +704,32 @@ def test_acceptance_episode_unrecoverable_failure_waits_then_reports_once(
         assert retained.status_code == 201, retained.text
         assert retained.json()["delivered_at"] is None
 
-        watcher = store.create_watchers(
-            [
-                GraphWatcherRecord(
-                    watcher_id="acceptance-terminal-failure-watcher",
-                    project_id=project_id,
-                    origin_operation_id=root_operation_id,
-                    origin_task_kind="auto_research",
-                    graph_target=root.graph_target,
-                    chat_id=root_operation_id,
-                    episode_id=episode_id,
-                    continuation=WatcherContinuation(
-                        provider="codex",
-                        run_on="backend",
-                        run_truth_scope=["repo-a"],
-                        patch_kind="work",
-                    ),
-                    condition={
-                        "node_id": "exp/episode-terminal-failure",
-                        "status_in": ["running"],
-                    },
-                    armed_revision=1,
-                    created_at=store.now(),
-                )
-            ]
-        )[0]
-        assert watcher.status == "active"
+        now = store.now()
+        watcher = store.arm_watcher(
+            WatcherRecord(
+                watcher_id="acceptance-terminal-failure-watcher",
+                agent_id=episode_id,
+                project_id=project_id,
+                purpose="worker node keeps running",
+                origin_turn_id=root_operation_id,
+                created_at=now,
+                checks=[
+                    WatcherCheckRecord(
+                        check_id="acceptance-terminal-failure-watcher",
+                        watcher_id="acceptance-terminal-failure-watcher",
+                        machine_id="backend",
+                        definition="graph",
+                        condition=NodeStatusGraphCondition(
+                            node_id="exp/episode-terminal-failure", status_in=["running"]
+                        ),
+                        graph_target=root.graph_target,
+                        armed_head=1,
+                        created_at=now,
+                    )
+                ],
+            )
+        )
+        assert watcher.state == "watching"
 
         try:
             root_release_path.write_text("release terminal failure\n", encoding="utf-8")
@@ -751,9 +756,8 @@ def test_acceptance_episode_unrecoverable_failure_waits_then_reports_once(
             assert current_worker is not None and current_worker.status == "running"
             stopped_watcher = store.watcher(watcher.watcher_id)
             assert stopped_watcher is not None
-            assert stopped_watcher.status == "stopped"
-            assert stopped_watcher.notified is True
-            assert stopped_watcher.stopped_by == "loop"
+            assert stopped_watcher.state == "cancelled"
+            assert stopped_watcher.cancelled_by == "rcp"
 
             messages_before = store.auto_research_messages(episode_id)
             rejected_message = client.post(

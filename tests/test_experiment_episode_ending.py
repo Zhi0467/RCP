@@ -9,6 +9,7 @@ from rcp.core.models import ExperimentDecisionPin
 from rcp.limits import AGENT_TASK_RECEIPT_MAX_BYTES
 from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.experiment_loop import (
+    ExperimentHandoffScope,
     commit_experiment_episode_binding,
     commit_experiment_episode_handoff,
     experiment_loop_ending_signal,
@@ -18,7 +19,7 @@ from rcp.runs.experiment_loop import (
     prepare_experiment_watcher_records,
 )
 from rcp.service import GraphUpdateResult, RunRequest
-from rcp.storage import AgentTaskRecord, WatcherContinuation
+from rcp.storage import AgentTaskRecord
 from rcp.watchers import ExperimentWatchSpec, WatcherBinding, WatcherCheckResult
 
 _CONTROL_NODE_ID = "exp/evaluation"
@@ -391,7 +392,7 @@ class _RecordingStore:
         self.events.append(
             (
                 "compound",
-                (values["operation_id"], binding.origin_operation_id, len(records)),
+                (values["operation_id"], binding.origin_turn_id, len(records)),
             )
         )
         if self.fail_commit:
@@ -431,24 +432,16 @@ def _minimal_ending_signal() -> dict[str, object]:
     }
 
 
-def _handoff_binding() -> WatcherBinding:
-    return WatcherBinding(
-        project_id="project-id",
-        origin_operation_id="root-operation",
-        origin_task_kind="node_chat",
-        chat_id="episode-chat",
+def _handoff_scope() -> ExperimentHandoffScope:
+    return ExperimentHandoffScope(
+        binding=WatcherBinding(
+            project_id="project-id",
+            agent_id="episode-chat",
+            origin_turn_id="root-operation",
+            machine_id=BACKEND_MACHINE_ID,
+        ),
         node_id=_CONTROL_NODE_ID,
         episode_id=_EPISODE_ID,
-        machine_id=BACKEND_MACHINE_ID,
-        continuation=WatcherContinuation(
-            provider="codex",
-            run_on=BACKEND_MACHINE_ID,
-            patch_kind="experiment_loop",
-            control_node_id=_CONTROL_NODE_ID,
-            control_episode_id=_EPISODE_ID,
-            control_invocation=2,
-            control_invocation_ceiling=4,
-        ),
     )
 
 
@@ -506,7 +499,7 @@ def test_prepared_handoff_uses_rooted_watchers_and_commits_receipt_after_storage
     execution = SimpleNamespace(
         operation_id="continuation-operation", store=store, continuation="fresh"
     )
-    binding = _handoff_binding()
+    binding = _handoff_scope()
     prepared = prepare_experiment_watcher_records(
         execution,
         [
@@ -519,7 +512,7 @@ def test_prepared_handoff_uses_rooted_watchers_and_commits_receipt_after_storage
     )
 
     assert len(prepared) == 1
-    assert prepared[0].origin_operation_id == "root-operation"
+    assert prepared[0].origin_turn_id == "root-operation"
     stored = commit_experiment_episode_handoff(
         execution,
         _binding_request(),

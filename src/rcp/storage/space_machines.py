@@ -16,6 +16,7 @@ from rcp.config import MachineComputeConfig
 from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import SpaceMachineHostInUse, SpaceMachineRecord
+from rcp.storage.watchers import _OPEN
 
 
 class SpaceMachineStoreMixin(StoreMixinBase):
@@ -43,8 +44,9 @@ class SpaceMachineStoreMixin(StoreMixinBase):
                 "SELECT 1 FROM graph_runs WHERE status IN ('queued', 'running', 'pausing') "
                 "AND (stage_machine_id = ? OR json_extract(request_json, '$.run_on') = ?) "
                 "UNION ALL SELECT 1 FROM compute_jobs WHERE status = 'running' AND machine_id = ? "
-                "UNION ALL SELECT 1 FROM watchers "
-                "WHERE status IN ('active', 'degraded') AND machine_id = ? "
+                "UNION ALL SELECT 1 FROM watcher_checks AS c JOIN watchers AS w USING (watcher_id) "
+                f"WHERE {_OPEN} AND c.removed_at IS NULL AND c.completed_at IS NULL "
+                "AND c.machine_id = ? "
                 "UNION ALL SELECT 1 FROM project_provisioning_requests "
                 "WHERE status NOT IN ('completed', 'cancelled') AND EXISTS ("
                 "SELECT 1 FROM json_each(machines_json) "

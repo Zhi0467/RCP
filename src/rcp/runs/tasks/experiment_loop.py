@@ -60,7 +60,7 @@ from rcp.background import AgentTaskExecution
 from rcp.config import AgentSurface
 from rcp.core.authority import AgentProfile
 from rcp.core.models import ExperimentDecisionPin
-from rcp.core.transition_models import GraphHeadRef
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import ReplayHalted
 from rcp.limits import (
     EXPERIMENT_LOOP_WATCH_CORRECTION_MAX_ROUNDS,
@@ -89,6 +89,7 @@ from rcp.runs.chat import (
 )
 from rcp.runs.experiment_admission import experiment_start_message
 from rcp.runs.experiment_loop import (
+    ExperimentHandoffScope,
     commit_experiment_episode_binding,
     commit_experiment_episode_handoff,
     experiment_episode_context_values,
@@ -180,7 +181,6 @@ from rcp.runs.tasks.work import (
     _SettledWorkDeliverables,
     _stage_retry_diagnostics,
     _StagedWorkInputs,
-    _watcher_continuation,
     _work_command_handler,
     _work_execution_instructions,
     _work_finalization_context,
@@ -1448,20 +1448,12 @@ async def _validate_watch_deliverable(
                     "patch.json to explicitly record success, a Proposal, or a "
                     "same-Patch Blocker."
                 )
-        binding = WatcherBinding(
-            project_id=origin_task.project_id,
-            origin_operation_id=root_experiment_loop_operation_id(turn.execution),
-            origin_task_kind=turn.surface,
-            chat_id=turn.request.chat_id or "",
-            node_id=turn.request.node_id,
-            episode_id=turn.request.control_episode_id,
-            graph_target=origin_task.graph_target,
-            machine_id=turn.write_scope.machine_id,
-            continuation=_watcher_continuation(turn),
-        )
+        scope = _handoff_scope(turn, origin_task.project_id, origin_task.graph_target)
+        binding = scope.binding
         if handoff.stops:
             turn.execution.store.validate_experiment_agent_watcher_stops(
                 binding,
+                scope.episode_id,
                 handoff.stops,
             )
         turn.execution.store.validate_experiment_observer_duplicates(
@@ -1469,7 +1461,7 @@ async def _validate_watch_deliverable(
             handoff.observers,
             stops=handoff.stops,
             rearmed_watcher_ids=[
-                experiment_observer_watcher_id(binding, index, spec)
+                experiment_observer_watcher_id(scope, index, spec)
                 for index, spec in enumerate(handoff.observers)
             ],
         )
@@ -1496,7 +1488,7 @@ async def _validate_watch_deliverable(
             check_results,
             handoff.graph_conditions,
             graph_armed_revision,
-            binding,
+            scope,
             handoff.stops,
         )
     except WatcherInitialCheckError as exc:
@@ -1520,6 +1512,27 @@ async def _validate_watch_deliverable(
     )
     settled.watch_correction_rounds = correction_rounds
     return _DeliverableStep()
+
+
+def _handoff_scope(
+    turn: WorkFinalizationContext, project_id: str, graph_target: GraphTargetRef
+) -> ExperimentHandoffScope:
+    """Watchers this turn arms belong to its Run's chat and the Run's root turn."""
+
+    assert turn.execution is not None
+    if not turn.request.chat_id or not turn.request.control_episode_id:
+        raise ValueError("Experiment watcher arming requires the Run's chat and episode.")
+    return ExperimentHandoffScope(
+        binding=WatcherBinding(
+            project_id=project_id,
+            agent_id=turn.request.chat_id,
+            origin_turn_id=root_experiment_loop_operation_id(turn.execution),
+            graph_target=graph_target,
+            machine_id=turn.write_scope.machine_id,
+        ),
+        node_id=turn.request.node_id,
+        episode_id=turn.request.control_episode_id,
+    )
 
 
 def _correction_prompt(
@@ -2126,9 +2139,10 @@ async def _apply_experiment_loop_turn(
             check_results,
             graph_conditions,
             graph_armed_revision,
-            binding,
+            scope,
             stop_requests,
         ) = settled.pending_loop_handoff
+        assert isinstance(scope, ExperimentHandoffScope)
     else:
         origin_task = execution.store.agent_task(execution.operation_id)
         if origin_task is None:
@@ -2138,17 +2152,7 @@ async def _apply_experiment_loop_turn(
         graph_conditions = []
         graph_armed_revision = None
         stop_requests = []
-        binding = WatcherBinding(
-            project_id=origin_task.project_id,
-            origin_operation_id=root_experiment_loop_operation_id(execution),
-            origin_task_kind=turn.surface,
-            chat_id=turn.request.chat_id or "",
-            node_id=turn.request.node_id,
-            episode_id=turn.request.control_episode_id,
-            graph_target=origin_task.graph_target,
-            machine_id=turn.write_scope.machine_id,
-            continuation=_watcher_continuation(turn),
-        )
+        scope = _handoff_scope(turn, origin_task.project_id, origin_task.graph_target)
 
     try:
         graph_state = (
@@ -2159,7 +2163,7 @@ async def _apply_experiment_loop_turn(
             execution,
             specs,
             check_results,
-            binding,
+            scope,
             graph_conditions=graph_conditions,
             graph_state=graph_state,
             armed_revision=graph_armed_revision,
@@ -2241,7 +2245,7 @@ async def _apply_experiment_loop_turn(
             execution,
             turn.request,
             prepared,
-            binding,
+            scope,
             native_session_id=applied.native_session_id,
             stage_machine_id=execution.stage_machine_id,
             stage_root=execution.stage_root,

@@ -13,10 +13,9 @@ from dataclasses import dataclass
 
 from rcp.core.models import GraphState, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef, TransitionEvent
-from rcp.storage import AppStore, StoredWatcherRecord
+from rcp.storage import AppStore
 from rcp.watchers import (
-    graph_watcher_boundary_result,
-    ready_graph_watcher_groups,
+    graph_check_boundary_result,
 )
 
 
@@ -86,8 +85,8 @@ def reconcile_accepted_graph_boundaries(
     boundaries: Iterable[AcceptedGraphBoundary],
     *,
     current_head: GraphHeadRef | None = None,
-) -> list[list[StoredWatcherRecord]]:
-    """Apply accepted boundaries in target-local order and return ready wakes.
+) -> None:
+    """Apply accepted boundaries in target-local order.
 
     Each boundary's watcher updates and durable target-local head advance share
     one SQLite transaction. Repeating a reconciliation pass is therefore safe,
@@ -138,11 +137,9 @@ def reconcile_accepted_graph_boundaries(
                 revision=boundary.revision,
                 transition_id=boundary.transition_id,
             ),
-            evaluate=lambda record, boundary=boundary: graph_watcher_boundary_result(
+            evaluate=lambda record, boundary=boundary: graph_check_boundary_result(
                 record,
                 boundary.state,
                 boundary.lifecycle_events,
             ),
         )
-
-    return ready_graph_watcher_groups(store, project_id)

@@ -33,7 +33,7 @@ from rcp.loop_status import LoopOverlap
 
 # Bumped by hand whenever the Experiment-loop policy prose in this module changes, so a live
 # session re-opens its master contract once instead of keeping the old policy.
-EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v22"
+EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v23"
 
 
 def experiment_loop_read_context(context: ChatContext, loops: LoopOverlap) -> str:
@@ -270,9 +270,8 @@ Context protocol:
 - Read loop control first. `phase` distinguishes a human-started episode from a watcher wake.
   `invocation`, `invocation_ceiling`, and `remaining_invocations` are the operational budget; they
   do not count or limit semantic attempts. `human_reauthorization` means a human started this
-  new episode at invocation 1: either a fresh Run delivering watcher ids that retain older origin
-  provenance, or a continuation of the same session with more turns after the previous episode
-  ended.
+  new episode at invocation 1 as a continuation of the same session with more turns after the
+  previous episode ended.
   Completion criteria are advisory interpretation aids.
 - Read the focused Experiment's full current record in `graph.json`, including all attempts. Find
   every edge whose source or target is the Experiment, then read each one-hop node's full record.
@@ -282,20 +281,15 @@ Context protocol:
   Decision moved from the state pinned for this episode. Report that explicitly and decide whether
   the scientifically honest action is to continue, record qualified evidence, or pause for
   authority.
-- Read the watcher-state file as operational evidence. On a watcher wake, use
-  `delivered_watcher_ids` to identify the coalesced trigger subset. For an external observer,
-  inspect its delivered log and authoritative scheduler, process, job, or result state. For a graph
-  condition, inspect the named fact in the fresh canonical graph. Compare either kind with every
-  other active, degraded, completed, or stopped watcher in that file. A watcher completing means
-  only that its declared wake condition was observed; it does not mean success and does not begin,
-  close, or correspond one-to-one with an attempt. For an external observer, completion means only
-  that its check no longer sees the named work. A graph watcher carries `condition` and
-  intentionally has no `check_command`, `log_path`, or `cwd`.
-- `delivered_watcher_groups` in loop control names every delivered group and all of its members.
-  A group wakes only when no member is still observed running. Exit-0 members are gone, not proven
-  successful. A degraded member has unknown external state; inspect it before relaunching,
-  cancelling, or recording an outcome. Group labels and watcher state are operational context, not
-  graph or episode authority.
+- Read the watcher-state file as operational evidence. It lists your open watchers and, on a
+  watcher wake, the ones in `delivered_watcher_ids` that woke you. Each watcher holds one or more
+  checks. For an external check, inspect its log and authoritative scheduler, process, job, or
+  result state. For a graph check, inspect the named fact in the fresh canonical graph. A watcher
+  wakes once, when none of its live checks still observes running work. A finished check means
+  only that its declared condition was observed; it does not mean success and does not begin,
+  close, or correspond one-to-one with an attempt. A check with errors has unknown external state;
+  inspect it before relaunching, cancelling, or recording an outcome. Watcher state is operational
+  context, not graph or episode authority.
 
 Operational method:
 - Perform a short preflight specific to the next consequential action: verify the effective config,
@@ -381,29 +375,26 @@ Watcher handoff protocol:
   creates a same-Patch Blocker, or a durable question supplies continuation.
 {_EXTERNAL_WATCHER_FORMS}
 - Each observer may also add one non-blank `group` label.
-  Observers sharing a label form one immutable group of at least two newly armed observers;
-  a member completing early does not wake this loop by itself.
-- Before arming an observer, reconcile it against the watcher state. When a listed `active`,
-  `degraded`, or unnotified `completed` observer already covers that same external work, do not
-  arm a second one for it, even where your command text differs from its `check_command`.
+  Observers sharing a label form one watcher of at least two checks; a check finishing early does
+  not wake this loop by itself.
+- Before arming an observer, reconcile it against the watcher state. When a listed open watcher's
+  check already covers that same external work, do not arm a second one for it, even where your
+  command text differs from its `check_command`.
   Observers whose `check_command`, `log_path`, or `cwd` name the same job id, run directory, or
   process observe one piece of work: they complete at separate times and wake this loop twice,
   spending two invocations on a single event. Either rely on the observer already armed, or retire
   it with a stop item in this same handoff and arm your replacement.
 - The `external` list may also contain a stop item with exactly `stop_watcher_id` and a non-blank
   `reason`. Use it only after you have cancelled or otherwise settled the obsolete work. The id
-  must be a compatible staged watcher and carries no command or path. Compatible means the watcher
-  state lists it for this Experiment node, graph target, and execution host, and its status is
-  still `active`, `degraded`, or `completed` with `notified` false. Retire either kind: an external
-  observer you no longer need, or a graph condition whose canonical fact you have stopped waiting
-  for. Both go in the `external` list as stop items, because that list carries every stop; the
-  `graph` list holds only conditions you are arming. A watcher armed by an earlier episode and
-  adopted by this one qualifies too: a differing `episode_id` is that watcher's immutable
-  provenance, not a reason to leave stale work armed. A live watcher you have stopped needing still
-  holds this loop open and spends an invocation when it fires, so retire it rather than leaving it
-  armed. Stopping a watcher does not prove a job was cancelled and does not request or set
-  **Stop loop**. You may mix stop items and observers, including retiring old watchers while
-  arming replacements.
+  names one of your open watchers in the watcher state, or one check of it, and carries no command
+  or path. Naming a watcher cancels it; naming one check of a watcher with several removes only
+  that check. Retire either kind: an external observer you no longer need, or a graph condition
+  whose canonical fact you have stopped waiting for. Both go in the `external` list as stop items,
+  because that list carries every stop; the `graph` list holds only conditions you are arming. A
+  live watcher you have stopped needing still holds this loop open and spends an invocation when
+  it fires, so retire it rather than leaving it armed. Stopping a watcher does not prove a job was
+  cancelled and does not request or set **Stop loop**. You may mix stop items and observers,
+  including retiring old watchers while arming replacements.
 {_EXPERIMENT_WATCH_HANDOFF}
 - Graph conditions are canonical and event-driven. RCP evaluates them after accepted graph
   revisions and at startup, never through the shell poller. A staged but unsynced draft cannot

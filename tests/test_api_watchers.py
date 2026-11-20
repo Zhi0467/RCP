@@ -3,79 +3,95 @@ from __future__ import annotations
 from pathlib import Path
 
 from rcp.machine_cards import BACKEND_MACHINE_ID
-from rcp.storage import (
-    WatcherContinuation,
-    WatcherRecord,
-)
+from rcp.storage import AgentTaskRecord, AppStore
+from rcp.storage.models import WatcherCheckRecord, WatcherRecord
 from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
 from .test_branch_chats import _app_branch
 
 
-def test_project_watchers_lists_an_ordinary_watcher(manifest, tmp_path: Path) -> None:
+def _turn(store: AppStore, project_id: str, operation_id: str, **request: object) -> None:
+    now = store.now()
+    with store.connection() as connection:
+        store._insert_agent_task(
+            connection,
+            AgentTaskRecord(
+                operation_id=operation_id,
+                project_id=project_id,
+                kind="node_chat",
+                status="succeeded",
+                request=request,
+                created_at=now,
+                updated_at=now,
+                status_message="Done",
+            ),
+            continuation_cause="fresh",
+        )
+
+
+def _external(store: AppStore, project_id: str, watcher_id: str, origin: str, *checks: str):
+    now = store.now()
+    return store.arm_watcher(
+        WatcherRecord(
+            watcher_id=watcher_id,
+            agent_id="chat",
+            project_id=project_id,
+            purpose="Training job",
+            origin_turn_id=origin,
+            created_at=now,
+            checks=[
+                WatcherCheckRecord(
+                    check_id=check_id,
+                    watcher_id=watcher_id,
+                    machine_id=BACKEND_MACHINE_ID,
+                    definition="external",
+                    check_command="true",
+                    log_path=f"/tmp/{check_id}.log",
+                    cwd="/tmp",
+                    created_at=now,
+                )
+                for check_id in checks or (watcher_id,)
+            ],
+        )
+    )
+
+
+def test_project_watchers_lists_one_object_per_check(manifest, tmp_path: Path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
-    watcher = WatcherRecord(
-        watcher_id="ordinary-api-watcher",
-        project_id=project_id,
-        origin_operation_id="ordinary-api-origin",
-        origin_task_kind="node_chat",
-        chat_id="ordinary-api-chat",
-        node_id="exp-one",
-        check_command="true",
-        log_path=str(tmp_path / "ordinary.log"),
-        cwd=str(tmp_path),
-        continuation=WatcherContinuation(
-            provider="codex",
-            run_on=BACKEND_MACHINE_ID,
-            patch_kind="work",
-        ),
-        created_at="2026-08-12T01:00:00+00:00",
-    )
-    store.create_watchers([watcher])
+    _turn(store, project_id, "origin", node_id="exp-one", chat_id="chat")
+    _external(store, project_id, "single", "origin")
+    _external(store, project_id, "group", "origin", "first", "second")
+    store.cancel_watchers(["group"], by="rcp", reason="Episode stopped.")
     client = signed_in_client(app)
 
     listed = client.get(f"/api/projects/{project_id}/watchers")
-    assert listed.status_code == 200
-    listed_payload = listed.json()
-    assert isinstance(listed_payload, list)
-    assert len(listed_payload) == 1
-    assert listed_payload[0]["watcher_id"] == watcher.watcher_id
-    assert listed_payload[0]["wakes_chat"] is True
-    assert listed_payload[0]["status"] == "active"
+    assert listed.status_code == 200, listed.text
+    rows = {row["watcher_id"]: row for row in listed.json()}
+    assert set(rows) == {"single", "first", "second"}
+    single = rows["single"]
+    assert (single["status"], single["chat_id"], single["node_id"]) == ("active", "chat", "exp-one")
+    assert single["wakes_chat"] is True and single["group_id"] is None
+    assert single["continuation"]["patch_kind"] == "work"
+    assert "condition" not in single
+    stopped = rows["first"]
+    assert (stopped["status"], stopped["stopped_by"], stopped["stop_reason"]) == (
+        "stopped",
+        "loop",
+        "Episode stopped.",
+    )
+    assert (stopped["group_id"], stopped["group_label"]) == ("group", "Training job")
+    assert stopped["wakes_chat"] is False and stopped["notified"] is True
 
 
-def test_branch_watcher_listing_scopes_to_the_displayed_target_unless_all(manifest, tmp_path):
+def test_branch_watcher_listing_scopes_to_the_arming_turn_target_unless_all(manifest, tmp_path):
     app, _main, episode, root = _app_branch(manifest, tmp_path)
     store = app.state.catalog.store
-    watcher = WatcherRecord(
-        watcher_id="main-observer",
-        project_id=episode.project_id,
-        origin_operation_id="observer-origin",
-        origin_task_kind="node_chat",
-        chat_id="observer-chat",
-        check_command="true",
-        log_path=str(tmp_path / "observer.log"),
-        cwd=str(tmp_path),
-        continuation=WatcherContinuation(
-            provider="codex", run_on=BACKEND_MACHINE_ID, patch_kind="work"
-        ),
-        created_at=store.now(),
-    )
-    branch_watcher = watcher.model_copy(
-        update={
-            "watcher_id": "branch-observer",
-            "origin_operation_id": root.operation_id,
-            "origin_task_kind": root.kind,
-            "episode_id": episode.episode_id,
-            "chat_id": "branch-observer-chat",
-            "graph_target": episode.graph_target,
-        }
-    )
-    store.create_watchers([watcher])
-    store.create_watchers([branch_watcher])
+    _turn(store, episode.project_id, "main-origin")
+    _external(store, episode.project_id, "main-observer", "main-origin")
+    _external(store, episode.project_id, "branch-observer", root.operation_id)
     client = signed_in_client(app)
     url = f"/api/projects/{episode.project_id}/watchers"
     params = {"branch_id": episode.graph_target.branch_id}
@@ -88,27 +104,21 @@ def test_branch_watcher_listing_scopes_to_the_displayed_target_unless_all(manife
     assert [row["watcher_id"] for row in scoped.json()] == ["branch-observer"]
 
 
-def test_only_a_chats_own_unwoken_work_watcher_wakes_it(tmp_path: Path) -> None:
-    from rcp.api.watchers import wakes_chat
+def test_only_an_open_work_watcher_of_a_chat_turn_wakes_the_chat(manifest, tmp_path) -> None:
+    from rcp.api.watchers import watcher_check_views
 
-    watcher = WatcherRecord(
-        watcher_id="chat-wake",
-        project_id="project",
-        origin_operation_id="origin",
-        origin_task_kind="project_chat",
-        chat_id="chat",
-        node_id=None,
-        check_command="true",
-        log_path=str(tmp_path / "job.log"),
-        cwd=str(tmp_path),
-        continuation=WatcherContinuation(
-            provider="codex", run_on=BACKEND_MACHINE_ID, patch_kind="work"
-        ),
-        created_at="2026-08-12T01:00:00+00:00",
-    )
-    loop = watcher.continuation.model_copy(update={"patch_kind": "experiment_loop"})
+    app, _, episode, loop_turn = _app_branch(manifest, tmp_path, owner_mode="experiment_loop")
+    project_id = episode.project_id
+    store = app.state.background_tasks.store
+    _turn(store, project_id, "work-turn")
+    work = _external(store, project_id, "work", "work-turn")
+    loop = _external(store, project_id, "loop", loop_turn.operation_id)
 
-    assert wakes_chat(watcher)
-    assert not wakes_chat(watcher.model_copy(update={"continuation": loop}))
-    assert not wakes_chat(watcher.model_copy(update={"notified": True}))
-    assert not wakes_chat(watcher.model_copy(update={"status": "stopped"}))
+    def wakes(watcher: WatcherRecord) -> bool:
+        (view,) = watcher_check_views(store, [watcher])
+        return bool(view["wakes_chat"])
+
+    assert wakes(work)
+    assert not wakes(loop)
+    assert not wakes(work.model_copy(update={"delivery_closed_at": store.now()}))
+    assert not wakes(work.model_copy(update={"cancelled_at": store.now(), "cancelled_by": "human"}))

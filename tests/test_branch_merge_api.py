@@ -60,9 +60,9 @@ from rcp.storage import (
     AppStore,
     AutoResearchStateRecord,
     EpisodeRecord,
-    GraphWatcherRecord,
     NodeStatusGraphCondition,
-    WatcherContinuation,
+    WatcherCheckRecord,
+    WatcherRecord,
 )
 from tests.helpers import signed_in_client
 
@@ -1170,31 +1170,30 @@ def _create_main_graph_watcher(harness: _BranchHarness) -> str:
     )
     origin = harness.store.create_agent_task(origin)
     watcher_id = str(uuid.uuid4())
-    harness.store.create_watchers(
-        [
-            GraphWatcherRecord(
-                watcher_id=watcher_id,
-                project_id=harness.project_id,
-                origin_operation_id=origin.operation_id,
-                origin_task_kind="project_chat",
-                chat_id=request.chat_id,
-                graph_target=GraphTargetRef(),
-                condition=NodeStatusGraphCondition(
-                    node_id="blk/merge-ready",
-                    status_in=["resolved"],
-                ),
-                armed_revision=harness.service.history.state().revision,
-                continuation=WatcherContinuation(
-                    provider="codex",
-                    model="",
-                    reasoning="medium",
-                    run_on=BACKEND_MACHINE_ID,
-                    run_truth_scope=["repo-a"],
-                    patch_kind="work",
-                ),
-                created_at=now,
-            )
-        ]
+    harness.store.arm_watcher(
+        WatcherRecord(
+            watcher_id=watcher_id,
+            agent_id=request.chat_id,
+            project_id=harness.project_id,
+            purpose="Merge gate",
+            origin_turn_id=origin.operation_id,
+            created_at=now,
+            checks=[
+                WatcherCheckRecord(
+                    check_id=watcher_id,
+                    watcher_id=watcher_id,
+                    machine_id=BACKEND_MACHINE_ID,
+                    definition="graph",
+                    condition=NodeStatusGraphCondition(
+                        node_id="blk/merge-ready",
+                        status_in=["resolved"],
+                    ),
+                    graph_target=GraphTargetRef(),
+                    armed_head=harness.service.history.state().revision,
+                    created_at=now,
+                )
+            ],
+        )
     )
     return watcher_id
 
@@ -1210,7 +1209,7 @@ def test_committed_merge_persists_its_receipt_before_success_and_evaluates_main_
     harness = _create_branch_harness(manifest, tmp_path, change="status")
     launcher = _AnswersWritingLauncher()
     monkeypatch.setattr(harness.app.state.launcher, "stream", launcher.stream)
-    monkeypatch.setattr("rcp.api.app.start_watcher_notification", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("rcp.api.app.start_plain_watcher_wake", lambda *_args, **_kwargs: None)
     settled = threading.Event()
     after_task_settled = harness.app.state.background_tasks.on_task_settled
     assert after_task_settled is not None
@@ -1254,10 +1253,8 @@ def test_committed_merge_persists_its_receipt_before_success_and_evaluates_main_
     assert settled.wait(TASK_SETTLE_TIMEOUT), "branch merge settlement callback did not finish"
 
     watcher = harness.store.watcher(watcher_id)
-    assert isinstance(watcher, GraphWatcherRecord)
-    assert watcher.graph_target == GraphTargetRef()
-    assert watcher.status == "completed"
-    assert watcher.notified is False
+    assert watcher is not None and watcher.open
+    assert watcher.checks[0].completed_at is not None
 
 
 def test_graph_projection_reconciles_a_crashed_commit_and_blocks_duplicate_merge(

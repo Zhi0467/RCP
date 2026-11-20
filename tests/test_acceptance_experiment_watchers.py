@@ -101,20 +101,19 @@ def _wait_for_new_task(
 
 def _wait_for_watcher_status(
     store: AppStore,
-    project_id: str,
     chat_id: str,
-    status: str,
+    state: str,
     *,
     timeout: float = TASK_SETTLE_TIMEOUT,
 ) -> list[WatcherRecord]:
-    """Wait for the lifespan-owned periodic poller to persist one status."""
+    """Wait for the lifespan-owned periodic poller to persist one state."""
 
     latest: list[WatcherRecord] = []
 
     def matching_watchers() -> list[WatcherRecord] | None:
         nonlocal latest
-        latest = store.watchers(project_id, chat_id=chat_id)
-        if len(latest) == 2 and all(record.status == status for record in latest):
+        latest = store.agent_watchers(chat_id)
+        if len(latest) == 2 and all(record.state == state for record in latest):
             return latest
         return None
 
@@ -122,7 +121,7 @@ def _wait_for_watcher_status(
         matching_watchers,
         timeout=timeout,
         interval=0.02,
-        detail=lambda: f"periodic watcher poller did not persist {status}: {latest}",
+        detail=lambda: f"periodic watcher poller did not persist {state}: {latest}",
     )
 
 
@@ -207,8 +206,9 @@ def _receipt_categories(task: dict[str, object]) -> set[str]:
     return {str(item["category"]) for item in task["debug_receipts"]}
 
 
-def _watcher_spec(record: WatcherRecord) -> tuple[str, str, str]:
-    return record.check_command, record.log_path, record.cwd
+def _watcher_spec(record: WatcherRecord) -> tuple[str | None, str | None, str | None]:
+    (check,) = record.checks
+    return check.check_command, check.log_path, check.cwd
 
 
 def _poll_after_due(app, watchers: list[WatcherRecord]) -> None:
@@ -221,7 +221,7 @@ def _poll_after_due(app, watchers: list[WatcherRecord]) -> None:
 
 def _assert_completed_job_artifacts(watchers: list[WatcherRecord]) -> None:
     for watcher in watchers:
-        log_path = Path(watcher.log_path)
+        log_path = Path(watcher.checks[0].log_path or "")
         assert log_path.read_text(encoding="utf-8").splitlines()[-1].endswith("completed")
         assert log_path.with_suffix(".status").read_text(encoding="utf-8") == "completed\n"
         assert log_path.with_suffix(".done").read_text(encoding="utf-8") == "done\n"
@@ -362,17 +362,15 @@ def test_generic_watcher_arming_records_an_already_finished_job_as_completed(
         assert origin["status"] == "succeeded", origin
         assert {"watcher_correction_requested", "watchers_armed"} <= _receipt_categories(origin)
 
-        armed = app.state.background_tasks.store.watchers(project_id, chat_id=chat_id)
+        armed = app.state.background_tasks.store.agent_watchers(chat_id)
         assert len(armed) == 2
         assert not app.state.watcher_poller.is_running()
-        assert {record.status for record in armed} == {"completed"}
-        assert all(record.last_exit_code == 0 for record in armed)
-        assert all(record.completed_at == record.last_checked_at for record in armed)
-        assert all(not record.notified for record in armed)
-        assert all(record.notification_operation_id is None for record in armed)
+        checks = [record.checks[0] for record in armed]
+        assert all(record.ready for record in armed)
+        assert all(check.last_exit_code == 0 for check in checks)
+        assert all(check.completed_at == check.last_checked_at for check in checks)
+        assert all(record.wake_turn_id is None for record in armed)
         assert len({_watcher_spec(record) for record in armed}) == 2
-        assert all(record.continuation.patch_kind == "work" for record in armed)
-        assert all(record.continuation.control_node_id is None for record in armed)
         assert service.history.load_patches() == baseline_patches
     finally:
         client.close()
@@ -417,13 +415,10 @@ def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
         assert origin["status"] == "succeeded", origin
         assert {"watcher_correction_requested", "watchers_armed"} <= _receipt_categories(origin)
 
-        armed = app.state.background_tasks.store.watchers(project_id, chat_id=chat_id)
+        armed = app.state.background_tasks.store.agent_watchers(chat_id)
         assert len(armed) == 2
-        assert {record.status for record in armed} == {"active"}
-        assert all(not record.notified for record in armed)
+        assert {record.state for record in armed} == {"watching"}
         assert len({_watcher_spec(record) for record in armed}) == 2
-        assert all(record.continuation.patch_kind == "work" for record in armed)
-        assert all(record.continuation.control_node_id is None for record in armed)
         assert service.history.load_patches() == baseline_patches
         assert [record.action for record in app.state.launcher.launch_records] == [
             "initial",
@@ -434,7 +429,7 @@ def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
         client.close()
         app.state.background_tasks.shutdown()
 
-    _complete_fixture_job_artifacts(Path(record.log_path) for record in armed)
+    _complete_fixture_job_artifacts(Path(record.checks[0].log_path or "") for record in armed)
 
     reopened = create_app(str(manifest.path), data_dir=data_dir, acceptance_agent=True)
     reopened.state.watcher_poller.interval = 0.05
@@ -442,11 +437,11 @@ def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
     poll_passes = _count_poll_passes(reopened)
     reopened_store = reopened.state.background_tasks.store
     with signed_in_client(reopened) as reopened_client:
-        persisted = reopened_store.watchers(project_id, chat_id=chat_id)
+        persisted = reopened_store.agent_watchers(chat_id)
         assert [_watcher_spec(record) for record in persisted] == [
             _watcher_spec(record) for record in armed
         ]
-        assert all(not record.notified for record in persisted)
+        assert all(record.wake_turn_id is None for record in persisted)
 
         before_ids = {task.operation_id for task in reopened_store.agent_tasks(project_id)}
         wake = _wait_for_new_task(
@@ -459,15 +454,14 @@ def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
         assert wake_detail["status"] == "succeeded", wake_detail
         assert wake.request["patch_kind"] == "work"
         assert set(wake.request["watcher_ids"]) == {record.watcher_id for record in persisted}
-        assert all(record.log_path in wake.request["message"] for record in persisted)
+        assert all(record.checks[0].log_path in wake.request["message"] for record in persisted)
         assert "watcher_notification" in _receipt_categories(wake_detail)
         assert [record.action for record in reopened.state.launcher.launch_records] == ["wake"]
         _assert_completed_job_artifacts(persisted)
 
-        delivered = reopened_store.watchers(project_id, chat_id=chat_id)
-        assert all(record.status == "completed" for record in delivered)
-        assert all(record.notified for record in delivered)
-        assert {record.notification_operation_id for record in delivered} == {wake.operation_id}
+        delivered = reopened_store.agent_watchers(chat_id)
+        assert all(record.state == "finished" for record in delivered)
+        assert {record.wake_turn_id for record in delivered} == {wake.operation_id}
         assert reopened.state.service.history.load_patches() == baseline_patches
 
         task_count = len(reopened_store.agent_tasks(project_id))
@@ -476,9 +470,7 @@ def test_s42_generic_watchers_persist_coalesce_and_never_change_the_graph(
         assert reopened.state.service.history.load_patches() == baseline_patches
 
 
-def test_s41_ceiling_pauses_then_human_run_starts_a_new_episode_and_exits(
-    manifest, tmp_path: Path
-) -> None:
+def test_s41_ceiling_leaves_completed_watchers_undelivered(manifest, tmp_path: Path) -> None:
     """Readiness settles on persisted rows before delivery runs, so the test waits for a whole
     delivery pass; otherwise the absence check passes only because nothing was decided yet.
     """
@@ -514,12 +506,9 @@ def test_s41_ceiling_pauses_then_human_run_starts_a_new_episode_and_exits(
         assert service.history.state().nodes[_EXPERIMENT_ID].attempts == []
         assert service.history.load_patches() == baseline_patches
 
-        armed = app.state.background_tasks.store.watchers(project_id, chat_id=chat_id)
+        armed = app.state.background_tasks.store.agent_watchers(chat_id)
         assert len(armed) == 2
-        assert all(record.continuation.patch_kind == "experiment_loop" for record in armed)
-        assert all(record.continuation.control_node_id == _EXPERIMENT_ID for record in armed)
-        assert all(record.continuation.control_episode_id == initial_episode for record in armed)
-        assert all(record.continuation.control_invocation == 1 for record in armed)
+        assert {record.origin_turn_id for record in armed} == {initial_record["operation_id"]}
         assert [record.action for record in app.state.launcher.launch_records] == [
             "initial",
             "watch_correction",
@@ -535,17 +524,12 @@ def test_s41_ceiling_pauses_then_human_run_starts_a_new_episode_and_exits(
     poll_passes = _count_poll_passes(reopened)
     reopened_store = reopened.state.background_tasks.store
     with signed_in_client(reopened) as reopened_client:
-        persisted = reopened_store.watchers(project_id, chat_id=chat_id)
+        persisted = reopened_store.agent_watchers(chat_id)
         assert len(persisted) == 2
         before_ceiling_ids = {task.operation_id for task in reopened_store.agent_tasks(project_id)}
-        pending = _wait_for_watcher_status(
-            reopened_store,
-            project_id,
-            chat_id,
-            "completed",
-        )
+        pending = _wait_for_watcher_status(reopened_store, chat_id, "finished")
         _assert_completed_job_artifacts(pending)
-        assert all(not record.notified for record in pending)
+        assert all(record.ready for record in pending)
         _wait_for_delivery_pass(poll_passes, after=len(poll_passes))
         control = _wait_for_ready_experiment_control(reopened_client, project_id)
         assert control["paused"] is False
@@ -556,85 +540,3 @@ def test_s41_ceiling_pauses_then_human_run_starts_a_new_episode_and_exits(
             task.operation_id for task in reopened_store.agent_tasks(project_id)
         } == before_ceiling_ids
         assert reopened.state.service.history.load_patches() == baseline_patches
-
-        reauthorized = reopened_client.post(
-            f"/api/projects/{project_id}/experiments/exp%2Facceptance-loop/run",
-            json={"chat_id": str(uuid.uuid4()), "run_truth_scope": ["repo-a"]},
-        )
-        assert reauthorized.status_code == 202, reauthorized.text
-        reauthorized_record = reauthorized.json()
-        request = reauthorized_record["request"]
-        assert request["trigger"] == "experiment_run"
-        assert request["patch_kind"] == "experiment_loop"
-        assert request["control_invocation"] == 1
-        assert request["control_invocation_ceiling"] == 1
-        assert request["control_episode_id"] != initial_episode
-        assert set(request["watcher_ids"]) == {record.watcher_id for record in pending}
-
-        finished = wait_for_task_response(
-            reopened_client,
-            project_id,
-            reauthorized_record["operation_id"],
-        )
-        assert finished["status"] == "succeeded", finished
-        assert {"watcher_notification", "experiment_loop_exit"} <= _receipt_categories(finished)
-        assert [record.action for record in reopened.state.launcher.launch_records] == ["wake"]
-
-        delivered = reopened_store.watchers(project_id, chat_id=chat_id)
-        assert all(record.notified for record in delivered)
-        assert {record.notification_operation_id for record in delivered} == {
-            reauthorized_record["operation_id"]
-        }
-        experiment = reopened.state.service.history.state().nodes[_EXPERIMENT_ID]
-        assert experiment.status == "completed"
-        assert experiment.attempts == []
-        state = reopened.state.service.history.state()
-        evidence = state.nodes["ev/acceptance-result"]
-        assert evidence.type == "evidence"
-        assert state.nodes[_HYPOTHESIS_ID].status == "proposed"
-        assert {
-            (
-                edge.source,
-                edge.target,
-                edge.relation,
-            )
-            for edge in state.edges.values()
-            if edge.id in {"edge/acceptance-produces", "edge/acceptance-supports"}
-        } == {
-            (_EXPERIMENT_ID, "ev/acceptance-result", "produces"),
-            ("ev/acceptance-result", _HYPOTHESIS_ID, "supports"),
-        }
-        pending_proposals = [
-            proposal for proposal in state.proposals.values() if proposal.status == "pending"
-        ]
-        assert [proposal.id for proposal in pending_proposals] == ["prop/acceptance-result"]
-        patches = reopened.state.service.history.load_patches()
-        assert len(patches) == len(baseline_patches) + 1
-        assert patches[-1].kind == "experiment_loop"
-        assert patches[-1].source_operation_id == reauthorized_record["operation_id"]
-
-        task_count = len(reopened_store.agent_tasks(project_id))
-        _wait_for_delivery_pass(poll_passes, after=len(poll_passes))
-        assert len(reopened_store.agent_tasks(project_id)) == task_count
-        assert len(reopened.state.service.history.load_patches()) == len(patches)
-
-        approved = reopened_client.post(
-            f"/api/projects/{project_id}/sync",
-            json={
-                "base_revision": state.revision,
-                "proposals": [
-                    {
-                        "proposal_id": "prop/acceptance-result",
-                        "decision": "approved",
-                    }
-                ],
-            },
-        )
-        assert approved.status_code == 200, approved.text
-        approved_graph = approved.json()
-        assert approved_graph["nodes"][_HYPOTHESIS_ID]["status"] == "supported"
-        assert approved_graph["proposals"]["prop/acceptance-result"]["status"] == "approved"
-        final_patches = reopened.state.service.history.load_patches()
-        assert len(final_patches) == len(patches) + 1
-        assert final_patches[-1].kind == "approval"
-        assert final_patches[-1].author == "human"

@@ -129,15 +129,6 @@ def test_running_lists_live_episodes_and_the_members_own_active_thread(
         episode_id=parent.episode_id,
         status="completed",
     )
-    _insert_watcher(
-        store,
-        "worker-watch",
-        project_id=project_id,
-        chat_id="loop-chat",
-        episode_id=current_episode,
-    )
-    with store.connection() as connection:
-        connection.execute("UPDATE watchers SET worker_id='worker' WHERE watcher_id='worker-watch'")
     watched = running()
     runs = {entry["episode_id"]: entry for entry in client.get("/api/space/runs").json()}
     rows = {row["id"]: row for row in watched["rows"]}
@@ -215,7 +206,7 @@ def test_running_lists_live_episodes_and_the_members_own_active_thread(
 
     _turn(store, project_id, thread_id, "done", "succeeded")
     with store.connection() as connection:
-        connection.execute("UPDATE watchers SET status='completed'")
+        connection.execute("UPDATE watchers SET cancelled_at=created_at, cancelled_by='human'")
         connection.execute("UPDATE questions SET state='dismissed'")
     assert thread_id not in {row["id"] for row in running()["rows"]}
 

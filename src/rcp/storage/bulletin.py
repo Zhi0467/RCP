@@ -32,6 +32,7 @@ from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.provisioning import ProjectProvisioningStoreMixin
 from rcp.storage.resource_versions import install_bulletin_resource_versions
 from rcp.storage.wake_inputs import queue_wake_input, wake_caused_sql
+from rcp.storage.watchers import _OPEN
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
@@ -949,13 +950,17 @@ class BulletinStoreMixin(StoreMixinBase):
         """Human Work chats remain alive while their target has an undelivered observer."""
         with self.connection() as connection:
             rows = connection.execute(
-                "SELECT DISTINCT chat_id FROM watchers "
-                "WHERE project_id=? AND graph_target_json=? AND episode_id IS NULL "
-                "AND worker_id IS NULL AND status IN ('active','degraded','completed') "
-                "AND notified=0 AND notification_operation_id IS NULL",
+                "SELECT DISTINCT w.agent_id FROM watchers AS w "
+                "JOIN graph_runs AS origin ON origin.operation_id = w.origin_turn_id "
+                "WHERE w.project_id=? AND origin.graph_target_json=? "
+                "AND origin.episode_id IS NULL "
+                "AND json_extract(origin.request_json, '$.chat_id') = w.agent_id "
+                "AND NOT EXISTS (SELECT 1 FROM auto_research_child_work AS child "
+                "WHERE child.worker_id = w.agent_id) "
+                f"AND {_OPEN}",
                 (project_id, graph_target_json(target)),
             ).fetchall()
-        return {str(row["chat_id"]) for row in rows}
+        return {str(row["agent_id"]) for row in rows}
 
     def bulletin_enabled_for_task(self, operation_id: str) -> bool:
         with self.connection() as connection:

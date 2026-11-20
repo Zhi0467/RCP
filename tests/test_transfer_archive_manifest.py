@@ -181,6 +181,7 @@ PROJECT_LINKED_TABLES = {
     "artifacts",
     "artifact_versions",
     "artifact_operations",
+    "watcher_checks",
     "watchers",
     "writing_sessions",
 }

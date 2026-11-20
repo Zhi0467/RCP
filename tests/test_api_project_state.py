@@ -18,7 +18,7 @@ from rcp.history import HistoryManager
 from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.providers import PROVIDER_IDS, ProviderUsage
 from rcp.skill_registry import SkillDefaults, official_registry
-from rcp.storage import AgentTaskRecord, WatcherContinuation, WatcherRecord
+from rcp.storage import AgentTaskRecord, WatcherCheckRecord, WatcherRecord
 from rcp.transport import StateUnavailable
 from tests.helpers import resource_watermark_tokens, sign_in_async_client, signed_in_client
 
@@ -259,23 +259,27 @@ def test_watermarks_notice_tasks_and_watchers_without_rebuilding_snapshot(
             status_message="running",
         )
     )
-    store.create_watchers(
-        [
-            WatcherRecord(
-                watcher_id="teammate-watcher",
-                project_id=project_id,
-                origin_operation_id="teammate-task",
-                origin_task_kind="node_chat",
-                chat_id="teammate-chat",
-                check_command="true",
-                log_path=str(tmp_path / "teammate.log"),
-                cwd=str(tmp_path),
-                continuation=WatcherContinuation(
-                    provider="claude", run_on=BACKEND_MACHINE_ID, run_truth_scope=["repo-a"]
-                ),
-                created_at=now,
-            )
-        ]
+    store.arm_watcher(
+        WatcherRecord(
+            watcher_id="teammate-watcher",
+            agent_id="teammate-chat",
+            project_id=project_id,
+            purpose="teammate job",
+            origin_turn_id="teammate-task",
+            created_at=now,
+            checks=[
+                WatcherCheckRecord(
+                    check_id="teammate-watcher",
+                    watcher_id="teammate-watcher",
+                    machine_id=BACKEND_MACHINE_ID,
+                    definition="external",
+                    check_command="true",
+                    log_path=str(tmp_path / "teammate.log"),
+                    cwd=str(tmp_path),
+                    created_at=now,
+                )
+            ],
+        )
     )
 
     after = resource_watermark_tokens(client, project_id, *keys)

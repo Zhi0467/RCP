@@ -615,7 +615,7 @@ def verify_live_application(
             )
         # These are the same storage-backed reads as the two operational API routes.
         store.agent_tasks(expected.project_id)
-        store.watchers(expected.project_id)
+        store.project_watchers(expected.project_id)
         projects.append(observed)
     read_model = {
         "startup_recovery": startup.model_dump(mode="json"),

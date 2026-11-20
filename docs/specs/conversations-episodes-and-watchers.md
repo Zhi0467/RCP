@@ -1131,34 +1131,19 @@ ceiling and may claim retained compatible completion as its invocation one, and
 
 ## Watcher resources
 
-Conversation, Experiment, and Auto-research child Work watcher targets are
-separate exact resources, not a client-chosen mode field.
+A watcher belongs to its arming agent and contains one or more checks.
+RCP retains observations for each check, including checks that were later
+removed. Readiness and the displayed state derive from these observations.
 
-- A conversation `watch.json` wakes that same conversation. A later turn that
-  re-arms a check or graph condition the conversation already watches, live and
-  undelivered at the same target, reuses that watcher instead of adding another.
-- An Experiment watcher resource is keyed by project, exact graph target,
-  Experiment node, and compatible episode, and wakes that bounded episode.
-- A child Work watcher retains the parent episode and child route worker id and
-  wakes that same route and native session, never the Auto-research root.
+Ready watchers are delivered together to their agent. An ordinary wake uses
+the current conversation settings and the arming turn's human authority. An
+Experiment or Auto-research episode owns its admission, budget and Stop
+fence. Its watcher claim and wake task commit together. A child Work wake
+returns to the child route that armed it.
 
-A branch watcher can never wake a main task, and a main watcher can never spend
-a branch episode. Watcher selection, staging, atomic claim, task creation, and
-episode association retain the same target.
-
-An Experiment episode adopts unclaimed compatible observations from earlier
-episodes of that Experiment on the same exact graph target and execution
-machine.
-Completions may coalesce across those origin episodes, including on a branch.
-The receiving episode supplies the human authorization, native session, stage,
-pinned Experiment execution policy and invocation budget; official packages
-follow the [current Settings selection](providers-and-containment.md#official-skills-and-workflows)
-on that new turn. Watcher origin is immutable provenance, including when another human
-created or maintained the observation.
-This adoption does not change ordinary conversation, Auto-research root, or
-child Work routing. Existing group readiness and atomic, once-only claims still
-apply. A child Experiment also retains its receiving parent's admission and
-shared Experiment allowance gates.
+A new Experiment Run gets a new agent. Continuing an existing Run with
+additional turns keeps its agent and watchers. Cancelling a watcher ends
+observation and leaves the underlying job running.
 
 Every watcher file has two all-or-none lists:
 

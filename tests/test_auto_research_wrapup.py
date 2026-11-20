@@ -33,11 +33,11 @@ from rcp.storage import (
     AutoResearchLifecycleNoticeRecord,
     AutoResearchStateRecord,
     EpisodeRecord,
-    GraphWatcherRecord,
     ProjectRecord,
-    WatcherContinuation,
 )
 from rcp.storage.episodes import compact_episode_receipt
+
+from .test_auto_research_child_work_watchers_storage import armed_watcher
 
 
 def _authority(episode_id: str) -> AgentDispatchAuthority:
@@ -171,28 +171,14 @@ def test_wrapup_selects_the_root_actors_exact_recovery_child_and_compact_receipt
             dispatch_authority=root.dispatch_authority,
         )
     )
-    watcher = store.create_watchers(
-        [
-            GraphWatcherRecord(
-                watcher_id="episode-watcher",
-                project_id=episode.project_id,
-                origin_operation_id=recovery.operation_id,
-                origin_task_kind="auto_research",
-                graph_target=episode.graph_target,
-                chat_id=episode.episode_id,
-                episode_id=episode.episode_id,
-                continuation=WatcherContinuation(
-                    provider="codex",
-                    run_on="local",
-                    patch_kind="work",
-                ),
-                condition={"node_id": "claim", "status_in": ["active"]},
-                armed_revision=1,
-                status="active",
-                created_at=store.now(),
-            )
-        ]
-    )[0]
+    watcher = armed_watcher(
+        store,
+        "episode-watcher",
+        agent_id=episode.episode_id,
+        origin_turn_id=recovery.operation_id,
+        project_id=episode.project_id,
+        completed=False,
+    )
 
     signal = auto_research_completion_signal(store, episode.episode_id)
     spec = auto_research_wrapup_spec(store, signal)
@@ -232,7 +218,7 @@ def test_wrapup_selects_the_root_actors_exact_recovery_child_and_compact_receipt
         & spec.receipt.keys()
     )
     assert len(json.dumps(spec.receipt).encode("utf-8")) < 32_000
-    assert store.watcher(watcher.watcher_id).status == "stopped"  # type: ignore[union-attr]
+    assert store.watcher(watcher.watcher_id).state == "cancelled"  # type: ignore[union-attr]
 
 
 def test_stop_settles_without_a_wrapup_spec(tmp_path) -> None:

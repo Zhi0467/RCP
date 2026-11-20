@@ -19,6 +19,7 @@ from rcp.storage.chat_forks import ChatForkRecord
 from rcp.storage.chat_names import ChatNameError, initialize_chat_name, normalize_chat_name
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import AgentTaskAdmissionConflict, AgentTaskRecord
+from rcp.storage.watchers import _OPEN
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
@@ -533,10 +534,10 @@ class ChatDisplayStoreMixin(StoreMixinBase):
             return True
         # An Auto-research conversation is its chain's root episode.
         row = connection.execute(
-            "WITH RECURSIVE chain(episode_id, root_operation_id) AS ("
-            "SELECT episode_id, root_operation_id FROM episodes "
+            "WITH RECURSIVE chain(episode_id) AS ("
+            "SELECT episode_id FROM episodes "
             "WHERE project_id=? AND episode_id=? AND mode='auto_research' UNION "
-            "SELECT child.episode_id, child.root_operation_id FROM episodes child "
+            "SELECT child.episode_id FROM episodes child "
             "JOIN chain ON child.continues_episode_id=chain.episode_id "
             "WHERE child.project_id=? AND child.mode='auto_research'), "
             "runs AS (SELECT status, episode_id FROM graph_runs WHERE project_id=? "
@@ -547,10 +548,8 @@ class ChatDisplayStoreMixin(StoreMixinBase):
             "AND status IN ('queued','running','stopping','wrapping_up') "
             "AND (episode_id IN (SELECT episode_id FROM chain) "
             "OR episode_id IN (SELECT episode_id FROM runs))) "
-            "OR EXISTS (SELECT 1 FROM watchers WHERE project_id=? "
-            "AND (chat_id=? OR chat_id IN (SELECT root_operation_id FROM chain)) "
-            "AND status IN ('active','degraded','completed') AND notified=0 "
-            "AND notification_operation_id IS NULL)",
+            "OR EXISTS (SELECT 1 FROM watchers AS w WHERE w.project_id=? AND w.agent_id=? "
+            f"AND {_OPEN})",
             (project_id, chat_id, project_id, project_id, chat_id, project_id, project_id, chat_id),
         ).fetchone()
         return bool(row[0])

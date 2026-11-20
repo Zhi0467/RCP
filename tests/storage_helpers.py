@@ -4,6 +4,58 @@ import sqlite3
 
 from rcp.storage import AppStore
 
+OLD_WATCHERS_TABLE = """
+CREATE TABLE watchers (
+    watcher_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    origin_operation_id TEXT NOT NULL,
+    origin_task_kind TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    node_id TEXT,
+    episode_id TEXT,
+    graph_target_json TEXT NOT NULL DEFAULT '{"kind":"main","branch_id":null}',
+    machine_id TEXT NOT NULL,
+    check_command TEXT NOT NULL,
+    log_path TEXT NOT NULL,
+    cwd TEXT NOT NULL,
+    graph_condition_json TEXT,
+    armed_revision INTEGER,
+    continuation_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_checked_at TEXT,
+    last_exit_code INTEGER,
+    last_error TEXT,
+    completed_at TEXT,
+    next_check_at TEXT,
+    consecutive_error_count INTEGER NOT NULL DEFAULT 0,
+    group_id TEXT,
+    group_label TEXT,
+    notified INTEGER NOT NULL DEFAULT 0,
+    notification_operation_id TEXT,
+    stopped_by TEXT,
+    stop_reason TEXT,
+    stopped_at TEXT,
+    stop_operation_id TEXT,
+    worker_id TEXT,
+    cancel_command TEXT,
+    cancel_requested_by TEXT,
+    cancel_requested_at TEXT,
+    cancel_error TEXT,
+    purpose TEXT
+)
+"""
+
+
+def downgrade_watchers(connection: sqlite3.Connection) -> None:
+    """Restore the per-check watcher table migration 93 folds."""
+    if not any(row[1] == "agent_id" for row in connection.execute("PRAGMA table_info(watchers)")):
+        return
+    connection.execute("DROP TABLE watcher_checks")
+    connection.execute("DROP TABLE watchers")
+    connection.execute(OLD_WATCHERS_TABLE)
+    connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 93")
+
 
 def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
     """Reconstruct older schema eras without retaining the later owner triggers.
@@ -232,6 +284,7 @@ def downgrade_artifacts(
 
     Migration 46 rebuilt the provisioning table; this restores its pre-46 shape.
     """
+    downgrade_watchers(connection)
     downgrade_resource_watermarks(connection)
     downgrade_machine_identity(connection)
     if not any(

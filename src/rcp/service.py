@@ -1273,7 +1273,9 @@ def agent_login_accounts(
             task_ids.update(task_id for _, task_id in work.recoveries)
             task_ids.update(work.queued)
             task_ids.update(work.retries)
-            task_ids.update(group[0].origin_operation_id for group in work.watcher_groups)
+            task_ids.update(
+                batch[0].origin_turn_id for batch in work.watcher_batches.values() if batch
+            )
         for task_id in task_ids:
             task = store.agent_task(task_id)
             if task is None or not task.request.get("provider"):

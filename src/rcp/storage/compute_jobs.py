@@ -208,26 +208,34 @@ class ComputeJobStoreMixin(StoreMixinBase):
         jobs += [
             EpisodeUnfinishedJob(
                 kind="watcher",
-                id=row["watcher_id"],
-                status=row["status"],
+                id=row["check_id"],
+                status=(
+                    "stopped"
+                    if row["cancelled_at"] is not None or row["removed_at"] is not None
+                    else "degraded"
+                    if row["consecutive_error_count"]
+                    else "active"
+                ),
                 execution_host=row["execution_host"] or "",
                 command=row["check_command"],
                 log_path=row["log_path"],
             )
             for row in connection.execute(
-                "SELECT w.watcher_id, w.status, COALESCE(m.host, '') AS execution_host, "
-                "w.check_command, w.log_path "
-                "FROM watchers w JOIN episodes e ON e.episode_id = w.episode_id "
-                "LEFT JOIN space_machines m ON m.machine_id = w.machine_id "
+                "SELECT c.check_id, w.cancelled_at, c.removed_at, c.consecutive_error_count, "
+                "COALESCE(m.host, '') AS execution_host, "
+                "c.check_command, c.log_path "
+                "FROM watcher_checks c JOIN watchers w ON w.watcher_id = c.watcher_id "
+                "LEFT JOIN graph_runs origin ON origin.operation_id = w.origin_turn_id "
+                "LEFT JOIN auto_research_child_work child ON child.worker_id = w.agent_id "
+                "JOIN episodes e ON e.episode_id = COALESCE(origin.episode_id, child.episode_id) "
+                "LEFT JOIN space_machines m ON m.machine_id = c.machine_id "
                 "JOIN episode_isolations i ON i.project_id = w.project_id "
                 "AND i.owner_episode_id = COALESCE(e.isolation_owner_episode_id, e.episode_id) "
                 "WHERE w.project_id = ? AND i.owner_episode_id = ? "
                 "AND json_extract(i.binding_json, '$.worktree') IS NOT NULL "
-                "AND w.graph_condition_json IS NULL "
                 # Stop ends observation, not the job: only a recorded completion is finished.
-                "AND (w.status IN ('active', 'degraded') "
-                "OR (w.status = 'stopped' AND w.completed_at IS NULL)) "
-                "ORDER BY w.watcher_id",
+                "AND c.definition = 'external' AND c.completed_at IS NULL "
+                "ORDER BY c.check_id",
                 (project_id, owner_episode_id),
             )
         ]

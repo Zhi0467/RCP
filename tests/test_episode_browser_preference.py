@@ -4,6 +4,7 @@ import uuid
 
 import pytest
 
+from rcp.control import ExperimentInvocationAdmission
 from rcp.runs.auto_research_admission import resume_auto_research_child_work
 from rcp.runs.auto_research_delivery import (
     deliver_pending_auto_research_mail,
@@ -60,8 +61,6 @@ def test_child_continuation_browser_matrix(tmp_path, path, requested):
 
 
 def test_experiment_browser_roundtrip_and_bounded_wake(tmp_path):
-    from .test_watchers import _record
-
     store = AppStore(tmp_path / "store.sqlite3")
     episode_id = str(uuid.uuid4())
     root = _task(store, "root", episode_id)
@@ -70,27 +69,16 @@ def test_experiment_browser_roundtrip_and_bounded_wake(tmp_path):
     _bind(store, episode_id, root.operation_id, invocation=1)
     assert store.episode(episode_id).browser_requested is True
     assert store.experiment_episode(episode_id).browser_requested is True
-    from rcp.storage import WatcherContinuation
-
-    continuation = WatcherContinuation.model_validate(
-        {
-            key: value
-            for key, value in root.request.items()
-            if key in WatcherContinuation.model_fields
-        }
-    )
-    watcher = _record("watch", origin=root.operation_id).model_copy(
-        update={"continuation": continuation}
+    runtime = store.experiment_loop_runtime(
+        root.project_id, str(root.request["control_node_id"]), graph_target=root.graph_target
     )
     request = experiment_watcher_delivery_request(
-        [watcher],
-        trigger="watcher",
-        episode_id=episode_id,
-        invocation=2,
-        invocation_ceiling=2,
-        control_revision=1,
-        decision_bundle=[],
-        completion_criteria=[],
+        ["watch"],
+        episode=store.episode(episode_id),
+        runtime=runtime,
+        admission=ExperimentInvocationAdmission(
+            episode_id=episode_id, invocation=2, invocation_ceiling=2, decision_bundle=[]
+        ),
         session_id="native-session",
     )
     assert request.browser_requested is True

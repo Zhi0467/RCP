@@ -12,6 +12,7 @@ from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution
+from rcp.control import ExperimentInvocationAdmission
 from rcp.core.models import AuthorizedHuman, Patch
 from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
@@ -38,12 +39,11 @@ from rcp.service import GraphUpdateResult, RunRequest, resolve_dispatch_authorit
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
+    EpisodeRecord,
     EpisodeWrapupRecord,
     ExperimentEpisodeRecord,
     ExperimentLoopRuntime,
-    GraphWatcherRecord,
-    NodeStatusGraphCondition,
-    WatcherContinuation,
+    WatcherCheckRecord,
     WatcherRecord,
 )
 from rcp.storage.episodes import compact_episode_receipt
@@ -148,43 +148,34 @@ def test_experiment_watcher_wake_keeps_packages_available_without_reinvoking_the
     tmp_path: Path,
 ) -> None:
     episode_id = "00000000-0000-4000-8000-000000000087"
-    continuation = WatcherContinuation(
+    runtime = ExperimentLoopRuntime(
+        episode_id=episode_id,
         provider="codex",
         run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
-        patch_kind="experiment_loop",
-        control_node_id=_EXPERIMENT_ID,
         control_revision=2,
-        control_episode_id=episode_id,
-        control_invocation=1,
-        control_invocation_ceiling=3,
-        skill_ids=["experiment-causality"],
-        invoked_skill_ids=["experiment-causality"],
-    )
-    watcher = WatcherRecord(
-        watcher_id="watcher-turn-local-invocation",
-        project_id="project-turn-local-invocation",
-        origin_operation_id="origin-turn-local-invocation",
-        origin_task_kind="node_chat",
         chat_id="chat-turn-local-invocation",
-        node_id=_EXPERIMENT_ID,
-        check_command="false",
-        log_path=str(tmp_path / "detached.log"),
-        cwd=str(tmp_path),
-        continuation=continuation,
-        status="completed",
+        skill_ids=["experiment-causality"],
+    )
+    episode = EpisodeRecord(
+        episode_id=episode_id,
+        project_id="project-turn-local-invocation",
+        mode="experiment_loop",
+        control_node_id=_EXPERIMENT_ID,
+        status="running",
+        invocation_ceiling=3,
+        invocations_used=1,
         created_at="2026-08-08T00:00:00Z",
+        updated_at="2026-08-08T00:00:00Z",
     )
 
     request = experiment_watcher_delivery_request(
-        [watcher],
-        trigger="watcher",
-        episode_id=episode_id,
-        invocation=2,
-        invocation_ceiling=3,
-        control_revision=2,
-        decision_bundle=[],
-        completion_criteria=[],
+        ["watcher-turn-local-invocation"],
+        episode=episode,
+        runtime=runtime,
+        admission=ExperimentInvocationAdmission(
+            episode_id=episode_id, invocation=2, invocation_ceiling=3, decision_bundle=[]
+        ),
         session_id="native-session",
     )
 
@@ -303,7 +294,7 @@ def _execution(
         assert stored is not None
     else:
         store.create_experiment_episode_with_invocation(
-            record, request.watcher_ids, continues_episode_id=continues_episode_id
+            record, continues_episode_id=continues_episode_id
         )
     store.mark_agent_task_running(operation_id)
     store.record_agent_task_receipt(
@@ -585,7 +576,7 @@ async def test_experiment_resume_requires_the_exact_saved_native_session(
     )
     revision_before = service.history.state().revision
     patch_count_before = len(service.history.load_patches())
-    watcher_ids_before = [item.watcher_id for item in store.watchers(project_id)]
+    watcher_ids_before = [item.watcher_id for item in store.project_watchers(project_id)]
     resume_request = initial_request.model_copy(update={"session_id": saved_session_id})
     resume_execution = _execution(
         store,
@@ -656,7 +647,7 @@ async def test_experiment_resume_requires_the_exact_saved_native_session(
     assert any("exact saved native session" in text for text in errors)
     assert service.history.state().revision == revision_before
     assert len(service.history.load_patches()) == patch_count_before
-    assert [item.watcher_id for item in store.watchers(project_id)] == watcher_ids_before
+    assert [item.watcher_id for item in store.project_watchers(project_id)] == watcher_ids_before
     assert bound_after.last_turn_operation_id == bound_before.last_turn_operation_id
     assert bound_after.native_session_id == saved_session_id
     assert any(
@@ -743,8 +734,8 @@ async def test_duplicate_observer_handoff_is_corrected_before_the_turn_ends(
     assert not [event for event in events if event.event == "error"]
     assert len(launcher.contracts) == 2
     assert any("arms one check twice" in item for item in launcher.diagnostics)
-    armed = app.state.background_tasks.store.watchers(project_id)
-    assert [item.check_command for item in armed] == ["false"]
+    armed = app.state.background_tasks.store.project_watchers(project_id)
+    assert [check.check_command for item in armed for check in item.checks] == ["false"]
 
 
 @pytest.mark.asyncio
@@ -829,7 +820,7 @@ async def test_patch_only_watcher_correction_accepts_unchanged_empty_watch_list(
     assert graph_update["status"] == "applied"
     assert service.history.state().nodes[_EXPERIMENT_ID].status == "completed"
     assert service.history.state().nodes[_EXPERIMENT_ID].next_action is None
-    assert app.state.background_tasks.store.watchers(project_id) == []
+    assert app.state.background_tasks.store.project_watchers(project_id) == []
 
 
 def test_retry_recovers_evicted_contract_from_same_stage_lineage(tmp_path: Path) -> None:
@@ -981,7 +972,7 @@ def test_episode_context_ontology_identity_changes_with_extension_definitions() 
     assert len(base["ontology"]["sha256"]) == 64
 
 
-def test_watcher_provenance_model_and_reasoning_do_not_select_or_block_session(
+def test_the_episode_session_alone_decides_wake_readiness(
     tmp_path: Path,
 ) -> None:
     stage = tmp_path / "episode-stage"
@@ -1007,41 +998,7 @@ def test_watcher_provenance_model_and_reasoning_do_not_select_or_block_session(
         created_at="2026-08-06T00:00:00Z",
         updated_at="2026-08-06T00:00:00Z",
     )
-    continuation = WatcherContinuation(
-        provider="codex",
-        model="older-watcher-model",
-        reasoning="low",
-        run_on=BACKEND_MACHINE_ID,
-        run_truth_scope=["repo-a"],
-        patch_kind="experiment_loop",
-        control_node_id=_EXPERIMENT_ID,
-        control_revision=2,
-        control_episode_id=episode.episode_id,
-        control_invocation=1,
-        control_invocation_ceiling=3,
-        control_decision_bundle=[],
-        control_completion_criteria=["The detached check is inspected."],
-    )
-    watcher = WatcherRecord(
-        watcher_id="watcher-model-provenance",
-        project_id=episode.project_id,
-        origin_operation_id="loop-initial",
-        origin_task_kind="node_chat",
-        chat_id="chat-native-wake",
-        node_id=_EXPERIMENT_ID,
-        episode_id=episode.episode_id,
-        machine_id=BACKEND_MACHINE_ID,
-        check_command="false",
-        log_path=str(tmp_path / "detached.log"),
-        cwd=str(tmp_path),
-        continuation=continuation,
-        status="completed",
-        created_at="2026-08-06T00:00:00Z",
-    )
-
-    readiness = preflight_episode_wake(
-        runtime, episode, [watcher], store=AppStore(tmp_path / "app.sqlite3")
-    )
+    readiness = preflight_episode_wake(runtime, episode, store=AppStore(tmp_path / "app.sqlite3"))
 
     assert readiness.readiness == "ready"
     assert readiness.session_id == episode.native_session_id
@@ -2074,7 +2031,7 @@ async def test_experiment_retry_recovers_after_atomic_handoff_failure(
         if injected:
             injected = False
             assert [item for item in service.history.load_patches() if item.source_operation_id]
-            assert store.watchers(project_id) == []
+            assert store.project_watchers(project_id) == []
             episode = store.experiment_episode(episode_id)
             assert episode is not None and not episode.session_bound
             raise ValueError("injected compound handoff failure")
@@ -2136,9 +2093,9 @@ async def test_experiment_retry_recovers_after_atomic_handoff_failure(
         if item.kind == "experiment_loop" and item.source_operation_id == root.operation_id
     ]
     assert len(loop_patches) == 1
-    watchers = store.watchers(project_id)
+    watchers = store.project_watchers(project_id)
     assert len(watchers) == 1
-    assert watchers[0].origin_operation_id == root.operation_id
+    assert watchers[0].origin_turn_id == root.operation_id
     episode = store.experiment_episode(episode_id)
     assert episode is not None
     assert episode.last_turn_operation_id == retry.operation_id
@@ -2206,290 +2163,65 @@ def _store_task(
 
 
 def _store_watcher(
-    store: AppStore,
-    *,
-    watcher_id: str,
-    project_id: str,
-    episode_id: str,
-    status: str,
-    notified: bool = False,
-    machine_id: str = BACKEND_MACHINE_ID,
+    store: AppStore, watcher_id: str, *, agent_id: str, completed: bool = False
 ) -> None:
     now = store.now()
-    continuation = WatcherContinuation(
-        provider="codex",
-        reasoning="medium",
-        run_on=BACKEND_MACHINE_ID,
-        run_truth_scope=["repo-a"],
-        patch_kind="experiment_loop",
-        control_node_id=_EXPERIMENT_ID,
-        control_revision=2,
-        control_episode_id=episode_id,
-        control_invocation=1,
-        control_invocation_ceiling=3,
-        control_decision_bundle=[],
-        control_completion_criteria=["The detached check is inspected."],
-    )
-    store.create_watchers(
-        [
-            WatcherRecord(
-                watcher_id=watcher_id,
-                project_id=project_id,
-                origin_operation_id=f"origin-{episode_id}",
-                origin_task_kind="node_chat",
-                chat_id="watcher-state-chat",
-                node_id=_EXPERIMENT_ID,
-                episode_id=episode_id,
-                machine_id=machine_id,
-                check_command="false",
-                log_path=f"/tmp/{watcher_id}.log",
-                cwd="/tmp",
-                continuation=continuation,
-                status=status,
-                created_at=now,
-                completed_at=now if status == "completed" else None,
-                notified=notified,
-            )
-        ]
+    store.arm_watcher(
+        WatcherRecord(
+            watcher_id=watcher_id,
+            agent_id=agent_id,
+            project_id="project-watcher-state",
+            purpose=watcher_id,
+            origin_turn_id="current-root",
+            created_at=now,
+            checks=[
+                WatcherCheckRecord(
+                    check_id=watcher_id,
+                    watcher_id=watcher_id,
+                    definition="external",
+                    check_command="false",
+                    log_path=f"/tmp/{watcher_id}.log",
+                    cwd="/tmp",
+                    created_at=now,
+                    completed_at=now if completed else None,
+                )
+            ],
+        )
     )
 
 
-def test_staged_graph_watcher_state_uses_condition_fields_without_shell_telemetry(
-    tmp_path: Path,
-) -> None:
-    store = AppStore(tmp_path / "graph-watcher-state.sqlite3")
-    project_id = "project-graph-watcher-state"
-    episode_id = "00000000-0000-4000-8000-000000000099"
-    _store_task(
-        store,
-        operation_id="graph-watcher-root",
-        project_id=project_id,
-        episode_id=episode_id,
-        status="running",
-    )
-    evaluated_at = "2026-08-12T00:00:00+00:00"
-    continuation = WatcherContinuation(
-        provider="codex",
-        reasoning="medium",
-        run_on=BACKEND_MACHINE_ID,
-        run_truth_scope=["repo-a"],
-        patch_kind="experiment_loop",
-        control_node_id=_EXPERIMENT_ID,
-        control_revision=2,
-        control_episode_id=episode_id,
-        control_invocation=1,
-        control_invocation_ceiling=3,
-        control_decision_bundle=[],
-        control_completion_criteria=["The canonical blocker is resolved."],
-    )
-    store.create_watchers(
-        [
-            GraphWatcherRecord(
-                watcher_id="graph-condition",
-                project_id=project_id,
-                origin_operation_id="graph-watcher-root",
-                origin_task_kind="node_chat",
-                chat_id="watcher-state-chat",
-                node_id=_EXPERIMENT_ID,
-                condition=NodeStatusGraphCondition(
-                    node_id="blk/result",
-                    status_in=["resolved"],
-                ),
-                armed_revision=2,
-                continuation=continuation,
-                status="active",
-                created_at=evaluated_at,
-                last_evaluated_at=evaluated_at,
-            )
-        ]
-    )
-    execution = AgentTaskExecution(
-        operation_id="graph-watcher-root",
-        store=store,
-        control=AgentProcessControl(),
-    )
-
-    state = _watcher_state(
-        execution,
-        _EXPERIMENT_ID,
-        [],
-        episode_id,
-        "initial_run",
-    )
-
-    assert len(state) == 1
-    item = state[0]
-    assert item["condition"] == {"node_id": "blk/result", "status_in": ["resolved"]}
-    assert item["armed_revision"] == 2
-    assert item["last_evaluated_at"] == evaluated_at
-    assert not {
-        "check_command",
-        "log_path",
-        "cwd",
-        "last_checked_at",
-        "last_exit_code",
-        "last_error",
-        "next_check_at",
-        "consecutive_error_count",
-        "group_id",
-        "group_label",
-    }.intersection(item)
-
-
-def test_watcher_state_includes_current_and_compatible_stopped_history(
+def test_watcher_state_lists_the_agents_open_watchers_and_the_ones_that_woke_it(
     tmp_path: Path,
 ) -> None:
     store = AppStore(tmp_path / "watcher-state.sqlite3")
-    project_id = "project-watcher-state"
-    older_episode = "00000000-0000-4000-8000-000000000070"
-    stopped_episode = "00000000-0000-4000-8000-000000000071"
-    current_episode = "00000000-0000-4000-8000-000000000072"
-    _store_task(
-        store,
-        operation_id="older-root",
-        project_id=project_id,
-        episode_id=older_episode,
-    )
-    older_stopped = store.request_experiment_loop_stop(
-        project_id, _EXPERIMENT_ID, graph_target=GraphTargetRef()
-    )
-    assert older_stopped is not None and older_stopped.stop_settled_at is not None
-    _store_task(
-        store,
-        operation_id="stopped-root",
-        project_id=project_id,
-        episode_id=stopped_episode,
-    )
-    store.commit_experiment_episode_turn(
-        episode_id=stopped_episode,
-        project_id=project_id,
-        control_node_id=_EXPERIMENT_ID,
-        provider="codex",
-        machine_id=BACKEND_MACHINE_ID,
-        native_session_id="stopped-session",
-        stage_machine_id=None,
-        stage_root="/tmp/stopped-stage",
-        chat_id="watcher-state-chat",
-        operation_id="stopped-root",
-        invocation=1,
-        graph_result="no graph change",
-        watcher_ids=[],
-        context_baseline={},
-    )
-    stopped = store.request_experiment_loop_stop(
-        project_id, _EXPERIMENT_ID, graph_target=GraphTargetRef()
-    )
-    assert stopped is not None and stopped.stop_requested_at is not None
     _store_task(
         store,
         operation_id="current-root",
-        project_id=project_id,
-        episode_id=current_episode,
+        project_id="project-watcher-state",
+        episode_id="00000000-0000-4000-8000-000000000072",
         status="running",
     )
-
-    _store_watcher(
-        store,
-        watcher_id="older-stopped",
-        project_id=project_id,
-        episode_id=older_episode,
-        status="stopped",
-        notified=True,
-    )
-    _store_watcher(
-        store,
-        watcher_id="previous-stopped",
-        project_id=project_id,
-        episode_id=stopped_episode,
-        status="stopped",
-        notified=True,
-    )
-    _store_watcher(
-        store,
-        watcher_id="previous-completed-notified",
-        project_id=project_id,
-        episode_id=stopped_episode,
-        status="completed",
-        notified=True,
-    )
-    _store_watcher(
-        store,
-        watcher_id="current-active",
-        project_id=project_id,
-        episode_id=current_episode,
-        status="active",
-    )
-    _store_watcher(
-        store,
-        watcher_id="current-completed",
-        project_id=project_id,
-        episode_id=current_episode,
-        status="completed",
-    )
-    _store_watcher(
-        store,
-        watcher_id="current-stopped",
-        project_id=project_id,
-        episode_id=current_episode,
-        status="stopped",
-        notified=True,
-    )
-    _store_watcher(
-        store,
-        watcher_id="current-completed-notified",
-        project_id=project_id,
-        episode_id=current_episode,
-        status="completed",
-        notified=True,
-    )
-    _store_watcher(
-        store,
-        watcher_id="delivered-notified",
-        project_id=project_id,
-        episode_id=stopped_episode,
-        status="completed",
-        notified=True,
-    )
+    agent = "watcher-state-chat"
+    _store_watcher(store, "open", agent_id=agent)
+    _store_watcher(store, "ready", agent_id=agent, completed=True)
+    _store_watcher(store, "cancelled", agent_id=agent)
+    store.cancel_watchers(["cancelled"], by="agent")
+    _store_watcher(store, "delivered", agent_id=agent, completed=True)
+    with store.connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        assert store.claim_watcher_wake(connection, agent, ["delivered"], "earlier-wake")
+    _store_watcher(store, "other-agent", agent_id="another-chat")
     execution = AgentTaskExecution(
-        operation_id="current-root",
-        store=store,
-        control=AgentProcessControl(),
+        operation_id="current-root", store=store, control=AgentProcessControl()
     )
 
-    initial_ids = {
-        item["watcher_id"]
-        for item in _watcher_state(
-            execution,
-            _EXPERIMENT_ID,
-            [],
-            current_episode,
-            "initial_run",
-        )
+    assert {item["watcher_id"] for item in _watcher_state(execution, agent, [])} == {
+        "open",
+        "ready",
     }
-    assert initial_ids == {
-        "older-stopped",
-        "previous-stopped",
-        "current-active",
-        "current-completed",
-        "current-stopped",
-    }
-
-    wake_ids = {
-        item["watcher_id"]
-        for item in _watcher_state(
-            execution,
-            _EXPERIMENT_ID,
-            ["delivered-notified"],
-            current_episode,
-            "watcher_wake",
-        )
-    }
-    assert wake_ids == {
-        "delivered-notified",
-        "current-active",
-        "current-completed",
-        "current-stopped",
-    }
+    staged = _watcher_state(execution, agent, ["delivered"])
+    assert {item["watcher_id"] for item in staged} == {"open", "ready", "delivered"}
+    assert {item["watcher_id"]: item["state"] for item in staged}["ready"] == "finished"
 
 
 def test_experiment_graph_result_tells_the_next_wake_each_commit_certainty_apart() -> None:

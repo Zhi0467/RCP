@@ -23,7 +23,7 @@ from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.history import HistoryManager
 from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.auto_research import AutoResearchRunRequest
-from rcp.runs.watcher_admission import start_watcher_notification
+from rcp.runs.watcher_admission import start_plain_watcher_wake
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import (
     ACTIVE_AGENT_TASK_STATUSES,
@@ -33,8 +33,6 @@ from rcp.storage import (
     AutoResearchStateRecord,
     EpisodeRecord,
     ProjectRecord,
-    WatcherContinuation,
-    WatcherRecord,
 )
 from tests.helpers import (
     seated_on_every_project,
@@ -42,6 +40,7 @@ from tests.helpers import (
     wait_until,
     write_local_test_manifest,
 )
+from tests.test_watchers import armed
 
 
 def _authorizer(store: AppStore) -> AuthorizedHuman:
@@ -728,43 +727,30 @@ def test_watcher_dispatch_binds_before_claim_and_refusal_leaves_claim_untouched(
 ) -> None:
     store = _project_store(tmp_path / "watcher.sqlite3")
     authorizer = _authorizer(store)
-    request = _work_request(trigger="watcher", watcher_ids=["watcher-one"])
-    now = store.now()
-    store.create_watchers(
-        [
-            WatcherRecord(
-                watcher_id="watcher-one",
-                project_id="project-one",
-                origin_operation_id="origin-task",
-                origin_task_kind="project_chat",
-                chat_id=request.chat_id or "project-chat",
-                continuation=WatcherContinuation(
-                    provider=request.provider or "codex",
-                    model=request.model,
-                    reasoning=request.reasoning,
-                    run_on=request.run_on or "local",
-                    run_truth_scope=request.run_truth_scope,
-                    patch_kind="work",
-                ),
-                status="completed",
-                created_at=now,
-                completed_at=now,
-                check_command="true",
-                log_path=str(tmp_path / "watcher.log"),
-                cwd=str(tmp_path),
-            )
-        ]
+    request = _work_request()
+    _record(
+        store,
+        operation_id="origin-task",
+        request=request,
+        status="succeeded",
+        authorized_by=authorizer,
+    )
+    watcher = armed(
+        store,
+        "watcher-one",
+        agent_id=request.chat_id,
+        origin_turn_id="origin-task",
+        project_id="project-one",
+        completed=True,
+        cwd=str(tmp_path),
     )
     claim_seen: list[AgentDispatchAuthority | None] = []
     stream_seen = threading.Event()
+    real_claim = store.create_watcher_wake_task
 
-    def claim(
-        record: AgentTaskRecord,
-        _watcher_ids: list[str],
-        **kwargs,
-    ) -> AgentTaskRecord:
+    def claim(record: AgentTaskRecord, agent_id: str, watcher_ids: list[str]):
         claim_seen.append(record.dispatch_authority)
-        return store.create_agent_task(record, **kwargs)
+        return real_claim(record, agent_id, watcher_ids)
 
     async def stream(
         _project_id: str,
@@ -777,17 +763,10 @@ def test_watcher_dispatch_binds_before_claim_and_refusal_leaves_claim_untouched(
         stream_seen.set()
         yield f"data: {AgentEvent(event='answer', text='done').model_dump_json()}\n\n"
 
-    monkeypatch.setattr(store, "create_watcher_notification_task", claim)
+    monkeypatch.setattr(store, "create_watcher_wake_task", claim)
     tasks = BackgroundAgentTasks(store, stream)
     try:
-        started = start_watcher_notification(
-            tasks,
-            "project-one",
-            "project_chat",
-            request,
-            ["watcher-one"],
-            authorized_by=authorizer,
-        )
+        started = start_plain_watcher_wake(tasks, request.chat_id, [watcher], authorizer)
         assert started is not None and stream_seen.wait(timeout=2)
         assert _wait_for_terminal(store, started.operation_id).status == "succeeded"
     finally:
@@ -795,14 +774,20 @@ def test_watcher_dispatch_binds_before_claim_and_refusal_leaves_claim_untouched(
 
     assert claim_seen == [_work_authority(request)]
 
-    refused_claim = False
+    second = armed(
+        store,
+        "watcher-two",
+        agent_id=request.chat_id,
+        origin_turn_id="origin-task",
+        project_id="project-one",
+        completed=True,
+        cwd=str(tmp_path),
+    )
 
-    def must_not_claim(_record: AgentTaskRecord, _ids: list[str]) -> AgentTaskRecord:
-        nonlocal refused_claim
-        refused_claim = True
+    def must_not_claim(*_args) -> AgentTaskRecord:
         raise AssertionError("refused watcher dispatch reached its claim")
 
-    monkeypatch.setattr(store, "create_watcher_notification_task", must_not_claim)
+    monkeypatch.setattr(store, "create_watcher_wake_task", must_not_claim)
     orchestrate = AgentDispatchAuthority(
         profile="ordinary",
         task_contract="orchestrate",
@@ -814,15 +799,8 @@ def test_watcher_dispatch_binds_before_claim_and_refusal_leaves_claim_untouched(
         dispatch_authority_resolver=lambda _kind, _request: orchestrate,
     )
     with pytest.raises(ValueError, match="action 'dispatch'"):
-        start_watcher_notification(
-            refused,
-            "project-one",
-            "project_chat",
-            request,
-            ["watcher-one"],
-            authorized_by=authorizer,
-        )
-    assert refused_claim is False
+        start_plain_watcher_wake(refused, request.chat_id, [second], authorizer)
+    assert store.watcher("watcher-two").wake_turn_id is None
 
 
 @pytest.mark.parametrize(

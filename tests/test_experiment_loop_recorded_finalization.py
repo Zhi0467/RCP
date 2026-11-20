@@ -166,10 +166,10 @@ async def test_recorded_loop_finalization_can_resume_without_arming_twice(
     assert len(episode.last_watcher_ids) == 1
     armed = [
         watcher
-        for watcher in execution.store.watchers(
+        for watcher in execution.store.project_watchers(
             execution.store.agent_task(execution.operation_id).project_id
         )
-        if watcher.origin_operation_id == execution.operation_id
+        if watcher.origin_turn_id == execution.operation_id
     ]
     assert len(armed) == 1
     owners = {execution.operation_id, loop_module.root_experiment_loop_operation_id(execution)}

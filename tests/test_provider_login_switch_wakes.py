@@ -13,20 +13,19 @@ from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.auto_research import AutoResearchStartRequest
 from rcp.runs.auto_research_admission import start_auto_research, start_auto_research_child_work
 from rcp.runs.auto_research_delivery import (
-    deliver_auto_research_watcher_group,
+    deliver_auto_research_watchers,
     deliver_pending_auto_research_mail,
     record_auto_research_message,
 )
 from rcp.runs.shared import _sse
-from rcp.runs.watcher_admission import start_watcher_notification
 from rcp.service import RunRequest
-from rcp.storage import WatcherContinuation, WatcherRecord
 
 from .helpers import wait_for_task
 from .provider_login_switch_helpers import PROJECT, switch_background, switched_session
-from .test_auto_research_delivery import _arm_completed_graph_condition
-from .test_background import _experiment_request
+from .test_auto_research_delivery import _arm_completed_graph_condition, _deliver
+from .test_background import _experiment_request, _start_experiment_watcher_wake
 from .test_provider_login_resolver import accounts as accounts
+from .test_watchers import armed
 
 
 @pytest.mark.parametrize("provider", ["codex", "claude"])
@@ -140,7 +139,7 @@ def test_episode_wake_after_login_switch(
         watcher = _arm_completed_graph_condition(store, episode, root)
         after_grace = datetime.fromisoformat(store.now()) + timedelta(minutes=1)
         monkeypatch.setattr(store, "now", lambda: after_grace.isoformat())
-        operation_id = deliver_auto_research_watcher_group(tasks, [watcher])
+        operation_id = _deliver(tasks, watcher)
     elif operation == "worker_mail":
         record_auto_research_message(
             store,
@@ -166,32 +165,16 @@ def test_episode_wake_after_login_switch(
         )
         operation_id = child.operation_id
     else:
-        continuation = WatcherContinuation.model_validate(
-            {
-                key: source.request[key]
-                for key in WatcherContinuation.model_fields
-                if key in source.request and source.request[key] is not None
-            }
-        )
-        watcher = WatcherRecord(
-            watcher_id="ready",
+        agent_id = source.request["chat_id"]
+        watcher = armed(
+            store,
+            "ready",
+            agent_id=agent_id,
+            origin_turn_id=source.operation_id,
             project_id=PROJECT,
-            origin_operation_id=source.operation_id,
-            origin_task_kind="node_chat",
-            episode_id=episode.episode_id,
-            graph_target=episode.graph_target,
-            worker_id=worker_id if operation == "worker_watcher" else None,
-            chat_id=source.request["chat_id"],
-            node_id=source.request["node_id"],
-            machine_id=BACKEND_MACHINE_ID,
-            check_command="true",
-            log_path=str(stage / "job.log"),
+            completed=True,
             cwd=str(stage),
-            continuation=continuation,
-            status="completed",
-            created_at=store.now(),
         )
-        store.create_watchers([watcher])
         if operation == "experiment_watcher":
             request = root_request.model_copy(
                 update={
@@ -201,23 +184,14 @@ def test_episode_wake_after_login_switch(
                     "session_id": source.native_session_id,
                 }
             )
+            _start_experiment_watcher_wake(
+                tasks, episode.episode_id, request, [watcher.watcher_id], member, stage
+            )
         else:
-            from rcp.api.app import _generic_watcher_delivery_request
-
-            request = _generic_watcher_delivery_request([watcher])
-        wake = start_watcher_notification(
-            tasks,
-            PROJECT,
-            "node_chat",
-            request,
-            [watcher.watcher_id],
-            authorized_by=member,
-            episode_stage_machine_id=(
-                BACKEND_MACHINE_ID if operation == "experiment_watcher" else None
-            ),
-            episode_stage_root=str(stage) if operation == "experiment_watcher" else None,
-        )
-        operation_id = wake.operation_id if wake else None
+            deliver_auto_research_watchers(
+                tasks, agent_id, store.agent_episode(agent_id), [watcher], None
+            )
+        operation_id = store.watcher(watcher.watcher_id).wake_turn_id
     assert operation_id is not None
     finished = wait_for_task(store, operation_id, expect="succeeded")
     expected_session = None if operation == "worker_dispatch" else source.native_session_id

@@ -14,11 +14,9 @@ from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
-    EpisodeWrapupRecord,
-    WatcherContinuation,
+    WatcherCheckRecord,
     WatcherRecord,
 )
-from rcp.storage.episodes import compact_episode_receipt
 from rcp.storage.models import AgentTaskAdmissionConflict
 from rcp.watchers import WatcherBinding
 
@@ -116,13 +114,28 @@ def _task(
     )
 
 
-def _continuation(episode_id: str) -> WatcherContinuation:
-    return WatcherContinuation.model_validate(
-        {
-            key: value
-            for key, value in _request(episode_id).items()
-            if key in WatcherContinuation.model_fields
-        }
+def _watcher(store: AppStore, watcher_id: str, *, completed: bool = True) -> WatcherRecord:
+    now = store.now()
+    return WatcherRecord(
+        watcher_id=watcher_id,
+        agent_id="episode-chat",
+        project_id="project",
+        purpose=watcher_id,
+        origin_turn_id="loop-root",
+        created_at=now,
+        checks=[
+            WatcherCheckRecord(
+                check_id=watcher_id,
+                watcher_id=watcher_id,
+                machine_id=BACKEND_MACHINE_ID,
+                definition="external",
+                check_command="true",
+                log_path=f"/tmp/{watcher_id}.log",
+                cwd="/tmp",
+                created_at=now,
+                completed_at=now if completed else None,
+            )
+        ],
     )
 
 
@@ -408,42 +421,20 @@ def test_compound_handoff_rolls_back_watchers_before_episode_binding(
         stage_root="/tmp/exact-experiment-stage",
     )
     store.create_experiment_recovery_task(retry)
-    continuation = _continuation(episode_id).model_copy(
-        update={
-            "patch_kind": "experiment_loop",
-            "control_node_id": "exp-one",
-            "control_episode_id": episode_id,
-            "control_invocation": 1,
-        }
-    )
     binding = WatcherBinding(
         project_id="project",
-        origin_operation_id="loop-root",
-        origin_task_kind="node_chat",
-        chat_id="episode-chat",
-        node_id="exp-one",
-        episode_id=episode_id,
+        agent_id="episode-chat",
+        origin_turn_id="loop-root",
         machine_id=BACKEND_MACHINE_ID,
-        continuation=continuation,
     )
-    now = store.now()
-    watcher = WatcherRecord(
-        watcher_id="loop-watcher",
-        project_id="project",
-        origin_operation_id="loop-root",
-        origin_task_kind="node_chat",
-        chat_id="episode-chat",
-        node_id="exp-one",
-        episode_id=episode_id,
-        machine_id=BACKEND_MACHINE_ID,
-        check_command="true",
-        log_path="/tmp/loop-watcher.log",
-        cwd="/tmp",
-        continuation=continuation,
-        status="completed",
-        created_at=now,
-        completed_at=now,
-    )
+    watcher = _watcher(store, "loop-watcher")
+    scope = {
+        "binding": binding,
+        "episode_id": episode_id,
+        "control_node_id": "exp-one",
+        "invocation": 1,
+        "provider": "codex",
+    }
 
     original_commit = store._commit_experiment_episode_turn
 
@@ -460,7 +451,7 @@ def test_compound_handoff_rolls_back_watchers_before_episode_binding(
     with pytest.raises(RuntimeError, match="simulated episode binding failure"):
         store.commit_experiment_episode_handoff(
             [watcher],
-            binding=binding,
+            **scope,
             operation_id="loop-retry",
             native_session_id="native-session",
             stage_machine_id=None,
@@ -476,7 +467,7 @@ def test_compound_handoff_rolls_back_watchers_before_episode_binding(
     monkeypatch.setattr(store, "_commit_experiment_episode_turn", original_commit)
     stored_watchers, stored_episode = store.commit_experiment_episode_handoff(
         [watcher],
-        binding=binding,
+        **scope,
         operation_id="loop-retry",
         native_session_id="native-session",
         stage_machine_id=None,
@@ -486,7 +477,7 @@ def test_compound_handoff_rolls_back_watchers_before_episode_binding(
     )
 
     assert [item.watcher_id for item in stored_watchers] == ["loop-watcher"]
-    assert stored_watchers[0].origin_operation_id == "loop-root"
+    assert stored_watchers[0].origin_turn_id == "loop-root"
     assert stored_episode.session_bound
     assert stored_episode.last_turn_operation_id == "loop-retry"
     assert stored_episode.last_watcher_ids == ["loop-watcher"]
@@ -499,29 +490,7 @@ def test_watcher_claim_spends_once_and_exhausts_only_after_task_settles(
     episode_id, _ = _admit_root(store, ceiling=2)
     store.complete_agent_task("loop-root", applied_revision=None, result={})
     _bind(store, episode_id, "loop-root", invocation=1)
-    continuation = _continuation(episode_id)
-    now = store.now()
-    store.create_watchers(
-        [
-            WatcherRecord(
-                watcher_id="evaluation-done",
-                project_id="project",
-                origin_operation_id="loop-root",
-                origin_task_kind="node_chat",
-                chat_id="episode-chat",
-                node_id="exp-one",
-                episode_id=episode_id,
-                machine_id=BACKEND_MACHINE_ID,
-                check_command="true",
-                log_path="/tmp/evaluation.log",
-                cwd="/tmp",
-                continuation=continuation,
-                status="completed",
-                created_at=now,
-                completed_at=now,
-            )
-        ]
-    )
+    store.arm_watcher(_watcher(store, "evaluation-done"))
     wake = _task(
         store,
         "watcher-wake",
@@ -538,7 +507,7 @@ def test_watcher_claim_spends_once_and_exhausts_only_after_task_settles(
     episode = store.episode(episode_id)
     assert episode is not None and episode.invocations_used == 2
     assert episode.ending is None
-    assert store.watcher("evaluation-done").notification_operation_id == "watcher-wake"
+    assert store.watcher("evaluation-done").wake_turn_id == "watcher-wake"
     assert not store.experiment_loop_runtime(
         "project", "exp-one", graph_target=GraphTargetRef()
     ).paused
@@ -551,94 +520,27 @@ def test_watcher_claim_spends_once_and_exhausts_only_after_task_settles(
     assert store.episode(episode_id).ending is None
 
 
-def test_non_stop_wrapup_preserves_unnotified_observers_for_fresh_human_episode(
+def test_non_stop_wrapup_keeps_the_agents_watchers_and_refuses_a_stale_wake(
     tmp_path: Path,
 ) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     old_episode_id, _ = _admit_root(store, ceiling=1)
     store.complete_agent_task("loop-root", applied_revision=None, result={})
-    now = store.now()
-    continuation = _continuation(old_episode_id)
-    store.create_watchers(
-        [
-            WatcherRecord(
-                watcher_id="pending-completion",
-                project_id="project",
-                origin_operation_id="loop-root",
-                origin_task_kind="node_chat",
-                chat_id="episode-chat",
-                node_id="exp-one",
-                episode_id=old_episode_id,
-                machine_id=BACKEND_MACHINE_ID,
-                check_command="true",
-                log_path="/tmp/pending-completion.log",
-                cwd="/tmp",
-                continuation=continuation,
-                status="completed",
-                created_at=now,
-                completed_at=now,
-            ),
-            WatcherRecord(
-                watcher_id="unfinished-observer",
-                project_id="project",
-                origin_operation_id="loop-root",
-                origin_task_kind="node_chat",
-                chat_id="episode-chat",
-                node_id="exp-one",
-                episode_id=old_episode_id,
-                machine_id=BACKEND_MACHINE_ID,
-                check_command="true",
-                log_path="/tmp/unfinished-observer.log",
-                cwd="/tmp",
-                continuation=continuation,
-                created_at=now,
-            ),
-        ]
-    )
-    ending_diagnostic = "The operational invocation ceiling was exhausted."
+    _bind(store, old_episode_id, "loop-root", invocation=1)
+    store.arm_watcher(_watcher(store, "pending-completion"))
+    store.arm_watcher(_watcher(store, "unfinished-observer", completed=False))
     store.fence_episode_ending(
         old_episode_id,
         "exhausted",
-        diagnostic=ending_diagnostic,
+        diagnostic="The operational invocation ceiling was exhausted.",
     )
 
     assert store.settle_experiment_episode_wrapup(old_episode_id)
 
     pending = store.watcher("pending-completion")
     unfinished = store.watcher("unfinished-observer")
-    assert pending is not None and pending.status == "completed" and not pending.notified
-    assert unfinished is not None and unfinished.status == "active" and not unfinished.notified
-
-    receipt_json, receipt_sha256 = compact_episode_receipt(
-        {"ending": "exhausted", "episode_id": old_episode_id}
-    )
-    report_error = "The exact report continuation is unavailable."
-    terminal_at = store.now()
-    store.fail_episode_wrapup_unlaunchable(
-        old_episode_id,
-        EpisodeWrapupRecord(
-            episode_id=old_episode_id,
-            ending="exhausted",
-            partial=True,
-            concluding_operation_id="loop-root",
-            receipt_json=receipt_json,
-            receipt_sha256=receipt_sha256,
-            state="failed",
-            diagnostic=report_error,
-            created_at=terminal_at,
-            updated_at=terminal_at,
-            finished_at=terminal_at,
-        ),
-        ending_diagnostic=ending_diagnostic,
-    )
-    completed_after_wrapup = store.record_watcher_check(
-        "unfinished-observer",
-        status="completed",
-        exit_code=0,
-        error=None,
-    )
-    assert completed_after_wrapup.status == "completed"
-    assert not completed_after_wrapup.notified
+    assert pending is not None and pending.ready
+    assert unfinished is not None and unfinished.open and not unfinished.ready
 
     stale_wake = _task(
         store,
@@ -647,82 +549,19 @@ def test_non_stop_wrapup_preserves_unnotified_observers_for_fresh_human_episode(
         invocation=2,
         ceiling=1,
         trigger="watcher",
-        watcher_ids=["pending-completion", "unfinished-observer"],
+        watcher_ids=["pending-completion"],
         session_id="native-session",
         stage_root="/tmp/exact-experiment-stage",
     )
-    assert (
-        store.create_experiment_watcher_invocation(
-            stale_wake,
-            ["pending-completion", "unfinished-observer"],
-        )
-        is None
-    )
+    assert store.create_experiment_watcher_invocation(stale_wake, ["pending-completion"]) is None
     assert store.agent_task("stale-watcher-wake") is None
     assert store.watcher("pending-completion") == pending
-    assert store.watcher("unfinished-observer") == completed_after_wrapup
-
-    new_episode_id = str(uuid.uuid4())
-    unauthorized = _task(
-        store,
-        "unauthorized-fresh-root",
-        new_episode_id,
-        ceiling=1,
-        watcher_ids=["pending-completion", "unfinished-observer"],
-    ).model_copy(update={"authorized_by": None})
-    with pytest.raises(ValueError, match="human authorization"):
-        store.create_experiment_episode_with_invocation(
-            unauthorized,
-            ["pending-completion", "unfinished-observer"],
-        )
-    assert store.watcher("pending-completion") == pending
-
-    fresh_root = _task(
-        store,
-        "fresh-root",
-        new_episode_id,
-        ceiling=1,
-        watcher_ids=["pending-completion", "unfinished-observer"],
-    )
-    store.create_experiment_episode_with_invocation(
-        fresh_root,
-        ["pending-completion", "unfinished-observer"],
-    )
-
-    for watcher_id in ("pending-completion", "unfinished-observer"):
-        adopted = store.watcher(watcher_id)
-        assert adopted is not None and adopted.status == "completed" and adopted.notified
-        assert adopted.notification_operation_id == "fresh-root"
-        assert adopted.continuation.control_episode_id == old_episode_id
-    new_episode = store.episode(new_episode_id)
-    assert new_episode is not None and new_episode.invocations_used == 1
 
 
 def test_stop_fences_then_skips_report_only_after_quiescence(tmp_path: Path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     episode_id, _ = _admit_root(store)
-    now = store.now()
-    store.create_watchers(
-        [
-            WatcherRecord(
-                watcher_id="stop-pending-completion",
-                project_id="project",
-                origin_operation_id="loop-root",
-                origin_task_kind="node_chat",
-                chat_id="episode-chat",
-                node_id="exp-one",
-                episode_id=episode_id,
-                machine_id=BACKEND_MACHINE_ID,
-                check_command="true",
-                log_path="/tmp/stop-pending-completion.log",
-                cwd="/tmp",
-                continuation=_continuation(episode_id),
-                status="completed",
-                created_at=now,
-                completed_at=now,
-            )
-        ]
-    )
+    store.arm_watcher(_watcher(store, "stop-pending-completion"))
 
     stopping = store.request_experiment_loop_stop(
         "project", "exp-one", graph_target=GraphTargetRef()
@@ -741,8 +580,8 @@ def test_stop_fences_then_skips_report_only_after_quiescence(tmp_path: Path) -> 
     assert wrapup is not None and wrapup.state == "skipped"
     stopped_watcher = store.watcher("stop-pending-completion")
     assert stopped_watcher is not None
-    assert stopped_watcher.status == "stopped"
-    assert stopped_watcher.notified
+    assert stopped_watcher.state == "cancelled"
+    assert stopped_watcher.cancelled_by == "rcp"
 
 
 def test_legacy_combined_rows_and_missing_state_roots_migrate_one_way(

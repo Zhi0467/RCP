@@ -124,17 +124,16 @@ async def test_work_settlement_corrects_only_unobserved_running_compute(
     expected_calls = 2 if state == "running" else 1
     assert len(launcher.calls) == expected_calls
     assert len(commands.backend.starts) == (state != "nothing")
-    watchers = execution.store.watchers(app.state.default_project_id, chat_id=request.chat_id)
+    watchers = execution.store.agent_watchers(request.chat_id)
     receipts = execution.store.agent_task_receipts(execution.operation_id)
     corrections = [item for item in receipts if item.category == "watcher_correction_requested"]
     if state == "running":
         assert len(corrections) == 1
         assert launcher.job_id in corrections[0].payload["problem"]
-        assert [watcher.check_command for watcher in watchers] == [
+        assert [check.check_command for watcher in watchers for check in watcher.checks] == [
             launcher.watcher["check_command"]
         ]
-        assert watchers[0].cancel_command == launcher.watcher["cancel_command"]
-        assert watchers[0].status == "active"
+        assert watchers[0].state == "watching"
         assert launcher.calls[1]["session_id"] == launcher.native_session_id
         assert staged_turns[0][0].invocation_gate != staged_turns[1][0].invocation_gate
         assert staged_turns[0][1] is staged_turns[1][1]
@@ -250,9 +249,11 @@ async def test_experiment_patch_correction_launch_revalidates_job_handoff(
     assert graph_update["correction_rounds"] == expected_corrections
     assert len(launcher.calls) == expected_corrections + 2
     assert len(commands.backend.starts) == 1
-    watchers = execution.store.watchers(app.state.default_project_id)
-    assert [item.check_command for item in watchers] == [launcher.watcher["check_command"]]
-    assert watchers[0].status == "active"
+    watchers = execution.store.project_watchers(app.state.default_project_id)
+    assert [check.check_command for item in watchers for check in item.checks] == [
+        launcher.watcher["check_command"]
+    ]
+    assert watchers[0].state == "watching"
     runtime = execution.store.experiment_loop_runtime(
         app.state.default_project_id, _EXPERIMENT_ID, graph_target=GraphTargetRef()
     )
@@ -314,7 +315,7 @@ async def test_missing_helper_watcher_fails_and_retains_recovery(
     errors = [event.text for event in events if event.event == "error"]
     assert len(errors) == 1 and "Compute watcher handoff failed" in errors[0]
     assert not any(event.event == "done" for event in events)
-    assert execution.store.watchers(app.state.default_project_id) == []
+    assert execution.store.project_watchers(app.state.default_project_id) == []
     job = _job_for_watcher(execution.store, app.state.default_project_id, launcher.watcher)
     assert job.status == "running"
     assert launcher.workspace.is_dir()

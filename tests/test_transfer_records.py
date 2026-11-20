@@ -17,6 +17,7 @@ from rcp.runs.tasks.episode_report import EpisodeReportRunRequest
 from rcp.service import RunRequest
 from rcp.storage import AgentTaskRecord, AppStore
 from rcp.storage.branch_names import backfill_graph_branches
+from rcp.storage.models import WatcherCheckRecord, WatcherRecord
 from rcp.transfer import (
     TransferArchiveActor,
     TransferArchiveAttribution,
@@ -259,41 +260,59 @@ def test_export_refuses_completed_watcher_with_pending_delivery(manifest, tmp_pa
     task = _finished_task(store, project_id, actor=actor)
     watcher_id = str(uuid.uuid4())
     now = store.now()
-    with store.connection() as connection:
-        connection.execute(
-            """
-            INSERT INTO watchers (
-                watcher_id, project_id, origin_operation_id, origin_task_kind,
-                chat_id, graph_target_json, machine_id, check_command,
-                log_path, cwd, continuation_json, status, created_at,
-                completed_at, notified
-            ) VALUES (?, ?, ?, 'project_chat', 'chat-1',
-                      '{"kind":"main","branch_id":null}', 'source-gpu', 'true',
-                      '/source/log', '/source/cwd', '{}', 'completed', ?, ?, 0)
-            """,
-            (watcher_id, project_id, task.operation_id, now, now),
-        )
+    store.arm_watchers(
+        [
+            WatcherRecord(
+                watcher_id=watcher_id,
+                agent_id="chat-1",
+                project_id=project_id,
+                purpose="Sweep",
+                origin_turn_id=task.operation_id,
+                created_at=now,
+                checks=[
+                    WatcherCheckRecord(
+                        check_id=check_id,
+                        watcher_id=watcher_id,
+                        machine_id="source-gpu",
+                        definition="external",
+                        check_command="true",
+                        log_path="/source/log",
+                        cwd="/source/cwd",
+                        created_at=now,
+                        completed_at=now,
+                    )
+                    for check_id in ("first", "second")
+                ],
+            )
+        ]
+    )
 
     with pytest.raises(ValueError, match="watcher to be settled"):
         store.export_project_transfer_records(project_id, attributions=attributions)
 
     with store.connection() as connection:
-        connection.execute(
-            "UPDATE watchers SET notified = 1, worker_id = 'history-worker', "
-            "cancel_command = 'scancel 33', cancel_requested_by = ?, "
-            "cancel_requested_at = ?, cancel_error = 'Scheduler unavailable' WHERE watcher_id = ?",
-            (actor.user_id, now, watcher_id),
-        )
+        store.close_watcher_delivery(connection, [watcher_id], reason="Closed.")
     bundle = store.export_project_transfer_records(project_id, attributions=attributions)
-    assert bundle.watchers[0].status == "completed"
+    assert [item.watcher_id for item in bundle.watchers] == ["first", "second"]
+    assert {item.status for item in bundle.watchers} == {"completed"}
+    assert {item.group_id for item in bundle.watchers} == {watcher_id}
+    assert bundle.watchers[0].chat_id == "chat-1"
     assert "check_command" not in type(bundle.watchers[0]).model_fields
-    assert "continuation" not in type(bundle.watchers[0]).model_fields
 
-    assert bundle.watchers[0].worker_id == "history-worker"
-    assert bundle.watchers[0].cancel_requested_by == actor.user_id
-    assert bundle.watchers[0].cancel_requested_at == now
-    assert bundle.watchers[0].cancel_error == "Scheduler unavailable"
-    assert "cancel_command" not in type(bundle.watchers[0]).model_fields
+    target = AppStore(tmp_path / "imported.sqlite3")
+    project = store.project(project_id)
+    assert project is not None
+    target.upsert_project(project)
+    with target.connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        target._insert_transfer_tasks(
+            connection, bundle, {item.archive_actor_id: item for item in attributions}
+        )
+        target._insert_transfer_watchers(connection, bundle)
+    imported = target.watcher(watcher_id)
+    assert imported is not None and not imported.open and imported.cancelled_at is None
+    assert [check.check_id for check in imported.checks] == ["first", "second"]
+    assert target.ready_watchers() == [] and target.due_external_checks() == []
 
 
 @pytest.mark.parametrize("seat", ["project", "nested_fork"])

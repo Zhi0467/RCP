@@ -715,12 +715,23 @@ def test_confirmed_unfinished_jobs_go_to_the_code_merge_agent(manifest, tmp_path
     shared, binding = _isolated(harness, tmp_path, shared=tmp_path / "repo-a")
     (Path(binding.worktree_path) / "file").write_text("episode change")
     with harness.store.connection() as connection:
+        now = harness.store.now()
         connection.execute(
-            "INSERT INTO watchers (watcher_id, project_id, origin_operation_id, "
-            "origin_task_kind, chat_id, episode_id, machine_id, check_command, log_path, "
-            "cwd, continuation_json, status, created_at) VALUES ('w', ?, 'origin', 'node_chat', "
-            "'chat', ?, 'backend', 'squeue -j 7', '/tmp/log', '/tmp', '{}', 'active', ?)",
-            (harness.project_id, harness.episode.episode_id, harness.store.now()),
+            "INSERT INTO graph_runs (operation_id, project_id, episode_id, kind, status, "
+            "request_json, created_at, updated_at, status_message) "
+            "VALUES ('watch-origin', ?, ?, 'node_chat', 'succeeded', '{}', ?, ?, '')",
+            (harness.project_id, harness.episode.episode_id, now, now),
+        )
+        connection.execute(
+            "INSERT INTO watchers (watcher_id, agent_id, project_id, purpose, origin_turn_id, "
+            "created_at) VALUES ('w', 'chat', ?, 'Job', 'watch-origin', ?)",
+            (harness.project_id, now),
+        )
+        connection.execute(
+            "INSERT INTO watcher_checks (check_id, watcher_id, machine_id, definition, "
+            "check_command, log_path, cwd, created_at) "
+            "VALUES ('w', 'w', 'backend', 'external', 'squeue -j 7', '/tmp/log', '/tmp', ?)",
+            (now,),
         )
     prompts = []
 
@@ -752,7 +763,7 @@ def test_confirmed_unfinished_jobs_go_to_the_code_merge_agent(manifest, tmp_path
     assert Path(binding.worktree_path).exists()
     with harness.store.connection() as connection:
         connection.execute(
-            "UPDATE watchers SET status = 'completed', completed_at = ? WHERE watcher_id = 'w'",
+            "UPDATE watcher_checks SET completed_at = ? WHERE check_id = 'w'",
             (harness.store.now(),),
         )
     assert harness.client.post(route, json={}).status_code == 202

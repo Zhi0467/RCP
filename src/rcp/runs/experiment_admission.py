@@ -284,13 +284,8 @@ def start_fresh_experiment(
     """Admit invocation 1 of a fresh Experiment episode on the service's graph target.
 
     A human Run and a Work turn's ``episode --kick-off-experiment`` both start
-    here, so they share one readiness rule and one delivery of completions a
-    previous episode left unclaimed. ``supplied`` must carry a fresh chat id.
+    here, so they share one readiness rule. ``supplied`` must carry a fresh chat id.
     """
-
-    from rcp.runs.episodes.isolation import validate_episode_admission
-    from rcp.runs.experiment_loop import experiment_watcher_delivery_request
-    from rcp.runs.watcher_admission import start_watcher_notification
 
     store = tasks.store
     target = service.history.graph_target
@@ -301,7 +296,7 @@ def start_fresh_experiment(
     if store.chat_graph_target(project_id, supplied.chat_id) is not None:
         raise ValueError("Run requires a new chat_id; this conversation already has turns.")
     creates_branch = supplied.graph_isolation and target.kind == "main"
-    runtime, control = ready_experiment_control(
+    _runtime, control = ready_experiment_control(
         store,
         project_id,
         state,
@@ -312,57 +307,6 @@ def start_fresh_experiment(
             GraphTargetRef(kind="branch", branch_id=episode_id) if creates_branch else target
         ),
     )
-    pending_group = (
-        None
-        if creates_branch or (runtime.stop_requested and runtime.stop_settled)
-        else store.completed_experiment_watcher_group(project_id, node.id, graph_target=target)
-    )
-    if pending_group is not None:
-        request = experiment_watcher_delivery_request(
-            pending_group,
-            trigger="experiment_run",
-            episode_id=episode_id,
-            invocation=1,
-            invocation_ceiling=invocation_ceiling,
-            control_revision=state.revision,
-            decision_bundle=control.governing_decisions,
-            completion_criteria=list(node.completion_criteria),
-        )
-        request = request.model_copy(
-            update={
-                "run_truth_scope": supplied.run_truth_scope,
-                "browser_requested": supplied.browser_requested,
-                "code_worktree": supplied.code_worktree,
-                "graph_isolation": supplied.graph_isolation,
-                "chat_scope": "node",
-                "node_id": node.id,
-                "message": experiment_start_message(supplied.message, node.id),
-                "chat_id": supplied.chat_id,
-                "session_id": None,
-                # A fresh session: the starter's pick, else Settings,
-                # never the delivered watcher's old binding.
-                "provider": supplied.provider,
-                "model": supplied.model,
-                "reasoning": supplied.reasoning,
-                "started_from_operation_id": supplied.started_from_operation_id,
-            }
-        )
-        request = resolve_experiment_node_work_request(service, request)
-        validate_episode_admission(store, project_id, request, graph_target=target)
-        record = start_watcher_notification(
-            tasks,
-            project_id,
-            "node_chat",
-            request,
-            [item.watcher_id for item in pending_group],
-            authorized_by=authorized_by,
-        )
-        if record is None:
-            raise ValueError(
-                "The pending watcher completion could not be claimed because its "
-                "conversation is active."
-            )
-        return record
     request = fresh_experiment_run_request(
         service,
         supplied,

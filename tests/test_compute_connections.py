@@ -283,19 +283,3 @@ def test_resolved_compute_context_is_immutable() -> None:
 
     with pytest.raises(ValidationError, match="Instance is frozen"):
         context.active[0].name = "Changed"  # type: ignore[misc]
-
-
-def test_watcher_row_with_a_frozen_compute_selection_still_loads() -> None:
-    from rcp.storage.models import WatcherContinuation
-
-    continuation = WatcherContinuation.model_validate(
-        {
-            "provider": "codex",
-            "run_on": "laptop",
-            "active_compute_ids": ["gpu"],
-            "resolved_compute_context": {"active": []},
-        }
-    )
-
-    assert "active_compute_ids" not in continuation.model_dump()
-    assert "resolved_compute_context" not in continuation.model_dump()

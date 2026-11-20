@@ -6,7 +6,7 @@ import sqlite3
 import uuid
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, JsonValue
 
@@ -25,6 +25,7 @@ from rcp.storage.artifacts import insert_artifact, write_artifact_file
 from rcp.storage.chat_names import backfill_chat_names
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import ProjectProvisioningRequestRecord, ProjectTransferImportRecord
+from rcp.storage.watchers import _OPEN, _watcher_records
 from rcp.transfer.archive import (
     TransferArchiveAttribution,
     TransferGraphHead,
@@ -106,6 +107,13 @@ def _rows_by(
 
 
 _TRANSFER_IMPORT_INERT_PROVIDER = "history-only"
+_TRANSFER_STOPPED_BY: dict[str, Literal["agent", "loop", "human"]] = {
+    "agent": "agent",
+    "rcp": "loop",
+    "human": "human",
+}
+_TRANSFER_CANCELLED_BY = {"agent": "agent", "loop": "rcp", "human": "human"}
+_IMPORTED_EXTERNAL_CHECK = ("true", "/dev/null", "/")
 _TRANSFER_IMPORT_INERT_STAGE_ROOT = "/history-only"
 
 
@@ -141,25 +149,6 @@ def _transfer_import_digest(value: str, label: str) -> str:
     if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
         raise ValueError(f"{label} must be lowercase SHA-256")
     return value
-
-
-def _inert_watcher_continuation() -> str:
-    return _canonical_json(
-        {
-            "provider": _TRANSFER_IMPORT_INERT_PROVIDER,
-            "model": None,
-            "reasoning": None,
-            "run_on": _TRANSFER_IMPORT_INERT_PROVIDER,
-            "patch_kind": "work",
-            "workflow_ids": [],
-            "skill_ids": [],
-            "invoked_workflow_ids": [],
-            "invoked_skill_ids": [],
-            "resolved_skill_packages": [],
-            "control_decision_bundle": [],
-            "control_completion_criteria": [],
-        }
-    )
 
 
 def _task_result_history(task: TransferTaskRecord) -> str | None:
@@ -402,9 +391,7 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                 "agent task",
             ),
             (
-                "SELECT watcher_id FROM watchers WHERE project_id = ? "
-                "AND (status NOT IN ('completed', 'stopped') "
-                "OR (status = 'completed' AND notified = 0)) LIMIT 1",
+                f"SELECT w.watcher_id FROM watchers AS w WHERE w.project_id = ? AND {_OPEN} LIMIT 1",
                 "watcher",
             ),
             (
@@ -723,41 +710,82 @@ class ProjectTransferStoreMixin(StoreMixinBase):
         connection: sqlite3.Connection,
         project_id: str,
     ) -> tuple[TransferWatcherRecord, ...]:
-        rows = connection.execute(
-            "SELECT * FROM watchers WHERE project_id = ? ORDER BY created_at, watcher_id",
-            (project_id,),
-        ).fetchall()
-        return tuple(
-            TransferWatcherRecord(
-                watcher_id=row["watcher_id"],
-                kind="graph" if row["graph_condition_json"] is not None else "external",
-                origin_operation_id=row["origin_operation_id"],
-                origin_task_kind=row["origin_task_kind"],
-                chat_id=row["chat_id"],
-                node_id=row["node_id"],
-                episode_id=row["episode_id"],
-                worker_id=row["worker_id"],
-                cancel_requested_by=row["cancel_requested_by"],
-                cancel_requested_at=row["cancel_requested_at"],
-                cancel_error=row["cancel_error"],
-                graph_target=TransferGraphTarget.model_validate_json(row["graph_target_json"]),
-                status=row["status"],
-                graph_condition=_optional_json_document(row["graph_condition_json"]),
-                last_checked_at=row["last_checked_at"],
-                last_exit_code=row["last_exit_code"],
-                last_error=row["last_error"],
-                consecutive_error_count=row["consecutive_error_count"],
-                group_id=row["group_id"],
-                group_label=row["group_label"],
-                stopped_by=row["stopped_by"],
-                stop_reason=row["stop_reason"],
-                created_at=row["created_at"],
-                completed_at=row["completed_at"],
-                stopped_at=row["stopped_at"],
-                stop_operation_id=row["stop_operation_id"],
+        """One record per check, in the per-check format exports have always used."""
+
+        exported: list[TransferWatcherRecord] = []
+        for watcher in _watcher_records(connection, "w.project_id = ?", (project_id,)):
+            turn = connection.execute(
+                "SELECT kind, episode_id, graph_target_json, request_json FROM graph_runs "
+                "WHERE operation_id = ?",
+                (watcher.origin_turn_id,),
+            ).fetchone()
+            if turn is None:
+                raise ValueError("watcher history references an unknown arming turn")
+            request = json.loads(turn["request_json"])
+            worker = connection.execute(
+                "SELECT 1 FROM auto_research_invocations "
+                "WHERE actor_operation_id = ? AND role = 'worker' LIMIT 1",
+                (watcher.agent_id,),
+            ).fetchone()
+            grouped = len(watcher.checks) > 1 or any(
+                check.check_id != watcher.watcher_id for check in watcher.checks
             )
-            for row in rows
-        )
+            for check in watcher.checks:
+                removed = watcher.cancelled_at is None and check.removed_at is not None
+                finished = (
+                    check.completed_at is not None and not removed and watcher.cancelled_at is None
+                )
+                stopped_by = (
+                    None
+                    if finished
+                    else "agent"
+                    if removed
+                    else _TRANSFER_STOPPED_BY[watcher.cancelled_by]
+                    if watcher.cancelled_by is not None
+                    else "loop"
+                )
+                exported.append(
+                    TransferWatcherRecord(
+                        watcher_id=check.check_id,
+                        kind=check.definition,
+                        origin_operation_id=watcher.origin_turn_id,
+                        origin_task_kind=turn["kind"]
+                        if turn["kind"] in {"node_chat", "project_chat", "auto_research"}
+                        else "project_chat",
+                        chat_id=watcher.agent_id,
+                        node_id=request.get("node_id") or request.get("control_node_id"),
+                        episode_id=turn["episode_id"],
+                        worker_id=watcher.agent_id if worker is not None else None,
+                        graph_target=TransferGraphTarget.model_validate_json(
+                            graph_target_json(check.graph_target)
+                            if check.graph_target is not None
+                            else turn["graph_target_json"]
+                        ),
+                        status="completed" if finished else "stopped",
+                        graph_condition=_optional_json_document(
+                            check.condition.model_dump_json() if check.condition else None
+                        ),
+                        last_checked_at=check.last_checked_at,
+                        last_exit_code=check.last_exit_code,
+                        last_error=check.last_error,
+                        consecutive_error_count=check.consecutive_error_count,
+                        group_id=watcher.watcher_id if grouped else None,
+                        group_label=watcher.purpose if grouped else None,
+                        stopped_by=stopped_by,
+                        stop_reason=watcher.cancel_reason,
+                        created_at=check.created_at,
+                        completed_at=check.completed_at,
+                        stopped_at=None
+                        if finished
+                        else watcher.cancelled_at
+                        or check.removed_at
+                        or watcher.delivery_closed_at
+                        or check.last_checked_at
+                        or check.created_at,
+                        stop_operation_id=None,
+                    )
+                )
+        return tuple(exported)
 
     @classmethod
     def _transfer_episodes(
@@ -1720,7 +1748,20 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                 tuple(task.operation_id for task in records.tasks),
             ),
             ("episodes", "episode_id", tuple(episode.episode_id for episode in records.episodes)),
-            ("watchers", "watcher_id", tuple(watcher.watcher_id for watcher in records.watchers)),
+            (
+                "watchers",
+                "watcher_id",
+                tuple(
+                    dict.fromkeys(
+                        watcher.group_id or watcher.watcher_id for watcher in records.watchers
+                    )
+                ),
+            ),
+            (
+                "watcher_checks",
+                "check_id",
+                tuple(watcher.watcher_id for watcher in records.watchers),
+            ),
             (
                 "agent_usage",
                 "usage_id",
@@ -2060,63 +2101,110 @@ class ProjectTransferStoreMixin(StoreMixinBase):
         connection: sqlite3.Connection,
         records: TransferRecordBundle,
     ) -> None:
-        continuation_json = _inert_watcher_continuation()
-        for watcher in records.watchers:
-            if watcher.kind == "graph":
-                graph_condition_json = (
-                    _history_json_document(watcher.graph_condition)
-                    if watcher.graph_condition is not None
-                    else None
+        """Insert imported watchers closed: a group folds into one watcher.
+
+        A stop other than an agent's cancels the watcher with its attribution;
+        an agent-stopped member becomes a removed check; anything else is
+        delivered history whose delivery is closed.
+        """
+
+        groups: dict[str, list[TransferWatcherRecord]] = {}
+        for record in records.watchers:
+            groups.setdefault(record.group_id or record.watcher_id, []).append(record)
+        for watcher_id, members in groups.items():
+            first = members[0]
+            blocking = next(
+                (
+                    member
+                    for member in members
+                    if member.status == "stopped" and member.stopped_by != "agent"
+                ),
+                members[0] if all(member.status == "stopped" for member in members) else None,
+            )
+            cancelled_at = (
+                blocking.stopped_at or blocking.completed_at or blocking.created_at
+                if blocking is not None
+                else None
+            )
+            closed_at = (
+                None
+                if blocking is not None
+                else max(
+                    str(member.stopped_at or member.completed_at or member.created_at)
+                    for member in members
                 )
-            else:
-                graph_condition_json = None
+            )
+            condition = first.graph_condition.value() if first.graph_condition else None
+            purpose = (
+                first.group_label
+                or (
+                    f"Graph condition on {condition.get('node_id', 'a node')}"
+                    if isinstance(condition, dict)
+                    else "Imported watcher"
+                )
+            )[:120]
             connection.execute(
                 """
                 INSERT INTO watchers (
-                    watcher_id, project_id, origin_operation_id, origin_task_kind,
-                    chat_id, node_id, episode_id, graph_target_json, machine_id,
-                    check_command, log_path, cwd, graph_condition_json, armed_revision,
-                    continuation_json, status, created_at, last_checked_at,
-                    last_exit_code, last_error, completed_at, next_check_at,
-                    consecutive_error_count, group_id, group_label, notified,
-                    notification_operation_id, stopped_by, stop_reason, stopped_at,
-                    stop_operation_id, worker_id, cancel_requested_by,
-                    cancel_requested_at, cancel_error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', '', '', ?, NULL, ?, ?, ?, ?, ?, ?, ?,
-                          NULL, ?, ?, ?, 1, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+                    watcher_id, agent_id, project_id, purpose, origin_turn_id, created_at,
+                    cancelled_at, cancelled_by, cancel_reason, wake_turn_id, delivery_closed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
                 """,
                 (
-                    watcher.watcher_id,
+                    watcher_id,
+                    first.chat_id,
                     records.project_id,
-                    watcher.origin_operation_id,
-                    watcher.origin_task_kind,
-                    watcher.chat_id,
-                    watcher.node_id,
-                    watcher.episode_id,
-                    graph_target_json(
-                        GraphTargetRef.model_validate(watcher.graph_target.model_dump())
-                    ),
-                    graph_condition_json,
-                    continuation_json,
-                    watcher.status,
-                    watcher.created_at,
-                    watcher.last_checked_at,
-                    watcher.last_exit_code,
-                    watcher.last_error,
-                    watcher.completed_at,
-                    watcher.consecutive_error_count,
-                    watcher.group_id,
-                    watcher.group_label,
-                    watcher.stopped_by,
-                    watcher.stop_reason,
-                    watcher.stopped_at,
-                    watcher.stop_operation_id,
-                    watcher.worker_id,
-                    watcher.cancel_requested_by,
-                    watcher.cancel_requested_at,
-                    watcher.cancel_error,
+                    purpose,
+                    first.origin_operation_id,
+                    first.created_at,
+                    cancelled_at,
+                    _TRANSFER_CANCELLED_BY.get(str(blocking.stopped_by), "rcp")
+                    if blocking is not None
+                    else None,
+                    blocking.stop_reason if blocking is not None else None,
+                    closed_at,
                 ),
             )
+            for member in members:
+                graph = member.kind == "graph"
+                command, log_path, cwd = (None, None, None) if graph else _IMPORTED_EXTERNAL_CHECK
+                connection.execute(
+                    """
+                    INSERT INTO watcher_checks (
+                        check_id, watcher_id, machine_id, definition, check_command, log_path,
+                        cwd, graph_condition_json, graph_target_json, armed_head, created_at,
+                        last_checked_at, last_exit_code, last_error, completed_at,
+                        next_check_at, consecutive_error_count, removed_at
+                    ) VALUES (?, ?, '', ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, NULL, ?, ?)
+                    """,
+                    (
+                        member.watcher_id,
+                        watcher_id,
+                        member.kind,
+                        command,
+                        log_path,
+                        cwd,
+                        _history_json_document(member.graph_condition)
+                        if graph and member.graph_condition is not None
+                        else None,
+                        graph_target_json(
+                            GraphTargetRef.model_validate(member.graph_target.model_dump())
+                        )
+                        if graph
+                        else None,
+                        member.created_at,
+                        member.last_checked_at,
+                        member.last_exit_code,
+                        member.last_error,
+                        member.completed_at,
+                        member.consecutive_error_count,
+                        member.stopped_at
+                        if blocking is None
+                        and member.status == "stopped"
+                        and member.stopped_by == "agent"
+                        else None,
+                    ),
+                )
 
     def _insert_transfer_episodes(
         self,

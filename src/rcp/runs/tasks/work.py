@@ -217,7 +217,6 @@ from rcp.skill_registry import SkillSelection
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
 from rcp.storage import (
     AppStore,
-    WatcherContinuation,
 )
 from rcp.storage.request_compat import persisted_request_roundtrips
 from rcp.transport import RemoteRunStage, RunLockCancelled, StateUnavailable
@@ -1504,26 +1503,6 @@ async def _validate_patch_deliverable(
     return _DeliverableStep(failure=failure)
 
 
-def _watcher_continuation(
-    turn: WorkFinalizationContext,
-) -> WatcherContinuation:
-    request_values = turn.request.model_dump(mode="json")
-    values = {
-        name: request_values[name]
-        for name in WatcherContinuation.model_fields
-        if name in request_values
-    }
-    values.update(
-        provider=turn.request.provider or "",
-        run_on=turn.request.run_on or "",
-        run_truth_scope=turn.run_truth_scope,
-        workflow_ids=turn.skill_selection.workflow_ids,
-        skill_ids=turn.skill_selection.skill_ids,
-        resolved_skill_packages=turn.skill_selection.resolved_skill_packages,
-    )
-    return WatcherContinuation.model_validate(values)
-
-
 def _patch_correction_contract(diagnostics_path: str) -> str:
     return PromptFactory.inline_continuation(
         mode="work_patch_correction",
@@ -1674,20 +1653,14 @@ async def _validate_watch_deliverable(
             )
         specs = ordinary_handoff.external
         graph_conditions = ordinary_handoff.graph
-        child_route = turn.execution.store.auto_research_child_work_for_operation(
-            turn.execution.operation_id
-        )
+        if not turn.request.chat_id:
+            raise ValueError("Watcher arming requires the turn's agent.")
         binding = WatcherBinding(
             project_id=origin_task.project_id,
-            origin_operation_id=turn.execution.operation_id,
-            origin_task_kind=turn.surface,
-            chat_id=turn.request.chat_id or "",
-            node_id=turn.request.node_id,
-            episode_id=origin_task.episode_id,
-            worker_id=child_route.worker_id if child_route is not None else None,
+            agent_id=turn.request.chat_id,
+            origin_turn_id=turn.execution.operation_id,
             graph_target=origin_task.graph_target,
             machine_id=turn.write_scope.machine_id,
-            continuation=_watcher_continuation(turn),
         )
         graph_state = (
             await asyncio.to_thread(turn.service.history.state) if graph_conditions else None

@@ -25,9 +25,6 @@ from rcp.agents.context import ChatContext, RepositoryPointer
 from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.project_repositories import RepositoryReadScope
-from rcp.api.app import (
-    _generic_watcher_delivery_request,
-)
 from rcp.api.tasks import _validate_stored_task_request, _validated_task_request
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.background import AgentTaskExecution
@@ -47,7 +44,10 @@ from rcp.runs.chat import (
     _prepare_local_artifact_directory,
     _project_write_scope,
 )
-from rcp.runs.experiment_loop import persist_experiment_watchers_idempotently
+from rcp.runs.experiment_loop import (
+    ExperimentHandoffScope,
+    persist_experiment_watchers_idempotently,
+)
 from rcp.runs.shared import (
     _MAX_PATCH_CANDIDATES,
     AgentOutputProblem,
@@ -82,9 +82,8 @@ from rcp.storage import (
     AgentTaskRecord,
     AppStore,
     EpisodeRecord,
-    GraphWatcherRecord,
     ProjectRecord,
-    WatcherContinuation,
+    WatcherCheckRecord,
     WatcherRecord,
 )
 from rcp.transport import (
@@ -95,7 +94,12 @@ from rcp.transport import (
     StateUnavailable,
     StateUnreachable,
 )
-from rcp.watchers import AgentWatchSpec, WatcherBinding, WatcherCheckResult
+from rcp.watchers import (
+    ExperimentWatchSpec,
+    WatcherBinding,
+    WatcherCheckResult,
+    watcher_wake_message,
+)
 from tests.helpers import sign_in_async_client, signed_in_client
 
 from .helpers import (
@@ -196,52 +200,23 @@ def _experiment_request(message: str) -> RunRequest:
     )
 
 
-def test_generic_watcher_wake_keeps_packages_available_without_reinvoking_them(
-    tmp_path: Path,
-) -> None:
-    continuation = WatcherContinuation(
-        provider="codex",
-        run_on=BACKEND_MACHINE_ID,
-        run_truth_scope=["repo-a"],
-        patch_kind="work",
-        skill_ids=["experiment-causality"],
-        invoked_skill_ids=["experiment-causality"],
-    )
-    watcher = WatcherRecord(
-        watcher_id="generic-turn-local-invocation",
-        project_id="project-turn-local-invocation",
-        origin_operation_id="origin-turn-local-invocation",
-        origin_task_kind="project_chat",
-        chat_id="chat-turn-local-invocation",
-        check_command="false",
-        log_path=str(tmp_path / "detached.log"),
-        cwd=str(tmp_path),
-        continuation=continuation,
-        status="completed",
-        created_at="2026-08-08T00:00:00Z",
-    )
-
-    request = _generic_watcher_delivery_request([watcher])
-
-    assert request.skill_ids == ["experiment-causality"]
-    assert request.invoked_skill_ids == []
-    assert request.invoked_workflow_ids == []
-    assert request.invoked_provider_skill_names == []
-    assert request.resolved_provider_skills == []
-
-    experiment_watcher = watcher.model_copy(
-        update={"continuation": continuation.model_copy(update={"patch_kind": "experiment_loop"})}
-    )
-    with pytest.raises(ValueError, match="cannot carry Experiment-loop authority"):
-        _generic_watcher_delivery_request([experiment_watcher])
-
-
-def test_generic_watcher_delivery_wakes_its_own_project_chat(
+def test_plain_watcher_wake_continues_its_own_chat_without_reinvoking_packages(
     app, tmp_path: Path, monkeypatch
 ) -> None:
     project_id = app.state.default_project_id
-    store = app.state.background_tasks.store
+    tasks = app.state.background_tasks
+    store = tasks.store
     authorized_by = _named_test_authorizer(store)
+    chat_id = "generic-project-chat"
+    origin = RunRequest(
+        chat_scope="project",
+        chat_id=chat_id,
+        message="Start the detached job.",
+        run_truth_scope=["repo-a"],
+        mode="work",
+        skill_ids=["experiment-causality"],
+        invoked_skill_ids=["experiment-causality"],
+    )
     now = store.now()
     store.create_agent_task(
         AgentTaskRecord(
@@ -249,57 +224,56 @@ def test_generic_watcher_delivery_wakes_its_own_project_chat(
             project_id=project_id,
             kind="project_chat",
             status="succeeded",
-            request={},
+            request=origin.model_dump(mode="json"),
             created_at=now,
             updated_at=now,
             status_message="Generic watcher origin fixture.",
             authorized_by=authorized_by,
         )
     )
-    watcher = WatcherRecord(
-        watcher_id="generic-project-chat-wake",
-        project_id=project_id,
-        origin_operation_id="generic-project-chat-origin",
-        origin_task_kind="project_chat",
-        chat_id="generic-project-chat",
-        check_command="true",
-        log_path=str(tmp_path / "generic.log"),
-        cwd=str(tmp_path),
-        continuation=WatcherContinuation(
-            provider="claude",
-            run_on=BACKEND_MACHINE_ID,
-            run_truth_scope=["repo-a"],
-            patch_kind="work",
-        ),
-        status="completed",
-        created_at="2026-08-08T00:00:00Z",
-    )
-    store.create_watchers([watcher])
-    captured: dict[str, object] = {}
-
-    def capture(_tasks, project, kind, request, watcher_ids, **kwargs):
-        captured.update(
-            project_id=project,
-            kind=kind,
-            request=request,
-            watcher_ids=watcher_ids,
-            authorized_by=kwargs["authorized_by"],
+    watcher = store.arm_watcher(
+        WatcherRecord(
+            watcher_id="generic-project-chat-wake",
+            agent_id=chat_id,
+            project_id=project_id,
+            purpose="detached job finishes",
+            origin_turn_id="generic-project-chat-origin",
+            created_at=now,
+            checks=[
+                WatcherCheckRecord(
+                    check_id="generic-project-chat-wake",
+                    watcher_id="generic-project-chat-wake",
+                    machine_id=BACKEND_MACHINE_ID,
+                    definition="external",
+                    check_command="true",
+                    log_path=str(tmp_path / "generic.log"),
+                    cwd=str(tmp_path),
+                    created_at=now,
+                    completed_at=now,
+                )
+            ],
         )
+    )
+    monkeypatch.setattr(tasks, "admit_provider_task", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tasks, "launch_admitted", store.agent_task)
+    tasks.accept_watcher_notifications()
 
-    monkeypatch.setattr("rcp.api.app.start_watcher_notification", capture)
+    app.state.services.watcher_delivery.deliver_ready(chat_id, [watcher])
 
-    assert app.state.watcher_poller.on_completed is not None
-    app.state.watcher_poller.on_completed([watcher])
-
-    request = captured["request"]
-    assert isinstance(request, RunRequest)
-    assert captured["project_id"] == project_id
-    assert captured["kind"] == "project_chat"
-    assert captured["watcher_ids"] == [watcher.watcher_id]
-    assert captured["authorized_by"] == authorized_by
-    assert request.chat_scope == "project"
-    assert request.chat_id == watcher.chat_id
-    assert request.node_id is None
+    claimed = store.watcher(watcher.watcher_id)
+    assert claimed is not None and claimed.wake_turn_id is not None
+    wake = store.agent_task(claimed.wake_turn_id)
+    assert wake is not None
+    assert wake.kind == "project_chat"
+    assert wake.authorized_by == authorized_by
+    request = RunRequest.model_validate(wake.request)
+    assert request.chat_id == chat_id
+    assert request.trigger == "watcher"
+    assert request.patch_kind == "work"
+    assert request.watcher_ids == [watcher.watcher_id]
+    assert request.skill_ids == ["experiment-causality"]
+    assert request.invoked_skill_ids == []
+    assert request.invoked_workflow_ids == []
 
 
 class FakeLauncher:
@@ -6545,16 +6519,13 @@ def _experiment_fixture_patch(
     )
 
 
-def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenance(
-    manifest, tmp_path: Path
-) -> None:
+def test_experiment_watcher_wake_resumes_the_episode_session(manifest, tmp_path: Path) -> None:
     app, service = _seeded_project(manifest, tmp_path)
     append_fixture_patch(service, _experiment_fixture_patch(invocation_ceiling=3))
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
     episode_id = str(uuid.uuid4())
     loop_chat_id = str(uuid.uuid4())
-    maintenance_chat_id = str(uuid.uuid4())
     stage_root = tmp_path / "episode-stage"
     stage_root.mkdir()
     now = store.now()
@@ -6598,19 +6569,6 @@ def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenanc
         applied_revision=None,
         result={},
     )
-    store.create_agent_task(
-        AgentTaskRecord(
-            operation_id="maintenance-project-chat-turn",
-            project_id=project_id,
-            kind="project_chat",
-            status="succeeded",
-            request={},
-            created_at=now,
-            updated_at=now,
-            status_message="Maintenance watcher origin fixture.",
-            authorized_by=authorized_by,
-        )
-    )
     store.commit_experiment_episode_turn(
         episode_id=episode_id,
         project_id=project_id,
@@ -6627,37 +6585,29 @@ def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenanc
         watcher_ids=["maintenance-origin-observer"],
         context_baseline={},
     )
-    watcher = WatcherRecord(
-        watcher_id="maintenance-origin-observer",
-        project_id=project_id,
-        origin_operation_id="maintenance-project-chat-turn",
-        origin_task_kind="project_chat",
-        chat_id=maintenance_chat_id,
-        node_id="exp/bounded-loop",
-        machine_id=BACKEND_MACHINE_ID,
-        check_command="true",
-        log_path=str(tmp_path / "maintenance-observer.log"),
-        cwd=str(tmp_path),
-        continuation=WatcherContinuation(
-            provider="claude",
-            model="maintenance-model",
-            reasoning="high",
-            run_on="maintenance-machine",
-            run_truth_scope=["repo-b"],
-            patch_kind="experiment_loop",
-            control_node_id="exp/bounded-loop",
-            control_revision=3,
-            control_episode_id=episode_id,
-            control_invocation=1,
-            control_invocation_ceiling=3,
-            control_decision_bundle=[],
-            control_completion_criteria=["The detached fixture exits cleanly."],
-        ),
-        status="completed",
-        created_at=now,
-        completed_at=now,
+    watcher = store.arm_watcher(
+        WatcherRecord(
+            watcher_id="maintenance-origin-observer",
+            agent_id=loop_chat_id,
+            project_id=project_id,
+            purpose="detached fixture exits",
+            origin_turn_id="loop-root-for-maintenance-wake",
+            created_at=now,
+            checks=[
+                WatcherCheckRecord(
+                    check_id="maintenance-origin-observer",
+                    watcher_id="maintenance-origin-observer",
+                    machine_id=BACKEND_MACHINE_ID,
+                    definition="external",
+                    check_command="true",
+                    log_path=str(tmp_path / "maintenance-observer.log"),
+                    cwd=str(tmp_path),
+                    created_at=now,
+                    completed_at=now,
+                )
+            ],
+        )
     )
-    store.create_watchers([watcher])
     captured: dict[str, object] = {}
     entered = threading.Event()
 
@@ -6672,11 +6622,9 @@ def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenanc
         yield _sse(AgentEvent(event="done"))
 
     app.state.background_tasks.stream = stream
+    app.state.background_tasks.accept_watcher_notifications()
 
-    stored = store.watcher(watcher.watcher_id)
-    assert stored is not None
-    assert app.state.watcher_poller.on_completed is not None
-    app.state.watcher_poller.on_completed([stored])
+    app.state.services.watcher_delivery.deliver_ready(loop_chat_id, [watcher])
     wait_for_entry(entered)
 
     request = captured["request"]
@@ -6693,12 +6641,10 @@ def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenanc
     assert request.reasoning == "medium"
     assert request.run_on == BACKEND_MACHINE_ID
     assert request.run_truth_scope == ["repo-a"]
-    assert request.chat_id != maintenance_chat_id
     delivered = store.watcher(watcher.watcher_id)
     assert delivered is not None
-    assert delivered.notified is True
-    assert delivered.notification_operation_id is not None
-    notification = store.agent_task(delivered.notification_operation_id)
+    assert delivered.wake_turn_id is not None
+    notification = store.agent_task(delivered.wake_turn_id)
     assert notification is not None
     assert notification.kind == "node_chat"
     assert notification.authorized_by == authorized_by
@@ -6953,7 +6899,6 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
     store = app.state.background_tasks.store
     old_episode = str(uuid.uuid4())
     loop_chat_id = str(uuid.uuid4())
-    maintenance_chat_id = str(uuid.uuid4())
     now = store.now()
     authorized_by = _named_test_authorizer(store)
     old_request = RunRequest(
@@ -6989,37 +6934,27 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
         )
     )
     store.complete_agent_task("old-loop-root", applied_revision=None, result={})
-    store.create_watchers(
-        [
-            WatcherRecord(
-                watcher_id="pending-loop-watcher",
-                project_id=project_id,
-                origin_operation_id="old-loop-root",
-                origin_task_kind="project_chat",
-                chat_id=maintenance_chat_id,
-                node_id="exp/bounded-loop",
-                machine_id=BACKEND_MACHINE_ID,
-                check_command="true",
-                log_path="/tmp/pending-loop.log",
-                cwd="/tmp",
-                continuation=WatcherContinuation(
-                    provider="claude",
-                    model="maintenance-model",
-                    reasoning="high",
-                    run_on="maintenance-machine",
-                    run_truth_scope=["repo-b"],
-                    patch_kind="experiment_loop",
-                    control_node_id="exp/bounded-loop",
-                    control_revision=3,
-                    control_episode_id=old_episode,
-                    control_invocation=1,
-                    control_invocation_ceiling=1,
-                    control_decision_bundle=[],
-                    control_completion_criteria=["The detached fixture exits cleanly."],
-                ),
-                created_at=now,
-            )
-        ]
+    store.arm_watcher(
+        WatcherRecord(
+            watcher_id="pending-loop-watcher",
+            agent_id=loop_chat_id,
+            project_id=project_id,
+            purpose="detached fixture exits",
+            origin_turn_id="old-loop-root",
+            created_at=now,
+            checks=[
+                WatcherCheckRecord(
+                    check_id="pending-loop-watcher",
+                    watcher_id="pending-loop-watcher",
+                    machine_id=BACKEND_MACHINE_ID,
+                    definition="external",
+                    check_command="true",
+                    log_path="/tmp/pending-loop.log",
+                    cwd="/tmp",
+                    created_at=now,
+                )
+            ],
+        )
     )
 
     client = signed_in_client(app)
@@ -7044,9 +6979,6 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
         exit_code=0,
         error=None,
     )
-    assert app.state.watcher_poller.on_completed is not None
-    app.state.watcher_poller.on_completed([store.watcher("pending-loop-watcher")])
-    assert store.watcher("pending-loop-watcher").notified is False
     assert app.state.watcher_poller.on_poll_completed is not None
     app.state.watcher_poller.on_poll_completed()
     exhausted_parent = store.episode(old_episode)
@@ -7097,7 +7029,6 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
         assert request.chat_scope == "node"
         assert request.node_id == "exp/bounded-loop"
         assert request.chat_id == new_loop_chat_id
-        assert request.chat_id != maintenance_chat_id
         assert request.provider == "codex"
         assert request.model == ""
         assert request.reasoning == "medium"
@@ -7119,7 +7050,7 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
     assert request["control_invocation"] == 1
     assert request["control_invocation_ceiling"] == 1
     assert request["control_episode_id"] != old_episode
-    assert request["watcher_ids"] == ["pending-loop-watcher"]
+    assert request["watcher_ids"] == []
     assert request["chat_scope"] == "node"
     assert request["node_id"] == "exp/bounded-loop"
     assert request["chat_id"] == new_loop_chat_id
@@ -7129,13 +7060,9 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
     assert request["run_on"] == BACKEND_MACHINE_ID
     assert request["run_truth_scope"] == writable
     assert response.json()["kind"] == "node_chat"
-    assert store.watcher("pending-loop-watcher").continuation.control_episode_id == old_episode
-    assert store.watcher("pending-loop-watcher").notified is True
+    assert store.watcher("pending-loop-watcher").wake_turn_id is None
     operation_id = response.json()["operation_id"]
     _wait_for_run(client, project_id, operation_id)
-    assert "watcher_notification" in {
-        receipt.category for receipt in store.agent_task_receipts(operation_id)
-    }
 
 
 def test_experiment_removal_and_run_admission_are_atomic_when_removal_wins(
@@ -7330,7 +7257,7 @@ def test_removed_experiment_fails_closed_for_every_continuation_admission(
     monkeypatch.setattr(app.state.background_tasks, "resume", unexpected_admission)
     monkeypatch.setattr(app.state.background_tasks, "retry", unexpected_admission)
     monkeypatch.setattr(app.state.background_tasks, "repair_graph_update", unexpected_admission)
-    monkeypatch.setattr("rcp.api.app.start_watcher_notification", unexpected_admission)
+    monkeypatch.setattr("rcp.api.app.start_plain_watcher_wake", unexpected_admission)
 
     for endpoint, operation_id in operation_ids.items():
         response = client.post(
@@ -7339,51 +7266,35 @@ def test_removed_experiment_fails_closed_for_every_continuation_admission(
         assert response.status_code == 409
         assert "no longer exists" in response.json()["detail"]
 
-    continuation = WatcherContinuation(
-        provider="codex",
-        run_on=BACKEND_MACHINE_ID,
-        patch_kind="experiment_loop",
-        control_node_id="exp/bounded-loop",
-        control_revision=3,
-        control_episode_id=str(uuid.uuid4()),
-        control_invocation=1,
-        control_invocation_ceiling=2,
-    )
-    watcher = WatcherRecord(
-        watcher_id="removed-experiment-watcher",
-        project_id=project_id,
-        origin_operation_id="removed-experiment-origin",
-        origin_task_kind="node_chat",
-        chat_id=request.chat_id,
-        node_id="exp/bounded-loop",
-        check_command="true",
-        log_path="/tmp/removed-experiment.log",
-        cwd="/tmp",
-        continuation=continuation,
-        status="completed",
-        created_at=now,
-        completed_at=now,
-    )
-    store.create_agent_task(
-        AgentTaskRecord(
-            operation_id="removed-experiment-origin",
+    assert request.chat_id is not None
+    watcher = store.arm_watcher(
+        WatcherRecord(
+            watcher_id="removed-experiment-watcher",
+            agent_id=request.chat_id,
             project_id=project_id,
-            kind="node_chat",
-            status="succeeded",
-            request={},
+            purpose="detached fixture exits",
+            origin_turn_id=operation_id,
             created_at=now,
-            updated_at=now,
-            status_message="Removed Experiment watcher origin fixture.",
-            authorized_by=_named_test_authorizer(store),
+            checks=[
+                WatcherCheckRecord(
+                    check_id="removed-experiment-watcher",
+                    watcher_id="removed-experiment-watcher",
+                    machine_id=BACKEND_MACHINE_ID,
+                    definition="external",
+                    check_command="true",
+                    log_path="/tmp/removed-experiment.log",
+                    cwd="/tmp",
+                    created_at=now,
+                    completed_at=now,
+                )
+            ],
         )
     )
-    store.create_watchers([watcher])
-    assert app.state.watcher_poller.on_completed is not None
-    app.state.watcher_poller.on_completed([store.watcher(watcher.watcher_id)])
+    app.state.services.watcher_delivery.deliver_ready(request.chat_id, [watcher])
     retired = store.watcher(watcher.watcher_id)
     assert retired is not None
-    assert retired.status == "stopped"
-    assert retired.notified is True
+    assert retired.state == "cancelled"
+    assert retired.cancelled_by == "rcp"
 
 
 @pytest.mark.asyncio
@@ -7438,60 +7349,34 @@ async def test_experiment_work_stamps_and_applies_the_bound_control_patch(
     )
     execution = _chat_task_execution(app, request, "experiment-work")
     watcher_now = execution.store.now()
-    execution.store.create_watchers(
-        [
+    for watcher_id, agent_id in (
+        ("open-current-agent", request.chat_id),
+        ("cancelled-current-agent", request.chat_id),
+        ("open-other-agent", "another-agent"),
+    ):
+        assert agent_id is not None
+        execution.store.arm_watcher(
             WatcherRecord(
-                watcher_id="stopped-current-episode",
+                watcher_id=watcher_id,
+                agent_id=agent_id,
                 project_id=app.state.default_project_id,
-                origin_operation_id=execution.operation_id,
-                origin_task_kind="node_chat",
-                chat_id=request.chat_id,
-                node_id=request.control_node_id,
-                check_command="false",
-                log_path="/tmp/stopped-current.log",
-                cwd="/tmp",
-                continuation=WatcherContinuation(
-                    provider="codex",
-                    run_on=BACKEND_MACHINE_ID,
-                    patch_kind="experiment_loop",
-                    control_node_id=request.control_node_id,
-                    control_revision=request.control_revision,
-                    control_episode_id=request.control_episode_id,
-                    control_invocation=request.control_invocation,
-                    control_invocation_ceiling=request.control_invocation_ceiling,
-                ),
-                status="stopped",
+                purpose=watcher_id,
+                origin_turn_id=execution.operation_id,
                 created_at=watcher_now,
+                checks=[
+                    WatcherCheckRecord(
+                        check_id=watcher_id,
+                        watcher_id=watcher_id,
+                        definition="external",
+                        check_command="false",
+                        log_path=f"/tmp/{watcher_id}.log",
+                        cwd="/tmp",
+                        created_at=watcher_now,
+                    )
+                ],
             )
-        ]
-    )
-    execution.store.create_watchers(
-        [
-            WatcherRecord(
-                watcher_id="stopped-prior-episode",
-                project_id=app.state.default_project_id,
-                origin_operation_id="legacy-prior-episode-operation",
-                origin_task_kind="node_chat",
-                chat_id=request.chat_id,
-                node_id=request.control_node_id,
-                check_command="false",
-                log_path="/tmp/stopped-prior.log",
-                cwd="/tmp",
-                continuation=WatcherContinuation(
-                    provider="codex",
-                    run_on=BACKEND_MACHINE_ID,
-                    patch_kind="experiment_loop",
-                    control_node_id=request.control_node_id,
-                    control_revision=request.control_revision,
-                    control_episode_id=str(uuid.uuid4()),
-                    control_invocation=request.control_invocation,
-                    control_invocation_ceiling=request.control_invocation_ceiling,
-                ),
-                status="stopped",
-                created_at=watcher_now,
-            )
-        ]
-    )
+        )
+    execution.store.cancel_watchers(["cancelled-current-agent"], by="agent")
     launcher = ScriptedLauncher(
         [
             {
@@ -7550,15 +7435,13 @@ async def test_experiment_work_stamps_and_applies_the_bound_control_patch(
         "decision_drift",
         "completion_criteria",
         "delivered_watcher_ids",
-        "delivered_watcher_groups",
         "watcher_state_path",
     }
     assert control["phase"] == "initial_run"
     assert control["invocation"] == 1
     assert control["remaining_invocations"] == 1
-    assert control["delivered_watcher_groups"] == []
     watcher_state = json.loads(launcher.input_snapshots[0][watcher_name])
-    assert [item["watcher_id"] for item in watcher_state] == ["stopped-current-episode"]
+    assert [item["watcher_id"] for item in watcher_state] == ["open-current-agent"]
     assert "remaining_invocations" not in launcher.prompts[0]
 
 
@@ -7821,7 +7704,7 @@ async def test_experiment_loop_keeps_one_watcher_when_graph_reflection_is_reject
     assert not _error_texts(frames)
     assert _events(frames)[-1].event == "done"
     assert _graph_update(frames)["status"] == "rejected"
-    assert len(execution.store.watchers(app.state.default_project_id)) == 1
+    assert len(execution.store.project_watchers(app.state.default_project_id)) == 1
     assert service.history.state().revision == 3
 
 
@@ -7887,38 +7770,41 @@ async def test_experiment_loop_retry_reuses_canonical_patch_and_watcher_handoff(
     assert _graph_update(frames)["applied_revision"] == 4
     assert service.history.state().revision == 5
     assert len(service.history.load_patches()) == 5
-    watchers = execution.store.watchers(app.state.default_project_id)
+    watchers = execution.store.project_watchers(app.state.default_project_id)
     assert len(watchers) == 1
     stored = watchers[0]
+    (check,) = stored.checks
+    assert check.check_command and check.log_path and check.cwd
     repeated = persist_experiment_watchers_idempotently(
         execution,
         [
-            AgentWatchSpec(
+            ExperimentWatchSpec(
                 purpose="job finishes",
-                check_command=stored.check_command,
-                log_path=stored.log_path,
-                cwd=stored.cwd,
+                check_command=check.check_command,
+                log_path=check.log_path,
+                cwd=check.cwd,
             )
         ],
         [
             WatcherCheckResult(
                 state="active",
-                checked_at=stored.last_checked_at or stored.created_at,
+                checked_at=check.last_checked_at or check.created_at,
                 exit_code=1,
             )
         ],
-        WatcherBinding(
-            project_id=stored.project_id,
-            origin_operation_id=stored.origin_operation_id,
-            origin_task_kind=stored.origin_task_kind,
-            chat_id=stored.chat_id,
-            node_id=stored.node_id,
-            machine_id=stored.machine_id,
-            continuation=stored.continuation,
+        ExperimentHandoffScope(
+            binding=WatcherBinding(
+                project_id=stored.project_id,
+                agent_id=stored.agent_id,
+                origin_turn_id=stored.origin_turn_id,
+                machine_id=check.machine_id,
+            ),
+            node_id=request.node_id,
+            episode_id=request.control_episode_id or "",
         ),
     )
     assert repeated[0].watcher_id == stored.watcher_id
-    assert len(execution.store.watchers(app.state.default_project_id)) == 1
+    assert len(execution.store.project_watchers(app.state.default_project_id)) == 1
     assert any(
         receipt.category == "experiment_loop_exit"
         for receipt in execution.store.agent_task_receipts(operation_id)
@@ -7975,7 +7861,7 @@ async def test_readable_watch_value_error_gets_same_session_correction(
     assert not _error_texts(frames)
     assert launcher.calls == 2
     assert launcher.resumed_sessions == [None, launcher.native_session_id]
-    assert len(execution.store.watchers(app.state.default_project_id)) == 1
+    assert len(execution.store.project_watchers(app.state.default_project_id)) == 1
 
 
 @pytest.mark.asyncio
@@ -8037,23 +7923,32 @@ async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
     ]
     assert launcher.launch_kwargs[1]["read_dirs"] == launcher.launch_kwargs[0]["read_dirs"]
     assert launcher.launch_kwargs[1]["write_dirs"] == launcher.launch_kwargs[0]["write_dirs"]
-    armed = store.watchers(app.state.default_project_id)
+    armed = store.project_watchers(app.state.default_project_id)
     assert len(armed) == 2
-    assert {type(record) for record in armed} == {WatcherRecord, GraphWatcherRecord}
-    assert all(record.status == "active" for record in armed)
-    assert all(record.origin_operation_id == "watch-origin" for record in armed)
-    assert all(record.continuation.patch_kind == "work" for record in armed)
+    assert sorted(check.definition for record in armed for check in record.checks) == [
+        "external",
+        "graph",
+    ]
+    assert all(record.state != "cancelled" for record in armed)
+    assert all(record.origin_turn_id == "watch-origin" for record in armed)
+    assert all(record.agent_id == chat_id for record in armed)
     assert any(
         receipt.category == "watchers_armed"
         for receipt in store.agent_task_receipts("watch-origin")
     )
 
     store.complete_agent_task("watch-origin", applied_revision=None, result={"messages": []})
-    external = next(record for record in armed if isinstance(record, WatcherRecord))
+    external = next(record for record in armed if record.checks[0].definition == "external")
     app.state.catalog.store.update_space_machine(
         card.machine_id, access_hint="Use /scratch/at-wake"
     )
-    wake = _generic_watcher_delivery_request([external])
+    wake = request.model_copy(
+        update={
+            "message": watcher_wake_message([external]),
+            "trigger": "watcher",
+            "watcher_ids": [external.watcher_id],
+        }
+    )
     wake_execution = _chat_task_execution(app, wake, "watch-wake")
     wake_launcher = ScriptedLauncher([{}], message="The watched fixture completed cleanly.")
     wake_frames = [
@@ -8078,9 +7973,7 @@ async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
     )
     wake_contract = Path(wake_launcher.prompts[0].splitlines()[1]).read_text(encoding="utf-8")
     assert "Use /scratch/at-wake" in wake_contract
-    persisted = store.watchers(app.state.default_project_id)
-    assert len(persisted) == 2
-    assert any(isinstance(record, GraphWatcherRecord) for record in persisted)
+    assert len(store.project_watchers(app.state.default_project_id)) == 2
 
 
 def _stuck_experiment_patch() -> Patch:

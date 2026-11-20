@@ -66,8 +66,6 @@ from rcp.storage import (
     EpisodeNotRunning,
     EpisodeRecord,
     ProjectRecord,
-    WatcherContinuation,
-    WatcherRecord,
 )
 from rcp.storage.auto_research_children import auto_research_inbox_projection
 
@@ -77,6 +75,7 @@ from .helpers import (
     wait_for_task,
     write_local_test_manifest,
 )
+from .test_auto_research_child_work_watchers_storage import armed_watcher
 
 MAILBOX_ID = "a" * 32
 CREDENTIAL = "b" * 64
@@ -813,47 +812,21 @@ def test_worker_recovery_cannot_advance_a_durably_stopped_route(tmp_path) -> Non
 def test_auto_research_stop_fences_child_work_watchers_and_late_wakes(tmp_path) -> None:
     store, auto_research, root = _setup_auto_research(tmp_path)
     worker = _create_routed_worker(store, auto_research, root, status="succeeded")
-    continuation_values = {
-        name: worker.request[name]
-        for name in WatcherContinuation.model_fields
-        if name in worker.request
-    }
-    for list_field in ("workflow_ids", "skill_ids", "resolved_skill_packages"):
-        if continuation_values.get(list_field) is None:
-            continuation_values[list_field] = []
     wake_watcher_id = "child-work-completion"
-    wake_watcher = WatcherRecord(
-        watcher_id=wake_watcher_id,
-        project_id=auto_research.project_id,
-        origin_operation_id=worker.operation_id,
-        origin_task_kind="node_chat",
-        chat_id=str(worker.request["chat_id"]),
-        node_id=str(worker.request["node_id"]),
-        episode_id=auto_research.episode_id,
-        worker_id=worker.operation_id,
-        graph_target=auto_research.graph_target,
-        check_command="true",
-        log_path="/tmp/child-work-completion.log",
-        cwd="/tmp",
-        continuation=WatcherContinuation.model_validate(continuation_values),
-        status="completed",
-        notified=False,
-        created_at=store.now(),
-        completed_at=store.now(),
-    )
-    lineage_watcher_id = "legacy-child-work-lineage"
-    lineage_watcher = wake_watcher.model_copy(
-        update={
-            "watcher_id": lineage_watcher_id,
-            "status": "active",
-            "completed_at": None,
-        }
-    )
-    store.create_watchers([wake_watcher, lineage_watcher])
-    with store.connection() as connection:
-        connection.execute(
-            "UPDATE watchers SET episode_id = NULL WHERE watcher_id = ?",
-            (lineage_watcher_id,),
+    pending_watcher_id = "child-work-pending"
+    root_watcher_id = "orchestrator-watcher"
+    for watcher_id, agent_id, origin, completed in (
+        (wake_watcher_id, worker.operation_id, worker.operation_id, True),
+        (pending_watcher_id, worker.operation_id, worker.operation_id, False),
+        (root_watcher_id, auto_research.episode_id, root.operation_id, True),
+    ):
+        armed_watcher(
+            store,
+            watcher_id,
+            agent_id=agent_id,
+            origin_turn_id=origin,
+            project_id=auto_research.project_id,
+            completed=completed,
         )
     store.request_episode_stop(auto_research.episode_id)
     wake_request = dict(worker.request)
@@ -881,13 +854,13 @@ def test_auto_research_stop_fences_child_work_watchers_and_late_wakes(tmp_path) 
             wake, worker_id=worker.operation_id, watcher_ids=[wake_watcher_id]
         )
     assert store.agent_task(wake.operation_id) is None
-    assert store.watcher(wake_watcher_id).notified is False  # type: ignore[union-attr]
-    assert store.settle_auto_research_watchers(auto_research.episode_id) == 2
-    for watcher_id in (wake_watcher_id, lineage_watcher_id):
+    assert store.watcher(wake_watcher_id).open  # type: ignore[union-attr]
+    assert store.settle_auto_research_watchers(auto_research.episode_id) == 3
+    for watcher_id in (wake_watcher_id, pending_watcher_id, root_watcher_id):
         stopped_watcher = store.watcher(watcher_id)
         assert stopped_watcher is not None
-        assert stopped_watcher.status == "stopped"
-        assert stopped_watcher.notified is True
+        assert stopped_watcher.state == "cancelled"
+        assert stopped_watcher.cancelled_by == "rcp"
 
 
 def test_exhaustion_hook_failure_is_recorded_without_reopening_the_episode(tmp_path) -> None:

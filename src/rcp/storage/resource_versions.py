@@ -704,3 +704,30 @@ def install_comment_resource_versions(connection: sqlite3.Connection) -> None:
         [_bump("ROW.project_id", "comments")],
         columns=("project_id", "post_id", "thread_id", "user_id", "created_at"),
     )
+
+
+def install_watcher_versions(connection: sqlite3.Connection) -> None:
+    """Watchers and their checks publish the project's watcher, episode, chat, and roster views."""
+    episode = "(SELECT episode_id FROM graph_runs WHERE operation_id=ROW.origin_turn_id)"
+    _install(
+        connection,
+        "watchers",
+        [
+            *(
+                _bump("ROW.project_id", resource)
+                for resource in ("watchers", "episodes", "graph", "bulletin")
+            ),
+            _bump("ROW.project_id", "chat", "ROW.agent_id"),
+            _bump("ROW.project_id", "episode", episode, f"{episode} IS NOT NULL"),
+        ],
+    )
+    scope = "(SELECT project_id FROM watchers WHERE watcher_id=ROW.watcher_id)"
+    agent = "(SELECT agent_id FROM watchers WHERE watcher_id=ROW.watcher_id)"
+    _install(
+        connection,
+        "watcher_checks",
+        [
+            *(_bump(scope, resource) for resource in ("watchers", "episodes", "graph")),
+            _bump(scope, "chat", agent),
+        ],
+    )

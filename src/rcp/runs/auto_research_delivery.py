@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 from rcp.core.models import AuthorizedHuman
@@ -16,6 +18,7 @@ from rcp.runs.auto_research_admission import (
     pending_auto_research_mail,
     reconcile_committed_auto_research_dispatches,
     start_auto_research_child_work_message_wake,
+    start_auto_research_child_work_watcher_wake,
     start_auto_research_turn,
 )
 from rcp.runs.auto_research_lifecycle import auto_research_lifecycle_delivery
@@ -30,13 +33,15 @@ from rcp.storage import (
     AutoResearchMessageRole,
     EpisodeInvocationCeilingReached,
     EpisodeNotRunning,
-    GraphWatcherRecord,
-    StoredWatcherRecord,
+    EpisodeRecord,
+    WatcherRecord,
 )
 from rcp.storage.models import _required_timestamp
+from rcp.watchers import watcher_wake_message
 
 if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks
+    from rcp.watchers import AdmissionFence
 
 
 def record_auto_research_message(
@@ -563,26 +568,71 @@ def _standalone_mail_prefix(
     return selected
 
 
-def deliver_auto_research_watcher_group(
+def deliver_auto_research_watchers(
     background: BackgroundAgentTasks,
-    watchers: list[StoredWatcherRecord],
-) -> str | None:
-    """Claim one ready watcher group into the existing paid auto_research wake path."""
+    agent_id: str,
+    episode: EpisodeRecord,
+    ready: list[WatcherRecord],
+    fence: AdmissionFence | None,
+) -> None:
+    """Wake one Auto-research agent for its ready watchers on its saved session.
 
-    if not watchers or any(item.origin_task_kind != "auto_research" for item in watchers):
-        raise ValueError("auto_research watcher delivery requires one auto_research watcher group")
-    first = watchers[0]
-    if any(item.project_id != first.project_id for item in watchers):
-        raise ValueError("auto_research watcher delivery cannot cross projects")
-    watcher_ids = [item.watcher_id for item in watchers]
-    if len(watcher_ids) != len(set(watcher_ids)):
-        raise ValueError("auto_research watcher delivery cannot repeat watcher ids")
-    binding = background.store.auto_research_actor_binding(first.origin_operation_id)
+    A child Work route continues its saved Work turn unmetered. An actor wake
+    spends one allocation; the root orchestrator's wake also carries its
+    pending lifecycle notices and mail. A refused or lost claim leaves the
+    watchers ready for a later pass.
+    """
+
+    if not ready:
+        return
+    watcher_ids = [item.watcher_id for item in ready]
+
+    def claim(start: Callable[[], object]) -> None:
+        def run() -> None:
+            with (
+                background._watcher_delivery_lock,
+                suppress(
+                    AutoResearchActorBusy,
+                    EpisodeInvocationCeilingReached,
+                    EpisodeNotRunning,
+                    AdmissionRefused,
+                ),
+            ):
+                if background._accepting_watcher_deliveries:
+                    start()
+
+        if fence is None:
+            run()
+        else:
+            fence(run)
+
+    store = background.store
+    child = store.auto_research_child_work(agent_id)
+    if child is not None:
+        claim(
+            lambda: start_auto_research_child_work_watcher_wake(
+                background,
+                child.episode_id,
+                child.worker_id,
+                watcher_ids,
+                message=watcher_wake_message(ready),
+            )
+        )
+        return
+    actor_operation_id = agent_id if store.episode(agent_id) is None else episode.root_operation_id
+    if actor_operation_id is None:
+        return
+    binding = store.auto_research_actor_binding(actor_operation_id)
     if not binding.native_session_id or not binding.stage_root:
-        return None
-    current = background.store.agent_task(binding.current_operation_id)
+        return
+    current = store.agent_task(binding.current_operation_id)
     if current is None:
-        return None
+        return
+    wake_cause = (
+        "graph_condition"
+        if all(check.definition == "graph" for item in ready for check in item.live_checks)
+        else "watcher"
+    )
     request = AutoResearchRunRequest.model_validate(current.request).model_copy(
         update={
             "episode_id": binding.episode_id,
@@ -595,25 +645,16 @@ def deliver_auto_research_watcher_group(
             "invoked_workflow_ids": [],
             "invoked_provider_skill_names": [],
             "resolved_provider_skills": [],
-            "wake_cause": (
-                "graph_condition"
-                if all(isinstance(item, GraphWatcherRecord) for item in watchers)
-                else "watcher"
-            ),
+            "wake_cause": wake_cause,
             "watcher_ids": watcher_ids,
         }
     )
-
-    store = background.store
-    episode = store.episode(binding.episode_id)
-    if episode is None:
-        raise KeyError(binding.episode_id)
     is_root = (
         binding.role == "orchestrator" and binding.actor_operation_id == episode.root_operation_id
     )
     notices = (
         store.pending_auto_research_lifecycle_notices(
-            episode.episode_id, limit=AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES
+            binding.episode_id, limit=AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES
         )
         if is_root
         else []
@@ -621,7 +662,7 @@ def deliver_auto_research_watcher_group(
     pending_mail = (
         pending_auto_research_mail(
             background,
-            episode_id=episode.episode_id,
+            episode_id=binding.episode_id,
             recipient_task_id=binding.actor_operation_id,
         )
         if is_root
@@ -633,39 +674,35 @@ def deliver_auto_research_watcher_group(
             "watcher": "watcher_wake",
             "graph_condition": "graph_condition_wake",
         }[cause]
-        if not is_root:
-            return store.create_watcher_notification_task(
-                record,
-                watcher_ids,
-                continuation_cause=continuation_cause,
+        if pending_mail is None:
+            return store.create_auto_research_watcher_wake_task(
+                record, agent_id, watcher_ids, continuation_cause=continuation_cause
             )
-        assert pending_mail is not None
-        claim = _RootWakeClaim(
+        root_claim = _RootWakeClaim(
             store,
-            episode_id=episode.episode_id,
+            episode_id=binding.episode_id,
             root_operation_id=binding.actor_operation_id,
             record=record,
             notices=notices,
             pending_messages=pending_mail.messages,
         )
-        return store.create_watcher_notification_task(
+        return store.create_auto_research_watcher_wake_task(
             record,
+            agent_id,
             watcher_ids,
             continuation_cause=continuation_cause,
-            lifecycle_notice_ids=claim.notice_ids,
-            message_ids=claim.message_ids,
-            expected_pending_notice_ids=claim.expected_pending_notice_ids,
-            expected_pending_message_ids=claim.expected_pending_message_ids,
+            lifecycle_notice_ids=root_claim.notice_ids,
+            message_ids=root_claim.message_ids,
+            expected_pending_notice_ids=root_claim.expected_pending_notice_ids,
+            expected_pending_message_ids=root_claim.expected_pending_message_ids,
         )
 
-    try:
-        task = start_auto_research_turn(
+    claim(
+        lambda: start_auto_research_turn(
             background,
             binding.episode_id,
             request,
             parent_operation_id=binding.current_operation_id,
             wake_admission=admit,
         )
-    except (EpisodeInvocationCeilingReached, EpisodeNotRunning, AdmissionRefused):
-        return None
-    return task.operation_id if task is not None else None
+    )

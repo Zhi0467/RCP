@@ -327,12 +327,7 @@ class AgentThreadStoreMixin(StoreMixinBase):
     def close_agent_thread(self, thread_id: str, *, reason: str) -> None:
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT project_id FROM agent_threads WHERE thread_id=?", (thread_id,)
-            ).fetchone()
-            if row is not None:
-                store = cast("AppStore", self)
-                store._stop_chat_watchers(connection, row[0] or store.space_id, thread_id)
+            cast("AppStore", self).cancel_agent_watchers(thread_id, by="rcp", connection=connection)
             connection.execute(
                 "UPDATE agent_threads SET closed_at=coalesce(closed_at,?),closed_reason=? WHERE thread_id=?",
                 (self.now(), reason, thread_id),

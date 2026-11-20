@@ -26,7 +26,7 @@ from rcp.runs.auto_research_admission import (
     start_auto_research_turn,
 )
 from rcp.runs.auto_research_delivery import (
-    deliver_auto_research_watcher_group,
+    deliver_auto_research_watchers,
     deliver_pending_auto_research_lifecycle,
     deliver_pending_auto_research_mail,
     pending_auto_research_lifecycle_episodes,
@@ -42,10 +42,9 @@ from rcp.storage import (
     AppStore,
     AutoResearchLifecycleNoticeRecord,
     EpisodeRecord,
-    GraphWatcherRecord,
     NodeStatusGraphCondition,
     ProjectRecord,
-    WatcherContinuation,
+    WatcherRecord,
 )
 from rcp.storage.models import _required_timestamp
 from rcp.watchers import WatcherBinding, arm_watchers
@@ -187,9 +186,7 @@ def _arm_completed_graph_condition(
     origin: AgentTaskRecord,
     *,
     watcher_id: str = "auto_research-watcher",
-) -> GraphWatcherRecord:
-    current = store.episode(auto_research.episode_id)
-    assert current is not None
+) -> WatcherRecord:
     condition = NodeStatusGraphCondition(node_id="blk/result", status_in=["resolved"])
     blocker = Blocker(
         id="blk/result",
@@ -198,48 +195,34 @@ def _arm_completed_graph_condition(
         description="The auto_research continues after this blocker resolves.",
         status="resolved",
     )
-    request = AutoResearchRunRequest.model_validate(origin.request)
-    assert request.provider is not None and request.run_on is not None
-    binding = store.auto_research_actor_binding(origin.operation_id)
     (watcher,) = arm_watchers(
         store,
         [],
         WatcherBinding(
             project_id=origin.project_id,
-            origin_operation_id=origin.operation_id,
-            origin_task_kind="auto_research",
-            chat_id=binding.actor_operation_id,
-            node_id=request.control_node_id,
-            episode_id=current.episode_id,
+            agent_id=auto_research.episode_id,
+            origin_turn_id=origin.operation_id,
             graph_target=origin.graph_target,
             machine_id=origin.stage_machine_id or "backend",
-            continuation=WatcherContinuation(
-                browser_requested=current.browser_requested,
-                provider=request.provider,
-                model=request.model,
-                reasoning=request.reasoning,
-                run_on=request.run_on,
-                run_truth_scope=request.run_truth_scope,
-                workflow_ids=request.workflow_ids or [],
-                skill_ids=request.skill_ids or [],
-                invoked_workflow_ids=request.invoked_workflow_ids,
-                invoked_skill_ids=request.invoked_skill_ids,
-                resolved_skill_packages=request.resolved_skill_packages or [],
-            ),
         ),
         graph_conditions=[condition],
         state=GraphState(revision=2, nodes={blocker.id: blocker}),
         watcher_ids=[watcher_id],
     )
-    assert isinstance(watcher, GraphWatcherRecord)
-    assert watcher.watcher_id == watcher_id
-    assert watcher.status == "completed"
-    assert watcher.origin_task_kind == "auto_research"
-    assert watcher.origin_operation_id == origin.operation_id
-    assert watcher.graph_target == auto_research.graph_target
-    assert watcher.chat_id == origin.operation_id
-    assert watcher.notified is False
+    assert watcher.ready
     return watcher
+
+
+def _deliver(tasks: BackgroundAgentTasks, watcher: WatcherRecord) -> str | None:
+    """Run the Auto-research wake owner and return the turn that claimed the watcher."""
+
+    store = tasks.store
+    episode = store.agent_episode(watcher.agent_id)
+    assert episode is not None
+    deliver_auto_research_watchers(tasks, watcher.agent_id, episode, [watcher], None)
+    claimed = store.watcher(watcher.watcher_id)
+    assert claimed is not None
+    return claimed.wake_turn_id
 
 
 def test_auto_research_message_keeps_its_planned_identity(tmp_path) -> None:
@@ -297,15 +280,11 @@ def test_auto_research_graph_watcher_wake_is_one_atomic_paid_actor_continuation(
     watcher = _arm_completed_graph_condition(store, auto_research, root)
     before = store.episode_budget_meter(auto_research.episode_id)
 
-    wake_id = deliver_auto_research_watcher_group(tasks, [watcher])
+    wake_id = _deliver(tasks, watcher)
 
     assert root.request["invoked_skill_ids"] == ["graph-audit"]
     assert wake_id is not None
     wake = wait_for_task(store, wake_id, expect="succeeded")
-    delivered = store.watcher(watcher.watcher_id)
-    assert isinstance(delivered, GraphWatcherRecord)
-    assert delivered.notified is True
-    assert delivered.notification_operation_id == wake.operation_id
     assert store.episode_budget_meter(auto_research.episode_id).invocations_used == (
         before.invocations_used + 1
     )
@@ -328,21 +307,6 @@ def test_auto_research_graph_watcher_wake_is_one_atomic_paid_actor_continuation(
         (root.operation_id, "fresh", None),
         (wake.operation_id, "graph_condition_wake", "orchestrator-session"),
     ]
-
-    from rcp.storage.watchers import WatcherStoreMixin
-
-    for forged in (
-        {"invoked_skill_ids": ["graph-audit"]},
-        {"invoked_workflow_ids": ["research-graph-audit"]},
-        {"model": "changed-model"},
-        {"browser_requested": not wake.request["browser_requested"]},
-        {"run_truth_scope": ["another-repo"]},
-        {"role": "worker"},
-    ):
-        candidate = wake.model_copy(update={"request": {**wake.request, **forged}})
-        with store.connection() as connection, pytest.raises(ValueError):
-            WatcherStoreMixin._validate_watcher_notification_scope(connection, candidate, [watcher])
-    assert store.watcher(watcher.watcher_id).continuation == watcher.continuation
     assert store.agent_task(root.operation_id).request == root.request
 
 
@@ -367,12 +331,11 @@ def test_auto_research_watcher_wake_waits_while_every_login_is_limited(
     before = store.episode_budget_meter(episode.episode_id)
     monkeypatch.setattr(ProviderAccounts, "automatic_launch_wait", lambda *_args: 60.0)
 
-    assert deliver_auto_research_watcher_group(tasks, [watcher]) is None
-    assert store.watcher(watcher.watcher_id).notified is False
+    assert _deliver(tasks, watcher) is None
     assert store.episode_budget_meter(episode.episode_id) == before
 
     monkeypatch.setattr(ProviderAccounts, "automatic_launch_wait", lambda *_args: 0.0)
-    wake_id = deliver_auto_research_watcher_group(tasks, [watcher])
+    wake_id = _deliver(tasks, watcher)
     assert wake_id is not None
     wait_for_task(store, wake_id, expect="succeeded")
 
@@ -440,10 +403,7 @@ def test_root_wake_coalesces_notices_and_mail_with_lifecycle_grace(
     ] == task_ids_before
     assert store.pending_auto_research_lifecycle_notices(episode.episode_id) == notices
     if wake_source == "graph_condition":
-        wake_id = deliver_auto_research_watcher_group(tasks, [watcher])
-        delivered_watcher = store.watcher(watcher.watcher_id)
-        assert delivered_watcher.notified
-        assert delivered_watcher.notification_operation_id == wake_id
+        wake_id = _deliver(tasks, watcher)
     else:
         clock += timedelta(seconds=AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS + 1)
         wake_id = deliver_pending_auto_research_lifecycle(tasks, episode_id=episode.episode_id)
@@ -508,10 +468,10 @@ def test_watcher_wake_prefix_race_rolls_back_allocation_and_claims(
         body="Result.",
     )
     before = store.episode_budget_meter(episode.episode_id)
-    real_admit = store.create_watcher_notification_task
+    real_admit = store.create_auto_research_watcher_wake_task
     attempted_ids = []
 
-    def change_prefix(record, watcher_ids, **kwargs):
+    def change_prefix(record, agent_id, watcher_ids, **kwargs):
         """A newer row sorts after the snapshot prefix and must still refuse the claim."""
         attempted_ids.append(record.operation_id)
         offset = timedelta(seconds=1 if changed_input.startswith("newer") else -1)
@@ -535,20 +495,18 @@ def test_watcher_wake_prefix_race_rolls_back_allocation_and_claims(
                     }
                 )
             )
-        return real_admit(record, watcher_ids, **kwargs)
+        return real_admit(record, agent_id, watcher_ids, **kwargs)
 
-    monkeypatch.setattr(store, "create_watcher_notification_task", change_prefix)
-    assert deliver_auto_research_watcher_group(tasks, [watcher]) is None
+    monkeypatch.setattr(store, "create_auto_research_watcher_wake_task", change_prefix)
+    assert _deliver(tasks, watcher) is None
     assert len(attempted_ids) == 1
     assert store.agent_task(attempted_ids[0]) is None
     assert store.episode_budget_meter(episode.episode_id) == before
-    assert not store.watcher(watcher.watcher_id).notified
-    assert store.watcher(watcher.watcher_id).notification_operation_id is None
     assert notice in store.pending_auto_research_lifecycle_notices(episode.episode_id)
     assert store.auto_research_message(mail.message_id).delivery_operation_id is None
 
-    monkeypatch.setattr(store, "create_watcher_notification_task", real_admit)
-    wake_id = deliver_auto_research_watcher_group(tasks, [watcher])
+    monkeypatch.setattr(store, "create_auto_research_watcher_wake_task", real_admit)
+    wake_id = _deliver(tasks, watcher)
     assert wake_id is not None
     wait_for_task(store, wake_id, expect="succeeded")
     assert store.pending_auto_research_lifecycle_notices(episode.episode_id) == []
@@ -596,12 +554,10 @@ def test_committed_watcher_wake_reconciles_after_thread_start_failure(
 
     monkeypatch.setattr(threading.Thread, "start", fail_once)
     with pytest.raises(RuntimeError, match="Thread.start failure"):
-        deliver_auto_research_watcher_group(tasks, [watcher])
+        _deliver(tasks, watcher)
     monkeypatch.setattr(threading.Thread, "start", real_start)
 
-    claimed = store.watcher(watcher.watcher_id)
-    assert isinstance(claimed, GraphWatcherRecord)
-    wake_id = claimed.notification_operation_id
+    wake_id = store.watcher(watcher.watcher_id).wake_turn_id
     assert wake_id is not None
     queued = store.agent_task(wake_id)
     assert queued is not None and queued.status == "queued"
@@ -614,9 +570,7 @@ def test_committed_watcher_wake_reconciles_after_thread_start_failure(
     ) == [wake_id]
     wait_for_task(store, wake_id, expect="succeeded")
 
-    delivered = store.watcher(watcher.watcher_id)
-    assert isinstance(delivered, GraphWatcherRecord)
-    assert delivered.notification_operation_id == wake_id
+    assert store.watcher(watcher.watcher_id).wake_turn_id == wake_id
     assert store.episode_budget_meter(auto_research.episode_id) == after_claim
     assert executions.count(wake_id) == 1
     assert (
@@ -673,11 +627,7 @@ def test_busy_auto_research_actor_leaves_completed_watcher_unclaimed_and_unspent
     ]
 
     try:
-        assert deliver_auto_research_watcher_group(tasks, [watcher]) is None
-        unchanged = store.watcher(watcher.watcher_id)
-        assert isinstance(unchanged, GraphWatcherRecord)
-        assert unchanged.notified is False
-        assert unchanged.notification_operation_id is None
+        assert _deliver(tasks, watcher) is None
         assert store.episode_budget_meter(auto_research.episode_id) == before
         assert [
             task.operation_id for task in store.auto_research_tasks(auto_research.episode_id)
@@ -1449,7 +1399,7 @@ def test_active_child_reply_waits_and_coalesces_with_its_lifecycle_notice(
     spent_before_settlement = 0
     if graph_wake_while_child_runs:
         watcher = _arm_completed_graph_condition(store, auto_research, root)
-        graph_wake_id = deliver_auto_research_watcher_group(tasks, [watcher])
+        graph_wake_id = _deliver(tasks, watcher)
         assert graph_wake_id is not None
         wait_for_task(store, graph_wake_id, expect="succeeded")
         assert store.auto_research_message(message_id).delivered_at is None  # type: ignore[union-attr]

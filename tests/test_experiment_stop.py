@@ -17,12 +17,11 @@ from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.experiment_loop import commit_experiment_episode_binding
 from rcp.runs.shared import _sse
-from rcp.runs.watcher_admission import start_watcher_notification
 from rcp.service import RunRequest
-from rcp.skill_registry import SkillReference
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
+    WatcherRecord,
 )
 from rcp.watchers import WatcherBinding
 
@@ -88,10 +87,7 @@ def test_stop_while_a_turn_runs_leaves_the_task_alone_and_blocks_a_fresh_run(
     assert {field: projected[field] for field in expected} == expected
     task = loop.store.agent_task("loop-root")
     assert task is not None and task.status == "running"
-    assert loop.store.watcher(watcher.watcher_id).status == "active"
-    assert watcher.watcher_id not in {
-        record.watcher_id for record in loop.store.pollable_watchers()
-    }
+    assert loop.store.watcher(watcher.watcher_id).open
 
     refused = loop.client.post(
         f"/api/projects/{loop.project_id}/experiments/{NODE_PATH}/run",
@@ -102,7 +98,7 @@ def test_stop_while_a_turn_runs_leaves_the_task_alone_and_blocks_a_fresh_run(
 
     loop.store.complete_agent_task("loop-root", applied_revision=None, result={})
     assert loop.store.settle_ready_experiment_loop_stops() == 1
-    assert loop.store.watcher(watcher.watcher_id).status == "stopped"
+    assert loop.store.watcher(watcher.watcher_id).state == "cancelled"
 
 
 def test_stop_with_only_watchers_left_terminalizes_them_and_settles_at_once(loop, tmp_path) -> None:
@@ -118,9 +114,9 @@ def test_stop_with_only_watchers_left_terminalizes_them_and_settles_at_once(loop
     for watcher_id in ("still-running", "finished-unclaimed"):
         record = loop.store.watcher(watcher_id)
         assert record is not None
-        assert record.status == "stopped"
-        assert record.notified is True
-        assert record.notification_operation_id is None
+        assert record.state == "cancelled"
+        assert record.cancelled_by == "rcp"
+        assert record.wake_turn_id is None
     assert control["ready"] is True
     assert control["reasons"] == []
 
@@ -152,7 +148,7 @@ def test_stop_settlement_rolls_back_watcher_changes_when_episode_terminalization
 
     watcher = loop.store.watcher("atomic-stop-watcher")
     episode = loop.store.episode(loop.episode_id)
-    assert watcher is not None and watcher.status == "active" and watcher.notified is False
+    assert watcher is not None and watcher.open
     assert episode is not None and episode.status == "stopping"
     assert episode.stop_settled_at is None
 
@@ -161,7 +157,7 @@ def test_stop_settlement_rolls_back_watcher_changes_when_episode_terminalization
         loop.project_id, EXPERIMENT_ID, graph_target=GraphTargetRef()
     )
     assert settled is not None and settled.stop_settled_at is not None
-    assert loop.store.watcher("atomic-stop-watcher").status == "stopped"  # type: ignore[union-attr]
+    assert loop.store.watcher("atomic-stop-watcher").state == "cancelled"  # type: ignore[union-attr]
 
 
 def test_stop_is_idempotent(loop, tmp_path) -> None:
@@ -429,23 +425,27 @@ def test_run_after_a_settled_stop_starts_a_fresh_episode_with_no_delivery(loop, 
     assert request["control_invocation"] == 1
     assert request["control_episode_id"] != loop.episode_id
     assert request["watcher_ids"] == []
-    assert loop.store.watcher("finished-unclaimed").notification_operation_id is None
+    assert loop.store.watcher("finished-unclaimed").wake_turn_id is None
 
 
-def test_an_unclaimed_completion_cannot_win_a_wake_after_a_persisted_stop(loop, tmp_path) -> None:
+def test_stop_cancels_the_agents_watchers_and_a_ready_one_never_wakes(loop, tmp_path) -> None:
     """The session was usable; only the stop refused the wake, and no budget moved."""
-    loop.start_episode()
+    loop.start_episode(status="running")
     loop.bind_session(tmp_path / "stage")
     loop.arm_watcher("finished-unclaimed", status="completed")
+    loop.arm_watcher("still-running")
 
-    loop.store.request_experiment_loop_stop(
-        loop.project_id, EXPERIMENT_ID, graph_target=GraphTargetRef()
-    )
+    assert loop.stop()["operational"]["stop_settled"] is False
     before = loop.loop_task_ids()
     loop.deliver("finished-unclaimed")
 
     assert loop.loop_task_ids() == before
-    assert loop.store.watcher("finished-unclaimed").notification_operation_id is None
+    assert loop.store.watcher("finished-unclaimed").wake_turn_id is None
+    loop.store.complete_agent_task("loop-root", applied_revision=None, result={})
+    assert loop.store.settle_ready_experiment_loop_stops() == 1
+    for watcher in loop.store.agent_watchers(loop.chat_id):
+        assert watcher.state == "cancelled" and watcher.cancelled_by == "rcp"
+    assert loop.store.ready_watchers() == []
     runtime = loop.store.experiment_loop_runtime(
         loop.project_id, EXPERIMENT_ID, graph_target=GraphTargetRef()
     )
@@ -466,31 +466,15 @@ def test_a_stop_settles_only_under_the_operation_lock_after_its_turn_ends(loop, 
     control = loop.control()
     assert control["operational"]["stop_requested"] is True
     assert control["operational"]["stop_settled"] is False
-    assert loop.store.watcher("still-running").status == "active"
+    assert loop.store.watcher("still-running").open
 
     response = loop.client.get("/api/episodes?mode=experiment_loop")
     assert response.status_code == 200, response.text
 
     control = loop.control()
     assert control["operational"]["stop_settled"] is True
-    assert loop.store.watcher("still-running").status == "stopped"
+    assert loop.store.watcher("still-running").state == "cancelled"
     assert control["ready"] is True
-
-
-def test_a_wake_without_a_committed_binding_never_claims_or_spends_budget(loop, tmp_path) -> None:
-    loop.start_episode()
-    loop.arm_watcher("finished-unclaimed", status="completed")
-
-    before = loop.loop_task_ids()
-    loop.deliver("finished-unclaimed")
-
-    assert loop.loop_task_ids() == before
-    record = loop.store.watcher("finished-unclaimed")
-    assert record.status == "completed"
-    assert record.notified is False
-    control = loop.control()
-    assert control["invocations_used"] == 1
-    assert control["operational"]["session"]["native_session_bound"] is False
 
 
 def test_a_vanished_episode_stage_becomes_a_durable_diagnostic(loop, tmp_path) -> None:
@@ -505,8 +489,7 @@ def test_a_vanished_episode_stage_becomes_a_durable_diagnostic(loop, tmp_path) -
 
     assert loop.loop_task_ids() == before
     record = loop.store.watcher("finished-unclaimed")
-    assert record.status == "completed"
-    assert record.notified is False
+    assert record.ready
     diagnostic = loop.control()["operational"]["session"]["diagnostic"]
     assert diagnostic is not None
     assert "saved provider workspace is gone" in diagnostic
@@ -516,35 +499,6 @@ def test_a_vanished_episode_stage_becomes_a_durable_diagnostic(loop, tmp_path) -
         ).invocations_used
         == 1
     )
-
-
-def test_provider_provenance_does_not_block_current_episode_delivery(loop, tmp_path) -> None:
-    """`status` reads "stopped" once the origin episode ends, and this delivery spends the last
-    invocation, so the claimed notification id proves delivery race-free.
-    """
-    loop.start_episode()
-    loop.bind_session(tmp_path / "stage")
-    loop.record_answers()
-    loop.arm_watcher(
-        "other-provider",
-        status="completed",
-        continuation=loop.continuation(provider="claude"),
-    )
-
-    loop.deliver("other-provider")
-
-    record = loop.store.watcher("other-provider")
-    assert record.notified is True
-    assert record.notification_operation_id is not None
-    woken = [
-        item
-        for item in loop.store.agent_tasks(loop.project_id)
-        if item.request.get("trigger") == "watcher"
-    ]
-    assert len(woken) == 1
-    assert woken[0].request["provider"] == "codex"
-    assert woken[0].request["chat_id"] == loop.chat_id
-    assert loop.control()["operational"]["session"]["diagnostic"] is None
 
 
 def test_a_ready_wake_resumes_the_episode_session_at_the_next_invocation(loop, tmp_path) -> None:
@@ -582,7 +536,7 @@ def test_a_ready_wake_resumes_the_episode_session_at_the_next_invocation(loop, t
         if item.category == "operation_admitted"
     )
     assert admission.payload["parent_operation_id"] is None
-    assert loop.store.watcher("finished-unclaimed").notified is True
+    assert loop.store.watcher("finished-unclaimed").wake_turn_id == task.operation_id
 
 
 def test_control_state_exposes_the_operational_block_without_the_session_id(loop, tmp_path) -> None:
@@ -801,72 +755,14 @@ def test_automatic_wake_requires_session_and_exact_episode_stage(loop, tmp_path)
 
     with pytest.raises(ValueError, match="episode binding"):
         loop.store.create_experiment_watcher_invocation(record, ["ready"])
-    assert loop.store.watcher("ready").notified is False
-
-    no_session = request.model_copy(update={"session_id": None})
-    with pytest.raises(ValueError, match="session and exact stage"):
-        start_watcher_notification(
-            loop.app.state.background_tasks,
-            loop.project_id,
-            "node_chat",
-            no_session,
-            ["ready"],
-            authorized_by=loop.authorizer,
-            episode_stage_machine_id=BACKEND_MACHINE_ID,
-            episode_stage_root=str(stage),
-        )
-
-
-def test_automatic_compatibility_ignores_model_reasoning_and_packages(loop, tmp_path) -> None:
-    loop.start_episode()
-    loop.bind_session(tmp_path / "stage")
-    loop.arm_watcher(
-        "old-config",
-        status="completed",
-        continuation=loop.continuation(
-            model="old-model",
-            reasoning="low",
-            resolved_skill_packages=[
-                SkillReference(id="old-package", kind="skill", version="1.0.0")
-            ],
-        ),
-    )
-    loop.arm_watcher(
-        "new-config",
-        status="completed",
-        continuation=loop.continuation(
-            model="new-model",
-            reasoning="high",
-            resolved_skill_packages=[
-                SkillReference(id="new-package", kind="skill", version="2.0.0")
-            ],
-        ),
-    )
-
-    groups = loop.app.state.background_tasks.store.completed_watcher_groups()
-    experiment_group = next(group for group in groups if group[0].watcher_id == "old-config")
-    assert {item.watcher_id for item in experiment_group} == {"old-config", "new-config"}
-
-    loop.record_answers()
-    loop.deliver("old-config", "new-config")
-    task = next(
-        task
-        for task in loop.store.agent_tasks(loop.project_id)
-        if task.request.get("trigger") == "watcher"
-    )
-    assert task.request["model"] == "gpt-5"
-    assert task.request["reasoning"] == "medium"
+    assert loop.store.watcher("ready").wake_turn_id is None
 
 
 def test_provider_default_model_stays_pinned_after_settings_change(loop, tmp_path) -> None:
     root_request = loop.root_request().model_copy(update={"model": ""})
     loop.start_episode(request=root_request)
     loop.bind_session(tmp_path / "stage")
-    loop.arm_watcher(
-        "provider-default-result",
-        status="completed",
-        continuation=loop.continuation(model=""),
-    )
+    loop.arm_watcher("provider-default-result", status="completed")
     project = loop.client.get(f"/api/projects/{loop.project_id}").json()
     profiles = {
         surface: {key: profile[key] for key in ("provider", "model", "reasoning")}
@@ -902,11 +798,7 @@ def test_default_truth_scope_is_pinned_before_watcher_completion(
     assert resolved.run_truth_scope == writable
     loop.start_episode(request=resolved)
     loop.bind_session(tmp_path / "scope-stage")
-    loop.arm_watcher(
-        "default-scope-result",
-        status="completed",
-        continuation=loop.continuation(run_truth_scope=writable),
-    )
+    loop.arm_watcher("default-scope-result", status="completed")
     loop.record_answers()
 
     loop.deliver("default-scope-result")
@@ -1366,7 +1258,7 @@ def test_a_wake_that_lost_its_link_before_composing_reruns_as_that_wake(manifest
 
 
 def test_a_completed_watcher_waits_for_a_wake_long_enough_to_launch(manifest, tmp_path) -> None:
-    """The group stays completed, so the next poll offers it again."""
+    """The watcher stays ready, so the next poll offers it again."""
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     loop = _Loop(app, invocation_ceiling=3)
     loop.start_episode()
@@ -1374,23 +1266,20 @@ def test_a_completed_watcher_waits_for_a_wake_long_enough_to_launch(manifest, tm
     loop.bind_session(tmp_path / "wake-stage")
     loop.arm_watcher("finished-job", status="completed")
     delivery = app.state.services.watcher_delivery
-    (group,) = loop.store.completed_watcher_groups()
     before = loop.loop_task_ids()
 
     delivery._launch_wait = lambda: 25.0
-    delivery.deliver_watcher_group(group)
+    loop.deliver("finished-job")
 
     assert loop.loop_task_ids() == before
-    assert [
-        [item.watcher_id for item in held] for held in loop.store.completed_watcher_groups()
-    ] == [["finished-job"]]
+    assert [watcher.watcher_id for watcher in loop.store.ready_watchers()] == ["finished-job"]
 
     async def stream(*_args, **_kwargs):
         yield _sse(AgentEvent(event="done"))
 
     app.state.background_tasks.stream = stream
     delivery._launch_wait = lambda: 0.0
-    delivery.deliver_watcher_group(group)
+    loop.deliver("finished-job")
 
     assert loop.loop_task_ids() != before
 
@@ -1917,15 +1806,6 @@ def test_human_reauthorization_uses_current_node_profile_and_new_chat(manifest, 
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     loop = _Loop(app, invocation_ceiling=1)
     loop.start_episode()
-    loop.arm_watcher(
-        "other-provider-result",
-        status="completed",
-        continuation=loop.continuation(
-            provider="claude",
-            model="sonnet",
-            reasoning="high",
-        ),
-    )
     loop.record_answers()
     new_chat_id = str(uuid.uuid4())
     reconcile = app.state.watcher_poller.on_poll_completed
@@ -2012,8 +1892,8 @@ def test_stop_preserves_compatible_stopped_watcher_history_across_episodes(loop,
 
     loop.stop()
 
-    assert loop.store.watcher("current-watcher").status == "stopped"
-    assert loop.store.watcher("old-watcher").status == "stopped"
+    assert loop.store.watcher("current-watcher").state == "cancelled"
+    assert loop.store.watcher("old-watcher").state == "cancelled"
 
 
 def test_reconciling_stopped_episode_does_not_retire_new_episode_watcher(loop, tmp_path) -> None:
@@ -2039,41 +1919,7 @@ def test_reconciling_stopped_episode_does_not_retire_new_episode_watcher(loop, t
 
     current = loop.store.watcher("current-watcher")
     assert current is not None
-    assert current.status == "active"
-    assert current.notified is False
-
-
-def test_stop_fences_current_turn_and_preserves_compatible_prior_watcher(loop, tmp_path) -> None:
-    loop.start_episode(operation_id="old-root")
-    old_episode = loop.episode_id
-    loop.arm_watcher("adopted-watcher", origin_operation_id="old-root")
-    loop.stop()
-    loop.episode_id = str(uuid.uuid4())
-    loop.chat_id = str(uuid.uuid4())
-    loop.start_episode(status="running", operation_id="current-root")
-
-    control = loop.stop()
-
-    assert control["operational"]["stop_settled"] is False
-    assert loop.store.watcher("adopted-watcher").status == "stopped"
-    assert "adopted-watcher" not in {record.watcher_id for record in loop.store.pollable_watchers()}
-    loop.store.complete_agent_task("current-root", applied_revision=None, result={})
-    assert loop.store.settle_ready_experiment_loop_stops() == 1
-    adopted = loop.store.watcher("adopted-watcher")
-    assert adopted is not None and adopted.status == "stopped" and adopted.notified is True
-    assert loop.store.experiment_watcher_compatible_with_episode(
-        "adopted-watcher",
-        loop.episode_id,
-    )
-    assert adopted.continuation.control_episode_id == old_episode
-
-    loop.record_answers()
-    response = loop.client.post(
-        f"/api/projects/{loop.project_id}/experiments/{NODE_PATH}/run",
-        json={"chat_id": str(uuid.uuid4()), "run_truth_scope": ["repo-a"]},
-    )
-    assert response.status_code == 202, response.text
-    assert response.json()["request"]["watcher_ids"] == []
+    assert current.open
 
 
 def test_final_handoff_is_born_stopped_when_stop_wins_transaction(loop, tmp_path) -> None:
@@ -2081,23 +1927,29 @@ def test_final_handoff_is_born_stopped_when_stop_wins_transaction(loop, tmp_path
     loop.store.request_experiment_loop_stop(
         loop.project_id, EXPERIMENT_ID, graph_target=GraphTargetRef()
     )
-    desired = loop._watcher("final-handoff")
+    desired = WatcherRecord(
+        watcher_id="final-handoff",
+        agent_id=loop.chat_id,
+        project_id=loop.project_id,
+        purpose="final handoff",
+        origin_turn_id="loop-root",
+        created_at=loop.store.now(),
+        checks=[loop._check("final-handoff")],
+    )
 
     stored = loop.store.persist_experiment_watchers_idempotently(
         [desired],
         binding=WatcherBinding(
             project_id=loop.project_id,
-            origin_operation_id="loop-root",
-            origin_task_kind="node_chat",
-            chat_id=loop.chat_id,
-            node_id=EXPERIMENT_ID,
+            agent_id=loop.chat_id,
+            origin_turn_id="loop-root",
             machine_id=BACKEND_MACHINE_ID,
-            continuation=loop.continuation(),
         ),
+        episode_id=loop.episode_id,
     )
 
-    assert stored[0].status == "stopped"
-    assert stored[0].notified is True
+    assert stored[0].state == "cancelled"
+    assert stored[0].cancelled_by == "rcp"
 
 
 def test_a_turn_failing_before_its_session_ends_the_episode_without_a_report(
@@ -2212,7 +2064,7 @@ def test_a_ready_report_does_not_hide_the_resumable_loop(manifest, tmp_path) -> 
     assert blocked["can_start"] is False
     assert blocked["recommendation"] == "open_report"
 
-    loop.store.stop_watchers(loop.project_id, ["detached-observer"], stopped_by="agent")
+    loop.store.cancel_watchers(["detached-observer"], by="agent")
 
     resumable = loop.control()
     assert resumable["health"] == "paused_at_limit"
@@ -2384,8 +2236,7 @@ def test_artifact_edit_does_not_replace_episode_control_or_block_watcher_wake(lo
     assert span.owner_episode_id == loop.episode_id
     loop.deliver("after-edit")
     watcher = loop.store.watcher("after-edit")
-    assert watcher.notified
-    assert watcher.notification_operation_id is not None
+    assert watcher.wake_turn_id is not None
 
 
 @pytest.mark.parametrize("route", ["experiments", "episodes"])
