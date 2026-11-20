@@ -2967,6 +2967,9 @@ button.agent-provider-label {
     flex: 0 0 155px;
     margin: 0 4px 0 0;
   }
+  .run-history > .eyebrow {
+    display: none;
+  }
   .run-inspector-actions {
     align-items: flex-start;
     flex-direction: column;

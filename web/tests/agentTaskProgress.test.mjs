@@ -44,6 +44,7 @@ function renderInspector(status) {
   const selectedTask = task(status);
   return renderToStaticMarkup(
     React.createElement(AgentTaskInspector, {
+      ownerLabel: null,
       tasks: [selectedTask],
       task: selectedTask,
       loading: false,
@@ -77,6 +78,7 @@ test("Auto-research tasks are inspection-only while ordinary task controls remai
   const episodeTask = { ...task("running"), kind: "auto_research", episode_id: "episode" };
   const episodeInspector = renderToStaticMarkup(
     React.createElement(AgentTaskInspector, {
+      ownerLabel: null,
       tasks: [episodeTask],
       task: episodeTask,
       loading: false,

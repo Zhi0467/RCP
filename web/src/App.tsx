@@ -125,7 +125,7 @@ import {
   type ComponentProps,
   type ReactNode,
 } from "react";
-import { isActiveTask } from "./agents/agentTasks";
+import { isActiveTask, taskOwnerLabel } from "./agents/agentTasks";
 import { mergeProviderLogins } from "./projects/providers";
 import { loadChatTranscript } from "./chat/chatApi";
 import { worktreeRepositoryChoices } from "./chat/worktreeRepositories";
@@ -2401,6 +2401,13 @@ function MemberApp({
       project?.name,
       projectTasks,
     ],
+  );
+  const chatTitles = useMemo(
+    () =>
+      new Map(
+        inventoryConversations.map((conversation) => [conversation.chatId, conversation.title]),
+      ),
+    [inventoryConversations],
   );
   const conversations = useMemo(
     () =>
@@ -6123,11 +6130,16 @@ function MemberApp({
           forkDisabled={mutationsDisabled}
           summaries={historyRevisionSummaries}
           tasks={projectTasks}
+          chatTitles={chatTitles}
           loading={historySummariesRevision !== graph.revision}
           error={historySummariesError}
           onInspectTask={(taskId) => {
             closeProjectHistory();
             selectTaskInspector(taskId);
+          }}
+          onOpenAgent={(chatId) => {
+            closeProjectHistory();
+            window.location.hash = projectViewHash(project.id, graphTarget, "chats", { chatId });
           }}
           episodeReportHref={(episodeId) => episodeReportPreviewUrl(project.id, episodeId)}
           onClose={closeProjectHistory}
@@ -6137,6 +6149,9 @@ function MemberApp({
         <AgentTaskInspector
           tasks={projectTasks}
           task={inspectedTask}
+          ownerLabel={
+            inspectedTask ? taskOwnerLabel(inspectedTask, projectTasks, chatTitles) : null
+          }
           loading={taskInspectorLoading}
           actionBusy={Boolean(
             taskActionId || (activeTask && activeTask.operation_id !== taskInspectorId),

@@ -1,4 +1,5 @@
 import { TURN_REFUSAL_REASONS } from "../core/api.ts";
+import { chatIdForTask } from "../chat/chatWorkspace.ts";
 import { ARTIFACT_VIEWS } from "../core/types.ts";
 import type {
   AgentArtifactDescriptor,
@@ -103,6 +104,126 @@ export function taskKindLabel(kind: AgentTaskKind): string {
     case "branch_merge":
       return "Branch merge";
   }
+}
+
+/** The turn as a member reads it: their first line, else what kind of run it is. */
+export function turnTitle(task: AgentTask): string {
+  const message = textValue(task.request.message);
+  return message ? message.trim().split("\n", 1)[0] : taskKindLabel(task.kind);
+}
+
+/** Every attempt of `task`'s turn, its Retry and Resume lineage, newest first. */
+export function turnAttempts(task: AgentTask, tasks: readonly AgentTask[]): AgentTask[] {
+  const byId = new Map(tasks.map((item) => [item.operation_id, item]));
+  byId.set(task.operation_id, task);
+  const root = lineageRoot(task, byId);
+  return [...byId.values()]
+    .filter((item) => lineageRoot(item, byId) === root)
+    .sort((left, right) => compareTaskTime(right, left));
+}
+
+export interface TaskOwnerRow {
+  key: string;
+  /** An agent opens its conversation; the others open their newest turn's audit. */
+  kind: "agent" | "episode" | "run";
+  chatId: string | null;
+  label: string;
+  latest: AgentTask;
+}
+
+/**
+ * One row per listed agent, per episode, and per remaining run, newest activity first.
+ * A chat the member's list has is an agent row, whatever started its turns.
+ */
+export function taskOwnerRows(
+  tasks: readonly AgentTask[],
+  chatTitles: ReadonlyMap<string, string>,
+): TaskOwnerRow[] {
+  const byId = new Map(tasks.map((item) => [item.operation_id, item]));
+  const rows = new Map<string, TaskOwnerRow>();
+  for (const task of tasks) {
+    const row = taskOwner(task, tasks, chatTitles, byId);
+    const previous = rows.get(row.key);
+    if (!previous || compareActivity(task, previous.latest) > 0) rows.set(row.key, row);
+  }
+  return [...rows.values()].sort((left, right) => compareActivity(right.latest, left.latest));
+}
+
+/** The name of whoever ran `task`, as its Project history row shows it. */
+export function taskOwnerLabel(
+  task: AgentTask,
+  tasks: readonly AgentTask[],
+  chatTitles: ReadonlyMap<string, string>,
+): string {
+  return taskOwner(task, tasks, chatTitles, new Map(tasks.map((item) => [item.operation_id, item])))
+    .label;
+}
+
+function taskOwner(
+  task: AgentTask,
+  tasks: readonly AgentTask[],
+  chatTitles: ReadonlyMap<string, string>,
+  byId: ReadonlyMap<string, AgentTask>,
+): TaskOwnerRow {
+  const chatId = chatIdForTask(task);
+  const title = chatId ? chatTitles.get(chatId) : undefined;
+  if (chatId && title !== undefined) {
+    return { key: `agent:${chatId}`, kind: "agent", chatId, label: title, latest: task };
+  }
+  if (task.episode_id) {
+    return {
+      key: `episode:${task.episode_id}`,
+      kind: "episode",
+      chatId: null,
+      label: tasks.some(
+        (item) => item.episode_id === task.episode_id && item.request.role === "orchestrator",
+      )
+        ? "Auto-research"
+        : "Experiment",
+      latest: task,
+    };
+  }
+  if (chatId) {
+    return {
+      key: `agent:${chatId}`,
+      kind: "run",
+      chatId: null,
+      label: taskKindLabel(task.kind),
+      latest: task,
+    };
+  }
+  return {
+    key: `run:${lineageRoot(task, byId)}`,
+    kind: "run",
+    chatId: null,
+    label: taskKindLabel(task.kind),
+    latest: task,
+  };
+}
+
+/** A Retry or Resume continues its parent as the next attempt of the same kind. */
+function lineageRoot(task: AgentTask, byId: ReadonlyMap<string, AgentTask>): string {
+  const seen = new Set<string>();
+  let current = task;
+  for (
+    let parent = current.parent_operation_id ? byId.get(current.parent_operation_id) : undefined;
+    parent &&
+    !seen.has(parent.operation_id) &&
+    parent.kind === current.kind &&
+    current.attempt === parent.attempt + 1;
+    parent = current.parent_operation_id ? byId.get(current.parent_operation_id) : undefined
+  ) {
+    seen.add(current.operation_id);
+    current = parent;
+  }
+  return current.operation_id;
+}
+
+function compareActivity(left: AgentTask, right: AgentTask): number {
+  return (
+    comparableTime(left.updated_at) - comparableTime(right.updated_at) ||
+    compareTaskTime(left, right)
+  );
 }
 
 export function relatedChatTasks(
@@ -429,6 +550,13 @@ export function withoutRepeatedTurnPrompts(
     }
     return true;
   });
+}
+
+/** Each turn's last line from its agent's side, which carries the turn's details link. */
+export function turnEndLineIds(lines: readonly TaskTranscriptLine[]): Set<string> {
+  const last = new Map<string, string>();
+  for (const line of lines) if (line.role !== "human") last.set(line.taskId, line.lineId);
+  return new Set(last.values());
 }
 
 export function orderTranscriptLines(lines: TaskTranscriptLine[]): TaskTranscriptLine[] {

@@ -1122,6 +1122,44 @@ button.relation-map-node:hover {
   grid-template-columns: 190px minmax(0, 1fr);
   min-height: 0;
 }
+.turn-audit .run-inspector-body {
+  grid-template-columns: minmax(0, 1fr);
+}
+.turn-audit > header .eyebrow {
+  display: block;
+  margin: 0 0 2px;
+}
+.turn-attempts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.turn-attempts > button {
+  align-items: center;
+  background: var(--surface-cool);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: var(--type-4xs);
+  gap: 6px;
+  padding: 3px 10px;
+  transition:
+    background-color 0.15s,
+    border-color 0.15s;
+}
+.turn-attempts > button.active {
+  background: var(--sheet);
+  border-color: var(--line-strong);
+}
+.turn-attempts .run-state-dot {
+  margin-top: 0;
+}
+.run-history-kind {
+  color: var(--muted);
+  display: inline-flex;
+  margin-right: 5px;
+  vertical-align: -2px;
+}
 .run-history {
   background: var(--surface-cool);
   border-right: 1px solid var(--line);
