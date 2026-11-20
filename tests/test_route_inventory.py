@@ -4,6 +4,8 @@ route surface, not ownership, so it stays unchanged when a handler moves.
 
 from __future__ import annotations
 
+import re
+from collections import defaultdict
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -388,6 +390,56 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("PATCH",), "/api/projects/{project_id}/bulletin/{post_id}"),
     (("DELETE",), "/api/projects/{project_id}/bulletin/{post_id}"),
 )
+
+
+_AGENT_PREFIXES = (
+    "/api/agent-threads/{thread_id}",
+    "/api/projects/{project_id}/chats/{chat_id}",
+    "/api/projects/{project_id}",
+)
+
+_DUPLICATED_AGENT_ACTIONS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("DELETE", "/attachments/{}"),
+        ("GET", "/artifacts/{}/state"),
+        ("GET", "/comment-threads"),
+        ("GET", "/comment-threads/{}"),
+        ("GET", "/tasks/{}"),
+        ("POST", "/attachments"),
+        ("POST", "/comment-threads"),
+        ("POST", "/comment-threads/{}/posts"),
+        ("POST", "/comment-threads/{}/reopen"),
+        ("POST", "/comment-threads/{}/resolve"),
+        ("POST", "/read"),
+        ("POST", "/tasks/{}/pause"),
+        ("POST", "/tasks/{}/resume"),
+        ("POST", "/tasks/{}/retry"),
+        ("POST", "/tasks/{}/steer"),
+        ("POST", "/title"),
+        ("PUT", "/browser"),
+    }
+)
+
+
+def _duplicated_agent_actions(inventory: Iterable[RouteEntry]) -> frozenset[tuple[str, str]]:
+    prefixes: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for methods, path in inventory:
+        prefix = next((item for item in _AGENT_PREFIXES if path.startswith(item + "/")), None)
+        if prefix is None:
+            continue
+        action = re.sub(r"\{[^}]*\}", "{}", path[len(prefix) :])
+        for method in methods:
+            if method != "HEAD":
+                prefixes[(method, action)].add(prefix)
+    return frozenset(action for action, found in prefixes.items() if len(found) > 1)
+
+
+def test_no_new_agent_action_lives_under_two_prefixes() -> None:
+    """An agent action has one route. The exceptions are today's copies and only shrink."""
+    duplicated = _duplicated_agent_actions(_FROZEN_ROUTE_INVENTORY)
+    assert duplicated - _DUPLICATED_AGENT_ACTIONS == frozenset()
+    assert _DUPLICATED_AGENT_ACTIONS - duplicated == frozenset(), "delete the retired exceptions"
+    assert len(_DUPLICATED_AGENT_ACTIONS) <= 17
 
 
 def _walk_routes(routes: Iterable[object]) -> Iterable[object]:

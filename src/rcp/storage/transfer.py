@@ -20,6 +20,8 @@ from rcp.server_ops.backup_paper import (
     capture_paper_section,
     restore_paper_section,
 )
+from rcp.storage.agent_tasks import SESSION_TASK_KINDS
+from rcp.storage.agents import backfill_agents
 from rcp.storage.artifact_models import Artifact, ArtifactVersion
 from rcp.storage.artifacts import insert_artifact, write_artifact_file
 from rcp.storage.chat_names import backfill_chat_names
@@ -1420,6 +1422,7 @@ class ProjectTransferStoreMixin(StoreMixinBase):
                     attributions,
                 )
                 backfill_chat_names(connection, normalized_capture.records.project_id)
+                backfill_agents(connection, SESSION_TASK_KINDS)
                 # A transfer carries no isolation choices; derive the branch-owned ones.
                 self._derive_branch_episode_isolation(
                     connection, normalized_capture.records.project_id

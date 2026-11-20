@@ -61,6 +61,7 @@ CREATED_AT = datetime(2026, 8, 31, 18, 0, tzinfo=UTC)
 
 PROJECT_LINKED_TABLES = {
     "agent_threads",
+    "agents",
     "space_turn_project_bindings",
     "memory_migrations",
     "memory_deletions",

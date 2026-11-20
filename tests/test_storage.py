@@ -2267,6 +2267,8 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "agent_schedules": 0,
         "space_turn_project_bindings": 0,
         "agent_threads": 0,
+        "agent_sessions": 0,
+        "agents": 0,
         "digest_events": 1,
         "digest_marks": 0,
         "digest_heads": 0,

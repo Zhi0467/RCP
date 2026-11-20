@@ -2381,6 +2381,7 @@ class EpisodeRecord(BaseModel):
     #: The ended episode this one adds turns to. A continuation runs on the
     #: source's graph branch and native session; branch ownership stays with the chain root.
     continues_episode_id: str | None = None
+    agent_id: str | None = None
     #: The client's idempotency key for the continuation request.
     continuation_request_id: str | None = None
 
@@ -3721,6 +3722,7 @@ _PROJECT_ID_TABLES = (
     "auto_research_child_experiments",
     "auto_research_child_admissions",
     "agent_threads",
+    "agents",
     "space_turn_project_bindings",
 )
 

@@ -90,6 +90,7 @@ from rcp.storage import (
     WatcherRecord,
 )
 from rcp.storage.agent_tasks import AgentTaskStoreMixin
+from rcp.storage.agents import backfill_agents, ensure_turn_agent
 from rcp.storage.artifacts import ArtifactStoreMixin, migrate_artifacts
 from rcp.storage.auto_research import AutoResearchStoreMixin
 from rcp.storage.auto_research_children import AutoResearchChildrenStoreMixin
@@ -619,6 +620,7 @@ _MIGRATIONS = (
     _migrate_campaign_wrapup,
     _migrate_experiment_episodes,
     _remove_impossible_legacy_experiment_wrapup,
+    backfill_agents,
     migrate_machine_identity,
 )
 _AUTO_RESEARCH = (
@@ -814,6 +816,7 @@ class Episode:
         ExperimentStoreMixin.settle_experiment_episode_wrapup,
         ProjectStoreMixin.migrate_legacy_project_data,
         WatcherStoreMixin.record_watcher_check,
+        ensure_turn_agent,
         *_MIGRATIONS,
         *_AUTO_RESEARCH,
         *_OTHER_MACHINES,

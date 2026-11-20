@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from pydantic import BaseModel
 
+from rcp.storage.agents import ensure_agent
 from rcp.storage.artifact_models import Artifact
 from rcp.storage.chat_names import normalize_chat_name
 from rcp.storage.mixin_base import StoreMixinBase
@@ -48,6 +49,7 @@ class AgentThreadRecord(BaseModel):
     agent_model: str | None = None
     agent_reasoning: str | None = None
     agent_run_on: str | None = None
+    is_default: bool = True
 
     @property
     def agent(self) -> dict[str, str | None] | None:
@@ -212,7 +214,8 @@ class AgentThreadStoreMixin(StoreMixinBase):
     def agent_threads(self, user_id: str) -> list[AgentThreadRecord]:
         with self.connection() as connection:
             rows = connection.execute(
-                "SELECT * FROM agent_threads WHERE user_id=? ORDER BY kind DESC, project_id",
+                "SELECT * FROM agent_threads WHERE user_id=? "
+                "ORDER BY kind DESC, project_id, is_default DESC, created_at",
                 (user_id,),
             ).fetchall()
         return [AgentThreadRecord.model_validate(dict(row)) for row in rows]
@@ -243,13 +246,13 @@ class AgentThreadStoreMixin(StoreMixinBase):
                 "SELECT t.*, d.archived_at AS display_archived_at FROM agent_threads t "
                 "LEFT JOIN chat_display d ON d.chat_id=t.thread_id AND d.project_id="
                 "coalesce(t.project_id, (SELECT space_id FROM space_identity WHERE singleton=1)) "
-                "WHERE t.user_id=? ORDER BY t.kind DESC, t.project_id",
+                "WHERE t.user_id=? ORDER BY t.kind DESC, t.project_id, t.is_default DESC, t.created_at",
                 (user_id,),
             ).fetchall()
         shown = {
             row["project_id"]
             for row in rows
-            if row["closed_at"] is None and row["display_archived_at"] is None
+            if row["is_default"] and row["closed_at"] is None and row["display_archived_at"] is None
         }
         if {None, *project_ids} <= shown:
             return [AgentThreadRecord.model_validate(dict(row)) for row in rows]
@@ -269,7 +272,8 @@ class AgentThreadStoreMixin(StoreMixinBase):
             }
             for project_id in [None, *sorted(set(project_ids))]:
                 row = connection.execute(
-                    "SELECT thread_id FROM agent_threads WHERE user_id=? AND project_id IS ?",
+                    "SELECT thread_id FROM agent_threads WHERE user_id=? AND project_id IS ? "
+                    "AND is_default=1",
                     (user_id, project_id),
                 ).fetchone()
                 if row is not None:
@@ -295,6 +299,13 @@ class AgentThreadStoreMixin(StoreMixinBase):
                         project_id,
                         self.now(),
                     ),
+                )
+                ensure_agent(
+                    connection,
+                    thread_id,
+                    project_id=project_id,
+                    owner_user_id=user_id,
+                    created_at=self.now(),
                 )
                 scope_id = project_id or space_id
                 connection.execute(
@@ -355,11 +366,13 @@ class AgentThreadStoreMixin(StoreMixinBase):
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             owners = connection.execute(
-                "SELECT 1 FROM agent_threads source JOIN agent_threads target ON source.user_id=target.user_id WHERE source.thread_id=? AND source.kind='space' AND target.thread_id=? AND target.kind='project' AND source.closed_at IS NULL AND target.closed_at IS NULL",
+                "SELECT 1 FROM agent_threads source JOIN agent_threads target ON source.user_id=target.user_id WHERE source.thread_id=? AND source.kind='space' AND target.thread_id=? AND target.kind='project' AND target.is_default=1 AND source.closed_at IS NULL AND target.closed_at IS NULL",
                 (source_thread_id, target_thread_id),
             ).fetchone()
             if owners is None:
-                raise ValueError("handoff must target the same member's open project thread")
+                raise ValueError(
+                    "handoff must target the same member's open default project thread"
+                )
             existing = connection.execute(
                 "SELECT * FROM agent_handoffs WHERE source_operation_id=? AND idempotency_key=?",
                 (source_operation_id, idempotency_key),

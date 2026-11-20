@@ -67,6 +67,7 @@ from rcp.api.questions import (
 )
 from rcp.api.tasks import (
     BackgroundTasksDependency,
+    ExperimentAdmissionDependency,
     RetryAgentTaskRequest,
     SteerAgentTaskRequest,
     _agent_artifact_descriptor,
@@ -77,6 +78,8 @@ from rcp.api.tasks import (
     download_agent_artifact,
     released_unless_started,
     require_attachment_pair,
+    resume_task_as,
+    retry_task_as,
 )
 from rcp.artifact_comments import supports_comments
 from rcp.artifact_views import ViewerPresentation
@@ -1233,18 +1236,25 @@ def resume_space_task(
     request: Request,
     *,
     store: StoreDependency,
+    catalog: CatalogDependency,
     identity_access: IdentityDependency,
     background_tasks: BackgroundTasksDependency,
+    experiment_admission: ExperimentAdmissionDependency,
     idempotency_key: Annotated[UUID4 | None, Header()] = None,
 ):
     authorized = identity_access.require_patch_capable_identity(request)
     thread = owned_thread(store, thread_id, authorized.user_id)
-    _reject_history_only_control(_space_task(store, thread, operation_id))
+    previous = _space_task(store, thread, operation_id)
+    _reject_history_only_control(previous)
     with _space_control_admission(store, authorized, idempotency_key, operation_id, "resume") as (
         existing
     ):
-        return existing or background_tasks.resume(
-            operation_id, authorized_by=authorized
+        return existing or resume_task_as(
+            previous,
+            authorized,
+            catalog=catalog,
+            background_tasks=background_tasks,
+            experiment_admission=experiment_admission,
         ).model_dump(mode="json")
 
 
@@ -1255,21 +1265,29 @@ def retry_space_task(
     request: Request,
     *,
     store: StoreDependency,
+    catalog: CatalogDependency,
     identity_access: IdentityDependency,
     background_tasks: BackgroundTasksDependency,
+    experiment_admission: ExperimentAdmissionDependency,
     body: RetryAgentTaskRequest | None = None,
     idempotency_key: Annotated[UUID4 | None, Header()] = None,
 ):
     authorized = identity_access.require_patch_capable_identity(request)
     thread = owned_thread(store, thread_id, authorized.user_id)
-    _reject_history_only_control(_space_task(store, thread, operation_id))
+    previous = _space_task(store, thread, operation_id)
+    _reject_history_only_control(previous)
     # A Space thread always runs on the backend machine, so a retry's run_on is not a choice.
     overrides = body.model_dump(exclude_none=True, exclude={"run_on"}) if body else {}
     with _space_control_admission(store, authorized, idempotency_key, operation_id, "retry") as (
         existing
     ):
-        return existing or background_tasks.retry(
-            operation_id, authorized_by=authorized, **overrides
+        return existing or retry_task_as(
+            previous,
+            authorized,
+            overrides,
+            catalog=catalog,
+            background_tasks=background_tasks,
+            experiment_admission=experiment_admission,
         ).model_dump(mode="json")
 
 

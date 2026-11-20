@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.machine_upgrade import machine_id_for_alias, upgraded_worktree_binding
+from rcp.storage.agents import rekey_project_sessions
 from rcp.transfer.records import TRANSFER_RECORD_SCHEMA_VERSION
 
 if TYPE_CHECKING:
@@ -101,6 +102,7 @@ def rekey_project_machines(
             )
             for table, column, path in _RUN_ON_DOCUMENTS:
                 _rekey_document(connection, table, column, path, project_id, mapped)
+            rekey_project_sessions(connection, project_id, mapped)
             _rekey_bindings(
                 connection,
                 "conversation_worktrees",

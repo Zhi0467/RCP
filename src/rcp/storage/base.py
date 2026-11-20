@@ -169,6 +169,7 @@ class AppStoreBase:
         (90, "plan_card_receipt_index_v1"),
         (91, "bulletin_deltas_v1"),
         (92, "episode_mailbox_v1"),
+        (93, "agents_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -1201,6 +1202,15 @@ class AppStoreBase:
             version=92,
             name="episode_mailbox_v1",
             migration=self._migrate_episode_mailbox,
+        )
+        from rcp.storage.agent_tasks import SESSION_TASK_KINDS
+        from rcp.storage.agents import migrate_agents
+
+        self._run_storage_schema_migration(
+            connection,
+            version=93,
+            name="agents_v1",
+            migration=lambda conn: migrate_agents(conn, SESSION_TASK_KINDS),
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
