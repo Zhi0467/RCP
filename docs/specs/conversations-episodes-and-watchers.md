@@ -228,7 +228,9 @@ backend card. `run_on_machine` resolves a task's card; an unset machine is the
 project's base machine, and a Space task always runs on the backend. A changed provider takes the provider switch path below.
 
 Project transcripts use `private-<user_id>-<chat_id>.jsonl`, with `privateOwner`
-on each record. The reader verifies the filename against the record. Source
+on each record. The reader verifies the filename against the record. A chat id
+found in both a node and a project transcript reads as one conversation: the
+node file names it and the messages interleave by time. Source
 indexing excludes `private-*.jsonl` before reading, using the hidden-read selector;
 private transcripts never enter consolidation sources. Space
 transcripts live under `<data_dir>/agent-threads/<user_id>/<chat_id>.jsonl` and
