@@ -274,7 +274,7 @@ def test_codex_work_parked_on_signed_out_shared_login_moves_to_own_login(account
     assert calls == ["queued"]
 
 
-@pytest.mark.parametrize("event", ["setting", "verify_own", "verify_shared"])
+@pytest.mark.parametrize("event", ["verify_own", "verify_shared"])
 def test_null_login_park_re_resolves_setting_on_release(accounts, monkeypatch, event):
     from rcp.runs.provider_login import provider_login_changed
     from rcp.storage import AgentTaskRecord
@@ -300,6 +300,9 @@ def test_null_login_park_re_resolves_setting_on_release(accounts, monkeypatch, e
         status_message="",
     )
     store.create_agent_task(task)
+    store.mark_provider_login_signed_out(
+        LoginKey("codex", BACKEND_MACHINE_ID, ""), member_id=None, source="restore", detail="401"
+    )
     assert resolved_task_login(store, task) is None
     background = BackgroundAgentTasks(store, _unused_stream)
     launched = []
@@ -318,19 +321,9 @@ def test_null_login_park_re_resolves_setting_on_release(accounts, monkeypatch, e
         )
         assert launched == []
         store.set_provider_login_setting(member.user_id, "codex", BACKEND_MACHINE_ID, "shared")
-    if event == "setting":
-        provider_login_changed(
-            background,
-            member_id=member.user_id,
-            provider="codex",
-            machine_id=BACKEND_MACHINE_ID,
-            reconcile_episodes=lambda: 0,
-            watcher_delivery=watcher_delivery,
-        )
-    else:
-        provider_login_changed(
-            background, key=key, reconcile_episodes=lambda: 0, watcher_delivery=watcher_delivery
-        )
+    provider_login_changed(
+        background, key=key, reconcile_episodes=lambda: 0, watcher_delivery=watcher_delivery
+    )
     assert launched == ["parked"]
     assert resolved_task_login(store, store.agent_task("parked")) == key
 

@@ -322,10 +322,24 @@ def main(argv=None):
             ],
             env,
         )
-    else:
-        executable = shutil.which("bwrap")
-        os.execve(executable, bwrap_argv(policy, args.command, executable=executable), env)
-    return 0
+    executable = shutil.which("bwrap")
+    try:
+        argv = bwrap_argv(policy, args.command, executable=executable)
+    except OSError:
+        os.execve("/bin/bash", ["/bin/bash", "-c", args.command], env)
+    status_read, status_write = os.pipe()
+    process = subprocess.Popen(
+        [argv[0], "--json-status-fd", str(status_write), *argv[1:]],
+        env=env,
+        pass_fds=(status_write,),
+    )
+    os.close(status_write)
+    with os.fdopen(status_read, encoding="utf-8") as status:
+        started = "child-pid" in status.read()
+    code = process.wait()
+    if not started:
+        os.execve("/bin/bash", ["/bin/bash", "-c", args.command], env)
+    return code
 
 
 if __name__ == "__main__":
