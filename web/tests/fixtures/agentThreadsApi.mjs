@@ -252,7 +252,11 @@ export async function mockApi(page, writes) {
     ...thread,
     agent: agents.get(thread.thread_id) ?? null,
     capabilities: capabilities[thread.kind],
-    can_queue: Boolean(thread.project_id),
+    can_queue: true,
+    can_schedule: true,
+    can_fork: true,
+    can_archive: true,
+    archived: false,
   });
   /** Saved comment threads, as each scope's comment routes keep them. */
   const commentThreads = [];

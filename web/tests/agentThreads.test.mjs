@@ -29,6 +29,7 @@ import {
   decideProposalCard,
   readAgentCards,
   readChatCards,
+  loadAgentCapabilities,
   loadThreadQueue,
   loadThreadQuestions,
   queueThreadTurn,
@@ -369,6 +370,7 @@ test("a project thread queues the send body under its key, reads and removes its
       "GET /api/agent-threads/chat%201/queue",
       "POST /api/agent-threads/chat%201/queue",
       "DELETE /api/agent-threads/chat%201/queue/q%201",
+      "GET /api/agent-threads/space/queue",
     ],
   );
   assert.equal(calls[1].key, "key");
@@ -380,6 +382,23 @@ test("a project thread queues the send body under its key, reads and removes its
   });
   await queueThreadTurn(project, { message: "Plain", timezone: "UTC" }, "other", request);
   assert.deepEqual(calls.at(-1).body, { message: "Plain" });
+});
+
+test("agent capabilities and queue routes use identity without a placement", async () => {
+  const paths = [];
+  const flags = { can_queue: true, can_schedule: true, can_fork: true, can_archive: true };
+  const request = async (path) => {
+    paths.push(path);
+    return path.endsWith("/capabilities") ? flags : { items: [] };
+  };
+  assert.deepEqual(await loadAgentCapabilities("shared/agent", request), flags);
+  await loadThreadQueue({ thread_id: "shared/agent" }, request);
+  await loadThreadQueue(space, request);
+  assert.deepEqual(paths, [
+    "/api/agent-threads/shared%2Fagent/capabilities",
+    "/api/agent-threads/shared%2Fagent/queue",
+    "/api/agent-threads/space/queue",
+  ]);
 });
 
 const renderServer = await createServer({

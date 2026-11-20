@@ -4088,7 +4088,15 @@ export type AgentThreadLiveState =
   "idle" | "queued" | "running" | "paused" | "needs_you" | "failed" | "closed";
 
 /** One of the member's private agent threads; the Space thread lists first. */
-export interface AgentThread {
+export interface AgentCapabilities {
+  can_queue: boolean;
+  can_schedule: boolean;
+  can_fork: boolean;
+  can_archive: boolean;
+}
+
+export interface AgentThread extends AgentCapabilities {
+  archived: boolean;
   thread_id: string;
   kind: AgentThreadKind;
   project_id: string | null;

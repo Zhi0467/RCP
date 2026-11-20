@@ -1,3 +1,5 @@
+import { useAgentUpcoming } from "../agents/useAgentUpcoming";
+import { queueThreadTurn, removeQueuedTurn } from "../agents/agentThreadsApi";
 import { AgentWindowTranscript } from "../agentWindow/AgentWindowTranscript";
 import {
   useAgentWindowLines,
@@ -8,7 +10,7 @@ import { AgentWindowLines } from "../agentWindow/AgentWindowLines";
 import type { AgentWindowScroll } from "../agentWindow/useAgentWindowScroll";
 import { projectAgentWindowEndpoints } from "../agentWindow/agentWindowEndpoints";
 import { ProviderSwitchHint } from "./ProviderSwitchHint";
-import { ChatOriginLink } from "./ChatBranchPicker";
+import { ChatBranchPicker, ChatOriginLink } from "./ChatBranchPicker";
 import { ChatComposer, ComposerField } from "./ChatComposer";
 import { ChatHeaderMenu, type ChatHeaderAction } from "./ChatHeaderMenu";
 import { AgentHeader, AgentPickRow } from "./AgentHeader";
@@ -60,6 +62,7 @@ import {
   loadServiceConnections,
   loadConnectionModels,
   setChatTitle,
+  setChatArchived,
   transcribeAudio,
 } from "../core/api";
 import {
@@ -345,13 +348,19 @@ export function AgentChatView({
     scroll,
   });
   const project = feed ? feed.project : requestedProject;
-  const readOnly = archived || requestedReadOnly;
-  const allowArtifactComments = !archived && requestedArtifactComments;
+  const isArchived = archived || Boolean(feed?.thread.archived);
+  const readOnly = isArchived || requestedReadOnly;
+  const allowArtifactComments = !isArchived && requestedArtifactComments;
   const surface = node ? "node_chat" : "project_chat";
   const relatedTasks = useMemo(
     () => feed?.tasks ?? relatedChatTasks(tasks, surface, node?.id, chatId),
     [feed?.tasks, chatId, node?.id, surface, tasks],
   );
+  const upcoming = useAgentUpcoming(
+    !feed && (relatedTasks.length > 0 || historyMessages?.length) ? chatId : null,
+    revision ?? relatedTasks.at(-1)?.updated_at ?? null,
+  );
+  const capabilities = feed?.thread ?? upcoming.state?.capabilities;
   const projectId = project?.id ?? null;
   const chatEndpoints = useMemo(
     () => (projectId ? projectAgentWindowEndpoints(projectId, chatId) : null),
@@ -593,7 +602,7 @@ export function AgentChatView({
     .reverse()
     .find((task) => task.active && task.steer_visible && task.can_steer && task.steer_turn_id);
   const awaitingSteerReceipt = Boolean(steeringTask) && submitting;
-  const queue = feed?.queue ?? null;
+  const queue = feed ? feed.queue : (upcoming.state?.queue ?? null);
   const queueable = Boolean(
     queue &&
     (relatedActive || queue.some((item) => item.kind === "handoff" || !item.refusal_reason)),
@@ -1268,7 +1277,13 @@ export function AgentChatView({
   ) =>
     feed
       ? feed.start(submission, requestId, queueing)
-      : startConversationTurn(onStartTask!, submission, requestId);
+      : queueing
+        ? queueThreadTurn(
+            { thread_id: chatId },
+            { message: submission.message.trim(), ...submission.attachments },
+            requestId,
+          ).then(() => upcoming.refresh())
+        : startConversationTurn(onStartTask!, submission, requestId);
 
   /** Start a turn, or start it again after a failed send under the same key.
    *  Resolves whether it was admitted. */
@@ -1470,14 +1485,19 @@ export function AgentChatView({
     else setConfigOverride({ chatId, config: next });
   };
 
+  const archiveThread = async (value: boolean) => {
+    await setChatArchived(apiBase, chatId, value);
+    if (feed) onThreadChanged?.({ ...feed.thread, archived: value });
+  };
+
   const headerChips = (
     <>
       {headerTools}
-      {feed && (
+      {capabilities?.can_schedule && (
         <SchedulesPopover
-          threadId={feed.thread.thread_id}
-          schedules={feed.schedules}
-          onChanged={() => void feed.refreshUpcoming()}
+          threadId={chatId}
+          schedules={feed?.schedules ?? upcoming.state?.schedules ?? []}
+          onChanged={() => void (feed ? feed.refreshUpcoming() : upcoming.refresh())}
         />
       )}
       <AgentStatusStrip tasks={statusTasks} />
@@ -1491,12 +1511,29 @@ export function AgentChatView({
       actions={[
         ...(renameTitle ? [{ label: "Rename", onSelect: () => setRenaming(true) }] : []),
         ...headerActions,
+        ...(feed && project && capabilities?.can_archive
+          ? [
+              {
+                label: isArchived ? "Restore" : "Archive",
+                disabled: !isArchived && relatedActive,
+                onSelect: () => reportFailure(() => archiveThread(!isArchived)),
+              },
+            ]
+          : []),
         ...(!fixedConversation && !readOnly && onNewSession
           ? [{ label: "New session", onSelect: onNewSession }]
           : []),
       ]}
     >
       {headerMenuItems}
+      {feed && project && capabilities?.can_fork && !isArchived && (
+        <ChatBranchPicker
+          projectId={project.id}
+          chatId={chatId}
+          graphTarget={graphTarget}
+          disabled={relatedActive || !sessionId}
+        />
+      )}
       {feed ? (
         <div className="chat-browser-control">
           <BrowserToggle
@@ -1584,7 +1621,11 @@ export function AgentChatView({
   const removeQueued = async (item: QueuedMessage, dismissed: boolean) => {
     setSubmitError(null);
     try {
-      await feed!.removeQueued(item);
+      if (feed) await feed.removeQueued(item);
+      else {
+        await removeQueuedTurn({ thread_id: chatId }, item.queue_id);
+        await upcoming.refresh();
+      }
     } catch (error) {
       setSubmitError(errorMessage(error));
       throw error;
@@ -1928,9 +1969,13 @@ export function AgentChatView({
         </div>
       )}
       {queue && <ThreadQueue items={queue} onRemove={removeQueued} />}
-      {archived ? (
+      {isArchived ? (
         <div className="chat-composer" role="status">
-          <button className="button compact" type="button" onClick={onRestore}>
+          <button
+            className="button compact"
+            type="button"
+            onClick={feed ? () => reportFailure(() => archiveThread(false)) : onRestore}
+          >
             Restore
           </button>
         </div>
