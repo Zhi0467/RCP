@@ -3942,6 +3942,8 @@ class AgentTaskStoreMixin(StoreMixinBase):
 
         Empty when no earlier turn of the conversation ran in `native_session_id`,
         so a session the conversation never used is never told it missed anything.
+        An ordinary turn reads ordinary turns only: an episode turn resuming the
+        session got no catch-up, so it settles nothing the chat missed.
         """
 
         with self.connection() as connection:
@@ -3953,18 +3955,18 @@ class AgentTaskStoreMixin(StoreMixinBase):
             ).fetchone()
             if turn is None or not turn["chat_id"]:
                 return set()
-            kind_test, kinds = _kinds_in(
-                "graph_runs", turn["kind"], ordinary=turn["episode_id"] is None
-            )
+            ordinary = turn["episode_id"] is None
+            kind_test, kinds = _kinds_in("graph_runs", turn["kind"], ordinary=ordinary)
             rows = connection.execute(
                 f"""
                 SELECT operation_id, native_session_id FROM graph_runs
                 WHERE project_id = ? AND {kind_test}
+                  AND (? = 0 OR episode_id IS NULL)
                   AND json_extract(request_json, '$.chat_id') = ?
                   AND operation_id != ? AND native_session_id IS NOT NULL
                 ORDER BY created_at, rowid
                 """,
-                (turn["project_id"], *kinds, turn["chat_id"], operation_id),
+                (turn["project_id"], *kinds, ordinary, turn["chat_id"], operation_id),
             ).fetchall()
         missed: set[str] | None = None
         for row in rows:

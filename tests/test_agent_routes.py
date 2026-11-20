@@ -226,3 +226,44 @@ def test_a_resumed_session_is_seeded_with_the_exchanges_it_missed(manifest, tmp_
     seed = resume("session-a", "resumes-a")
     assert "answer in project-b" in seed
     assert "answer in node-a" not in seed
+
+
+def test_an_episode_turn_does_not_hide_missed_exchanges_from_the_chat(
+    manifest, tmp_path, monkeypatch
+):
+    """An episode turn resuming the node session got no catch-up, so it settles nothing."""
+    from rcp.agents import AgentProcessControl
+    from rcp.background import AgentTaskExecution
+    from rcp.runs.agent_threads import thread_history_seed
+    from rcp.runs.chat import _append_chat_exchange
+    from rcp.service import RunRequest
+    from tests.test_api import _chat_task_execution
+
+    app, store, agent, node, profile = _node_chat_split_by_a_project_turn(
+        manifest, tmp_path, monkeypatch, paused=False
+    )
+    service = app.state.service
+    turn = store.agent_task("project-b")
+    _append_chat_exchange(
+        service,
+        RunRequest.model_validate(turn.request),
+        "answer in project-b",
+        turn.native_session_id,
+        None,
+        execution=AgentTaskExecution(
+            operation_id="project-b", store=store, control=AgentProcessControl()
+        ),
+    )
+    episode = RunRequest(chat_id=agent, chat_scope="node", node_id=node, **profile)
+    _chat_task_execution(app, episode, "episode-a")
+    store.checkpoint_agent_task("episode-a", native_session_id="session-a")
+    store.complete_agent_task("episode-a", applied_revision=None, result={})
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET episode_id = 'loop' WHERE operation_id = 'episode-a'"
+        )
+    request = RunRequest(
+        chat_id=agent, chat_scope="node", node_id=node, session_id="session-a", **profile
+    )
+    _chat_task_execution(app, request, "resumes-a")
+    assert "answer in project-b" in thread_history_seed(service, request, "resumes-a")
