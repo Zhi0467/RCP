@@ -29,7 +29,6 @@ from rcp.limits import (
     HIDDEN_READ_ENV_MAX_COUNT,
     HIDDEN_READ_ENV_NAME_MAX_LENGTH,
     HIDDEN_READ_IDENTITY_MAX_LENGTH,
-    HIDDEN_READ_KEY_MAX_COUNT,
     HIDDEN_READ_PATH_MAX_COUNT,
     HIDDEN_READ_PATH_MAX_LENGTH,
     HIDDEN_READ_REASON_MAX_COUNT,
@@ -249,9 +248,7 @@ class HiddenReadScope(BaseModel):
         ...,
     ] = Field(default=(), max_length=HIDDEN_READ_ENV_MAX_COUNT)
     enforcement: HiddenReadStatus
-    key_evidence: tuple[HiddenReadKeyEvidence, ...] = Field(
-        default=(), max_length=HIDDEN_READ_KEY_MAX_COUNT
-    )
+    key_evidence: tuple[HiddenReadKeyEvidence, ...] = ()
     fingerprint: str = Field(default="", pattern=r"^[0-9a-f]{64}$")
 
     @field_validator("hidden_directories", "hidden_files", "hidden_globs", "env_deny_list")

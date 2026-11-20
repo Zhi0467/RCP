@@ -16,7 +16,6 @@ from rcp.limits import (
     HIDDEN_READ_ENV_MAX_COUNT,
     HIDDEN_READ_ENV_NAME_MAX_LENGTH,
     HIDDEN_READ_IDENTITY_MAX_LENGTH,
-    HIDDEN_READ_KEY_MAX_COUNT,
     HIDDEN_READ_PATH_MAX_COUNT,
     HIDDEN_READ_PATH_MAX_LENGTH,
     HIDDEN_READ_REASON_MAX_COUNT,
@@ -147,7 +146,6 @@ def test_policy_bounds() -> None:
     invalid = {
         "hidden_files": ("/" + "x" * HIDDEN_READ_PATH_MAX_LENGTH,),
         "env_deny_list": tuple(f"ENV_{i}" for i in range(HIDDEN_READ_ENV_MAX_COUNT + 1)),
-        "key_evidence": tuple(_key(f"/key/{i}") for i in range(HIDDEN_READ_KEY_MAX_COUNT + 1)),
         "machine_id": "x" * (HIDDEN_READ_IDENTITY_MAX_LENGTH + 1),
         "os_account": "x" * (HIDDEN_READ_IDENTITY_MAX_LENGTH + 1),
     }

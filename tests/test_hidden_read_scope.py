@@ -18,7 +18,6 @@ from rcp.agents.staged_hidden_read import clean_environment
 from rcp.config import Manifest
 from rcp.core.models import HiddenReadKeyEvidence
 from rcp.limits import (
-    HIDDEN_READ_KEY_MAX_COUNT,
     HIDDEN_READ_MACHINE_FOLDER_MAX_COUNT,
     HIDDEN_READ_PATH_MAX_LENGTH,
 )
@@ -317,7 +316,7 @@ def test_every_confirmed_key_is_hidden_alongside_the_defaults(manifest, tmp_path
             visibility="hidden",
             public_key_fingerprint="SHA256:" + "A" * 43,
         )
-        for n in range(HIDDEN_READ_KEY_MAX_COUNT)
+        for n in range(300)
     )
     scope = _resolve(manifest, tmp_path, monkeypatch, key_evidence=keys)
     assert {key.path for key in keys} < set(scope.hidden_files)
