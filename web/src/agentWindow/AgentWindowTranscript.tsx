@@ -18,6 +18,7 @@ import {
 import {
   isActiveTask,
   isNewestOfTurnClass,
+  orderTranscriptLines,
   pausedTaskText,
   taskKindLabel,
   type TaskTranscriptLine,
@@ -179,8 +180,25 @@ export function AgentWindowTranscript({
   const plansByLine = renderPlanCard
     ? planCardPlacement(transcript, questions, shownElsewhere)
     : NO_PLANS;
+  const liveRows = agentProgress
+    ? []
+    : relatedTasks
+        .filter(
+          (task) =>
+            task.active &&
+            !transcript.some((line) => line.running && line.taskId === task.operation_id),
+        )
+        .map((task): TaskTranscriptLine => ({
+          lineId: `task:${task.operation_id}:running`,
+          taskId: task.operation_id,
+          timestamp: task.created_at,
+          shownAt: null,
+          role: "agent",
+          text: "",
+          running: true,
+        }));
   const entries = agentWindowEntries(
-    transcript,
+    liveRows.length ? orderTranscriptLines([...transcript, ...liveRows]) : transcript,
     questions,
     plansByLine.size
       ? new Set([...shownElsewhere, ...[...plansByLine.values()].flat().map((q) => q.question_id)])
@@ -478,17 +496,11 @@ export function AgentWindowTranscript({
                 </time>
               )}
             </div>
-            {line.role === "human" &&
-              !agentProgress &&
-              !pausedLineTask &&
-              (activeLineTask || (pendingLine && !failedTurn)) && (
-                <div className="agent-chat-view-line agent">
-                  <InlineTaskProgress
-                    task={activeLineTask}
-                    control={activeLineTask === relatedTasks.at(-1) ? stopControl : null}
-                  />
-                </div>
-              )}
+            {line.role === "human" && !agentProgress && pendingLine && !task && !failedTurn && (
+              <div className="agent-chat-view-line agent">
+                <InlineTaskProgress task={null} />
+              </div>
+            )}
             {compaction?.placement === "after" && (
               <CompactionDivider compactions={compaction.compactions} />
             )}

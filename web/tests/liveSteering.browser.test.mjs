@@ -220,7 +220,24 @@ for (const [kind, width] of [
       assert.equal(starts.length, 0);
 
       await page.reload();
+      await page.evaluate(() => {
+        window.setSteeringFixture({ parent_operation_id: "parent" });
+        window.reopenSteeringFixture([
+          {
+            message_id: "original",
+            operation_id: "parent",
+            role: "user",
+            text: "Original prompt",
+            timestamp: "2026-09-05T11:59:00Z",
+            mode: "discuss",
+            trigger: "human",
+            attachments: [],
+          },
+        ]);
+      });
       await composer.fill("Stop here and explain");
+      assert.equal(await page.getByText("Original prompt", { exact: true }).count(), 1);
+      assert.equal(await stop.count(), 1);
       await stop.click();
       await Promise.all([
         page.waitForResponse((response) => response.url().endsWith("/tasks/" + kind)),
