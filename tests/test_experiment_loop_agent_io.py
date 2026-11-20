@@ -379,18 +379,19 @@ class _LoopLauncher:
         self.write_scopes.append(kwargs["write_scope"])
         self.read_dirs.append(kwargs["read_dirs"])
         if self.write_handoff:
-            (workspace / "watch.json").write_text(
+            folder = workspace / "watchers"
+            path = next(iter(folder.glob("*.json")), folder / f"{kwargs['operation_id']}.json")
+            path.write_text(
                 json.dumps(
                     {
-                        "external": [
+                        "purpose": "job finishes",
+                        "checks": [
                             {
-                                "purpose": "job finishes",
                                 "check_command": "false",
                                 "log_path": str(self.watcher_cwd / "detached.log"),
                                 "cwd": str(self.watcher_cwd),
                             }
                         ],
-                        "graph": [],
                     }
                 ),
                 encoding="utf-8",
@@ -449,7 +450,8 @@ async def test_experiment_message_wake_clears_stale_handoffs_in_split_workspace(
     )
     store.fail_agent_task(root.operation_id, "Interrupted before the message wake.")
     (workspace / "patch.json").write_text("stale patch", encoding="utf-8")
-    (workspace / "watch.json").write_text("stale watch", encoding="utf-8")
+    (workspace / "watchers").mkdir(exist_ok=True)
+    (workspace / "watchers" / "stale.json").write_text("stale watch", encoding="utf-8")
 
     wake_request = request.model_copy(
         update={
@@ -474,7 +476,7 @@ async def test_experiment_message_wake_clears_stale_handoffs_in_split_workspace(
     )
     try:
         assert not (workspace / "patch.json").exists()
-        assert not (workspace / "watch.json").exists()
+        assert not (workspace / "watchers" / "stale.json").exists()
         assert wake_turn.workspace == workspace
         assert wake_turn.write_scope.stage_root == str(stage)
         assert wake_turn.write_scope.workspace_root == str(workspace)
@@ -706,13 +708,11 @@ async def test_duplicate_observer_handoff_is_corrected_before_the_turn_ends(
                 "log_path": str(tmp_path / "detached.log"),
                 "cwd": str(tmp_path),
             }
+            purpose = observer.pop("purpose")
             repeated = len(self.contracts) == 1
-            (workspace / "watch.json").write_text(
+            (workspace / "watchers" / "job.json").write_text(
                 json.dumps(
-                    {
-                        "external": [observer, dict(observer)] if repeated else [observer],
-                        "graph": [],
-                    }
+                    {"purpose": purpose, "checks": [observer, observer] if repeated else [observer]}
                 ),
                 encoding="utf-8",
             )
@@ -733,7 +733,7 @@ async def test_duplicate_observer_handoff_is_corrected_before_the_turn_ends(
 
     assert not [event for event in events if event.event == "error"]
     assert len(launcher.contracts) == 2
-    assert any("arms one check twice" in item for item in launcher.diagnostics)
+    assert any("duplicate check" in item for item in launcher.diagnostics)
     armed = app.state.background_tasks.store.project_watchers(project_id)
     assert [check.check_command for item in armed for check in item.checks] == ["false"]
 
@@ -772,7 +772,7 @@ async def test_patch_only_watcher_correction_accepts_unchanged_empty_watch_list(
             contract = _launch_text(prompt)
             self.contracts.append(contract)
             workspace = Path(kwargs["cwd"])
-            (workspace / "watch.json").write_text('{"external":[],"graph":[]}\n', encoding="utf-8")
+            assert not list((workspace / "watchers").iterdir())
             correcting = "watcher correction" in contract.partition("\n")[0].casefold()
             next_action = None if correcting else "Analyze and document the remaining results."
             (workspace / "patch.json").write_text(
@@ -1115,7 +1115,9 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
         context_baseline={**initial_baseline, "repositories": []},
     )
     delivered_id = episode.last_watcher_ids[0]
-    store.record_watcher_check(delivered_id, status="completed", exit_code=0, error=None)
+    store.record_watcher_check(
+        store.watcher(delivered_id).checks[0].check_id, status="completed", exit_code=0, error=None
+    )
     wake_request = _loop_request(
         episode_id,
         chat_id,
@@ -1137,7 +1139,6 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     assert wake_execution.stage_root is not None
     stale_workspace = Path(wake_execution.stage_root) / "workspace"
     (stale_workspace / "patch.json").write_text("stale Patch", encoding="utf-8")
-    (stale_workspace / "watch.json").write_text("stale watcher", encoding="utf-8")
     launcher.patch_payload = {
         "summary": "Tried to update an unavailable graph node.",
         "ops": [
@@ -1217,7 +1218,7 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
 
     failed_delivered_id = committed.last_watcher_ids[0]
     store.record_watcher_check(
-        failed_delivered_id,
+        store.watcher(failed_delivered_id).checks[0].check_id,
         status="completed",
         exit_code=0,
         error=None,
@@ -1347,7 +1348,9 @@ async def test_report_restriction_is_retired_until_a_same_session_turn_succeeds(
         episode = store.experiment_episode(episode_id)
         assert episode is not None
         delivered = episode.last_watcher_ids[0]
-        store.record_watcher_check(delivered, status="completed", exit_code=0, error=None)
+        store.record_watcher_check(
+            store.watcher(delivered).checks[0].check_id, status="completed", exit_code=0, error=None
+        )
         return _loop_request(
             episode_id,
             "chat-report-rebootstrap",
@@ -2053,7 +2056,9 @@ async def test_experiment_retry_recovers_after_atomic_handoff_failure(
     assert root.stage_root is not None
     workspace = Path(root.stage_root) / "workspace"
     patch_before = (workspace / "patch.json").read_bytes()
-    watch_before = (workspace / "watch.json").read_bytes()
+    folder = workspace / "watchers"
+    (original_path,) = folder.glob("*.json")
+    watch_before = original_path.read_text()
     store.checkpoint_agent_task(
         root.operation_id,
         native_session_id=native_session_id,
@@ -2086,7 +2091,8 @@ async def test_experiment_retry_recovers_after_atomic_handoff_failure(
     assert not [event for event in retry_events if event.event == "error"]
     assert retry_launcher.sessions == [native_session_id]
     assert (workspace / "patch.json").read_bytes() == patch_before
-    assert (workspace / "watch.json").read_bytes() == watch_before
+    (retry_path,) = folder.glob("*.json")
+    assert retry_path.read_text() == watch_before
     loop_patches = [
         item
         for item in service.history.load_patches()
@@ -2095,7 +2101,7 @@ async def test_experiment_retry_recovers_after_atomic_handoff_failure(
     assert len(loop_patches) == 1
     watchers = store.project_watchers(project_id)
     assert len(watchers) == 1
-    assert watchers[0].origin_turn_id == root.operation_id
+    assert watchers[0].origin_turn_id == retry.operation_id
     episode = store.experiment_episode(episode_id)
     assert episode is not None
     assert episode.last_turn_operation_id == retry.operation_id
@@ -2107,15 +2113,14 @@ async def test_experiment_retry_recovers_after_atomic_handoff_failure(
     ]
     assert len(prepared) == 1
     assert prepared[0].payload["patch_sha256"] == hashlib.sha256(patch_before).hexdigest()
-    assert prepared[0].payload["watch_sha256"] == hashlib.sha256(watch_before).hexdigest()
+    assert (
+        prepared[0].payload["watch_sha256"]
+        == hashlib.sha256(
+            json.dumps({original_path.name: watch_before}, sort_keys=True).encode()
+        ).hexdigest()
+    )
     assert "watch_text" not in prepared[0].payload
-    retry_comparison = [
-        item
-        for item in store.agent_task_receipts(retry.operation_id)
-        if item.category == "retry_deliverable_comparison"
-        and item.payload.get("filename") == "watch.json"
-    ]
-    assert retry_comparison and retry_comparison[-1].payload["consumed"] is True
+    assert store.agent_task_contract(retry.operation_id, "watcher_folder:0") == "{}"
     retry_prepared = [
         item
         for item in store.agent_task_receipts(retry.operation_id)

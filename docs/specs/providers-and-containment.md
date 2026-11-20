@@ -329,10 +329,10 @@ storage, not general project write roots.
 
 ### Watcher commands
 
-`watch.json` check and cancel commands run as written in a fresh `bash -lic`
+Watcher check commands run as written in a fresh `bash -lic`
 as the execution account, locally or over SSH. They are outside provider sandbox
 and turn write scope, bounded only by timeout and process-group termination.
-Human Cancel executes saved agent-authored text with the same account reach.
+Project deletion runs a helper job's saved cancel command with the same account reach.
 
 **Why:** Watchers outlive provider turns and need the observed job's login
 environment, scheduler, network and sockets. A provider sandbox cannot supply
@@ -979,7 +979,7 @@ the one its session began with.
 
 The collection boundary is [invariant 4b](../../AGENTS.md#stable-invariants).
 Conversation graph changes collect only `patch.json` from their exact task stage.
-Ordinary Work also collects `watch.json` and the required `outcome.json` there;
+Ordinary Work also collects the `watchers/` folder and the required `outcome.json` there;
 the latter reports the turn outcome and grants no graph authority.
 Branch merge prefers it, then accepts exactly one patch-shaped JSON
 file if it is missing or not Patch-shaped. They inspect at most eight JSON files,
@@ -2135,9 +2135,10 @@ receives the union of the bound projects' read-hiding policies; the combined pol
 local write projects retains the local account's default secret protections.
 An account policy that cannot be resolved runs the turn unhidden.
 
-Collection reads `patch.json` and `watch.json` at the stage top level and in
-each `projects/<id>` folder, plus the top-level `outcome.json` for the turn
-outcome, which grants no graph authority. It applies each admitted project's Patch through
+Collection reads `patch.json` at the stage top level and in
+each `projects/<id>` folder, the top-level `outcome.json` for the turn
+outcome, which grants no graph authority, and the top-level `watchers/` folder,
+whose watchers belong to the Space thread. It applies each admitted project's Patch through
 Work Apply, in project-id order, under that project's lock and live membership
 check. Each project's Work graph-update status (`applied`, `none`, `rejected` or
 `unavailable`) goes to `project_results`, and its first reason to the

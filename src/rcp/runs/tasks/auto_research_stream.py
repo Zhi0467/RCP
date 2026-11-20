@@ -1443,7 +1443,6 @@ def _prepare_turn_handoffs(
             "version": 1,
             "files": [
                 "patch.json",
-                "watch.json",
                 AUTO_RESEARCH_MAIL_HANDOFF_FILE,
                 AUTO_RESEARCH_LIFECYCLE_HANDOFF_FILE,
             ],

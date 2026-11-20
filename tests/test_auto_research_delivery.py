@@ -47,7 +47,8 @@ from rcp.storage import (
     WatcherRecord,
 )
 from rcp.storage.models import _required_timestamp
-from rcp.watchers import WatcherBinding, arm_watchers
+from rcp.watcher_folder import WatcherFile, reconcile_watcher_files
+from rcp.watchers import WatcherBinding
 
 from .helpers import (
     async_wait_until,
@@ -195,9 +196,8 @@ def _arm_completed_graph_condition(
         description="The auto_research continues after this blocker resolves.",
         status="resolved",
     )
-    (watcher,) = arm_watchers(
+    (watcher,) = reconcile_watcher_files(
         store,
-        [],
         WatcherBinding(
             project_id=origin.project_id,
             agent_id=auto_research.episode_id,
@@ -205,9 +205,13 @@ def _arm_completed_graph_condition(
             graph_target=origin.graph_target,
             machine_id=origin.stage_machine_id or "backend",
         ),
-        graph_conditions=[condition],
+        {},
+        {
+            f"{watcher_id}.json": WatcherFile(
+                purpose="Wait for the result", graph=condition
+            ).model_dump_json(exclude_none=True)
+        },
         state=GraphState(revision=2, nodes={blocker.id: blocker}),
-        watcher_ids=[watcher_id],
     )
     assert watcher.ready
     return watcher

@@ -326,6 +326,7 @@ def test_current_schema_classifies_every_table_and_installs_all_owner_triggers(t
             "artifact_operations",
             "paper_publication",
             "paper_state",
+            "watcher_checks",
         }
     )
     store = AppStore(tmp_path / "store.db")

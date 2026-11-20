@@ -9,7 +9,7 @@ from rcp.core.models import AuthorizedHuman
 from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord, ProjectRecord
 
-from .storage_helpers import downgrade_artifacts
+from .storage_helpers import downgrade_artifacts, downgrade_watchers
 
 
 def _authorizer(store: AppStore) -> AuthorizedHuman:
@@ -86,7 +86,6 @@ def test_fresh_lineage_schema_and_events_use_only_episode_vocabulary(tmp_path) -
     assert "campaign_id" not in columns["graph_runs"]
     assert "episode_id" in columns["graph_run_events"]
     assert "campaign_id" not in columns["graph_run_events"]
-    assert "episode_id" in columns["watchers"]
     assert "experiment_episode_id" not in columns["watchers"]
     with pytest.raises(ValueError):
         AgentTaskRecord.model_validate({**task.model_dump(), "campaign_id": "legacy"})
@@ -117,6 +116,7 @@ def test_existing_lineage_columns_json_watchers_and_usage_migrate_once(tmp_path)
         "patch_kind": "work",
     }
     with store.connection() as connection:
+        downgrade_watchers(connection)
         for operation_id, episode_id, kind, request, dispatch in (
             (
                 "auto-origin",
@@ -213,9 +213,8 @@ def test_existing_lineage_columns_json_watchers_and_usage_migrate_once(tmp_path)
     event = migrated.agent_task_events("auto-origin")[0]
     assert event.episode_id == "auto-episode"
     assert event.payload == {"episode_id": "auto-episode"}
-    assert migrated.watcher("origin-watcher").episode_id == "auto-episode"
-    assert migrated.watcher("notification-watcher").episode_id == "auto-episode"
-    assert migrated.watcher("origin-watcher").origin_task_kind == "auto_research"
+    assert migrated.watcher("origin-watcher").origin_turn_id == "auto-origin"
+    assert migrated.watcher("notification-watcher").agent_id == "chat"
     with migrated.connection() as connection:
         assert (
             connection.execute(
@@ -226,7 +225,6 @@ def test_existing_lineage_columns_json_watchers_and_usage_migrate_once(tmp_path)
         for table, legacy_column in (
             ("graph_runs", "campaign_id"),
             ("graph_run_events", "campaign_id"),
-            ("watchers", "experiment_episode_id"),
         ):
             columns = {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")}
             assert legacy_column not in columns

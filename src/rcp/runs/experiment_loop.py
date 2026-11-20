@@ -3,20 +3,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import os
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
-from uuid import NAMESPACE_URL, uuid4, uuid5
+from uuid import uuid4
 
-from rcp.agents.schema import (
-    EXPERIMENT_WATCH_OUTPUT_PREFIX as _EXPERIMENT_WATCH_OUTPUT_PREFIX,
-)
-from rcp.agents.schema import (
-    EXPERIMENT_WATCH_OUTPUT_SUFFIX as _EXPERIMENT_WATCH_OUTPUT_SUFFIX,
-)
 from rcp.agents.schema import (
     CreateEdgesOperation as AgentCreateEdgesOperation,
 )
@@ -54,20 +47,12 @@ from rcp.storage import (
     EpisodeRecord,
     ExperimentEpisodeRecord,
     ExperimentLoopRuntime,
-    GraphCondition,
-    WatcherCheckRecord,
     WatcherRecord,
-    WatcherStopRequest,
 )
-from rcp.transport import RemoteRunStage, StateUnavailable
+from rcp.transport import RemoteRunStage
 from rcp.watchers import (
     AdmissionFence,
-    ExperimentWatchSpec,
     WatcherBinding,
-    WatcherCheckResult,
-    external_check,
-    graph_condition_result,
-    validate_graph_conditions,
 )
 
 if TYPE_CHECKING:
@@ -75,6 +60,7 @@ if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks
     from rcp.runs.episodes.wrapup import EpisodeWrapupSpec
     from rcp.storage import AppStore
+    from rcp.watcher_folder import WatcherFolderChange
 
 _EXIT_STATUSES = frozenset({"completed"})
 _COMPLETED_NEXT_ACTION_PROBLEM = (
@@ -136,36 +122,6 @@ class ExperimentLoopSemanticEnding:
     @property
     def partial(self) -> bool:
         return self.ending == "human_pause"
-
-
-def _experiment_watcher_output_names(
-    workspace: Path,
-    remote_stage: RemoteRunStage | None,
-) -> list[str]:
-    if remote_stage is not None:
-        return [
-            name
-            for name in remote_stage.list_workspace_files()
-            if name.startswith(_EXPERIMENT_WATCH_OUTPUT_PREFIX)
-            and name.endswith(_EXPERIMENT_WATCH_OUTPUT_SUFFIX)
-        ]
-    try:
-        entries = list(os.scandir(workspace))
-    except OSError as exc:
-        raise StateUnavailable(f"could not inspect chat watcher outputs: {exc}") from exc
-    names: list[str] = []
-    for entry in entries:
-        if not (
-            entry.name.startswith(_EXPERIMENT_WATCH_OUTPUT_PREFIX)
-            and entry.name.endswith(_EXPERIMENT_WATCH_OUTPUT_SUFFIX)
-        ):
-            continue
-        if not entry.is_file(follow_symlinks=False):
-            raise ValueError(
-                f"Experiment watcher output is not a direct regular file: {entry.name}"
-            )
-        names.append(entry.name)
-    return sorted(names)
 
 
 def preflight_episode_wake(
@@ -864,169 +820,6 @@ class ExperimentHandoffScope:
     episode_id: str
 
 
-def experiment_observer_watcher_id(
-    scope: ExperimentHandoffScope,
-    index: int,
-    spec: ExperimentWatchSpec,
-) -> str:
-    """Derive one observer's deterministic check id so Retry re-arms the same check.
-
-    The declaration's list position is part of the identity, so the same
-    observer moved elsewhere in the list is a different check. An ungrouped
-    observer's watcher id is its check id.
-    """
-
-    identity = json.dumps(
-        {
-            "origin": scope.binding.origin_turn_id,
-            "node_id": scope.node_id,
-            "episode_id": scope.episode_id,
-            "index": index,
-            "check_command": spec.check_command,
-            "log_path": spec.log_path,
-            "cwd": spec.cwd,
-            "group": spec.group,
-            "cancel_command": spec.cancel_command,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return str(uuid5(NAMESPACE_URL, f"rcp-experiment-watcher:{identity}"))
-
-
-def prepare_experiment_watcher_records(
-    execution: AgentTaskExecution,
-    specs: list[ExperimentWatchSpec],
-    results: list[WatcherCheckResult],
-    scope: ExperimentHandoffScope,
-    *,
-    graph_conditions: list[GraphCondition] | None = None,
-    graph_state: GraphState | None = None,
-    armed_revision: int | None = None,
-) -> list[WatcherRecord]:
-    """Prepare one deterministic watcher handoff without writing storage.
-
-    Each ungrouped observer and each graph condition is one watcher; each group
-    label is one watcher holding its observers as checks.
-    """
-
-    if len(specs) != len(results):
-        raise ValueError("Experiment-loop watcher checks do not match their specifications.")
-    conditions = list(graph_conditions or [])
-    if conditions:
-        if graph_state is None:
-            raise ValueError("Experiment graph conditions require current canonical graph state.")
-        if armed_revision is None:
-            raise ValueError("Experiment graph conditions require their validated base revision.")
-        if armed_revision > graph_state.revision:
-            raise ValueError("Experiment graph condition baseline is ahead of canonical state.")
-        serialized = [item.model_dump_json() for item in conditions]
-        if len(serialized) != len(set(serialized)):
-            raise ValueError("an Experiment handoff cannot repeat a graph condition")
-        validate_graph_conditions(conditions, graph_state)
-    binding = scope.binding
-    created_at = execution.store.now()
-
-    def watcher(watcher_id: str, purpose: str, checks: list[WatcherCheckRecord]) -> WatcherRecord:
-        return WatcherRecord(
-            watcher_id=watcher_id,
-            agent_id=binding.agent_id,
-            project_id=binding.project_id,
-            purpose=purpose,
-            origin_turn_id=binding.origin_turn_id,
-            created_at=created_at,
-            checks=[check.model_copy(update={"watcher_id": watcher_id}) for check in checks],
-        )
-
-    desired: list[WatcherRecord] = []
-    groups: dict[str, list[WatcherCheckRecord]] = {}
-    for index, (spec, result) in enumerate(zip(specs, results, strict=True)):
-        check = external_check(
-            experiment_observer_watcher_id(scope, index, spec),
-            spec,
-            result,
-            machine_id=binding.machine_id,
-            created_at=created_at,
-        )
-        if spec.group is None:
-            desired.append(watcher(check.check_id, spec.purpose, [check]))
-        else:
-            groups.setdefault(spec.group, []).append(check)
-    for label, checks in groups.items():
-        group_id = str(
-            uuid5(
-                NAMESPACE_URL,
-                "rcp-experiment-watcher-group:"
-                f"{binding.origin_turn_id}:{scope.node_id}:{scope.episode_id}:{label}",
-            )
-        )
-        desired.append(watcher(group_id, label, checks))
-    for index, condition in enumerate(conditions):
-        identity = json.dumps(
-            {
-                "origin": binding.origin_turn_id,
-                "node_id": scope.node_id,
-                "episode_id": scope.episode_id,
-                "index": index,
-                "condition": condition.model_dump(mode="json"),
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        assert graph_state is not None
-        assert armed_revision is not None
-        result = graph_condition_result(condition, graph_state, armed_revision=armed_revision)
-        if result == "removed":
-            raise ValueError(
-                f"Experiment graph condition target {condition.node_id!r} is not canonical."
-            )
-        watcher_id = str(uuid5(NAMESPACE_URL, f"rcp-experiment-graph-watcher:{identity}"))
-        check = WatcherCheckRecord(
-            check_id=watcher_id,
-            watcher_id=watcher_id,
-            machine_id=binding.machine_id,
-            definition="graph",
-            condition=condition,
-            graph_target=binding.graph_target,
-            armed_head=armed_revision,
-            created_at=created_at,
-            last_checked_at=created_at,
-            completed_at=created_at if result == "completed" else None,
-        )
-        desired.append(watcher(watcher_id, f"Graph condition on {condition.node_id}", [check]))
-    return desired
-
-
-def persist_experiment_watchers_idempotently(
-    execution: AgentTaskExecution,
-    specs: list[ExperimentWatchSpec],
-    results: list[WatcherCheckResult],
-    scope: ExperimentHandoffScope,
-    stops: list[WatcherStopRequest] | None = None,
-    *,
-    graph_conditions: list[GraphCondition] | None = None,
-    graph_state: GraphState | None = None,
-    armed_revision: int | None = None,
-) -> list[WatcherRecord]:
-    """Persist one validated handoff once across Retry/crash recovery."""
-
-    desired = prepare_experiment_watcher_records(
-        execution,
-        specs,
-        results,
-        scope,
-        graph_conditions=graph_conditions,
-        graph_state=graph_state,
-        armed_revision=armed_revision,
-    )
-    return execution.store.persist_experiment_watchers_idempotently(
-        desired,
-        stops=stops,
-        binding=scope.binding,
-        episode_id=scope.episode_id,
-    )
-
-
 def _watcher_state(
     execution: AgentTaskExecution,
     agent_id: str | None,
@@ -1372,7 +1165,6 @@ def commit_experiment_episode_binding(
 def commit_experiment_episode_handoff(
     execution: AgentTaskExecution,
     request: RunRequest,
-    watcher_records: list[WatcherRecord],
     scope: ExperimentHandoffScope,
     *,
     native_session_id: str | None,
@@ -1380,10 +1172,10 @@ def commit_experiment_episode_handoff(
     stage_root: str | None,
     graph_result: str,
     context_baseline: dict[str, object],
-    stops: list[WatcherStopRequest] | None = None,
+    folder_change: WatcherFolderChange | None = None,
     ending_signal: dict[str, object] | None = None,
 ) -> list[WatcherRecord]:
-    """Commit prepared watchers and the episode binding as one handoff."""
+    """Commit the turn's watcher folder and the episode binding as one handoff."""
 
     task, _episode, replacement_authorized, replacement_provenance = (
         _prepare_experiment_episode_binding_intent(
@@ -1410,7 +1202,6 @@ def commit_experiment_episode_handoff(
     ):
         raise ValueError("Experiment handoff binding does not match the current task scope.")
     stored_watchers, _stored_episode = execution.store.commit_experiment_episode_handoff(
-        watcher_records,
         binding=binding,
         episode_id=scope.episode_id,
         control_node_id=request.control_node_id,
@@ -1422,7 +1213,7 @@ def commit_experiment_episode_handoff(
         stage_root=stage_root,
         graph_result=graph_result,
         context_baseline=context_baseline,
-        stops=stops,
+        folder_change=folder_change,
         ending_signal=ending_signal,
         replace_binding=replacement_authorized,
         replacement_provenance=replacement_provenance,

@@ -825,14 +825,9 @@ def create_app(
                 project_id, kind, request, execution
             )
             return
-        with store.connection() as connection:
-            projects = connection.execute(
-                "SELECT project_id FROM space_turn_project_bindings WHERE operation_id=? ORDER BY project_id",
-                (execution.operation_id,),
-            ).fetchall()
-        for row in projects:
+        for bound_project_id in store.space_turn_project_ids(execution.operation_id):
             project_display_cache.refresh_cached_project_after_stream(
-                str(row[0]), kind, request, execution
+                bound_project_id, kind, request, execution
             )
 
     setup = ProjectSetupManager(app_data, catalog, launcher)
@@ -1493,6 +1488,10 @@ def create_app(
                 record_work_question_receipts(execution)
             reconcile_thread_handoffs()
             if kind == "space_chat":
+                for bound_project_id in store.space_turn_project_ids(execution.operation_id):
+                    watcher_delivery.evaluate_graph_wake_boundary(
+                        bound_project_id, None, graph_target=GraphTargetRef(), source="space turn"
+                    )
                 return
             reconcile_question_answers(project_id)
             watcher_delivery.evaluate_graph_conditions_after_task(

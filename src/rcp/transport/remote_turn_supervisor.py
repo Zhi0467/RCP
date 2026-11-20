@@ -17,7 +17,6 @@ was worth.
 """
 
 import argparse
-import glob
 import hashlib
 import json
 import os
@@ -144,12 +143,12 @@ def _watcher_folder_snapshot(source, directory, args):
     except FileNotFoundError:
         return None
     digests = {}
-    remaining = args.max_experiment_watch_bytes
+    remaining = args.max_watcher_bytes
     try:
         with os.scandir(descriptor) as entries:
             for entry in entries:
                 name = entry.name
-                if len(digests) >= args.max_experiment_watch_files:
+                if len(digests) >= args.max_watcher_files:
                     raise ValueError("The watcher folder exceeds its file count.")
                 if not name.endswith(".json") or name.startswith("."):
                     raise ValueError("The watcher folder contains an unexpected file.")
@@ -409,57 +408,17 @@ def run(args):
     return_code = child.wait()
     patch_present = False
     patch_sha256 = None
-    watch_present = False
-    watch_sha256 = None
     watcher_folder = None
-    experiment_watch = {}
-    experiment_watch_snapshotted = False
     if fence.terminal and journal_complete and not error and not external_stop:
         try:
             patch_present, patch_sha256 = _deliverable_snapshot(
                 args.patch_path, directory / "patch.json", args.max_patch_bytes
             )
-            # The watcher handoff is the other half of what a turn hands back.
-            # A turn that writes no watch.json snapshots nothing and says so.
-            watch_present, watch_sha256 = _deliverable_snapshot(
-                args.watch_path, directory / "watch.json", args.max_patch_bytes
-            )
-            # Experiment watcher maintenance writes one file per resource, so
-            # unlike the two above this set is discovered rather than named. The
-            # settling turn discovers it the same way off the stage, which is
-            # exactly why the bytes have to be pinned here.
-            experiment_watch_directory = directory / "experiment-watch"
-            sources = sorted(glob.glob(args.experiment_watch_glob))
-            # The provider chose how many of these to write, so the set is
-            # bounded as a whole. Overflowing is an incomplete turn, the same
-            # answer any other journal overflow gives, rather than a partial
-            # snapshot that would read as the set the pass produced.
-            if len(sources) > args.max_experiment_watch_files:
-                raise ValueError("The provider's Experiment watcher outputs exceed their count.")
-            if sources:
-                experiment_watch_directory.mkdir(mode=0o700)
-            remaining = args.max_experiment_watch_bytes
-            for source in sources:
-                name = os.path.basename(source)
-                present, digest = _deliverable_snapshot(
-                    source,
-                    experiment_watch_directory / name,
-                    min(args.max_patch_bytes, remaining),
-                )
-                if present:
-                    experiment_watch[name] = digest
-                    remaining -= os.path.getsize(experiment_watch_directory / name)
-            experiment_watch_snapshotted = True
             watcher_folder = _watcher_folder_snapshot(
-                Path(args.watch_path).parent / "watchers", directory / "watchers", args
+                Path(args.watchers_path), directory / "watchers", args
             )
         except (OSError, ValueError) as exc:
             error = str(exc)
-            # Half a set is not a smaller set. Whatever was copied before the
-            # overflow stays on disk as evidence, but the outcome names none of
-            # it, so nothing downstream can read a partial handoff as the pass's.
-            experiment_watch = {}
-            experiment_watch_snapshotted = False
     if error and not detached:
         # A failure of this supervisor's own is otherwise recorded only in
         # `outcome.json`, which nothing reads while the link is up. Stderr is the
@@ -498,12 +457,8 @@ def run(args):
                 "events_sha256": events_hash.hexdigest(),
                 "patch_present": patch_present,
                 "patch_sha256": patch_sha256,
-                "watch_present": watch_present,
-                "watch_sha256": watch_sha256,
                 # Absent entirely in a journal written before these were
                 # snapshotted, which is not the same as a turn that wrote none.
-                "experiment_watch_snapshotted": experiment_watch_snapshotted,
-                "experiment_watch_sha256": experiment_watch,
                 "watcher_folder_sha256": watcher_folder,
                 "stderr_truncated": stderr_truncated,
                 "root_thread_id": fence.thread_id,
@@ -548,8 +503,7 @@ def main(argv=None):
         "provider",
         "runtime-id",
         "patch-path",
-        "watch-path",
-        "experiment-watch-glob",
+        "watchers-path",
     ):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--provider-version")
@@ -561,8 +515,8 @@ def main(argv=None):
         "max-stderr-bytes",
         "max-patch-bytes",
         "max-control-messages",
-        "max-experiment-watch-files",
-        "max-experiment-watch-bytes",
+        "max-watcher-files",
+        "max-watcher-bytes",
     ):
         parser.add_argument("--" + name, type=int, required=True)
     for name in ("stop-hold-seconds", "stop-grace-seconds", "poll-seconds"):

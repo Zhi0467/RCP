@@ -318,7 +318,7 @@ def test_generic_watcher_arming_records_an_already_finished_job_as_completed(
 ) -> None:
     """Pin the arming outcome that makes the armed status unassertable in S42.
 
-    `arm_watchers` validates every spec, so one whose check already passes is
+    Arming validates every check, so one whose check already passes is
     persisted completed rather than active. The real fixture jobs finish after
     `ACCEPTANCE_AGENT_JOB_SECONDS`, and a loaded runner can spend longer than
     that inside the correction turn, which is how S42 read completed on a
@@ -339,6 +339,7 @@ def test_generic_watcher_arming_records_an_already_finished_job_as_completed(
         data_dir=tmp_path / "acceptance-data",
         acceptance_agent=True,
     )
+    app.state.background_tasks.close_watcher_notifications()
     client = signed_in_client(app)
     project_id = app.state.default_project_id
     assert project_id is not None

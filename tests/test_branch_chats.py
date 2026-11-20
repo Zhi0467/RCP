@@ -456,18 +456,18 @@ def test_human_branch_experiment_has_own_episode_and_target_bound_recovery(
             yield AgentEvent(event="paused", text="Paused at native checkpoint.")
             return
         repository = manifest.repository_map["repo-a"].path
-        (Path(kwargs["cwd"]) / "watch.json").write_text(
+        (Path(kwargs["cwd"]) / "watchers").mkdir(exist_ok=True)
+        (Path(kwargs["cwd"]) / "watchers" / "job.json").write_text(
             json.dumps(
                 {
-                    "external": [
+                    "purpose": "job finishes",
+                    "checks": [
                         {
-                            "purpose": "job finishes",
                             "check_command": "false",
                             "log_path": str(Path(repository) / "check.log"),
                             "cwd": repository,
                         }
                     ],
-                    "graph": [],
                 }
             )
         )

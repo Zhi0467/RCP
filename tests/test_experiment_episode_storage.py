@@ -18,6 +18,7 @@ from rcp.storage import (
     WatcherRecord,
 )
 from rcp.storage.models import AgentTaskAdmissionConflict
+from rcp.watcher_folder import WatcherFolderChange
 from rcp.watchers import WatcherBinding
 
 from .storage_helpers import downgrade_artifacts
@@ -427,13 +428,15 @@ def test_compound_handoff_rolls_back_watchers_before_episode_binding(
         origin_turn_id="loop-root",
         machine_id=BACKEND_MACHINE_ID,
     )
-    watcher = _watcher(store, "loop-watcher")
+    watcher = _watcher(store, "loop-watcher").model_copy(update={"origin_turn_id": "loop-retry"})
+    folder_binding = binding.model_copy(update={"origin_turn_id": "loop-retry"})
     scope = {
         "binding": binding,
         "episode_id": episode_id,
         "control_node_id": "exp-one",
         "invocation": 1,
         "provider": "codex",
+        "folder_change": WatcherFolderChange(folder_binding, "digest", {}, [watcher], [], []),
     }
 
     original_commit = store._commit_experiment_episode_turn
@@ -450,7 +453,6 @@ def test_compound_handoff_rolls_back_watchers_before_episode_binding(
     monkeypatch.setattr(store, "_commit_experiment_episode_turn", fail_after_watcher_insert)
     with pytest.raises(RuntimeError, match="simulated episode binding failure"):
         store.commit_experiment_episode_handoff(
-            [watcher],
             **scope,
             operation_id="loop-retry",
             native_session_id="native-session",
@@ -466,7 +468,6 @@ def test_compound_handoff_rolls_back_watchers_before_episode_binding(
 
     monkeypatch.setattr(store, "_commit_experiment_episode_turn", original_commit)
     stored_watchers, stored_episode = store.commit_experiment_episode_handoff(
-        [watcher],
         **scope,
         operation_id="loop-retry",
         native_session_id="native-session",
@@ -477,7 +478,7 @@ def test_compound_handoff_rolls_back_watchers_before_episode_binding(
     )
 
     assert [item.watcher_id for item in stored_watchers] == ["loop-watcher"]
-    assert stored_watchers[0].origin_turn_id == "loop-root"
+    assert stored_watchers[0].origin_turn_id == "loop-retry"
     assert stored_episode.session_bound
     assert stored_episode.last_turn_operation_id == "loop-retry"
     assert stored_episode.last_watcher_ids == ["loop-watcher"]

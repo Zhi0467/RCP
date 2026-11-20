@@ -121,7 +121,7 @@ Work, Experiment and child Work expose
 `launch --key K --cwd <absolute-path> [--label TEXT] -- <argv...>` through the
 turn-bound process-tree broker. The working directory must be in write scope and
 outside protected paths. Validate-only credentials and other run kinds cannot
-launch. The response supplies the watcher to copy into `watch.json`. The
+launch. The response supplies the check to copy into a watcher file. The
 [compute job models](../../src/rcp/compute_jobs/models.py) own stored job,
 launch request and readiness fields. The watcher observes OS ownership and
 receipts rather than guessed PIDs. Cancel uses the saved handle.

@@ -765,12 +765,17 @@ def test_a_store_from_before_watcher_purposes_upgrades_to_the_fresh_schema(
 
     _old_store(path, monkeypatch, before_purposes, through_version=80)
     store = AppStore(path)
-    with store.connection() as connection:
-        columns = [row[1] for row in connection.execute("PRAGMA table_info(watchers)")]
+    fresh = AppStore(tmp_path / "fresh.sqlite3")
+    with store.connection() as connection, fresh.connection() as expected:
+        columns, fresh_columns = (
+            [row[1] for row in db.execute("PRAGMA table_info(watchers)")]
+            for db in (connection, expected)
+        )
         trigger = connection.execute(
             "SELECT sql FROM sqlite_master WHERE name = 'resource_watchers_update'"
         ).fetchone()[0]
-    assert columns[-1] == "purpose"
+    fresh.close()
+    assert columns == fresh_columns
     assert 'OLD."purpose" IS NOT NEW."purpose"' in trigger
     assert store.storage_schema_ledger_head() == AppStoreBase._STORAGE_SCHEMA_MIGRATIONS[-1][0]
     store.close()

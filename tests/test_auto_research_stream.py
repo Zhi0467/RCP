@@ -1570,7 +1570,7 @@ async def test_orchestrator_continuation_preserves_actor_session_stage_and_hando
         role="orchestrator",
         continuation_cause="auto_research_continuation",
     )
-    for name in ("patch.json", "watch.json", "messages.json"):
+    for name in ("patch.json", "messages.json"):
         (stage / name).write_text("stale", encoding="utf-8")
     continuation_launcher = _WorkerLauncher(session_id="orchestrator-session")
     continuation_events = await _orchestrator_events(
@@ -1603,15 +1603,12 @@ async def test_orchestrator_continuation_preserves_actor_session_stage_and_hando
         )
         == continuation_contract
     )
-    assert all(
-        not (stage / name).exists() for name in ("patch.json", "watch.json", "messages.json")
-    )
+    assert all(not (stage / name).exists() for name in ("patch.json", "messages.json"))
     assert store.auto_research_handoffs_cleared(continuation.operation_id) is True
 
     store.fail_agent_task(continuation.operation_id, "provider disconnected")
     empty_patch = json.dumps({"summary": "No graph change.", "ops": [], "repositories_read": []})
     (stage / "patch.json").write_text(empty_patch, encoding="utf-8")
-    (stage / "watch.json").write_text("retained watcher handoff", encoding="utf-8")
     (stage / "messages.json").write_text("unowned retained mail", encoding="utf-8")
     retry = _recovery_task(
         store,
@@ -1622,9 +1619,6 @@ async def test_orchestrator_continuation_preserves_actor_session_stage_and_hando
 
     def inspect_recovery(contract_text: str, workspace: Path) -> None:
         assert (workspace / "patch.json").read_text(encoding="utf-8") == empty_patch
-        assert (workspace / "watch.json").read_text(encoding="utf-8") == (
-            "retained watcher handoff"
-        )
         assert not (workspace / "messages.json").exists()
 
     retry_launcher = _WorkerLauncher(
@@ -2339,13 +2333,11 @@ async def test_fresh_turn_fences_clear_and_recovery_preserves_only_authorized_ha
         / _worker_stage_name(worker.project_id, worker.operation_id)
     )
     stage.mkdir(parents=True)
-    for name in ("patch.json", "watch.json", "messages.json"):
+    for name in ("patch.json", "messages.json"):
         (stage / name).write_text("stale", encoding="utf-8")
 
     def fresh_writer(_contract_text, workspace):
-        assert not any(
-            (workspace / name).exists() for name in ("patch.json", "watch.json", "messages.json")
-        )
+        assert not any((workspace / name).exists() for name in ("patch.json", "messages.json"))
 
     fresh_launcher = _WorkerLauncher(writer=fresh_writer)
     fresh_events = await _worker_events(
@@ -2378,7 +2370,7 @@ async def test_fresh_turn_fences_clear_and_recovery_preserves_only_authorized_ha
     retry_store.record_agent_task_receipt(
         retry_worker.operation_id,
         _HANDOFFS_CLEARED_RECEIPT,
-        {"version": 1, "files": ["patch.json", "watch.json", "messages.json"]},
+        {"version": 1, "files": ["patch.json", "messages.json"]},
     )
     for index in range(AGENT_TASK_RECEIPT_RETENTION_COUNTS["summary"] + 1):
         retry_store.record_agent_task_receipt(
@@ -2395,7 +2387,6 @@ async def test_fresh_turn_fences_clear_and_recovery_preserves_only_authorized_ha
     )
     retained = {
         "patch.json": retained_patch,
-        "watch.json": "retained watcher",
         "messages.json": "retained messages",
     }
     for name, content in retained.items():
@@ -2404,7 +2395,6 @@ async def test_fresh_turn_fences_clear_and_recovery_preserves_only_authorized_ha
 
     def retry_writer(contract_text, workspace):
         assert (workspace / "patch.json").read_text(encoding="utf-8") == retained_patch
-        assert (workspace / "watch.json").read_text(encoding="utf-8") == retained["watch.json"]
         assert not (workspace / "messages.json").exists()
         assert str(workspace / "messages.json") not in contract_text
 
@@ -2429,7 +2419,7 @@ async def test_recovery_repeats_fail_closed_clear_when_interruption_left_no_fenc
         tmp_path, status="failed", service=service
     )
     _record_original_contract(store, worker, stage)
-    for name in ("patch.json", "watch.json", "messages.json"):
+    for name in ("patch.json", "messages.json"):
         (stage / name).write_text("stale", encoding="utf-8")
 
     original_clear = auto_research_stream_module._clear_stale_turn_handoffs
@@ -2461,9 +2451,7 @@ async def test_recovery_repeats_fail_closed_clear_when_interruption_left_no_fenc
     retry = _recovery_task(store, auto_research, worker)
 
     def retry_writer(_contract_text, workspace):
-        assert not any(
-            (workspace / name).exists() for name in ("patch.json", "watch.json", "messages.json")
-        )
+        assert not any((workspace / name).exists() for name in ("patch.json", "messages.json"))
 
     recovered = await _worker_events(
         service,

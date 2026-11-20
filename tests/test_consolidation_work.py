@@ -643,9 +643,7 @@ async def test_consolidation_bound_owner_pins_workflow_and_refuses_watchers(
         "flag",
         "bulletin",
     }
-    launcher = ScriptedLauncher(
-        [{"watch.json": "{}"}], message="Consolidation finished.", outcome=outcome
-    )
+    launcher = ScriptedLauncher([{}], message="Consolidation finished.", outcome=outcome)
     frames = []
     async for frame in stream_work_run(
         app.state.service, launcher, request, tmp_path / "data", execution=execution

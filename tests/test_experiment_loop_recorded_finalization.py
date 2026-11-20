@@ -31,20 +31,21 @@ _EPISODE_ID = "00000000-0000-4000-8000-0000000000a1"
 _ROLE = loop_module.EXPERIMENT_LOOP_FINALIZATION_CONTEXT_ROLE
 
 
-def _watch_handoff(watcher_cwd: Path) -> str:
-    return json.dumps(
-        {
-            "external": [
-                {
-                    "purpose": "job finishes",
-                    "check_command": "false",
-                    "log_path": str(watcher_cwd / "detached.log"),
-                    "cwd": str(watcher_cwd),
-                }
-            ],
-            "graph": [],
-        }
-    )
+def _watch_handoff(watcher_cwd: Path) -> dict[str, str]:
+    return {
+        "job.json": json.dumps(
+            {
+                "purpose": "job finishes",
+                "checks": [
+                    {
+                        "check_command": "false",
+                        "log_path": str(watcher_cwd / "detached.log"),
+                        "cwd": str(watcher_cwd),
+                    }
+                ],
+            }
+        )
+    }
 
 
 async def _retained_loop_turn(
@@ -123,12 +124,13 @@ async def test_a_recorded_loop_pass_arms_the_episode_of_its_own_task(
     the pass's own operation and invocation, so the next wake resumes this session.
     """
     service, request, execution, workspace = await _retained_loop_turn(manifest, tmp_path)
-    (workspace / "watch.json").write_text(
-        json.dumps({"external": [], "graph": []}), encoding="utf-8"
-    )
+    (workspace / "watchers" / "stray.json").write_text("{}")
 
     events = await _finalize(
-        service, request, execution, _recorded_pass("", _ANSWER, _watch_handoff(tmp_path))
+        service,
+        request,
+        execution,
+        _recorded_pass("", _ANSWER, watcher_folder=_watch_handoff(tmp_path)),
     )
 
     assert [item["event"] for item in events if item["event"] == "error"] == []
@@ -143,6 +145,19 @@ async def test_a_recorded_loop_pass_arms_the_episode_of_its_own_task(
 
 
 @pytest.mark.asyncio
+async def test_missing_watcher_snapshot_cannot_arm_the_mutable_stage(manifest, tmp_path):
+    from dataclasses import replace
+
+    service, request, execution, workspace = await _retained_loop_turn(manifest, tmp_path)
+    staged = _watch_handoff(tmp_path)
+    (workspace / "watchers" / "job.json").write_text(staged["job.json"])
+    record = replace(_recorded_pass("", _ANSWER), watcher_folder=None)
+    with pytest.raises(ValueError, match="watcher folder snapshot"):
+        await _finalize(service, request, execution, record)
+    assert execution.store.agent_watchers(request.chat_id) == []
+
+
+@pytest.mark.asyncio
 async def test_recorded_loop_finalization_can_resume_without_arming_twice(
     manifest, tmp_path: Path
 ) -> None:
@@ -153,7 +168,7 @@ async def test_recorded_loop_finalization_can_resume_without_arming_twice(
     """
 
     service, request, execution, _workspace = await _retained_loop_turn(manifest, tmp_path)
-    recorded = _recorded_pass("", _ANSWER, _watch_handoff(tmp_path))
+    recorded = _recorded_pass("", _ANSWER, watcher_folder=_watch_handoff(tmp_path))
 
     first = await _finalize(service, request, execution, recorded)
     second = await _finalize(service, request, execution, recorded)
@@ -215,7 +230,10 @@ async def test_a_loop_turn_without_its_episode_context_refuses_to_finalize(
 
     with pytest.raises(ValueError, match="retained Experiment-loop episode context is invalid"):
         await _finalize(
-            service, request, execution, _recorded_pass("", _ANSWER, _watch_handoff(tmp_path))
+            service,
+            request,
+            execution,
+            _recorded_pass("", _ANSWER, watcher_folder=_watch_handoff(tmp_path)),
         )
 
 
@@ -353,9 +371,11 @@ async def test_a_recorded_loop_pass_cannot_correct_its_own_deliverable(
         _recorded_pass(
             "",
             _ANSWER,
-            json.dumps(
-                {"external": [{"purpose": "job finishes", "check_command": ""}], "graph": []}
-            ),
+            watcher_folder={
+                "job.json": json.dumps(
+                    {"purpose": "job finishes", "checks": [{"check_command": ""}]}
+                )
+            },
         ),
     )
 
@@ -387,7 +407,7 @@ async def test_a_stage_that_changed_after_the_host_finished_admits_the_recorded_
 
     service, request, execution, workspace = await _retained_loop_turn(manifest, tmp_path)
     recorded_patch = agent_patch_json(_experiment_patch(invocation_ceiling=4))
-    recorded = _recorded_pass(recorded_patch, _ANSWER, _watch_handoff(tmp_path))
+    recorded = _recorded_pass(recorded_patch, _ANSWER, watcher_folder=_watch_handoff(tmp_path))
     (workspace / "patch.json").write_text('{"ops": []}', encoding="utf-8")
 
     events = await _finalize(service, request, execution, recorded)
@@ -405,7 +425,7 @@ async def test_a_resettled_watcher_handoff_keeps_its_own_limit(
 ) -> None:
     """Two deliverables, two policies, and the Patch's is the looser one.
 
-    A loop Patch correction can rewrite watch.json, which resettles the watcher
+    A loop Patch correction can edit the watcher folder, which resettles the watcher
     handoff. That resettlement is still watcher work and keeps the watcher
     limit; handing it the Patch limit would buy a second full provider call the
     watcher policy does not allow.
@@ -445,7 +465,7 @@ async def test_a_resettled_watcher_handoff_keeps_its_own_limit(
         offered.append(kwargs["maximum_corrections"])
         return settle(*args, **kwargs)
 
-    read = loop_module._read_watch_request
+    read = loop_module._watcher_output
     reads: list[int] = []
 
     def changed_on_the_second_look(*args, **kwargs):
@@ -456,7 +476,7 @@ async def test_a_resettled_watcher_handoff_keeps_its_own_limit(
         return text
 
     monkeypatch.setattr(loop_module, "_settle_watch_deliverable", record_the_limit)
-    monkeypatch.setattr(loop_module, "_read_watch_request", changed_on_the_second_look)
+    monkeypatch.setattr(loop_module, "_watcher_output", changed_on_the_second_look)
 
     async for _frame in loop_module.stream_experiment_loop_task(
         service,
@@ -489,7 +509,10 @@ async def test_a_recovered_loop_correction_does_not_replace_the_reply(
 
     service, request, execution, _workspace = await _retained_loop_turn(manifest, tmp_path)
     await _finalize(
-        service, request, execution, _recorded_pass("", _ANSWER, _watch_handoff(tmp_path))
+        service,
+        request,
+        execution,
+        _recorded_pass("", _ANSWER, watcher_folder=_watch_handoff(tmp_path)),
     )
     assert (
         execution.store.agent_task_contract(
@@ -502,7 +525,9 @@ async def test_a_recovered_loop_correction_does_not_replace_the_reply(
         service,
         request,
         execution,
-        _recorded_pass("", "Rewrote the observer command.", _watch_handoff(tmp_path)),
+        _recorded_pass(
+            "", "Rewrote the observer command.", watcher_folder=_watch_handoff(tmp_path)
+        ),
     )
 
     assert [item["text"] for item in events if item["event"] == "answer"] == [_ANSWER]
@@ -523,7 +548,10 @@ async def test_a_recovered_loop_correction_that_failed_keeps_the_reply_it_gave(
 
     service, request, execution, _workspace = await _retained_loop_turn(manifest, tmp_path)
     await _finalize(
-        service, request, execution, _recorded_pass("", _ANSWER, _watch_handoff(tmp_path))
+        service,
+        request,
+        execution,
+        _recorded_pass("", _ANSWER, watcher_folder=_watch_handoff(tmp_path)),
     )
     assert (
         execution.store.agent_task_contract(
@@ -589,10 +617,8 @@ async def test_a_correction_that_goes_pending_leaves_the_turn_for_its_own_task(
     launcher = _LoopLauncher("provider-session-pending", tmp_path, write_handoff=False)
 
     async def invalid_handoff(_provider, prompt, **kwargs):
-        Path(kwargs["cwd"]).joinpath("watch.json").write_text(
-            json.dumps(
-                {"external": [{"purpose": "job finishes", "check_command": ""}], "graph": []}
-            ),
+        Path(kwargs["cwd"], "watchers", "job.json").write_text(
+            json.dumps({"purpose": "job finishes", "checks": [{"check_command": ""}]}),
             encoding="utf-8",
         )
         async for event in _LoopLauncher.stream(launcher, _provider, prompt, **kwargs):
@@ -642,7 +668,10 @@ async def test_a_recorded_loop_continuation_refuses_another_native_session(
     )
 
     events = await _finalize(
-        service, request, execution, _recorded_pass("", _ANSWER, _watch_handoff(tmp_path))
+        service,
+        request,
+        execution,
+        _recorded_pass("", _ANSWER, watcher_folder=_watch_handoff(tmp_path)),
     )
 
     assert [item["event"] for item in events] == ["error"]
@@ -681,7 +710,10 @@ async def test_a_loop_stage_that_drops_mid_settlement_is_not_a_verdict(
     loop_module._read_chat_patch = host_went_away
     try:
         events = await _finalize(
-            service, request, execution, _recorded_pass("", _ANSWER, _watch_handoff(tmp_path))
+            service,
+            request,
+            execution,
+            _recorded_pass("", _ANSWER, watcher_folder=_watch_handoff(tmp_path)),
         )
     finally:
         loop_module._read_chat_patch = original
@@ -717,7 +749,10 @@ async def test_a_supervised_loop_correction_pins_the_session_it_must_continue(
     assert reloaded.required_session_id == "the-pass-session"
 
     events = await _finalize(
-        service, request, execution, _recorded_pass("", _ANSWER, _watch_handoff(tmp_path))
+        service,
+        request,
+        execution,
+        _recorded_pass("", _ANSWER, watcher_folder=_watch_handoff(tmp_path)),
     )
     assert [item["event"] for item in events] == ["error"]
     assert "exact saved native session" in str(events[0]["text"])

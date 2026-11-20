@@ -16,11 +16,11 @@ from rcp.runs.experiment_loop import (
     experiment_loop_launch_failure_diagnostic,
     experiment_loop_semantic_ending,
     experiment_loop_wrapup_spec,
-    prepare_experiment_watcher_records,
 )
 from rcp.service import GraphUpdateResult, RunRequest
-from rcp.storage import AgentTaskRecord
-from rcp.watchers import ExperimentWatchSpec, WatcherBinding, WatcherCheckResult
+from rcp.storage import AgentTaskRecord, WatcherCheckRecord, WatcherRecord
+from rcp.watcher_folder import WatcherFolderChange
+from rcp.watchers import WatcherBinding
 
 _CONTROL_NODE_ID = "exp/evaluation"
 _EPISODE_ID = "00000000-0000-4000-8000-000000000099"
@@ -385,19 +385,19 @@ class _RecordingStore:
         if self.fail_commit:
             raise RuntimeError("handoff commit failed")
 
-    def commit_experiment_episode_handoff(
-        self, records: list[object], **values: object
-    ) -> tuple[list[object], None]:
+    def commit_experiment_episode_handoff(self, **values: object) -> tuple[list[object], None]:
         binding = values["binding"]
+        change = values["folder_change"]
+        assert isinstance(change, WatcherFolderChange)
         self.events.append(
             (
                 "compound",
-                (values["operation_id"], binding.origin_turn_id, len(records)),
+                (values["operation_id"], binding.origin_turn_id, len(change.additions)),
             )
         )
         if self.fail_commit:
             raise RuntimeError("handoff commit failed")
-        return records, None
+        return list(change.additions), None
 
     def record_agent_task_receipt(
         self,
@@ -494,35 +494,48 @@ def test_failed_binding_commit_cannot_publish_an_exit_receipt() -> None:
     assert store.events == [("commit", ("continuation-operation", _minimal_ending_signal()))]
 
 
-def test_prepared_handoff_uses_rooted_watchers_and_commits_receipt_after_storage() -> None:
+def test_folder_handoff_uses_rooted_watchers_and_commits_receipt_after_storage() -> None:
     store = _RecordingStore()
     execution = SimpleNamespace(
         operation_id="continuation-operation", store=store, continuation="fresh"
     )
     binding = _handoff_scope()
-    prepared = prepare_experiment_watcher_records(
-        execution,
-        [
-            ExperimentWatchSpec(
-                purpose="job finishes", check_command="true", log_path="/tmp/result.log", cwd="/tmp"
+    now = store.now()
+    watcher = WatcherRecord(
+        watcher_id="job",
+        agent_id="episode-chat",
+        project_id="project-id",
+        purpose="job finishes",
+        origin_turn_id=binding.binding.origin_turn_id,
+        created_at=now,
+        checks=[
+            WatcherCheckRecord(
+                check_id="job-check",
+                watcher_id="job",
+                machine_id=BACKEND_MACHINE_ID,
+                definition="external",
+                check_command="true",
+                log_path="/tmp/result.log",
+                cwd="/tmp",
+                created_at=now,
             )
         ],
-        [WatcherCheckResult(state="complete", checked_at="2026-08-19T00:01:00+00:00")],
-        binding,
     )
+    prepared = [watcher]
+    change = WatcherFolderChange(binding.binding, "digest", {}, prepared, [], [])
 
     assert len(prepared) == 1
     assert prepared[0].origin_turn_id == "root-operation"
     stored = commit_experiment_episode_handoff(
         execution,
         _binding_request(),
-        prepared,
         binding,
         native_session_id="native-session",
         stage_machine_id=None,
         stage_root="/tmp/exact-episode-stage",
         graph_result="applied as revision 42",
         context_baseline={"revision": 42},
+        folder_change=change,
     )
 
     assert stored == prepared

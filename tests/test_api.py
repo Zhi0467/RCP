@@ -41,10 +41,6 @@ from rcp.runs.chat import (
     _prepare_local_artifact_directory,
     _project_write_scope,
 )
-from rcp.runs.experiment_loop import (
-    ExperimentHandoffScope,
-    persist_experiment_watchers_idempotently,
-)
 from rcp.runs.shared import (
     _MAX_PATCH_CANDIDATES,
     AgentOutputProblem,
@@ -86,12 +82,9 @@ from rcp.transport import (
     StateUnreachable,
 )
 from rcp.watchers import (
-    ExperimentWatchSpec,
-    WatcherBinding,
-    WatcherCheckResult,
     watcher_wake_message,
 )
-from tests.helpers import sign_in_async_client, signed_in_client
+from tests.helpers import fake_launch_admitted, sign_in_async_client, signed_in_client
 
 from .helpers import (
     TASK_SETTLE_TIMEOUT,
@@ -244,7 +237,7 @@ def test_plain_watcher_wake_continues_its_own_chat_without_reinvoking_packages(
         )
     )
     monkeypatch.setattr(tasks, "admit_provider_task", lambda *args, **kwargs: None)
-    monkeypatch.setattr(tasks, "launch_admitted", store.agent_task)
+    fake_launch_admitted(monkeypatch, tasks)
     tasks.accept_watcher_notifications()
 
     app.state.services.watcher_delivery.deliver_ready(chat_id, [watcher])
@@ -651,6 +644,7 @@ class ScriptedLauncher:
         if self.outcome is not None and "outcome.json" not in turn:
             write_turn_outcome(workspace, self.outcome)
         for name, content in turn.items():
+            (workspace / name).parent.mkdir(parents=True, exist_ok=True)
             (workspace / name).write_text(content, encoding="utf-8")
         yield AgentEvent(event="session", session_id=self.native_session_id)
         if self.message:
@@ -5699,17 +5693,16 @@ async def test_experiment_work_stamps_and_applies_the_bound_control_patch(
         [
             {
                 "patch.json": agent_patch_json(patch),
-                "watch.json": json.dumps(
+                "watchers/job.json": json.dumps(
                     {
-                        "external": [
+                        "purpose": "job finishes",
+                        "checks": [
                             {
-                                "purpose": "job finishes",
                                 "check_command": "false",
                                 "log_path": "/tmp/bounded-loop.log",
                                 "cwd": "/tmp",
                             }
                         ],
-                        "graph": [],
                     }
                 ),
             }
@@ -5764,12 +5757,8 @@ async def test_experiment_work_stamps_and_applies_the_bound_control_patch(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "initial_watch, expected_calls",
-    [('{"external":[],"graph":[]}', 1), (None, 2)],
-)
 async def test_experiment_loop_accepts_empty_watch_only_with_explicit_exit(
-    manifest, tmp_path, initial_watch, expected_calls
+    manifest, tmp_path
 ) -> None:
     app, service = _experiment_project(manifest, tmp_path)
     patch = Patch(
@@ -5787,13 +5776,7 @@ async def test_experiment_loop_accepts_empty_watch_only_with_explicit_exit(
     )
     request = _experiment_request("Finish the bounded loop.")
     execution = _chat_task_execution(app, request, "experiment-empty-watch")
-    first = {"patch.json": agent_patch_json(patch)}
-    if initial_watch is not None:
-        first["watch.json"] = initial_watch
-    launcher = ScriptedLauncher(
-        [first, {"watch.json": '{"external":[],"graph":[]}'}],
-        message="Finished.",
-    )
+    launcher = ScriptedLauncher([{"patch.json": agent_patch_json(patch)}], message="Finished.")
 
     frames = [
         frame
@@ -5808,7 +5791,7 @@ async def test_experiment_loop_accepts_empty_watch_only_with_explicit_exit(
 
     assert not _error_texts(frames)
     assert _events(frames)[-1].event == "done"
-    assert launcher.calls == expected_calls
+    assert launcher.calls == 1
     assert service.history.state().nodes["exp/bounded-loop"].status == "completed"
     assert any(
         receipt.category == "experiment_loop_exit"
@@ -5872,7 +5855,6 @@ async def test_experiment_loop_patch_correction_rechecks_empty_watch_exit(
         [
             {
                 "patch.json": agent_patch_json(invalid_exit),
-                "watch.json": '{"external":[],"graph":[]}',
             },
             {"patch.json": removed_exit},
         ],
@@ -5944,7 +5926,6 @@ async def test_unreadable_loop_patch_correction_stays_a_correction(manifest, tmp
         [
             {
                 "patch.json": agent_patch_json(invalid_exit),
-                "watch.json": '{"external":[],"graph":[]}',
             }
         ],
         message="Finished.",
@@ -5992,17 +5973,10 @@ async def test_experiment_loop_keeps_one_watcher_when_graph_reflection_is_reject
     execution = _chat_task_execution(app, request, "experiment-rejected-reflection")
     handoff = {
         "patch.json": agent_patch_json(invalid),
-        "watch.json": json.dumps(
+        "watchers/job.json": json.dumps(
             {
-                "external": [
-                    {
-                        "purpose": "job finishes",
-                        "check_command": "false",
-                        "log_path": "/tmp/loop.log",
-                        "cwd": "/tmp",
-                    }
-                ],
-                "graph": [],
+                "purpose": "job finishes",
+                "checks": [{"check_command": "false", "log_path": "/tmp/loop.log", "cwd": "/tmp"}],
             }
         ),
     }
@@ -6055,17 +6029,16 @@ async def test_experiment_loop_retry_reuses_canonical_patch_and_watcher_handoff(
         [
             {
                 "patch.json": agent_patch_json(exit_patch),
-                "watch.json": json.dumps(
+                "watchers/job.json": json.dumps(
                     {
-                        "external": [
+                        "purpose": "job finishes",
+                        "checks": [
                             {
-                                "purpose": "job finishes",
                                 "check_command": "false",
                                 "log_path": "/tmp/recovered-loop.log",
                                 "cwd": "/tmp",
                             }
                         ],
-                        "graph": [],
                     }
                 ),
             }
@@ -6090,39 +6063,6 @@ async def test_experiment_loop_retry_reuses_canonical_patch_and_watcher_handoff(
     assert len(service.history.load_patches()) == 5
     watchers = execution.store.project_watchers(app.state.default_project_id)
     assert len(watchers) == 1
-    stored = watchers[0]
-    (check,) = stored.checks
-    assert check.check_command and check.log_path and check.cwd
-    repeated = persist_experiment_watchers_idempotently(
-        execution,
-        [
-            ExperimentWatchSpec(
-                purpose="job finishes",
-                check_command=check.check_command,
-                log_path=check.log_path,
-                cwd=check.cwd,
-            )
-        ],
-        [
-            WatcherCheckResult(
-                state="active",
-                checked_at=check.last_checked_at or check.created_at,
-                exit_code=1,
-            )
-        ],
-        ExperimentHandoffScope(
-            binding=WatcherBinding(
-                project_id=stored.project_id,
-                agent_id=stored.agent_id,
-                origin_turn_id=stored.origin_turn_id,
-                machine_id=check.machine_id,
-            ),
-            node_id=request.node_id,
-            episode_id=request.control_episode_id or "",
-        ),
-    )
-    assert repeated[0].watcher_id == stored.watcher_id
-    assert len(execution.store.project_watchers(app.state.default_project_id)) == 1
     assert any(
         receipt.category == "experiment_loop_exit"
         for receipt in execution.store.agent_task_receipts(operation_id)
@@ -6138,32 +6078,31 @@ async def test_readable_watch_value_error_gets_same_session_correction(
     execution = _chat_task_execution(app, request, "watch-readable-value-error")
     watch = json.dumps(
         {
-            "external": [
+            "purpose": "job finishes",
+            "checks": [
                 {
-                    "purpose": "job finishes",
                     "check_command": "false",
                     "log_path": str(tmp_path / "fixture.log"),
                     "cwd": str(tmp_path),
                 }
             ],
-            "graph": [],
         }
     )
     launcher = ScriptedLauncher(
-        [{"watch.json": watch}, {"watch.json": json.dumps(json.loads(watch), indent=2)}],
+        [{"watchers/job.json": watch}],
         message="The fixture was launched once.",
     )
-    original_read = work_module._read_watch_request
+    original_read = work_module.read_watcher_folder
     read_calls = 0
 
     def flaky_read(*args, **kwargs):
         nonlocal read_calls
         read_calls += 1
         if read_calls == 1:
-            raise ValueError("watch.json is not a direct regular file")
+            raise ValueError("watcher files must be directly inside watchers/")
         return original_read(*args, **kwargs)
 
-    monkeypatch.setattr(work_module, "_read_watch_request", flaky_read)
+    monkeypatch.setattr(work_module, "read_watcher_folder", flaky_read)
 
     frames = [
         frame
@@ -6201,21 +6140,28 @@ async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
         mode="work",
     )
     execution = _chat_task_execution(app, request, "watch-origin")
-    common = {
-        "purpose": "job finishes",
-        "log_path": str(tmp_path / "fixture.log"),
-        "cwd": str(tmp_path),
-    }
-    graph = [
+    common = {"log_path": str(tmp_path / "fixture.log"), "cwd": str(tmp_path)}
+    graph = json.dumps(
         {
-            "node_id": "hyp/replanning-restores-plasticity",
-            "proposal_resolved": True,
+            "purpose": "proposal resolves",
+            "graph": {"node_id": "hyp/replanning-restores-plasticity", "proposal_resolved": True},
         }
-    ]
-    invalid = json.dumps({"external": [{**common, "check_command": "exit 2"}], "graph": graph})
-    corrected = json.dumps({"external": [{**common, "check_command": "exit 1"}], "graph": graph})
+    )
+
+    def job(command: str) -> str:
+        return json.dumps(
+            {"purpose": "job finishes", "checks": [{**common, "check_command": command}]}
+        )
+
     launcher = ScriptedLauncher(
-        [{"watch.json": invalid}, {"watch.json": corrected, "outcome.json": '{"status":"done"}'}],
+        [
+            {"watchers/job.json": job("exit 2"), "watchers/proposal.json": graph},
+            {
+                "watchers/job.json": job("exit 1"),
+                "watchers/proposal.json": graph,
+                "outcome.json": '{"status":"done"}',
+            },
+        ],
         outcome=None,
         message="The fixture was launched once.",
     )

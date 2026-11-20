@@ -35,7 +35,6 @@ from rcp.agents.provider_environment import (
     ProviderProcessEnvironment,
     unhidden_read_scope,
 )
-from rcp.agents.schema import EXPERIMENT_WATCH_OUTPUT_GLOB
 from rcp.agents.steering import LiveProviderSteering
 from rcp.agents.write_scope import ProviderWriteScope
 from rcp.artifacts import AgentArtifactDescriptor
@@ -245,8 +244,7 @@ def _supervised_remote_turn_command(
     runtime_id: str,
     provider_version: str | None,
     patch_path: str,
-    watch_path: str,
-    experiment_watch_glob: str,
+    watchers_path: str,
     close_input_after_initial: bool,
     fork_session_id: str | None = None,
     fork_source_cwd: str | None = None,
@@ -264,10 +262,8 @@ def _supervised_remote_turn_command(
         runtime_id,
         "--patch-path",
         patch_path,
-        "--watch-path",
-        watch_path,
-        "--experiment-watch-glob",
-        experiment_watch_glob,
+        "--watchers-path",
+        watchers_path,
         "--max-journal-bytes",
         str(TURN_JOURNAL_MAX_BYTES),
         "--max-event-bytes",
@@ -278,9 +274,9 @@ def _supervised_remote_turn_command(
         str(TURN_JOURNAL_MAX_PATCH_BYTES),
         "--max-control-messages",
         str(TURN_JOURNAL_MAX_CONTROL_MESSAGES),
-        "--max-experiment-watch-files",
+        "--max-watcher-files",
         str(TURN_JOURNAL_MAX_WATCHER_FILES),
-        "--max-experiment-watch-bytes",
+        "--max-watcher-bytes",
         str(TURN_JOURNAL_MAX_WATCHER_BYTES),
         "--stop-hold-seconds",
         str(PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS),
@@ -1553,8 +1549,7 @@ class AgentLauncher:
                     runtime_id=runtime.id,
                     provider_version=getattr(readiness, "version", None),
                     patch_path=str(cwd / "patch.json"),
-                    watch_path=str(cwd / "watch.json"),
-                    experiment_watch_glob=str(cwd / EXPERIMENT_WATCH_OUTPUT_GLOB),
+                    watchers_path=str(cwd / "watchers"),
                     close_input_after_initial=turn.close_input_after_initial,
                     fork_session_id=fork_session_id,
                     fork_source_cwd=fork_source_cwd,

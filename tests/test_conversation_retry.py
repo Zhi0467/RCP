@@ -293,23 +293,10 @@ def test_same_provider_work_retry_preserves_but_does_not_consume_predecessor_out
     failure = "Work provider disconnected after an external submission may have completed."
     objective = "Submit the bounded run once and report its result."
     stale_patch = refresh_patch("rq/stale-retry-deliverable").model_copy(update={"kind": "work"})
-    stale_watch = json.dumps(
-        {
-            "external": [
-                {
-                    "check_command": "exit 1",
-                    "log_path": str(tmp_path / "detached.log"),
-                    "cwd": str(tmp_path),
-                }
-            ],
-            "graph": [],
-        }
-    )
     launcher = _FailThenSucceedLauncher(
         failure,
         first_files={
             "patch.json": agent_patch_json(stale_patch),
-            "watch.json": stale_watch,
         },
     )
 
@@ -363,10 +350,8 @@ def test_same_provider_work_retry_preserves_but_does_not_consume_predecessor_out
     assert (retained_workspace / "patch.json").read_text(encoding="utf-8") == agent_patch_json(
         stale_patch
     )
-    assert (retained_workspace / "watch.json").read_text(encoding="utf-8") == stale_watch
     if legacy_layout:
         assert not (workspace / "patch.json").exists()
-        assert not (workspace / "watch.json").exists()
     assert "rq/stale-retry-deliverable" not in service.history.state().nodes
     assert retried["result"]["graph_update"]["status"] == "none"
     assert store.project_watchers(project_id) == []
@@ -376,6 +361,7 @@ def test_same_provider_work_retry_preserves_but_does_not_consume_predecessor_out
         if item.category == "retry_deliverable_comparison"
         and item.payload["filename"] != "outcome.json"
     ]
+    empty_folder = hashlib.sha256(b"{}").hexdigest()
     assert {
         (
             item["filename"],
@@ -388,7 +374,7 @@ def test_same_provider_work_retry_preserves_but_does_not_consume_predecessor_out
     } == (
         {
             ("patch.json", None, None, False, False),
-            ("watch.json", None, None, False, False),
+            ("watchers", None, empty_folder, False, True),
         }
         if legacy_layout
         else {
@@ -399,13 +385,7 @@ def test_same_provider_work_retry_preserves_but_does_not_consume_predecessor_out
                 True,
                 False,
             ),
-            (
-                "watch.json",
-                hashlib.sha256(stale_watch.encode()).hexdigest(),
-                hashlib.sha256(stale_watch.encode()).hexdigest(),
-                True,
-                False,
-            ),
+            ("watchers", None, empty_folder, False, True),
         }
     )
     _assert_retry_receipt(app, str(retried["operation_id"]))

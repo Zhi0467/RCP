@@ -57,6 +57,17 @@ def _capture_commands(monkeypatch, owner):
     return staged_turns
 
 
+def _write_helper_watcher(workspace: Path, job_id: str, watcher: dict[str, str]) -> None:
+    (workspace / "watchers" / f"{job_id}.json").write_text(
+        json.dumps(
+            {
+                "purpose": watcher["purpose"],
+                "checks": [{key: watcher[key] for key in ("cwd", "log_path", "check_command")}],
+            }
+        )
+    )
+
+
 class _ComputeTurnLauncher:
     def __init__(self, staged_turns, backend, *, state):
         self.staged_turns = staged_turns
@@ -87,9 +98,7 @@ class _ComputeTurnLauncher:
                 Path(job.exit_path).write_text("0 101")
                 self.backend.alive_handles.remove(self.job_id)
         elif self.job_id:
-            (workspace / "watch.json").write_text(
-                json.dumps({"external": [self.watcher], "graph": []})
-            )
+            _write_helper_watcher(workspace, self.job_id, self.watcher)
         write_turn_outcome(workspace)
         yield AgentEvent(event="session", session_id=self.native_session_id)
         yield AgentEvent(event="answer", text="Handed off computation.")
@@ -113,7 +122,9 @@ async def test_work_settlement_corrects_only_unobserved_running_compute(
     )
     execution = _chat_task_execution(app, request, "compute-settlement")
     monkeypatch.setattr(
-        work, "arm_watchers", partial(work.arm_watchers, check_runner=commands.check_runner)
+        work,
+        "reconcile_watcher_files",
+        partial(work.reconcile_watcher_files, check_runner=commands.check_runner),
     )
     staged_turns = _capture_commands(monkeypatch, work)
     launcher = _ComputeTurnLauncher(staged_turns, commands.backend, state=state)
@@ -167,7 +178,7 @@ async def test_experiment_patch_correction_launch_revalidates_job_handoff(
         "compute-loop-correction",
         request,
     )
-    real_check = experiment_loop.validate_watch_specs
+    real_check = experiment_loop.prepare_watcher_files
 
     def check(spec, host, timeout):
         if spec.check_command == "false":
@@ -177,7 +188,7 @@ async def test_experiment_patch_correction_launch_revalidates_job_handoff(
         return commands.check_runner(spec, host, timeout)
 
     monkeypatch.setattr(
-        experiment_loop, "validate_watch_specs", partial(real_check, check_runner=check)
+        experiment_loop, "prepare_watcher_files", partial(real_check, check_runner=check)
     )
     staged_turns = _capture_commands(monkeypatch, experiment_loop)
 
@@ -192,18 +203,17 @@ async def test_experiment_patch_correction_launch_revalidates_job_handoff(
                 (workspace / "patch.json").write_text(
                     json.dumps({"summary": "Invalid reflection", "ops": [{"op": "unknown"}]})
                 )
-                (workspace / "watch.json").write_text(
+                (workspace / "watchers" / "external.json").write_text(
                     json.dumps(
                         {
-                            "external": [
+                            "purpose": "job finishes",
+                            "checks": [
                                 {
-                                    "purpose": "job finishes",
                                     "check_command": "false",
                                     "log_path": str(workspace / "external.log"),
                                     "cwd": str(workspace),
                                 }
                             ],
-                            "graph": [],
                         }
                     )
                 )

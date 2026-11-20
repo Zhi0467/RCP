@@ -48,7 +48,6 @@ from rcp.storage.models import (
 )
 from rcp.storage.rows import _agent_task_control_flags
 from rcp.storage.wake_inputs import queue_wake_input
-from rcp.storage.watchers import _OPEN
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
@@ -3133,10 +3132,10 @@ def _migrate_experiment_episodes(connection: sqlite3.Connection) -> None:
             for task in all_task_rows
         )
         live_watcher = connection.execute(
-            f"""
-            SELECT 1 FROM watchers AS w
-            JOIN graph_runs AS origin ON origin.operation_id = w.origin_turn_id
-            WHERE origin.episode_id = ? AND {_OPEN} LIMIT 1
+            """
+            SELECT 1 FROM watchers
+            WHERE episode_id = ? AND notified = 0
+              AND status IN ('active', 'degraded', 'completed') LIMIT 1
             """,
             (episode_id,),
         ).fetchone()

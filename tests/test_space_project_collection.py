@@ -31,7 +31,6 @@ def test_space_collection_exact_binding_and_replay(manifest, tmp_path, monkeypat
     before = project.service.history.state().revision
     project.patch_path.write_text(agent_patch_json(seed_patch()))
     (stage / "patch.json").write_text("stray")
-    (stage / "watch.json").write_text("stray")
     original_receipt = store.record_agent_task_receipt
 
     def fail_after_collection(operation_id, category, detail, **kwargs):
@@ -45,7 +44,6 @@ def test_space_collection_exact_binding_and_replay(manifest, tmp_path, monkeypat
             collect_space_projects(owner, execution, found, stage)
     assert project.service.history.state().revision == before + 1
     assert not (stage / "patch.json").exists()
-    assert not (stage / "watch.json").exists()
     assert not project.patch_path.exists()
     retry = store.create_agent_task(
         store.agent_task(execution.operation_id).model_copy(

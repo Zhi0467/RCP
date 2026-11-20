@@ -20,6 +20,7 @@ from rcp.limits import WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT
 from rcp.runs.watcher_admission import start_plain_watcher_wake
 from rcp.storage import AgentTaskRecord, AppStore, WatcherRecord, watcher_next_check_at
 from rcp.storage.models import WatcherCheckRecord
+from rcp.watcher_folder import WatcherFile, reconcile_watcher_files
 from rcp.watchers import (
     AgentWatchSpec,
     GraphWatcherRetryRegistry,
@@ -29,13 +30,10 @@ from rcp.watchers import (
     WatcherInitialCheckError,
     WatcherPoller,
     WatchSpec,
-    arm_watchers,
-    parse_experiment_watch_json,
-    parse_watch_json,
     run_watcher_check,
 )
 
-from .helpers import fabricated_authorizer, wait_until
+from .helpers import fabricated_authorizer, fake_launch_admitted, wait_until
 
 
 @pytest.fixture
@@ -164,51 +162,35 @@ def _result(state: str, exit_code: int | None, error: str | None = None) -> Watc
     )
 
 
-def test_watch_json_is_a_nonempty_strict_two_list_object() -> None:
-    parsed = parse_watch_json(
-        '{"external":[{"purpose":"job finishes","check_command":"squeue -h -j 4471 >/dev/null",'
-        '"log_path":"/logs/4471.log","cwd":"/work"}],'
-        '"graph":[{"node_id":"blk/waiting","status_in":["resolved"]}]}'
+def test_a_watcher_file_is_strict_and_has_exactly_one_definition() -> None:
+    check = {"check_command": "squeue -h -j 4471 >/dev/null", "log_path": "/logs/4471.log"}
+    parsed = WatcherFile.model_validate(
+        {"purpose": "job finishes", "checks": [check | {"cwd": "/work"}]}
     )
-
-    assert parsed.external == [
-        AgentWatchSpec(
-            purpose="job finishes",
-            check_command="squeue -h -j 4471 >/dev/null",
-            log_path="/logs/4471.log",
-            cwd="/work",
-        )
-    ]
-    assert [item.model_dump(mode="json") for item in parsed.graph] == [
-        {"node_id": "blk/waiting", "status_in": ["resolved"]}
-    ]
+    assert parsed.checks[0].cwd == "/work"
+    graph = WatcherFile.model_validate(
+        {"purpose": "node resolves", "graph": {"node_id": "blk/waiting", "status_in": ["resolved"]}}
+    )
+    assert graph.graph is not None and graph.graph.node_id == "blk/waiting"
     for payload in (
-        '{"external":[],"graph":[]}',
-        "[]",
-        '{"purpose":"job finishes","check_command":"true","log_path":"/tmp/x","cwd":"/tmp"}',
-        '{"external":[{"purpose":"job finishes","check_command":"true","log_path":"relative","cwd":"/tmp"}],"graph":[]}',
-        '{"external":[{"purpose":"job finishes","check_command":"true","log_path":"/tmp/x","cwd":"/tmp",'
-        '"host":"bad"}],"graph":[]}',
-        '{"external":[],"graph":[{"node_id":"blk/waiting","standing":"accepted"}]}',
+        {"purpose": "job finishes"},
+        {"purpose": "job finishes", "checks": []},
+        {"purpose": "job finishes", "checks": [check | {"cwd": "relative"}]},
+        {"purpose": "job finishes", "checks": [check | {"cwd": "/work", "host": "bad"}]},
+        {
+            "purpose": "job finishes",
+            "checks": [check | {"cwd": "/work", "cancel_command": "scancel 1"}],
+        },
+        {"purpose": " ", "checks": [check | {"cwd": "/work"}]},
+        {
+            "purpose": "both",
+            "checks": [check | {"cwd": "/work"}],
+            "graph": {"node_id": "blk/waiting", "status_in": ["resolved"]},
+        },
+        {"purpose": "job finishes", "graph": {"node_id": "blk/waiting", "standing": "accepted"}},
     ):
-        with pytest.raises((ValidationError, ValueError)):
-            parse_watch_json(payload)
-
-
-def test_experiment_watch_json_accepts_observers_stops_and_graph_conditions() -> None:
-    assert parse_experiment_watch_json('{"external":[],"graph":[]}').is_empty
-    handoff = parse_experiment_watch_json(
-        '{"external":['
-        '{"purpose":"job finishes","check_command":"exit 1","log_path":"/tmp/a.log","cwd":"/tmp"},'
-        '{"stop_watcher_id":"old-watcher","reason":"Cancelled superseded job"}'
-        '],"graph":[{"node_id":"hyp/result","proposal_resolved":true}]}'
-    )
-
-    assert [item.log_path for item in handoff.observers] == ["/tmp/a.log"]
-    assert [item.stop_watcher_id for item in handoff.stops] == ["old-watcher"]
-    assert [item.model_dump(mode="json") for item in handoff.graph_conditions] == [
-        {"node_id": "hyp/result", "proposal_resolved": True}
-    ]
+        with pytest.raises(ValidationError):
+            WatcherFile.model_validate(payload)
 
 
 def test_check_runs_from_declared_cwd_and_uses_exit_table(tmp_path) -> None:
@@ -418,13 +400,17 @@ def test_an_unobservable_check_still_wakes_its_agent(store) -> None:
     assert ready.checks[0].unobservable
 
 
-def test_initial_error_arms_none_then_corrected_list_persists_atomically(store) -> None:
-    specs = [
-        AgentWatchSpec(
-            purpose="job finishes", check_command=name, log_path=f"/tmp/{name}.log", cwd="/tmp"
-        )
+def test_initial_error_arms_none_then_corrected_folder_persists_atomically(store) -> None:
+    _chat_turn(store, "origin")
+    files = {
+        f"{name}.json": WatcherFile.model_validate(
+            {
+                "purpose": "job finishes",
+                "checks": [{"check_command": name, "log_path": f"/tmp/{name}.log", "cwd": "/tmp"}],
+            }
+        ).model_dump_json()
         for name in ("one", "two")
-    ]
+    }
 
     def one_bad(spec: WatchSpec, _host: str, _timeout: float) -> WatcherCheckResult:
         return (
@@ -432,37 +418,22 @@ def test_initial_error_arms_none_then_corrected_list_persists_atomically(store) 
         )
 
     with pytest.raises(WatcherInitialCheckError):
-        arm_watchers(store, specs, _binding(), check_runner=one_bad)
+        reconcile_watcher_files(store, _binding(), {}, files, check_runner=one_bad)
     assert store.agent_watchers("chat") == []
 
     def corrected(spec: WatchSpec, _host: str, _timeout: float) -> WatcherCheckResult:
         return _result("complete", 0) if spec.check_command == "two" else _result("active", 1)
 
-    records = arm_watchers(store, specs, _binding(), check_runner=corrected)
+    records = reconcile_watcher_files(store, _binding(), {}, files, check_runner=corrected)
 
-    assert [record.state for record in records] == ["watching", "finished"]
-    assert {record.watcher_id for record in AppStore(store.path).agent_watchers("chat")} == {
-        record.watcher_id for record in records
+    assert {record.watcher_id: record.state for record in records} == {
+        "one": "watching",
+        "two": "finished",
     }
-
-
-def test_an_identical_live_watcher_is_reused_instead_of_stacking_a_second_wake(store) -> None:
-    spec = AgentWatchSpec(
-        purpose="job finishes", check_command="squeue", log_path="/tmp/job.log", cwd="/tmp"
-    )
-    other = spec.model_copy(update={"log_path": "/tmp/other.log"})
-
-    def active(*_args) -> WatcherCheckResult:
-        return _result("active", 1)
-
-    (first,) = arm_watchers(store, [spec], _binding(), check_runner=active)
-    again, fresh = arm_watchers(
-        store, [spec, other], _binding(), reuse_live=True, check_runner=active
-    )
-
-    assert again.watcher_id == first.watcher_id
-    assert fresh.watcher_id != first.watcher_id
-    assert len(store.agent_watchers("chat")) == 2
+    assert {record.watcher_id for record in AppStore(store.path).agent_watchers("chat")} == {
+        "one",
+        "two",
+    }
 
 
 def test_plain_delivery_is_authorized_by_the_arming_turns_human(store) -> None:
@@ -531,7 +502,7 @@ def _task_count(store: AppStore) -> int:
 def _plain_tasks(store: AppStore) -> BackgroundAgentTasks:
     tasks = BackgroundAgentTasks(store, None)
     tasks.admit_provider_task = lambda *_args, **_kwargs: None
-    tasks.launch_admitted = store.agent_task
+    fake_launch_admitted(pytest.MonkeyPatch(), tasks)
     return tasks
 
 
@@ -599,3 +570,33 @@ def test_episode_agents_wake_through_their_episode_owner(store, monkeypatch) -> 
     assert [(agent, found, [w.watcher_id for w in ready]) for agent, found, ready, _ in owned] == [
         ("chat", episode, ["done"])
     ]
+
+
+def test_removing_every_check_cancels_the_watcher_instead_of_leaving_it_empty(store) -> None:
+    watcher = armed(store, "pair")
+    second = watcher.checks[0].model_copy(update={"check_id": "pair-second", "log_path": "/tmp/b"})
+    with store.connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        store.revise_watcher(
+            connection,
+            "pair",
+            purpose=watcher.purpose,
+            removed_check_ids=[],
+            new_checks=[second],
+            at=store.now(),
+        )
+    for check_id in ("pair", "pair-second"):
+        with store.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            store.revise_watcher(
+                connection,
+                "pair",
+                purpose=watcher.purpose,
+                removed_check_ids=[check_id],
+                new_checks=[],
+                at=store.now(),
+            )
+
+    stopped = store.watcher("pair")
+    assert stopped.state == "cancelled" and stopped.cancelled_by == "agent"
+    assert store.agent_watchers("chat", open_only=True) == []

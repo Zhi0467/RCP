@@ -34,7 +34,7 @@ from .helpers import (
     write_turn_outcome,
 )
 from .test_compute_jobs_commands import commands as commands
-from .test_compute_jobs_settlement import _command, _job_for_watcher
+from .test_compute_jobs_settlement import _command, _job_for_watcher, _write_helper_watcher
 
 
 @pytest.mark.parametrize("state", ["running", "exited", "nothing", "malformed"])
@@ -57,7 +57,9 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
 
     monkeypatch.setattr(child_work, "_stage_auto_research_child_work_turn", capture_turn)
     monkeypatch.setattr(
-        work, "arm_watchers", partial(work.arm_watchers, check_runner=commands.check_runner)
+        work,
+        "reconcile_watcher_files",
+        partial(work.reconcile_watcher_files, check_runner=commands.check_runner),
     )
     for owner, name in (
         (child_work, "_start_auto_research_child_validator_mailbox"),
@@ -114,15 +116,13 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
                     Path(job.exit_path).write_text("0 101")
                     commands.backend.alive_handles.remove(self.job_id)
                 elif state == "malformed":
-                    (workspace / "watch.json").write_text('{"external": [{"bad": true}]}')
+                    (workspace / "watchers" / "invalid.json").write_text('{"bad": true}')
             elif self.job_id and len(self.calls) == 2:
                 correction = prompt
                 assert '"job_id"' not in correction
                 if state == "running":
                     assert self.job_id in correction
-                (workspace / "watch.json").write_text(
-                    json.dumps({"external": [self.watcher], "graph": []})
-                )
+                _write_helper_watcher(workspace, self.job_id, self.watcher)
             if len(self.calls) == 3:
                 self.wake_contract = prompt
                 turn, inputs = child_turns[-1]
@@ -135,7 +135,7 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
                 for extensions in (False, True):
                     rules = graph_rules(edits=True, ontology_extensions=extensions)
                     assert rules not in self.wake_contract
-                assert not (workspace / "watch.json").exists()
+                assert not list((workspace / "watchers").iterdir())
             yield AgentEvent(event="session", session_id="child-compute-session")
             yield AgentEvent(event="answer", text="Computation handed off.")
             yield AgentEvent(event="done")
@@ -216,7 +216,7 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
         assert watchers[0].agent_id == child.request["chat_id"]
         assert watchers[0].origin_turn_id == child.operation_id
         assert watchers[0].state == "watching"
-        assert Path(launcher.calls[-1]["cwd"], "watch.json").exists()
+        assert Path(launcher.calls[-1]["cwd"], "watchers", f"{launcher.job_id}.json").exists()
         assert launcher.calls[-1]["session_id"] == "child-compute-session"
         assert staged_turns[0][1] is staged_turns[1][1]
     else:

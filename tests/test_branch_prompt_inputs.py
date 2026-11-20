@@ -290,17 +290,16 @@ def test_branch_graph_repair_refreshes_inline_read_context(manifest, tmp_path, m
     initial_files = {"patch.json": invalid}
     if owner == "experiment_loop":
         repository = service.manifest.repository_map["repo-a"].path
-        initial_files["watch.json"] = json.dumps(
+        initial_files["watchers/job.json"] = json.dumps(
             {
-                "external": [
+                "purpose": "job finishes",
+                "checks": [
                     {
-                        "purpose": "job finishes",
                         "check_command": "false",
                         "log_path": str(Path(repository) / "check.log"),
                         "cwd": repository,
                     }
                 ],
-                "graph": [],
             }
         )
     launcher = ScriptedLauncher(

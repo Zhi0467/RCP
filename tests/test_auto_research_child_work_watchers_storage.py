@@ -111,12 +111,20 @@ def test_child_watcher_wake_claims_once_on_saved_route_and_does_not_spend_b(tmp_
 @pytest.mark.parametrize("stop_parent", [False, True])
 def test_child_stop_fence_cancels_watchers_and_refuses_wake(tmp_path, stop_parent):
     store, parent, route, watcher, wake = _waiting_child(tmp_path)
+    root_watcher = armed_watcher(
+        store,
+        "root-watcher",
+        agent_id=parent.episode_id,
+        origin_turn_id=route.admitted_by_operation_id,
+        completed=False,
+    )
     if stop_parent:
         store.request_auto_research_stop_and_settle_watchers(parent.episode_id)
     else:
         store.request_auto_research_child_work_stop(route.worker_id)
     stopped = store.watcher(watcher.watcher_id)
     assert stopped.state == "cancelled" and stopped.cancelled_by == "rcp"
+    assert (store.watcher(root_watcher.watcher_id).state == "cancelled") is stop_parent
     with pytest.raises(EpisodeNotRunning):
         store.create_auto_research_child_work_watcher_wake_task(
             wake, worker_id=route.worker_id, watcher_ids=[watcher.watcher_id]
