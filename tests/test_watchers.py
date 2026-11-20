@@ -599,3 +599,33 @@ def test_episode_agents_wake_through_their_episode_owner(store, monkeypatch) -> 
     assert [(agent, found, [w.watcher_id for w in ready]) for agent, found, ready, _ in owned] == [
         ("chat", episode, ["done"])
     ]
+
+
+def test_removing_every_check_cancels_the_watcher_instead_of_leaving_it_empty(store) -> None:
+    watcher = armed(store, "pair")
+    second = watcher.checks[0].model_copy(update={"check_id": "pair-second", "log_path": "/tmp/b"})
+    with store.connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        store.revise_watcher(
+            connection,
+            "pair",
+            purpose=watcher.purpose,
+            removed_check_ids=[],
+            new_checks=[second],
+            at=store.now(),
+        )
+    for check_id in ("pair", "pair-second"):
+        with store.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            store.revise_watcher(
+                connection,
+                "pair",
+                purpose=watcher.purpose,
+                removed_check_ids=[check_id],
+                new_checks=[],
+                at=store.now(),
+            )
+
+    stopped = store.watcher("pair")
+    assert stopped.state == "cancelled" and stopped.cancelled_by == "agent"
+    assert store.agent_watchers("chat", open_only=True) == []

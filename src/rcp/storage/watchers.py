@@ -564,7 +564,10 @@ class WatcherStoreMixin(StoreMixinBase):
         new_checks: list[WatcherCheckRecord],
         at: str,
     ) -> None:
-        """Change an open watcher in place: matched checks keep their state."""
+        """Change an open watcher in place: matched checks keep their state.
+
+        Removing its last check cancels the watcher, which never stays open checking nothing.
+        """
 
         current = _watcher_records(connection, "w.watcher_id = ?", (watcher_id,))
         if not current or not current[0].open:
@@ -580,6 +583,16 @@ class WatcherStoreMixin(StoreMixinBase):
             )
         for check in new_checks:
             self._insert_check(connection, check.model_copy(update={"watcher_id": watcher_id}))
+        if (
+            not new_checks
+            and not _watcher_records(connection, "w.watcher_id = ?", (watcher_id,))[0].live_checks
+        ):
+            self.cancel_watchers(
+                [watcher_id],
+                by="agent",
+                reason="Its last check was removed.",
+                connection=connection,
+            )
 
     def cancel_watchers(
         self,
