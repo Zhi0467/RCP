@@ -18,8 +18,6 @@ from .helpers import append_fixture_patch, create_named_app, seed_patch, wait_fo
 from .test_episode_api import settling_auto_research_stream
 
 _EXECUTION_PROFILES = (
-    "seed",
-    "refresh",
     "node_chat",
     "project_chat",
     "paper_coach",

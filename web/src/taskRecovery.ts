@@ -52,7 +52,6 @@ export function taskRetryConfig(task: AgentTask, project: ProjectSnapshot): Agen
 
 /** The profile whose defaults fill a retry the task's own request left unset. */
 export function retryProfileKind(task: AgentTask): AgentExecutionProfile {
-  if (task.kind === "seed" || task.kind === "refresh") return task.kind;
   if (task.kind === "auto_research") return "orchestrator";
   if (isExperimentLoopRecovery(task)) return "node_chat";
   return task.kind === "project_chat" || task.kind === "paper_coach" ? task.kind : "node_chat";

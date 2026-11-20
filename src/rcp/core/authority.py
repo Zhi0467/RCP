@@ -49,7 +49,7 @@ if TYPE_CHECKING:
 AGENT_GRAPH_AUTHORITY_POLICY_VERSION = "s115-v2"
 
 AgentProfile = Literal["ordinary", "orchestrator"]
-DispatchPatchKind = Literal["seed", "refresh", "work", "experiment_loop"]
+DispatchPatchKind = Literal["work", "experiment_loop"]
 ChatFocus = Literal["paper"]
 
 #: Whether ``user_id`` is currently a member of ``project_id``. Membership is
@@ -173,13 +173,9 @@ class AgentTaskAuthority(BaseModel):
         return self.merge_source if self.merge_dispatcher == "member" else None
 
 
-ORDINARY_AGENT_TASK_CONTRACTS: frozenset[AgentCapability] = frozenset(
-    {"discuss", "work_auto", "scratch_patch"}
-)
+ORDINARY_AGENT_TASK_CONTRACTS: frozenset[AgentCapability] = frozenset({"discuss", "work_auto"})
 ORCHESTRATOR_AGENT_TASK_CONTRACTS: frozenset[AgentCapability] = frozenset({"orchestrate"})
-APPLY_CAPABLE_TASK_CONTRACTS: frozenset[AgentCapability] = frozenset(
-    {"work_auto", "scratch_patch", "orchestrate"}
-)
+APPLY_CAPABLE_TASK_CONTRACTS: frozenset[AgentCapability] = frozenset({"work_auto", "orchestrate"})
 
 
 def _require_scope_shape(
@@ -259,20 +255,6 @@ def _require_scope_shape(
         if contract == "work_auto" and scope.patch_kind not in {"work", "experiment_loop"}:
             raise ValueError(
                 f"Authority refused action {action!r}: work_auto requires Work or Experiment scope."
-            )
-        return
-    if contract == "scratch_patch":
-        if scope.patch_kind not in {"seed", "refresh"}:
-            raise ValueError(
-                f"Authority refused action {action!r}: scratch_patch requires seed or refresh "
-                "scope."
-            )
-        if any(
-            value is not None
-            for value in (scope.episode_id, scope.chat_scope, scope.chat_id, scope.node_id)
-        ):
-            raise ValueError(
-                f"Authority refused action {action!r}: scratch_patch cannot carry chat identity."
             )
         return
 
@@ -360,9 +342,10 @@ def require_apply(
             f"task contract {dispatch.task_contract!r} exposes no graph Patch channel."
         )
     scope = dispatch.scope
-    compatible_scope = (
-        dispatch.task_contract == "scratch_patch" and scope.patch_kind in {"seed", "refresh"}
-    ) or (dispatch.task_contract == "work_auto" and scope.patch_kind in {"work", "experiment_loop"})
+    compatible_scope = dispatch.task_contract == "work_auto" and scope.patch_kind in {
+        "work",
+        "experiment_loop",
+    }
     compatible_scope = compatible_scope or (
         dispatch.task_contract == "orchestrate" and scope.patch_kind == "work"
     )

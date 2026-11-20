@@ -237,7 +237,7 @@ def test_migration_upgrades_existing_database_and_preserves_existing_rows(store)
         assert connection.execute("SELECT * FROM space_identity").fetchall() == identity
 
 
-@pytest.mark.parametrize("capability", ["discuss", "work_auto", "orchestrate", "scratch_patch"])
+@pytest.mark.parametrize("capability", ["discuss", "work_auto", "orchestrate"])
 def test_origin_write_scope_matches_capability(origin, capability):
     values = {**origin.model_dump(), "capability": capability}
     if capability == "discuss":

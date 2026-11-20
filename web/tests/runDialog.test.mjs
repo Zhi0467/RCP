@@ -36,13 +36,6 @@ after(() => server.close());
 
 const project = {
   agent_profiles: {
-    seed: {
-      provider: "codex",
-      model: "",
-      reasoning: "medium",
-      run_on: "local",
-      permissions: {},
-    },
     node_chat: {
       provider: "codex",
       model: "",
@@ -71,13 +64,6 @@ const project = {
       run_on: "local",
       permissions: {},
     },
-    refresh: {
-      provider: "codex",
-      model: "",
-      reasoning: "medium",
-      run_on: "local",
-      permissions: {},
-    },
   },
   provider_readiness: {
     local: {
@@ -98,29 +84,13 @@ const project = {
   name: "Project",
 };
 
-test("seed and refresh runs offer one empty, labelled additional-message field", () => {
-  const html = renderMarkup(
-    React.createElement(RunDialog, {
-      open: true,
-      kind: "seed",
-      project,
-      busy: false,
-      onClose() {},
-      onRun() {},
-    }),
-  );
-
-  assert.match(html, /<textarea rows="4"><\/textarea>/);
-  assert.equal(html.match(/<textarea/g)?.length, 1);
-  assert.doesNotMatch(html, /placeholder=/);
-});
-
-test("a closed run dialog renders no message field", () => {
+test("a closed run dialog renders nothing", () => {
   const html = renderMarkup(
     React.createElement(RunDialog, {
       open: false,
-      kind: "seed",
+      kind: "node_chat",
       project,
+      initialConfig: { provider: "codex", model: "", reasoning: "medium", run_on: "local" },
       busy: false,
       onClose() {},
       onRun() {},
@@ -948,34 +918,11 @@ test("a running watcher wake or episode turn shows its Activity row before any a
   }
 });
 
-test("retry keeps the original task boundary and exposes provider configuration", () => {
-  const html = renderMarkup(
-    React.createElement(RunDialog, {
-      open: true,
-      kind: "seed",
-      mode: "retry",
-      project,
-      initialConfig: {
-        provider: "codex",
-        model: "",
-        reasoning: "medium",
-        run_on: "local",
-      },
-      busy: false,
-      onClose() {},
-      onRun() {},
-    }),
-  );
-
-  assert.doesNotMatch(html, /<button class="button primary" disabled=""/);
-});
-
 test("Experiment provider switch exposes provider controls and no machine choice", () => {
   const html = renderMarkup(
     React.createElement(RunDialog, {
       open: true,
       kind: "node_chat",
-      mode: "retry",
       project,
       initialConfig: {
         provider: "codex",
@@ -994,15 +941,14 @@ test("Experiment provider switch exposes provider controls and no machine choice
 });
 
 test("every switch dialog holds its submit until the binding actually changes", () => {
-  // Only seed and refresh reach this dialog as a plain retry; every other kind
-  // gets here through a switch control, where an unchanged selection is a no-op.
+  // Every kind gets here through a switch control, where an unchanged selection
+  // is a no-op.
   const initialConfig = { provider: "codex", model: "", reasoning: "medium", run_on: "local" };
   const render = (kind, config) =>
     renderMarkup(
       React.createElement(RunDialog, {
         open: true,
         kind,
-        mode: "retry",
         project,
         initialConfig: config ?? initialConfig,
         busy: false,
@@ -1015,11 +961,6 @@ test("every switch dialog holds its submit until the binding actually changes", 
     const html = render(kind);
     assert.match(html, /<button class="button primary" disabled=""/);
   }
-
-  // Seed keeps a submittable plain retry with nothing changed.
-  const seed = render("seed");
-
-  assert.doesNotMatch(seed, /<button class="button primary" disabled=""/);
 });
 
 test("Experiment provider switch requires an agent selection change and ignores run_on", () => {

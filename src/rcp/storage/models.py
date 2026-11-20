@@ -25,8 +25,8 @@ from pydantic import (
 
 from rcp.config import (
     DEFAULT_AUTO_RESEARCH_INVOCATION_CEILING,
-    AgentExecutionProfile,
     MachineComputeConfig,
+    RecordedAgentProfile,
 )
 from rcp.core.authority import (
     AgentDispatchAuthority,
@@ -581,7 +581,7 @@ class ProjectProvisioningRepositoryRecord(ProjectProvisioningRepositoryIntent):
 
 
 class ProjectProvisioningProviderIntent(_StrictProvisioningModel):
-    profile: AgentExecutionProfile
+    profile: RecordedAgentProfile
     provider: ProviderId
     runtime_id: str
     model: str = Field(max_length=200)

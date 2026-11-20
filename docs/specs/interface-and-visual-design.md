@@ -116,7 +116,8 @@ the menu's flow rather than floating off its scroll box. When the row is still s
 branch name truncates before the tab strip narrows below one tab and +.
 No wordmark, logo, or revision label sits beside the project name.
 The labelled Sync control sits beside Auto-research.
-Group the icon-only History and Refresh controls together.
+Group the icon-only History and Refresh controls together. Refresh rereads the
+current panel and project settings. Its icon spins while the reads are pending.
 Agent tasks are icon-only and accessible. Inbox carries a colored count.
 The DAG is under Research. Research has no page heading.
 View switches between the drill-down and the DAG and sets which records show.
@@ -187,7 +188,7 @@ Collapsed cards have no muted recommendation or report commentary. Expanded
 Auto-research detail shows the parent recommendation described by the
 [Runs projection](api-web-and-desktop-projections.md#runs).
 Backend controls select the current Experiment episode, its section, and its health.
-Older episodes remain in History. Seed, Refresh, chat, and coaching are not Runs rows.
+Older episodes remain in History. Chat and coaching are not Runs rows.
 Blockers stay in Inbox.
 
 Run opens episode detail in Runs. Stop loop is the loop action.
@@ -412,7 +413,6 @@ the package menu is open, they move the caret or the highlight as before.
 `/` selects packages. Arrow keys highlight a package, Enter chooses it,
 and Escape dismisses the picker. Selections are per turn.
 Settings supplies fresh-chat defaults. Sessions retain their profile.
-Seed and Refresh have launch controls. Raw truth inputs choose the context.
 The + menu holds Upload file and From RCP, then the turn's options.
 Start episode's picker takes an optional starting message.
 

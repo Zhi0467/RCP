@@ -41,7 +41,7 @@
   },
   "src/agents/agentTasks.ts": {
     "rcp/no-comments": {
-      "count": 12
+      "count": 10
     }
   },
   "src/agents/agentThreadModel.ts": {
@@ -391,7 +391,7 @@
   },
   "src/experiments/RunDialog.tsx": {
     "rcp/no-comments": {
-      "count": 15
+      "count": 14
     }
   },
   "src/experiments/SpaceRuns.tsx": {
@@ -482,11 +482,6 @@
   "src/graph/dagLens.ts": {
     "rcp/no-comments": {
       "count": 1
-    }
-  },
-  "src/graph/graphAuthority.ts": {
-    "rcp/no-comments": {
-      "count": 4
     }
   },
   "src/graph/graphResources.ts": {
@@ -1169,11 +1164,6 @@
       "count": 1
     }
   },
-  "tests/fixtures/settingsProject.ts": {
-    "rcp/no-comments": {
-      "count": 1
-    }
-  },
   "tests/fixtures/settingsRail.tsx": {
     "rcp/no-comments": {
       "count": 2
@@ -1441,7 +1431,7 @@
   },
   "tests/runDialog.test.mjs": {
     "rcp/no-comments": {
-      "count": 12
+      "count": 11
     }
   },
   "tests/runProjection.test.mjs": {

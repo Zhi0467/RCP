@@ -1,21 +1,16 @@
 import { TriangleAlert, Play, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { AgentExecutionProfile, AgentRunConfig, ProjectSnapshot } from "../core/types";
-import {
-  AgentConfigControls,
-  launchProviderReady,
-  profileRunConfig,
-} from "../core/AgentConfigControls";
+import { AgentConfigControls, launchProviderReady } from "../core/AgentConfigControls";
 
 interface Props {
   open: boolean;
   kind: AgentExecutionProfile;
   project: ProjectSnapshot;
-  initialConfig?: AgentRunConfig;
-  mode?: "start" | "retry";
+  initialConfig: AgentRunConfig;
   busy: boolean;
   onClose: () => void;
-  onRun: (config: AgentRunConfig, message: string | null) => void;
+  onRun: (config: AgentRunConfig) => void;
 }
 
 /** Whose binding this dialog is about to change, in that run's own words. */
@@ -25,40 +20,18 @@ function switchTitle(kind: AgentExecutionProfile): string {
   return "Switch provider";
 }
 
-export function RunDialog({
-  open,
-  kind,
-  project,
-  initialConfig,
-  mode = "start",
-  busy,
-  onClose,
-  onRun,
-}: Props) {
-  const [config, setConfig] = useState(() =>
-    profileRunConfig(project.agent_profiles[kind], project.run_on),
-  );
-  const [message, setMessage] = useState("");
+export function RunDialog({ open, kind, project, initialConfig, busy, onClose, onRun }: Props) {
+  const [config, setConfig] = useState(initialConfig);
 
   useEffect(() => {
-    if (!open) return;
-    setConfig(initialConfig || profileRunConfig(project.agent_profiles[kind], project.run_on));
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset the form when it opens or the project changes, not when a profile refresh arrives mid-edit
-  }, [open, initialConfig, kind, project.id]);
-
-  useEffect(() => {
-    if (open) setMessage("");
-  }, [open]);
+    if (open) setConfig(initialConfig);
+  }, [open, initialConfig]);
 
   if (!open) return null;
-  // A run that can retry as-is only reaches this dialog through a switch
-  // control, so opening it means the human wants a different binding and an
-  // unchanged selection is not a submission. Seed and Refresh have no other
-  // retry path, so requiring a change there would block a plain retry.
-  const switching = mode === "retry" && kind !== "seed" && kind !== "refresh";
-  const switchSelectionUnchanged = Boolean(
-    switching && initialConfig && !agentSelectionChanged(config, initialConfig),
-  );
+  // A run only reaches this dialog through a switch control, so opening it
+  // means the human wants a different binding and an unchanged selection is
+  // not a submission.
+  const switchSelectionUnchanged = !agentSelectionChanged(config, initialConfig);
   const readiness = project.provider_readiness[config.run_on]?.[config.provider];
   // Which runtime this run will use. A request cannot override the profile's
   // runtime, and the backend swaps in the provider default only when the run
@@ -83,7 +56,6 @@ export function RunDialog({
       ? project.agent_profiles[kind].effective_model
       : "");
   const childBindingStays = Boolean(
-    switching &&
     kind === "orchestrator" &&
     childProfile &&
     (childProfile.provider !== config.provider || childProfile.effective_model !== selectedModel),
@@ -104,34 +76,11 @@ export function RunDialog({
         aria-labelledby="run-dialog-title"
       >
         <header>
-          <h2 id="run-dialog-title">
-            {switching
-              ? switchTitle(kind)
-              : mode === "retry"
-                ? kind === "seed"
-                  ? "Retry seed"
-                  : "Retry refresh"
-                : kind === "seed"
-                  ? "Seed the project graph"
-                  : "Refresh project understanding"}
-          </h2>
+          <h2 id="run-dialog-title">{switchTitle(kind)}</h2>
           <button className="icon-button" onClick={onClose} disabled={busy} aria-label="Close">
             <X size={16} />
           </button>
         </header>
-        {mode === "start" && (
-          <div className="run-dialog-section">
-            <label className="node-edit-field">
-              <span>Additional message (optional)</span>
-              <textarea
-                rows={4}
-                value={message}
-                disabled={busy}
-                onChange={(event) => setMessage(event.target.value)}
-              />
-            </label>
-          </div>
-        )}
         <AgentConfigControls
           project={project}
           value={config}
@@ -166,24 +115,9 @@ export function RunDialog({
           <button
             className="button primary"
             disabled={busy || switchSelectionUnchanged || !providerReady}
-            onClick={() => onRun(config, message.trim() || null)}
+            onClick={() => onRun(config)}
           >
-            <Play size={14} />{" "}
-            {mode === "retry"
-              ? busy
-                ? switching
-                  ? "Switching…"
-                  : "Retrying…"
-                : switching
-                  ? "Switch provider"
-                  : "Retry"
-              : busy
-                ? kind === "seed"
-                  ? "Seeding…"
-                  : "Refreshing…"
-                : kind === "seed"
-                  ? "Start seed"
-                  : "Start refresh"}
+            <Play size={14} /> {busy ? "Switching…" : "Switch provider"}
           </button>
         </footer>
       </section>

@@ -124,10 +124,7 @@ async function openDemoProject(t, initialFreshness, options = {}) {
     default_run_truth_scope: [],
     providers,
     agent_profiles: Object.fromEntries(
-      ["seed", "refresh", "node_chat", "project_chat", "paper_coach", "orchestrator"].map((k) => [
-        k,
-        profile,
-      ]),
+      ["node_chat", "project_chat", "paper_coach", "orchestrator"].map((k) => [k, profile]),
     ),
     provider_readiness: { local: providers },
     provider_skill_inventories: {},
@@ -893,6 +890,30 @@ test(
     assert.equal(await shellStillMounted(page), true);
   },
 );
+
+for (const width of [390, 1280]) {
+  test(`project Refresh reloads the current graph without launching an agent at ${width}px`, async (t) => {
+    const { page, state, errors } = await openedShell(t, { viewport: { width, height: 844 } });
+    const menu = page.getByRole("button", { name: "Project menu", exact: true });
+    if (await menu.isVisible()) await menu.click();
+    const refresh = page.getByRole("button", { name: "Refresh", exact: true });
+    state.projectGate = Promise.withResolvers();
+    state.projectName = "Reloaded project";
+    const nextRead = page.waitForRequest(
+      (request) => new URL(request.url()).pathname === "/api/projects/demo",
+    );
+    await refresh.click();
+    await nextRead;
+    if (await menu.isVisible()) await menu.click();
+    assert.equal(await refresh.isDisabled(), true);
+    state.projectGate.resolve();
+    await page.locator('.refresh-control[aria-busy="false"]').waitFor();
+    assert.equal(await refresh.isEnabled(), true);
+    await page.getByText(state.projectName, { exact: true }).first().waitFor();
+    assert.equal(state.taskStarts, 0);
+    assert.deepEqual(errors, []);
+  });
+}
 
 test("a desktop refresh revalidates the shown project without holding it inert", async (t) => {
   const { page, state } = await openedShell(t, {

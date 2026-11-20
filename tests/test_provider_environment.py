@@ -634,7 +634,7 @@ async def test_agy_wrapper_is_inside_broker_and_remote_supervisor(tmp_path, monk
             cwd=tmp_path,
             machine_id=BACKEND_MACHINE_ID,
             host=host,
-            capability="scratch_patch",
+            capability="discuss",
             invocation_gate=gate,
             supervise_remote=remote,
             supervisor_path=supervisor if remote else None,

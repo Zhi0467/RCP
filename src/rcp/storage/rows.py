@@ -6,6 +6,7 @@ import sqlite3
 from collections.abc import Mapping
 from datetime import UTC, datetime
 
+from rcp.config import RETIRED_AGENT_PROFILES
 from rcp.core.models import (
     AuthorizedHuman,
 )
@@ -75,7 +76,7 @@ def _agent_task_control_flags(
 
     status = str(row["status"])
     visible = bool(row.get("visible", True))
-    history_only = bool(row.get("history_only", False))
+    history_only = bool(row.get("history_only", False)) or row.get("kind") in RETIRED_AGENT_PROFILES
     stage_ready = row.get("stage_machine_id") in {None, BACKEND_MACHINE_ID} or bool(
         row.get("stage_root")
     )
@@ -219,7 +220,8 @@ class RowMappingMixin:
             progress = 0.85 + 0.14 * (1.0 - math.exp(-(elapsed - estimate) / estimate))
         data["elapsed_seconds"] = round(elapsed, 1)
         data["progress"] = round(min(0.99, max(0.0, progress)), 4) if status != "succeeded" else 1.0
-        active = status in ACTIVE_AGENT_TASK_STATUSES
+        retired = data["kind"] in RETIRED_AGENT_PROFILES
+        active = not retired and status in ACTIVE_AGENT_TASK_STATUSES
         visible = bool(data.get("visible", True))
         history_only = bool(data.get("history_only", False))
         data["visible"] = visible
@@ -228,7 +230,9 @@ class RowMappingMixin:
             data, recovery_abandoned=recovery_abandoned
         )
         data["active"] = active
-        data["awaiting_human"] = not history_only and status in AWAITING_HUMAN_AGENT_TASK_STATUSES
+        data["awaiting_human"] = (
+            not (history_only or retired) and status in AWAITING_HUMAN_AGENT_TASK_STATUSES
+        )
         data["queued"] = status == "queued"
         data["pausing"] = status == "pausing"
         data["paused"] = status == "paused"

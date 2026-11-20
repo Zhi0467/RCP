@@ -894,7 +894,7 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
             project: {
               id: "project",
               name: "Project",
-              agent_profiles: { seed: profile, node_chat: profile, project_chat: profile },
+              agent_profiles: { node_chat: profile, project_chat: profile },
               repositories: [{ alias: "repo", machine: "local", path: "/repo" }],
               project_truth_scope: ["repo"],
               state_repository: "repo",
@@ -1228,7 +1228,7 @@ print(json.dumps(dict(page=shell("tall.html", "text/html", "/tall-content"), ima
               project: {
                 id: "project",
                 name: "Project",
-                agent_profiles: { seed: profile, node_chat: profile, project_chat: profile },
+                agent_profiles: { node_chat: profile, project_chat: profile },
                 repositories: [{ alias: "repo", machine: "local", path: "/repo" }],
                 project_truth_scope: ["repo"],
                 state_repository: "repo",

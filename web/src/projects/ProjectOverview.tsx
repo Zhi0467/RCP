@@ -100,9 +100,7 @@ export function ProjectOverview({
       prompt: "Where are we?",
       answer: activeExperiments.length
         ? `${activeExperiments.length} active experiment${activeExperiments.length === 1 ? "" : "s"}`
-        : !project.last_refresh_at
-          ? "The project has not been seeded yet."
-          : "Understanding and review",
+        : "Understanding and review",
       detail: null,
       view: "execution",
     },
@@ -110,11 +108,7 @@ export function ProjectOverview({
       number: "03",
       prompt: "What changed?",
       answer: latestRevisionText || (latestNode ? latestNode.title : "No graph changes yet."),
-      detail: latestRevisionDetail
-        ? latestRevisionDetail
-        : project.last_refresh_at
-          ? `Last refresh ${new Date(project.last_refresh_at).toLocaleString()}`
-          : "Never refreshed",
+      detail: latestRevisionDetail || null,
       view: "scientific",
     },
     {
@@ -139,12 +133,7 @@ export function ProjectOverview({
     {
       number: "06",
       prompt: "What happens next?",
-      answer: String(
-        nextExperimentAction ||
-          (!project.last_refresh_at
-            ? "Seed the graph from the selected truth repositories."
-            : "Refresh when new research work lands."),
-      ),
+      answer: String(nextExperimentAction || "No experiment is queued."),
       detail: nextExperiment ? nextExperiment.title : null,
       view: nextExperiment ? "execution" : "attention",
     },

@@ -45,17 +45,17 @@ def _review(node_id: str, standing: str, summary: str) -> Patch:
 
 
 def _agent_patch(operation_id: str | None = "operation-1") -> Patch:
-    return seed_patch().model_copy(update={"source_operation_id": operation_id})
+    return seed_patch().model_copy(update={"kind": "work", "source_operation_id": operation_id})
 
 
 def _task_authority(
     operation_id: str,
     authorizer: AuthorizedHuman | None,
     *,
-    patch_kind: str = "seed",
+    patch_kind: str = "work",
     project_id: str = PROJECT_ID,
     profile: str = "ordinary",
-    task_contract: str = "scratch_patch",
+    task_contract: str = "work_auto",
     episode_id: str | None = None,
 ) -> AgentTaskAuthority:
     return AgentTaskAuthority(
@@ -70,6 +70,11 @@ def _task_authority(
                 run_truth_scope=["repo-a"],
                 episode_id=episode_id,
                 patch_kind=patch_kind,
+                **(
+                    {"chat_scope": "project", "chat_id": "attribution-chat"}
+                    if task_contract == "work_auto" and episode_id is None
+                    else {}
+                ),
             ),
         ),
         episode_id=episode_id,
@@ -624,7 +629,6 @@ def test_authorizer_rename_does_not_change_existing_agent_snapshot(manifest) -> 
         return _task_authority(
             operation_id,
             current,
-            patch_kind="refresh" if operation_id == "operation-2" else "seed",
         )
 
     history = HistoryManager(
@@ -637,7 +641,9 @@ def test_authorizer_rename_does_not_change_existing_agent_snapshot(manifest) -> 
     history.append(_agent_patch("operation-1"))
     current = current.model_copy(update={"display_name": "After rename"})
     history.append(
-        refresh_patch("rq/after-rename").model_copy(update={"source_operation_id": "operation-2"})
+        refresh_patch("rq/after-rename").model_copy(
+            update={"kind": "work", "source_operation_id": "operation-2"}
+        )
     )
 
     stored = history.load_patches()

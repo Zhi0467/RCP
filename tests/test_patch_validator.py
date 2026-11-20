@@ -18,11 +18,10 @@ from rcp.runs.patch_validator import (
     serve_patch_validation_mailbox,
     stage_patch_validation_mailbox,
 )
-from rcp.runs.tasks.graph import _validate_graph_patch_live
 from rcp.runs.tasks.work import _apply_work_patch, _validate_work_patch_live
 from rcp.service import ProjectService
 from rcp.storage import AppStore
-from tests.helpers import agent_patch_json, refresh_patch, seed_patch, unchecked_write_authority
+from tests.helpers import refresh_patch, seed_patch, unchecked_write_authority
 
 
 class _RecordingStore:
@@ -326,43 +325,6 @@ def test_live_self_check_and_apply_share_current_state_validation(manifest, tmp_
     assert failure is not None
     assert "already exists" in failure.message
     assert history.state().revision == 2
-
-
-def test_graph_live_self_check_validates_current_state_without_appending(
-    manifest, tmp_path: Path
-) -> None:
-    history = HistoryManager(manifest, write_authority=unchecked_write_authority())
-    service = ProjectService(
-        manifest,
-        history,
-        PaperService(manifest, AppStore(tmp_path / "app.sqlite3")),
-        data_dir=tmp_path,
-    )
-    semantic_patch = agent_patch_json(seed_patch())
-
-    checked = _validate_graph_patch_live(
-        service,
-        semantic_patch,
-        kind="seed",
-        run_truth_scope=["repo-a"],
-    )
-    assert checked.status == "valid"
-    assert checked.live_revision == 0
-    assert checked.candidate_revision == 1
-    assert history.state().revision == 0
-
-    history.append(seed_patch())
-    rechecked = _validate_graph_patch_live(
-        service,
-        semantic_patch,
-        kind="seed",
-        run_truth_scope=["repo-a"],
-    )
-    assert rechecked.status == "invalid"
-    assert rechecked.live_revision == 1
-    assert rechecked.candidate_revision == 2
-    assert len(rechecked.messages) > 1
-    assert history.state().revision == 1
 
 
 @pytest.mark.asyncio

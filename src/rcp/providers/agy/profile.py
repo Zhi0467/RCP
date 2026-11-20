@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shlex
 import subprocess
 import uuid
 from pathlib import Path, PurePosixPath
@@ -55,12 +54,10 @@ _SUBAGENT_TOOLS = ("define_subagent", "invoke_subagent", "manage_subagents", "wa
 _WORK = {"work_auto", "orchestrate"}
 
 
-def _tools(capability: AgentCapability, gate: ProviderInvocationGate | None) -> tuple[str, ...]:
+def _tools(capability: AgentCapability) -> tuple[str, ...]:
     result = _FILE_TOOLS + _WEB_TOOLS
     if capability in _WORK:
         return result + _SHELL_TOOLS + _SUBAGENT_TOOLS
-    if capability == "scratch_patch" and gate is not None and gate.client_path is not None:
-        return (*result, "run_command")
     return result
 
 
@@ -119,8 +116,6 @@ def _policy(
         ]
     if gate is not None and gate.client_path is not None:
         deny.append(f"write_file({PurePosixPath(gate.client_path).parent})")
-        if capability == "scratch_patch":
-            allow.append(f"command({shlex.join(gate.client_executable_argv())})")
     return {
         "agentMode": "",
         "toolPermission": "request-review",
@@ -316,7 +311,7 @@ class AgyProfile(ProviderProfile):
 
     def work_like_probe_command(self, binary: str) -> list[str]:
         policy = _policy("work_auto", Path.cwd(), [], None, None)
-        tools = _tools("work_auto", None)
+        tools = _tools("work_auto")
         return [
             binary,
             "--rcp-agy-tools",
@@ -399,7 +394,7 @@ class AgyProfile(ProviderProfile):
             request.hidden_read_scope,
             request.invocation_gate,
         )
-        tools = _tools(request.capability, request.invocation_gate)
+        tools = _tools(request.capability)
         command = [
             request.binary,
             "--rcp-agy-tools",

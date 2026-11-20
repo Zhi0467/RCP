@@ -589,11 +589,9 @@ def _apply_patch(
 
     state.revision = max(state.revision, revision)
     # Invariant 10f: the ingestion watermark moves only for an ingestion Patch that
-    # materialized, so a failed or rejected run and every conversation turn
-    # leave it alone. It is an overlap-tolerant timestamp, not an exactly-once
-    # cursor (tests/test_direct_ingestion_run.py::
-    # test_failed_graph_run_stages_no_conversation_bytes_and_keeps_watermark,
-    # tests/test_direct_ingestion_contract.py).
+    # materialized. Seed and Refresh runs are retired, so only their historical
+    # Patches move it on replay; every agent turn leaves it alone
+    # (tests/test_retired_ingestion_history.py).
     if patch.kind in {"seed", "refresh"}:
         state.last_refresh_at = patch.created_at
 

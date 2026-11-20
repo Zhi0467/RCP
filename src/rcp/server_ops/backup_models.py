@@ -14,9 +14,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from rcp.config import (
     AGENT_EXECUTION_PROFILES,
-    AgentExecutionProfile,
+    RETIRED_AGENT_PROFILES,
     AgentPermissions,
     Manifest,
+    RecordedAgentProfile,
 )
 from rcp.core.transition_models import GraphHeadRef
 from rcp.limits import (
@@ -614,7 +615,7 @@ class BackupAgentPermissions(AgentPermissions):
 
 
 class BackupManifestAgentProfile(_StrictBackupModel):
-    profile: AgentExecutionProfile
+    profile: RecordedAgentProfile
     provider: ProviderId
     runtime: str
     model: str
@@ -698,7 +699,9 @@ class BackupManifestConfiguration(_StrictBackupModel):
         if not set(self.default_run_truth_scope).issubset(self.project_truth_scope):
             raise ValueError("backup default run scope must be a project subset")
         profiles = [profile.profile for profile in self.agent_profiles]
-        if set(profiles) != set(AGENT_EXECUTION_PROFILES) or len(profiles) != len(set(profiles)):
+        if set(profiles) - RETIRED_AGENT_PROFILES != set(AGENT_EXECUTION_PROFILES) or len(
+            profiles
+        ) != len(set(profiles)):
             raise ValueError("backup manifest must carry every agent profile exactly once")
         return self
 
@@ -759,7 +762,9 @@ class BackupManifestConfiguration(_StrictBackupModel):
             "declared_skill_defaults": True,
             "agent_profiles": {"__all__": {"permissions"}},
         }
-        if self.model_dump(exclude=exclude) != current.model_dump(exclude=exclude):
+        if _without_retired_profiles(self).model_dump(exclude=exclude) != _without_retired_profiles(
+            current
+        ).model_dump(exclude=exclude):
             return False
         if self.declared_skill_defaults is None:
             return all(
@@ -774,6 +779,20 @@ class BackupManifestConfiguration(_StrictBackupModel):
     @property
     def sha256(self) -> str:
         return _canonical_json_sha256(self.model_dump(mode="json"))
+
+
+def _without_retired_profiles(
+    configuration: BackupManifestConfiguration,
+) -> BackupManifestConfiguration:
+    return configuration.model_copy(
+        update={
+            "agent_profiles": tuple(
+                profile
+                for profile in configuration.agent_profiles
+                if profile.profile not in RETIRED_AGENT_PROFILES
+            )
+        }
+    )
 
 
 class BackupRecoveryMachine(_StrictBackupModel):

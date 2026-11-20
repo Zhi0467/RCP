@@ -23,14 +23,7 @@ test("transfer option stays off by default, binds retries, and survives review r
         if (message.type() === "error") errors.push(message.text());
       });
       const projectId = "33333333-3333-4333-8333-333333333333";
-      const profiles = [
-        "seed",
-        "refresh",
-        "node_chat",
-        "project_chat",
-        "paper_coach",
-        "orchestrator",
-      ];
+      const profiles = ["node_chat", "project_chat", "paper_coach", "orchestrator"];
       const profile = {
         provider: "codex",
         runtime: "exec",

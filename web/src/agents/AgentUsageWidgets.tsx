@@ -25,8 +25,6 @@ const taskLabels: Record<AgentTaskKind, string> = {
 };
 
 const taskOrder: AgentTaskKind[] = [
-  "seed",
-  "refresh",
   "node_chat",
   "project_chat",
   "paper_coach",
@@ -34,6 +32,8 @@ const taskOrder: AgentTaskKind[] = [
   "branch_merge",
   "artifact_edit",
 ];
+
+const legacyTaskKinds: AgentTaskKind[] = ["seed", "refresh"];
 
 interface Props {
   usage: AgentUsageSnapshot | null;
@@ -154,7 +154,10 @@ function UsageWidget({
             {providerLabel(providers, provider)}
           </span>
         ))}
-        {taskOrder.map((taskKind) => (
+        {[
+          ...taskOrder,
+          ...legacyTaskKinds.filter((kind) => metric.cells.some((cell) => cell.task_kind === kind)),
+        ].map((taskKind) => (
           <UsageRow
             key={taskKind}
             taskKind={taskKind}

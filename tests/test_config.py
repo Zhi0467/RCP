@@ -67,15 +67,12 @@ default_run_truth_scope = ["repo-a"]
 def test_capability_permissions_are_fixed_and_narrow() -> None:
     discuss = permissions_for("discuss")
     work = permissions_for("work_auto")
-    scratch = permissions_for("scratch_patch")
     paper = permissions_for("paper_coach")
 
     assert discuss.write_graph_patch is False
     assert discuss.write_project_files is False
     assert work.write_graph_patch is True
     assert work.write_project_files is True
-    assert scratch.write_graph_patch is True
-    assert scratch.write_project_files is False
     assert paper == work
 
 
@@ -94,24 +91,28 @@ def test_unknown_agent_capability_is_rejected() -> None:
 def test_surface_permissions_default_conversations_to_work(manifest) -> None:
     assert manifest.agent_profile("node_chat").permissions == permissions_for("work_auto")
     assert manifest.agent_profile("project_chat").permissions == permissions_for("work_auto")
-    assert manifest.agent_profile("seed").permissions == permissions_for("scratch_patch")
-    assert manifest.agent_profile("refresh").permissions == permissions_for("scratch_patch")
     assert manifest.agent_profile("orchestrator").permissions == permissions_for("orchestrate")
 
 
-def test_legacy_manifest_derives_an_independent_orchestrator_from_refresh(manifest) -> None:
-    original = manifest.path.read_text(encoding="utf-8")
-    refresh = manifest.agent_profile("refresh")
-    orchestrator = manifest.agent_profile("orchestrator")
-
-    assert orchestrator is not refresh
-    assert orchestrator.permissions is not refresh.permissions
-    assert orchestrator.model_dump(exclude={"permissions"}) == refresh.model_dump(
-        exclude={"permissions"}
+def test_legacy_manifest_drops_seed_and_refresh_and_derives_the_orchestrator(manifest) -> None:
+    legacy = manifest.path.read_text(encoding="utf-8") + (
+        '\n[agent.seed]\nprovider = "claude"\nmodel = "seed-model"\n'
+        '\n[agent.refresh]\nprovider = "claude"\nmodel = "refresh-model"\n'
+        "\n[agent.refresh.permissions]\nread_graph = true\nread_research_md = true\n"
+        'read_repositories = "run_scope"\nread_conversations = "run_scope"\n'
+        "write_graph_patch = true\nwrite_project_files = false\n"
     )
+    assert "[agent.orchestrator]" not in legacy
+    manifest.path.write_text(legacy, encoding="utf-8")
+
+    loaded = load_manifest(manifest.path)
+
+    assert not hasattr(loaded.agent, "seed")
+    assert not hasattr(loaded.agent, "refresh")
+    orchestrator = loaded.agent_profile("orchestrator")
+    assert (orchestrator.provider, orchestrator.model) == ("claude", "refresh-model")
     assert orchestrator.permissions == permissions_for("orchestrate")
-    assert manifest.path.read_text(encoding="utf-8") == original
-    assert "[agent.orchestrator]" not in original
+    assert manifest.path.read_text(encoding="utf-8") == legacy
 
 
 def test_legacy_manifest_defaults_auto_research_ceiling_without_writing(manifest) -> None:
@@ -159,23 +160,19 @@ def test_manifest_rejects_conflicting_auto_research_ceiling_keys(manifest) -> No
         Manifest.model_validate(payload)
 
 
-def test_current_five_profile_manifest_without_orchestrator_still_normalizes(manifest) -> None:
+def test_manifest_without_orchestrator_still_normalizes(manifest) -> None:
     payload = manifest.model_dump(mode="python")
     payload["agent"].pop("orchestrator")
 
     migrated = Manifest.model_validate(payload)
 
-    assert (
-        migrated.agent_profile("orchestrator").provider
-        == migrated.agent_profile("refresh").provider
-    )
     assert migrated.agent_profile("orchestrator").permissions == permissions_for("orchestrate")
 
 
 def test_orchestrator_profile_permissions_are_fixed(manifest) -> None:
     wrong_permissions = manifest.model_dump(mode="python")
     wrong_permissions["agent"]["orchestrator"]["permissions"] = permissions_for(
-        "scratch_patch"
+        "discuss"
     ).model_dump(mode="python")
     with pytest.raises(ValueError, match="orchestrator safety contract"):
         Manifest.model_validate(wrong_permissions)
@@ -192,8 +189,6 @@ def test_every_agent_runs_on_the_state_repositorys_card(manifest) -> None:
     assert all(
         "run_on" not in loaded.agent_profile(surface).model_dump()
         for surface in (
-            "seed",
-            "refresh",
             "node_chat",
             "project_chat",
             "paper_coach",
@@ -280,10 +275,8 @@ def test_a_relative_path_on_a_remote_card_stays_as_written(manifest) -> None:
     assert loaded.repository_map["repo-b"].path == "work/repo-b"
 
 
-def test_write_agent_settings_persists_all_six_execution_profiles(manifest) -> None:
+def test_write_agent_settings_persists_every_execution_profile(manifest) -> None:
     names = (
-        "seed",
-        "refresh",
         "node_chat",
         "project_chat",
         "paper_coach",
@@ -326,7 +319,7 @@ def test_legacy_compute_connections_load_and_the_next_write_drops_them(manifest)
 
     assert manifest.path.read_text(encoding="utf-8") == legacy
     assert loaded.machines == [BASE]
-    profiles = {surface: loaded.agent_profile(surface) for surface in ("seed", "node_chat")}
+    profiles = {surface: loaded.agent_profile(surface) for surface in ("paper_coach", "node_chat")}
     updated = write_agent_settings(loaded, list(loaded.agent.default_run_truth_scope), profiles)
 
     assert "compute_connections" not in updated.path.read_text(encoding="utf-8")
@@ -337,7 +330,12 @@ def test_legacy_compute_connections_load_and_the_next_write_drops_them(manifest)
 @pytest.mark.parametrize("surface", ["node_chat", "project_chat"])
 def test_exact_legacy_chat_permissions_load_as_work(manifest, legacy, surface) -> None:
     payload = manifest.model_dump(mode="python")
-    payload["agent"][surface]["permissions"] = permissions_for(legacy).model_dump(mode="python")
+    retired = (
+        config_module._RETIRED_SCRATCH_PATCH_PERMISSIONS
+        if legacy == "scratch_patch"
+        else permissions_for(legacy)
+    )
+    payload["agent"][surface]["permissions"] = retired.model_dump(mode="python")
 
     migrated = Manifest.model_validate(payload)
 

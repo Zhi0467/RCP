@@ -527,7 +527,6 @@ def test_metadata_projections_do_not_reconstruct_history(history, monkeypatch):
     assert [row["revision"] for row in history.slice(from_revision=1)] == [1]
     assert [row["revision"] for row in branch.slice(from_revision=2)] == [2]
     assert branch.slice(from_revision=3) == []
-    history.refresh_delta()
     _, changes = branch_changes(SimpleNamespace(history=branch))
     assert "ev/branch" in changes.changed_node_ids
     snapshots = history.branch_read_snapshots(

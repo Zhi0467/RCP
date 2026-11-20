@@ -28,7 +28,7 @@ const requestBody = {
   ],
   provider_checks: [
     {
-      profile: "seed",
+      profile: "node_chat",
       provider: "codex",
       runtime_id: "codex:exec",
       model: "gpt-5.6-luna",

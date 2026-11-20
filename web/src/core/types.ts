@@ -11,9 +11,12 @@ export type AppView =
   | "paper"
   | "settings"
   | "chats";
-export type AgentSurface = "seed" | "refresh" | "node_chat" | "project_chat" | "paper_coach";
+export type AgentSurface = "node_chat" | "project_chat" | "paper_coach";
 export type AgentExecutionProfile = AgentSurface | "orchestrator";
-export type AgentTaskKind = AgentSurface | "auto_research" | "branch_merge" | "artifact_edit";
+export type LegacyAgentTaskKind = "seed" | "refresh";
+export type StartableAgentTaskKind =
+  AgentSurface | "auto_research" | "branch_merge" | "artifact_edit";
+export type AgentTaskKind = StartableAgentTaskKind | LegacyAgentTaskKind;
 /**
  * Opaque on purpose, like `EpisodeStatus`. A task's lifecycle reaches the client
  * already answered, as `active`, `awaiting_human`, `settled`, `status_label`, and
@@ -35,7 +38,7 @@ export type SteerReceiptStatus = {
 export type ConversationMode = "discuss" | "work";
 export type TaskTrigger = "human" | "orchestrator" | "experiment_run" | "watcher" | "schedule";
 export type GraphPatchKind = "work" | "experiment_loop";
-export type AgentCapability = "discuss" | "work_auto" | "orchestrate" | "scratch_patch";
+export type AgentCapability = "discuss" | "work_auto" | "orchestrate";
 
 export const DISPLAY_NAME_MAX_LENGTH = 120;
 export const SPACE_NAME_MAX_LENGTH = 120;
@@ -334,7 +337,7 @@ export interface ProjectProvisioningRepositoryProjection {
 }
 
 export interface ProjectProvisioningProviderProjection {
-  profile: AgentExecutionProfile;
+  profile: AgentExecutionProfile | LegacyAgentTaskKind;
   provider: ProviderId;
   runtime_id: string;
   model: string;
@@ -2964,7 +2967,10 @@ export interface AgentUsageSnapshot {
   records: AgentUsageRecord[];
 }
 
-export type StartAgentTask = (kind: AgentTaskKind, request: AgentTaskRequest) => Promise<AgentTask>;
+export type StartAgentTask = (
+  kind: StartableAgentTaskKind,
+  request: AgentTaskRequest,
+) => Promise<AgentTask>;
 
 export interface ChatOrigin {
   source_chat_id: string;

@@ -106,6 +106,7 @@ import {
   Network,
   RefreshCw,
   RotateCcw,
+  RotateCw,
   Settings,
   Telescope,
   SquareTerminal,
@@ -189,7 +190,6 @@ import {
 import {
   projectGraphMutationFailureLabel,
   projectGraphMutationsDisabled,
-  taskMayMutateGraph,
 } from "./graph/graphAuthority";
 import { buildGlossaryIndex } from "./graph/glossary";
 import {
@@ -1404,15 +1404,12 @@ function MemberApp({
   const { floatingChat, draftConversations, selectedChatId, chatReads, chatTranscripts } =
     chatStateSnapshot;
   const {
-    runDialogOpen,
     autoResearchDialogOpen,
     autoResearchStartError,
     episodeAction,
     episodeRefreshError,
     episodes,
     liveAutoResearchEpisodes,
-    openRunDialog,
-    closeRunDialog,
     openAutoResearchDialog,
     closeAutoResearchDialog,
     reportAutoResearchStartError,
@@ -1892,6 +1889,19 @@ function MemberApp({
       );
     return profiles.map((profile) => resourceKeyId(profile.key));
   }, [backendSessionReady, projectId, graphTarget, apiBase, view, pinsProfile]);
+  const [projectReloading, setProjectReloading] = useState(false);
+  const reloadOpenProject = async () => {
+    if (projectReloading || !projectId) return;
+    setProjectReloading(true);
+    const ids = new Set([...panelRequiredIds, resourceKeyId(settingsProfile(projectId).key)]);
+    try {
+      await Promise.all(Array.from(ids, (id) => store.refresh(id)));
+    } catch (error) {
+      if (isActiveProject(projectId)) reportErrorNotice(errorMessage(error));
+    } finally {
+      setProjectReloading(false);
+    }
+  };
   const panelAdmission = useResourcePresentation("project-panel", panelKey, panelRequiredIds);
   const admittedGraph = panelAdmission.views[0]?.value as ProjectSnapshot | undefined;
   const graphAtAdmittedHead = Boolean(
@@ -2815,11 +2825,8 @@ function MemberApp({
   ]);
 
   useEffect(() => {
-    if (mutationsDisabled) {
-      closeRunDialog();
-      closeAutoResearchDialog();
-    }
-  }, [closeAutoResearchDialog, closeRunDialog, mutationsDisabled]);
+    if (mutationsDisabled) closeAutoResearchDialog();
+  }, [closeAutoResearchDialog, mutationsDisabled]);
 
   // A conversation a task names but the inventory lacks has unknown ownership,
   // so its composer stays closed; fetch the inventory once to resolve it.
@@ -3481,21 +3488,6 @@ function MemberApp({
     [project, startExperiment],
   );
 
-  const runAgent = async (config: AgentRunConfig, message: string | null) => {
-    if (!project || taskStarting || mutationsDisabled) return;
-    const runKind = project.last_refresh_at ? "refresh" : "seed";
-    try {
-      await startAgentTask(runKind, {
-        ...config,
-        model: config.model || null,
-        message,
-      });
-      closeRunDialog();
-    } catch (caught) {
-      setNotice({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
-    }
-  };
-
   const autoResearchRefusal = autoResearchStartRefusal({
     projectOpen: Boolean(project && apiBase),
     mutationsDisabled,
@@ -3844,7 +3836,6 @@ function MemberApp({
     presentTask = true,
   ) => {
     if (taskActionId || !projectId) return;
-    if (action !== "pause" && mutationsDisabled && taskMayMutateGraph(task)) return;
     const finish = beginTaskAction(task.operation_id);
     if (!finish) return;
     try {
@@ -3972,10 +3963,6 @@ function MemberApp({
       setComposerRetry(task);
       if (chatId && chatId !== floatingChat?.chatId && chatId !== selectedExperimentChatId)
         openChats(chatId);
-      return;
-    }
-    if (task.kind === "seed" || task.kind === "refresh") {
-      chooseRetryTask(task);
       return;
     }
     void operateTask(task, "retry");
@@ -4777,7 +4764,6 @@ function MemberApp({
   const attentionCount =
     pendingProposals.length + attentionDecisions.length + openBlockers.length + consolidationCount;
   const showTrustFilter = view === "scientific" || view === "dag";
-  const runKind = project.last_refresh_at ? "refresh" : "seed";
   const replayWarning = projectGraphMutationFailureLabel(project);
   const selectedExperimentExecution = projectExperimentExecution(
     Object.values(presentedGraph.nodes),
@@ -4990,17 +4976,15 @@ function MemberApp({
         {activeTask ? <span className="activity-pulse" /> : null}
       </button>
       <button
-        className="icon-button primary refresh-control"
-        disabled={
-          mutationsDisabled ||
-          projectReconciliation !== "authoritative" ||
-          !project.canonical_state.reachable ||
-          taskStarting
-        }
-        aria-label={runKind === "seed" ? "Seed project" : "Refresh project"}
-        onClick={openRunDialog}
+        className="icon-button refresh-control"
+        type="button"
+        aria-label="Refresh"
+        aria-busy={projectReloading}
+        title="Refresh"
+        disabled={projectReloading}
+        onClick={reloadOpenProject}
       >
-        <RefreshCw className={activeTask && !activeTask.pausing ? "spin" : ""} size={16} />
+        <RotateCw className={projectReloading ? "spin" : undefined} size={16} aria-hidden="true" />
       </button>
       <button
         className="icon-button space-settings-control"
@@ -6103,14 +6087,6 @@ function MemberApp({
           </Suspense>
         </DraggableWindow>
       )}
-      <RunDialog
-        open={runDialogOpen}
-        kind={runKind}
-        project={project}
-        busy={taskStarting}
-        onClose={closeRunDialog}
-        onRun={(config, message) => void runAgent(config, message)}
-      />
       <AutoResearchDialog
         open={autoResearchDialogOpen}
         // Continue's handlers skip silently while any episode action runs, so the
@@ -6152,7 +6128,6 @@ function MemberApp({
       {retryTask && retryConfig && (
         <RunDialog
           open
-          mode="retry"
           kind={retryProfileKind(retryTask)}
           project={project}
           initialConfig={retryConfig}
@@ -6190,9 +6165,6 @@ function MemberApp({
           loading={taskInspectorLoading}
           actionBusy={Boolean(
             taskActionId || (activeTask && activeTask.operation_id !== taskInspectorId),
-          )}
-          mutatingActionsDisabled={Boolean(
-            mutationsDisabled && inspectedTask && taskMayMutateGraph(inspectedTask),
           )}
           onSelect={selectTaskInspector}
           onStop={() => {

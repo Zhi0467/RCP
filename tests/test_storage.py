@@ -2926,7 +2926,7 @@ def test_v02_graph_run_migrates_to_recoverable_interrupted_agent_task(tmp_path) 
     assert record is not None
     assert record.status == "interrupted"
     assert record.can_resume is False
-    assert record.can_retry is True
+    assert record.can_retry is False
     assert record.attempt == 1
     assert record.result is None
     assert record.agent_status is None
@@ -3057,12 +3057,15 @@ def test_child_agent_tasks_use_only_the_explicitly_supplied_authorizer(tmp_path)
         display_name="Child Authorizer",
     )
     now = store.now()
-    request = RunRequest(run_truth_scope=["repo-a"])
-    dispatch_authority = resolve_dispatch_authority("refresh", request)
+    request = RunRequest(
+        run_truth_scope=["repo-a"], chat_scope="project", chat_id="chat-one", mode="work"
+    )
+    dispatch_authority = resolve_dispatch_authority("project_chat", request)
     assert dispatch_authority is not None
     store.create_agent_task(
         _task_record(
             now,
+            kind="project_chat",
             operation_id="parent",
             status="failed",
             request=request.model_dump(mode="json"),
@@ -3074,6 +3077,7 @@ def test_child_agent_tasks_use_only_the_explicitly_supplied_authorizer(tmp_path)
     store.create_agent_task(
         _task_record(
             now,
+            kind="project_chat",
             operation_id="explicit-child",
             status="succeeded",
             request=request.model_dump(mode="json"),
@@ -3086,6 +3090,7 @@ def test_child_agent_tasks_use_only_the_explicitly_supplied_authorizer(tmp_path)
     store.create_agent_task(
         _task_record(
             now,
+            kind="project_chat",
             operation_id="legacy-child",
             status="succeeded",
             request=request.model_dump(mode="json"),

@@ -318,7 +318,7 @@ and chat messages alone are not lines.
 
 Links open ordinary in-app routes: a run's branch orchestrator, exact Experiment
 Runs entry, Inbox item, or consolidation report. Attribution precedence is merge,
-consolidation, identified human, ingestion, captured Work, other agent, system,
+consolidation, identified human, ingestion (old Seed and Refresh steps), captured Work, other agent, system,
 then unattributed human. Stable source keys do not depend on display titles or
 optional task enrichment.
 Conversation-source group labels follow the [canonical agent-name rule](conversations-episodes-and-watchers.md#agent-names).
@@ -1424,8 +1424,9 @@ turns retain them. Clients never supply paths or ownership.
 Runs lists durable Experiment-loop and Auto-research parents, using backend
 health, section, recommendation, and control offers. Experiment entries use
 `ExperimentControlState`, never generic episode status. Layout belongs to
-[Projections](interface-and-visual-design.md#projections). Seed/Refresh and other
-tasks remain in History; Blocker judgment stays in Inbox.
+[Projections](interface-and-visual-design.md#projections). Other tasks remain in
+History; Blocker judgment stays in Inbox. Old Seed and Refresh rows are history
+only: they offer no Retry or Resume, and no route starts a new one.
 
 The exhaustive episode projection gives endings precedence over active state,
 then wrap-up. Exhaustion/human pause needs reauthorization; revoked login needs
@@ -1716,10 +1717,11 @@ check in the Space Settings header. Project Settings owns
 repositories, which space machines the project uses (the same machine cards,
 read from the space), execution profiles, packages, caches, project
 membership, and prospective episode limits, not ontology authoring. Each
-preference has one home, so Project Settings has no Appearance pane. Seed and
-Refresh run on one profile. Project Settings and both project setup flows show
-one Seed and refresh row, and every save writes its choice to both stored
-profiles, so the two cannot drift apart.
+preference has one home, so Project Settings has no Appearance pane. Project
+Settings and both project setup flows list four execution profiles: node chat,
+project chat, paper coach, and orchestrator. A manifest's legacy `agent.seed`
+and `agent.refresh` tables are dropped on load. Without an orchestrator table,
+the legacy refresh table's provider and model seed the orchestrator profile.
 
 Both levels show a section rail beside one pane at a time. The rail lists only
 the sections that exist, each with an icon and a label. The open section lives

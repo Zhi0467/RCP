@@ -379,7 +379,7 @@ def _can_apply_again(store: AppStore, record: AgentTaskRecord) -> bool:
 
 
 def _reject_history_only_control(record: AgentTaskRecord) -> None:
-    if record.history_only:
+    if record.history_only or record.kind in {"seed", "refresh"}:
         raise HTTPException(
             status_code=409,
             detail="This task is retained as history and cannot be controlled or continued.",
@@ -594,6 +594,8 @@ def start_agent_task(
 ) -> dict[str, object]:
     if kind == "paper_coach":
         raise HTTPException(status_code=405, detail="Paper coaching is a Paper chat.")
+    if kind in {"seed", "refresh"}:
+        raise HTTPException(status_code=405, detail="Seed and Refresh runs are retired.")
     body = dict(body)
     try:
         thread_ids = TypeAdapter(list[str]).validate_python(
@@ -1677,17 +1679,6 @@ def _validated_task_request(
             "watcher_ids": [],
         }
     )
-    if kind in {"seed", "refresh"}:
-        if request.worktree or request.worktree_integration:
-            raise ValueError("Only ordinary conversations can use worktrees.")
-        service.history.require_writable()
-        if request.session_id:
-            raise ValueError(
-                "Seed and refresh sessions can only be resumed from an RCP background "
-                "task checkpoint."
-            )
-        return _resolved_graph_request(service, kind, request)
-
     chat_scope: Literal["node", "project"] = "node" if kind == "node_chat" else "project"
     request = request.model_copy(
         update={
@@ -1734,6 +1725,8 @@ def _validate_stored_task_request(
         )
     if kind == "paper_coach":
         raise ValueError("A retired Paper coach turn cannot run again.")
+    if kind in {"seed", "refresh"}:
+        raise ValueError("A retired Seed or Refresh run cannot run again.")
     request = RunRequest.model_validate(body)
     if request.artifact_edit is not None and request.artifact_edit.origin_bound:
         selection = service.resolve_skill_selection(request)
@@ -1743,8 +1736,6 @@ def _validate_stored_task_request(
             skill_ids=request.invoked_skill_ids,
         )
         return request, selection
-    if kind in {"seed", "refresh"}:
-        service.history.require_writable()
     resolved_run = _resolved_graph_request(
         service,
         kind,

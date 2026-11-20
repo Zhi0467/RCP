@@ -89,7 +89,7 @@ becomes `fork-<mon>-<day>` the same way; a lineage fork is named
 Migration backfills legacy names and their reservations. Renames preserve other names.
 Transfer carries current and retired reservations.
 
-Chat, Seed, Refresh, Experiment, Auto-research, and merge launches carry
+Chat, Experiment, Auto-research, and merge launches carry
 the same inventory of retained readable branches in their resolved read scope
 and history usage. Archived readable targets remain listed. Names or ids resolve
 through [History reads](graph-history-and-transitions.md#history-reads).

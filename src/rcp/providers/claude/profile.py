@@ -92,7 +92,7 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
             else:
                 self.command[index] = rendered
         if (
-            request.capability in {"discuss", "scratch_patch"}
+            request.capability == "discuss"
             and request.invocation_gate is not None
             and request.invocation_gate.client_path is not None
         ):
@@ -328,7 +328,6 @@ _CLAUDE_TOOLS: dict[AgentCapability, tuple[str, ...]] = {
     "discuss": _CLAUDE_AGENT_TOOLS,
     "work_auto": _CLAUDE_AGENT_TOOLS,
     "orchestrate": _CLAUDE_AGENT_TOOLS,
-    "scratch_patch": _CLAUDE_AGENT_TOOLS,
     "session_summary": (),
 }
 
@@ -571,7 +570,7 @@ class ClaudeProfile(ProviderProfile):
         # Claude accepts `auto` syntactically but non-interactive `--print`
         # normalizes it to `default` and denies both scratch and repository
         # writes. Work bypasses permission prompts so it can execute unattended;
-        # scratch-patch runs retain acceptEdits; the coach grants only its output.
+        # Discuss retains acceptEdits.
         # Native public-web retrieval is pre-authorized explicitly
         # on non-bypass launches without broadening Bash permissions.
         work_like = capability in {"work_auto", "orchestrate"}
@@ -589,7 +588,6 @@ class ClaudeProfile(ProviderProfile):
             "discuss": "acceptEdits",
             "work_auto": "dontAsk",
             "orchestrate": "dontAsk",
-            "scratch_patch": "acceptEdits",
             "session_summary": "dontAsk",
         }[capability]
         command = [

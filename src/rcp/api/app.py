@@ -217,7 +217,6 @@ from rcp.runs.tasks.branch_merge import stream_branch_merge_task
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.episode_report import EpisodeReportRunRequest, stream_episode_report_run
 from rcp.runs.tasks.experiment_loop import stream_experiment_loop_task
-from rcp.runs.tasks.graph import stream_graph_run
 from rcp.runs.tasks.work import _apply_work_patch, _validate_work_patch_live, stream_work_run
 from rcp.runs.transition_event_reconciliation import reconcile_accepted_graph_boundaries
 from rcp.runs.watcher_admission import start_watcher_notification
@@ -1195,18 +1194,7 @@ def create_app(
                 async for frame in stream:
                     yield frame
             return
-        async with aclosing(
-            stream_graph_run(
-                service,
-                launcher,
-                kind,
-                request,
-                app_data,
-                execution=execution,
-            )
-        ) as stream:
-            async for frame in stream:
-                yield frame
+        raise ValueError(f"Unknown provider task kind: {kind}")
 
     async def background_recorded_task_stream(
         project_id: str,
