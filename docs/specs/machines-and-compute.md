@@ -176,12 +176,8 @@ observer form. Checks report operational liveness, never scientific success.
 log, diagnostic, cancellation history and backend-computed `can_cancel`. There
 is no separate compute-job list API.
 
-`GET /api/agent-threads/{thread_id}/watchers` lists the watchers one agent armed,
-Space agents included, and
-`POST /api/agent-threads/{thread_id}/watchers/{watcher_id}/cancel` cancels one
-of them. Both need access to the agent. A watcher that agent did not arm returns
-404. A project agent's Cancel keeps project write admission. A Space agent's
-Cancel needs none.
+Each agent, Space agents included, also lists and cancels its own watchers
+([agent watcher routes](api-web-and-desktop-projections.md#compute-setup-and-job-apis)).
 
 A human request to
 `POST /api/projects/{project_id}/watchers/{watcher_id}/cancel` requires membership,
