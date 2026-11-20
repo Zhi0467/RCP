@@ -2935,6 +2935,20 @@ class AgentTaskStoreMixin(StoreMixinBase):
             ).fetchone()
         return self._agent_task_record(row) if row else None
 
+    def chat_node_id(self, project_id: str, chat_id: str) -> str | None:
+        """The node a chat's latest node turn discussed, or None for a project chat."""
+        with self.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT json_extract(request_json, '$.node_id') FROM graph_runs
+                WHERE project_id = ? AND kind = 'node_chat'
+                  AND json_extract(request_json, '$.chat_id') = ?
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (project_id, chat_id),
+            ).fetchone()
+        return str(row[0]) if row and row[0] else None
+
     def agent_task(self, operation_id: str) -> AgentTaskRecord | None:
         with self.connection() as connection:
             return self._agent_task_in(connection, operation_id)
