@@ -179,7 +179,7 @@ def thread_projections(
                 # The member's stored pick; null until one is made, when the default applies.
                 "agent": thread.agent,
                 "capabilities": resolve_agent_profile(
-                    SINGLE_ENTRY if thread.kind == "space" else PRIVATE_PROJECT, None, OFFER
+                    SINGLE_ENTRY if thread.project_id is None else PRIVATE_PROJECT, None, OFFER
                 ).welcome(),
                 "can_queue": thread.project_id is not None,
             }

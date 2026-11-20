@@ -1,6 +1,6 @@
 {
   "agents/acceptance.py": 4,
-  "agents/auto_research_prompt.py": 5,
+  "agents/auto_research_prompt.py": 3,
   "agents/command_protocol.py": 1,
   "agents/experiment_loop_prompt.py": 4,
   "agents/launcher.py": 5,
@@ -17,14 +17,14 @@
   "runs/shared.py": 12,
   "runs/space_chat.py": 2,
   "runs/space_projects.py": 6,
-  "runs/tasks/auto_research_child_work.py": 3,
+  "runs/tasks/auto_research_child_work.py": 1,
   "runs/tasks/auto_research_stream.py": 7,
   "runs/tasks/compute_commands.py": 3,
   "runs/tasks/discuss.py": 1,
   "runs/tasks/experiment_loop.py": 9,
   "runs/tasks/experiment_watcher_maintenance.py": 3,
   "runs/tasks/graph.py": 5,
-  "runs/tasks/work.py": 5,
+  "runs/tasks/work.py": 4,
   "runs/tasks/work_turn_runtime.py": 2,
   "watchers.py": 3
 }
