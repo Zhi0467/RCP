@@ -1489,3 +1489,60 @@ def test_a_note_waiting_before_v74_wakes_with_the_fires_it_held(
 
     [note] = json.loads(message[message.index("\n") + 1 :])
     assert note["missed_fires"] == missed
+
+
+def test_shared_schedules_wake_as_each_creating_member(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from rcp.background import BackgroundAgentTasks
+    from rcp.core.models import AuthorizedHuman
+    from rcp.runs.agent_schedules import dispatch_agent_schedules, handle_schedule
+    from rcp.service import RunRequest, resolve_dispatch_authority
+    from rcp.storage import AppStore
+    from tests.helpers import fake_launch_admitted
+    from tests.test_storage import _project, _task_record
+
+    store = AppStore(tmp_path / "state.sqlite3", space_kind="team")
+    store.now = lambda: "2026-01-01T08:00:00+00:00"
+    store.upsert_project(_project("project"))
+    request = RunRequest(chat_id="shared", chat_scope="project", mode="work", message="Hi")
+    authors = []
+    for index, note in enumerate(("First", "Second")):
+        member = store.preprovision_team_member(note)
+        store.seat_project_member("project", member.user_id)
+        author = AuthorizedHuman(space_id=store.space_id, user_id=member.user_id, display_name=note)
+        authors.append(author)
+        store.now = lambda index=index: f"2026-01-01T08:0{index}:00+00:00"
+        store.create_agent_task(
+            _task_record(
+                store.now(),
+                operation_id=note,
+                kind="project_chat",
+                status="succeeded",
+                request=request.model_dump(mode="json"),
+                authorized_by=author,
+                dispatch_authority=resolve_dispatch_authority("project_chat", request),
+            )
+        )
+        added = handle_schedule(
+            store, note, command(action="add", every="1h", note=note, timezone="UTC")
+        )
+        assert added.status == "ok", added.message
+    assert store.agent("shared").visibility == "shared"
+    launched = []
+    tasks = BackgroundAgentTasks(store, lambda *_args: None)
+    fake_launch_admitted(monkeypatch, tasks, launched.append)
+    poller = SimpleNamespace(store=store, tasks=tasks)
+    now = datetime(2026, 1, 1, 9, 1, tzinfo=UTC)
+    store.now = lambda: now.isoformat()
+    dispatch_agent_schedules(poller, now, store.advance_agent_schedules(now))
+    assert len(launched) == 1
+    wake = store.agent_task(launched[0])
+    assert wake.authorized_by == authors[0]
+    assert '"note": "First"' in wake.request["message"]
+    assert '"note": "Second"' not in wake.request["message"]
+    store.complete_agent_task(wake.operation_id, applied_revision=None, result={})
+    dispatch_agent_schedules(poller, now, store.advance_agent_schedules(now))
+    assert len(launched) == 2
+    assert store.agent_task(launched[1]).authorized_by == authors[1]
+    assert all(row.pending_since is None for row in store.agent_schedules())

@@ -429,10 +429,10 @@ def start_ordinary_task(
     if thread is not None:
         if thread.user_id != authorized_by.user_id or thread.project_id != project_id:
             raise HTTPException(status_code=404, detail="Thread not found")
-        if kind != "project_chat" or body.get("mode", "work") != "work" or branch_id:
+        if kind != "project_chat" or body.get("mode", "work") != "work":
             raise HTTPException(
                 status_code=422,
-                detail="Agent threads require Work on the project main graph.",
+                detail="Agent threads require project Work.",
             )
         body = {**body, "mode": "work", "chat_scope": "project"}
         from rcp.runs.agent_thread_commands import sent_thread_agent

@@ -2465,7 +2465,7 @@ current text. An unreadable turn, and a file the turn did not change, answer
 project threads: `thread_id`, `kind`, `project_id`, `project_name`,
 `agent_name`, `unread`, `last_finished_at`, `last_activity_at`, `live_state`,
 `live_label`, `watching`, `latest_operation_id`, `browser_requested`,
-`capabilities`, `can_queue`, and `agent` (the thread's saved agent pick, or null). The Space
+`capabilities`, `archived`, and `agent` (the thread's saved agent pick, or null). The Space
 thread comes first, then project threads by latest activity. `live_state` is idle, queued, running,
 paused (also an interrupted turn), `failed` (the latest turn failed and no retry or resume of it started)
 or `needs_you` (one of the thread's own questions or cards is open, including a
@@ -2487,9 +2487,8 @@ member left are closed and omitted; listing reopens every other thread.
 `capabilities` lists one member-facing line per capability of the thread kind,
 from the record of each verb its turns can be granted: the Space handler's verb
 table, or `WORK_THREAD_VERB_CAPABILITIES` beside the Work handler for a project
-thread. A test holds every grantable verb to a line. `can_queue` is true where
-the queue routes accept the thread's sends, today a project thread; the one
-agent view shows the queue from it.
+thread. A test holds every grantable verb to a line. Every agent queues, schedules,
+forks and archives, so the view shows those controls without a flag.
 
 `GET /api/agent-threads/cards`, with optional `thread_id`, returns
 `{proposal_cards, asked_cards, questions, episodes, next_expiry_at}` for the member's open project threads in their

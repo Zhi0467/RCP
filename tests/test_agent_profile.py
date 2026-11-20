@@ -185,3 +185,8 @@ def test_every_project_agent_may_read_the_authorizing_members_projects() -> None
     turn = AgentTurn(projects=True)
     for placement in (PRIVATE_PROJECT, SHARED_PROJECT):
         assert "projects" in resolve_agent_profile(placement, None, turn).verbs
+
+
+@pytest.mark.parametrize("placement", PLACEMENTS)
+def test_every_placement_offers_schedule(placement) -> None:
+    assert "schedule" in resolve_agent_profile(placement, None, OFFER).verbs

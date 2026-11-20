@@ -355,8 +355,6 @@ def _archive_chat(
     chat_id = _canonical_chat_id(chat_id)
     project_id = catalog.resolve_project_id(project_id)
     user = identity_access.acting_user(request)
-    if body.archived and store.agent_thread(chat_id) is not None:
-        raise HTTPException(status_code=409, detail="private_thread_cannot_be_archived")
     try:
         store.set_chat_archived(project_id, chat_id, user.user_id, archived=body.archived)
     except AgentTaskAdmissionConflict as exc:

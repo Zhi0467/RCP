@@ -109,18 +109,75 @@ def test_thread_attribution_is_projection_only_and_follows_parent(tmp_path):
     assert store.agent_task(parent.operation_id) == parent
 
 
-def test_private_thread_cannot_fork_into_public_chat(tmp_path):
+def test_private_thread_fork_preserves_owner_and_visibility(manifest, tmp_path):
+    from uuid import uuid4
 
-    from rcp.storage import AppStore
+    from rcp.service import RunRequest
+    from tests.test_api import _chat_task_execution
 
-    store = AppStore(tmp_path / "app.sqlite3")
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    client = signed_in_client(app)
+    owner = store.local_owner.user_id
     thread = next(
         t
-        for t in store.ensure_agent_threads("member", ["project"], default_names=("Pip",))
+        for t in store.ensure_agent_threads(owner, [project_id], default_names=("Pip",))
         if t.project_id
     )
-    with pytest.raises(ValueError, match="private"):
-        store.require_chat_fork_source("project", thread.thread_id)
+    request = RunRequest(
+        chat_id=thread.thread_id,
+        chat_scope="project",
+        mode="work",
+        provider="claude",
+        run_on="backend",
+        message="Private work",
+    )
+    source = _chat_task_execution(app, request, "source-turn")
+    source.checkpoint_stage("backend", str(tmp_path / "source-stage"))
+    store.checkpoint_agent_task(source.operation_id, native_session_id="source-session")
+    store.complete_agent_task(source.operation_id, applied_revision=None, result={})
+    base = f"/api/projects/{project_id}/chats"
+    assert client.get(f"{base}/{thread.thread_id}/branch").status_code == 204
+    body = {"graph_target": {"kind": "main"}, "request_id": str(uuid4())}
+    response = client.post(f"{base}/{thread.thread_id}/branch", json=body)
+    assert response.status_code == 200, response.text
+    fork_id = response.json()["chat_id"]
+    fork = store.agent_thread(fork_id)
+    assert fork is not None and fork.user_id == owner and not fork.is_default
+    assert fork.project_id == project_id
+    assert store.agent(fork_id).visibility == "private"
+    assert store.private_chat_owner(fork_id) == owner
+    assert fork_id in store.private_chat_ids_except("another-member")
+    assert fork_id not in store.private_chat_ids_except(owner)
+    replay = client.post(f"{base}/{thread.thread_id}/branch", json=body)
+    assert replay.status_code == 200 and replay.json()["chat_id"] == fork_id
+    assert store.pending_chat_fork_profile(project_id, fork_id)["provider"] == "claude"
+    assert store.agent_task(source.operation_id).native_session_id == "source-session"
+
+
+def test_private_project_archive_survives_thread_listing(manifest, tmp_path):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    project_id = app.state.default_project_id
+    client = signed_in_client(app)
+    thread = next(
+        t
+        for t in store.ensure_agent_threads(
+            store.local_owner.user_id, [project_id], default_names=("Pip",)
+        )
+        if t.project_id
+    )
+    url = f"/api/projects/{project_id}/chats/{thread.thread_id}/archive"
+    archived = client.post(url, json={"archived": True})
+    assert archived.status_code == 200, archived.text
+    assert thread.thread_id in archived.json()["archived"]
+    assert client.get("/api/agent-threads").status_code == 200
+    assert store.chat_archived(project_id, thread.thread_id)
+    assert store.chat_turn_refusal(project_id, thread.thread_id) == "chat_archived"
+    restored = client.post(url, json={"archived": False})
+    assert restored.status_code == 200, restored.text
+    assert not store.chat_archived(project_id, thread.thread_id)
 
 
 def test_task_ownership_filter_precedes_recent_limit(tmp_path):

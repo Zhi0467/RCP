@@ -8,7 +8,7 @@
   "agents/ProjectHistoryDrawer.tsx": 2,
   "agents/agentTasks.ts": 7,
   "agents/agentThreadModel.ts": 4,
-  "agents/agentThreadsApi.ts": 3,
+  "agents/agentThreadsApi.ts": 2,
   "agents/experimentPlanModel.ts": 3,
   "agents/threadWelcome.ts": 1,
   "chat/AgentChatView.tsx": 2,

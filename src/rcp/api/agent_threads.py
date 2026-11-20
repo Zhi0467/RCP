@@ -124,6 +124,7 @@ from rcp.storage.agent_threads import (
     private_artifact_owner,
     thread_binds_task,
 )
+from rcp.storage.agents import AgentRecord
 from rcp.storage.chat_names import ChatNameError, chat_titles
 from rcp.storage.comments import CommentError
 from rcp.storage.models import EpisodeRecord, ProjectRecord
@@ -142,6 +143,19 @@ def owned_thread(store: AppStore, thread_id: str, user_id: str) -> AgentThreadRe
     if thread.project_id and not store.is_project_member(thread.project_id, user_id):
         raise HTTPException(status_code=404, detail="Thread not found")
     return thread
+
+
+def accessible_agent(store: AppStore, agent_id: str, user_id: str) -> AgentRecord:
+    agent = store.agent(agent_id)
+    thread = store.agent_thread(agent_id)
+    if (
+        agent is None
+        or (agent.owner_user_id is not None and agent.owner_user_id != user_id)
+        or (agent.project_id and not store.is_project_member(agent.project_id, user_id))
+        or (thread is not None and thread.closed_at is not None)
+    ):
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return agent
 
 
 def owned_space_thread(store: AppStore, thread_id: str, user_id: str) -> AgentThreadRecord:
@@ -943,16 +957,19 @@ def queue_thread_message(
 ):
     """Keep the member's message until the thread is free, then run one drain pass for it."""
     authorized = identity_access.require_patch_capable_identity(request)
-    thread = owned_project_thread(store, thread_id, authorized.user_id)
-    assert thread.project_id is not None
+    thread = accessible_agent(store, thread_id, authorized.user_id)
     key = str(idempotency_key)
-    with project_write_admission(thread.project_id, request) as project_id:
+    with (
+        project_write_admission(thread.project_id, request)
+        if thread.project_id
+        else nullcontext(store.space_id)
+    ) as project_id:
         if refusal := store.chat_turn_refusal(project_id, thread_id):
             raise HTTPException(status_code=409, detail=refusal)
         queued = store.agent_thread_queue_for_key(thread_id, key) or _queue_new_message(
-            store, catalog, attachment_store, thread, project_id, body, key
+            store, catalog, attachment_store, thread, project_id, authorized.user_id, body, key
         )
-    if queued.request_sha256 != body.request_sha256():
+    if queued.user_id != authorized.user_id or queued.request_sha256 != body.request_sha256():
         raise HTTPException(status_code=422, detail="The key was used for another message")
     request.app.state.reconcile_thread_handoffs()
     current = store.agent_thread_queue_item(queued.queue_id)
@@ -966,8 +983,9 @@ def _queue_new_message(
     store: AppStore,
     catalog: ProjectCatalog,
     attachment_store: ChatAttachmentStore,
-    thread: AgentThreadRecord,
+    thread: AgentRecord,
     project_id: str,
+    user_id: str,
     body: QueuedMessageBody,
     key: str,
 ) -> AgentThreadQueueRecord:
@@ -982,24 +1000,24 @@ def _queue_new_message(
             attachment_store,
             project_id,
             RunRequest(
-                chat_id=thread.thread_id,
+                chat_id=thread.agent_id,
                 chat_scope="project",
                 attachment_set_id=body.attachment_set_id,
                 attachment_client_id=client_id,
                 references=body.references,
             ),
             operation_id=operation_id,
-            viewer_id=thread.user_id,
+            viewer_id=user_id,
         )
     except ValueError as exc:
-        if (raced := store.agent_thread_queue_for_key(thread.thread_id, key)) is not None:
+        if (raced := store.agent_thread_queue_for_key(thread.agent_id, key)) is not None:
             return raced
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
         queued = store.queue_agent_thread_message(
             queue_id=queue_id,
-            thread_id=thread.thread_id,
-            user_id=thread.user_id,
+            thread_id=thread.agent_id,
+            user_id=user_id,
             idempotency_key=key,
             message=body.message,
             attachment_set_id=batch,
@@ -1028,9 +1046,15 @@ def remove_queued_message(
     attachment_store: AttachmentStoreDependency,
 ):
     """Remove the member's unstarted or refused message; a started one stays."""
-    thread = owned_project_thread(store, thread_id, identity_access.acting_user(request).user_id)
+    user_id = identity_access.acting_user(request).user_id
+    thread = accessible_agent(store, thread_id, user_id)
     row = store.agent_thread_queue_item(queue_id)
-    if row is None or row.thread_id != thread.thread_id or row.removed_at is not None:
+    if (
+        row is None
+        or row.thread_id != thread.agent_id
+        or row.user_id != user_id
+        or row.removed_at is not None
+    ):
         raise HTTPException(status_code=404, detail="Queued message not found")
     removed = store.remove_agent_thread_queue_item(queue_id)
     if removed is None:
@@ -1049,7 +1073,8 @@ def thread_queue(
     identity_access: IdentityDependency,
 ):
     """What waits for the thread: ready handoffs and the member's messages, by readiness."""
-    thread = owned_project_thread(store, thread_id, identity_access.acting_user(request).user_id)
+    user_id = identity_access.acting_user(request).user_id
+    thread = accessible_agent(store, thread_id, user_id)
     items: list[dict[str, object]] = []
     for handoff in store.pending_agent_handoffs(thread_id):
         source = store.agent_task(handoff.source_operation_id)
@@ -1073,7 +1098,7 @@ def thread_queue(
             "refusal_reason": row.refusal_reason,
             "attachment_count": row.attachment_count,
         }
-        for row in store.agent_thread_queue(thread.thread_id)
+        for row in store.agent_thread_queue(thread.agent_id)
     )
     items.sort(key=lambda item: str(item.get("ready_at") or item.get("created_at")))
     return {"items": items}

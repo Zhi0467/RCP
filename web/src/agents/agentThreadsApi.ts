@@ -102,19 +102,25 @@ export async function sendThreadTurn(
   return { operation_id: task.operation_id };
 }
 
-/** A Space thread has no queue; its sends keep today's wait. */
 export async function loadThreadQueue(
-  thread: AgentThread,
+  thread: Pick<AgentThread, "thread_id">,
   request: Request = api,
 ): Promise<AgentThreadQueue> {
-  if (thread.kind !== "project") return { items: [] };
   return request(`${threadPath(thread.thread_id)}/queue`);
 }
 
 /** Queues a project send's message, files and references; the request id makes a resend safe. */
 export function queueThreadTurn(
-  thread: AgentThread,
-  { message, attachment_set_id, attachment_client_id, references }: AgentThreadTurnRequest,
+  thread: Pick<AgentThread, "thread_id">,
+  {
+    message,
+    attachment_set_id,
+    attachment_client_id,
+    references,
+  }: Pick<
+    AgentThreadTurnRequest,
+    "message" | "attachment_set_id" | "attachment_client_id" | "references"
+  >,
   requestId: string,
   request: Request = api,
 ): Promise<{ queue_id: string; operation_id: string | null }> {
@@ -130,7 +136,7 @@ export function queueThreadTurn(
 }
 
 export function removeQueuedTurn(
-  thread: AgentThread,
+  thread: Pick<AgentThread, "thread_id">,
   queueId: string,
   request: Request = api,
 ): Promise<void> {

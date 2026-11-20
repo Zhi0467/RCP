@@ -10,6 +10,7 @@ from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import classify_terminal_error
 from rcp.runs.provider_usage import record_provider_usage
 from rcp.storage import AppStore
+from rcp.storage.agent_tasks import SESSION_TASK_KINDS
 from rcp.storage.agent_threads import AgentThreadRecord, bound_thread
 from rcp.storage.watchers import _OPEN
 
@@ -116,10 +117,11 @@ def thread_projections(
                 thread_ids,
             )
         }
-        names = {
-            (row["project_id"], row["chat_id"]): row["title"]
+        display = {
+            (row["project_id"], row["chat_id"]): row
             for row in connection.execute(
-                f"SELECT project_id, chat_id, title FROM chat_display WHERE chat_id IN ({ids})",
+                "SELECT project_id, chat_id, title, archived_at FROM chat_display "
+                f"WHERE chat_id IN ({ids})",
                 thread_ids,
             )
         }
@@ -166,7 +168,9 @@ def thread_projections(
             # An alias or retired id resolves through the store's own rule.
             project = store.project(thread.project_id)
             project_name = project.name if project else None
-        name = names.get((scope, thread_id))
+        shown = display.get((scope, thread_id))
+        name = shown["title"] if shown is not None else None
+        placement = SINGLE_ENTRY if thread.project_id is None else PRIVATE_PROJECT
         rows.append(
             {
                 "thread_id": thread_id,
@@ -187,10 +191,8 @@ def thread_projections(
                 "browser_requested": browser.get((scope, thread_id), False),
                 # The member's stored pick; null until one is made, when the default applies.
                 "agent": thread.agent,
-                "capabilities": resolve_agent_profile(
-                    SINGLE_ENTRY if thread.project_id is None else PRIVATE_PROJECT, None, OFFER
-                ).welcome(),
-                "can_queue": thread.project_id is not None,
+                "capabilities": resolve_agent_profile(placement, None, OFFER).welcome(),
+                "archived": bool(shown is not None and shown["archived_at"]),
             }
         )
     return rows
@@ -661,3 +663,31 @@ async def _summarize_thread_session(
     if not completed or not summary:
         raise _SessionSummaryUnavailable("provider_error")
     return summary
+
+
+def latest_agent_turn(store, agent_id: str, *, ordinary: bool = False):
+    """The newest stored binding of an agent, whoever sent it.
+
+    An ordinary turn is a chat turn outside any episode, which a member's next
+    message continues.
+    """
+    kinds = sorted(SESSION_TASK_KINDS) if ordinary else []
+    ordinary_filter = (
+        f" AND kind IN ({', '.join('?' for _ in kinds)}) AND episode_id IS NULL" if ordinary else ""
+    )
+    with store.connection() as connection:
+        row = connection.execute(
+            "SELECT * FROM graph_runs WHERE json_extract(request_json, '$.chat_id')=?"
+            f"{ordinary_filter} ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (agent_id, *kinds),
+        ).fetchone()
+    return store._agent_task_record(row) if row is not None else None
+
+
+def agent_turn_busy(store, agent_id: str) -> bool:
+    task = latest_agent_turn(store, agent_id)
+    if task is None:
+        return False
+    return store.has_active_chat_task(
+        task.project_id, task.kind, agent_id
+    ) or store.has_resumable_paused_chat_task(task.project_id, task.kind, agent_id)

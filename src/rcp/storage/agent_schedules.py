@@ -1,4 +1,4 @@
-"""Durable private-thread schedules; a wake consumes its pending notes atomically."""
+"""Durable agent schedules; a wake consumes its pending notes atomically."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Literal, cast
 from pydantic import BaseModel
 
 from rcp.limits import AGENT_SCHEDULES_MAX_ACTIVE
-from rcp.storage.agent_threads import AgentThreadRecord, thread_binds_task
+from rcp.storage.agents import agent
 from rcp.storage.membership import live_project_member
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import AgentTaskRecord
@@ -288,22 +288,9 @@ class AgentSchedulesStoreMixin(StoreMixinBase):
     def _require_schedule_command_thread(
         self, connection: sqlite3.Connection, task: AgentTaskRecord, thread_id: str
     ) -> None:
-        row = connection.execute(
-            "SELECT * FROM agent_threads WHERE thread_id=? AND closed_at IS NULL", (thread_id,)
-        ).fetchone()
-        store = cast("AppStore", self)
-        if row is None or not thread_binds_task(
-            AgentThreadRecord.model_validate(dict(row)), task, store.space_id
-        ):
+        if task.request.get("chat_id") != thread_id:
             raise ValueError("schedule_thread_required")
-        try:
-            store._require_active_space_user_from_connection(connection, row["user_id"])
-        except KeyError as exc:
-            raise ValueError("schedule_thread_required") from exc
-        if row["project_id"] and not live_project_member(
-            connection, row["project_id"], row["user_id"]
-        ):
-            raise ValueError("schedule_thread_required")
+        schedule_agent(connection, task)
 
     def agent_schedules(self, thread_id: str | None = None) -> list[AgentSchedule]:
         with self.connection() as connection:
@@ -605,6 +592,13 @@ class AgentSchedulesStoreMixin(StoreMixinBase):
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             thread = self._wake_thread(connection, schedules[0].thread_id, task)
+            for schedule in schedules:
+                origin = connection.execute(
+                    "SELECT authorized_user_id FROM graph_runs WHERE operation_id=?",
+                    (schedule.created_operation_id,),
+                ).fetchone()
+                if origin is None or origin[0] != thread["user_id"]:
+                    raise ValueError("schedule_member_mismatch")
             if self._thread_holds_wake(connection, thread, task) or not _notes_unchanged(
                 connection, schedules
             ):
@@ -620,29 +614,19 @@ class AgentSchedulesStoreMixin(StoreMixinBase):
 
     def _wake_thread(
         self, connection: sqlite3.Connection, thread_id: str, task: AgentTaskRecord
-    ) -> sqlite3.Row:
+    ) -> dict:
         """The open thread, its live member, and a project that accepts work."""
-        store = cast("AppStore", self)
-        thread = connection.execute(
-            "SELECT * FROM agent_threads WHERE thread_id=? AND closed_at IS NULL", (thread_id,)
-        ).fetchone()
-        if (
-            thread is None
-            or task.authorized_by is None
-            or thread["user_id"] != task.authorized_by.user_id
-        ):
-            raise ValueError("schedule_thread_unavailable")
-        if task.project_id != (thread["project_id"] or store.space_id):
+        if task.request.get("chat_id") != thread_id:
             raise ValueError("schedule_thread_mismatch")
-        store._require_active_space_user_from_connection(connection, thread["user_id"])
+        thread = schedule_agent(connection, task)
         if thread["project_id"]:
-            if not live_project_member(connection, thread["project_id"], thread["user_id"]):
-                raise ValueError("schedule_thread_unavailable")
-            store._require_project_accepts_new_work(connection, thread["project_id"])
+            cast("AppStore", self)._require_project_accepts_new_work(
+                connection, thread["project_id"]
+            )
         return thread
 
     def _thread_holds_wake(
-        self, connection: sqlite3.Connection, thread: sqlite3.Row, task: AgentTaskRecord
+        self, connection: sqlite3.Connection, thread: dict, task: AgentTaskRecord
     ) -> bool:
         busy = connection.execute(
             "SELECT 1 FROM graph_runs WHERE json_extract(request_json, '$.chat_id')=? "
@@ -668,3 +652,36 @@ def _notes_unchanged(connection: sqlite3.Connection, schedules: list[AgentSchedu
         ):
             return False
     return True
+
+
+def schedule_agent(connection: sqlite3.Connection, task: AgentTaskRecord) -> dict:
+    """Resolve a schedule's agent and the live member authorizing this turn."""
+    record = agent(connection, str(task.request.get("chat_id") or ""))
+    thread = connection.execute(
+        "SELECT user_id, closed_at FROM agent_threads WHERE thread_id=?",
+        (task.request.get("chat_id"),),
+    ).fetchone()
+    member = task.authorized_by
+    if record is None or member is None:
+        raise ValueError("schedule_thread_required")
+    owner = thread["user_id"] if thread else record.owner_user_id
+    if (
+        (thread is not None and thread["closed_at"] is not None)
+        or (owner is not None and owner != member.user_id)
+        or task.project_id != (record.project_id or record.space_id)
+    ):
+        raise ValueError("schedule_thread_required")
+    user = connection.execute(
+        "SELECT 1 FROM space_users WHERE user_id=? AND removed_at IS NULL "
+        "AND removal_started_at IS NULL",
+        (member.user_id,),
+    ).fetchone()
+    if user is None or (
+        record.project_id and not live_project_member(connection, record.project_id, member.user_id)
+    ):
+        raise ValueError("schedule_thread_required")
+    return {
+        "thread_id": record.agent_id,
+        "project_id": record.project_id,
+        "user_id": member.user_id,
+    }

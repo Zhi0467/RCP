@@ -3084,7 +3084,7 @@ test("Enter steers a steerable text-only run and otherwise queues behind the tur
       0,
     );
     await pip.getByRole("textbox", { name: "Message" }).fill("");
-    assert.equal(await pip.getByRole("button", { name: "Queue", exact: true }).count(), 0);
+    await pip.getByRole("button", { name: "Queue", exact: true }).waitFor();
     assert.equal(await pip.locator(".thread-queue").count(), 0);
     assert.deepEqual(errors, []);
     await page.close();

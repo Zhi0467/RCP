@@ -22,7 +22,6 @@ def test_threads_created_once_with_names_browser_and_owner_controls(manifest, tm
             resolve_agent_profile(placement, None, OFFER).welcome()
             for placement in (SINGLE_ENTRY, PRIVATE_PROJECT)
         ]
-        assert [row["can_queue"] for row in rows] == [False, True]
         assert client.get("/api/agent-threads").json()["threads"] == rows
         for row in rows:
             base = "/api/agent-threads/" + row["thread_id"]
@@ -1292,8 +1291,8 @@ def test_queue_routes_store_list_start_and_remove_member_messages(manifest, tmp_
 
         _busy_thread_turn(store, actor, thread)
         space_queue = f"/api/agent-threads/{space['thread_id']}/queue"
-        assert client.get(space_queue).status_code == 404
-        assert post("x", url=space_queue).status_code == 404
+        assert client.get(space_queue).status_code == 200
+        assert post("x", url=space_queue).status_code == 202
         assert client.post(base, json={"message": "No key"}).status_code == 422
         assert post("").status_code == 422
         assert post("x" * (AGENT_THREAD_QUEUE_MAX_CHARS + 1)).status_code == 422

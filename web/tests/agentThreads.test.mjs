@@ -369,6 +369,7 @@ test("a project thread queues the send body under its key, reads and removes its
       "GET /api/agent-threads/chat%201/queue",
       "POST /api/agent-threads/chat%201/queue",
       "DELETE /api/agent-threads/chat%201/queue/q%201",
+      "GET /api/agent-threads/space/queue",
     ],
   );
   assert.equal(calls[1].key, "key");
@@ -380,6 +381,20 @@ test("a project thread queues the send body under its key, reads and removes its
   });
   await queueThreadTurn(project, { message: "Plain", timezone: "UTC" }, "other", request);
   assert.deepEqual(calls.at(-1).body, { message: "Plain" });
+});
+
+test("queue routes use identity without a placement", async () => {
+  const paths = [];
+  const request = async (path) => {
+    paths.push(path);
+    return { items: [] };
+  };
+  await loadThreadQueue({ thread_id: "shared/agent" }, request);
+  await loadThreadQueue(space, request);
+  assert.deepEqual(paths, [
+    "/api/agent-threads/shared%2Fagent/queue",
+    "/api/agent-threads/space/queue",
+  ]);
 });
 
 const renderServer = await createServer({

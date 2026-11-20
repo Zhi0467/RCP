@@ -4089,6 +4089,7 @@ export type AgentThreadLiveState =
 
 /** One of the member's private agent threads; the Space thread lists first. */
 export interface AgentThread {
+  archived: boolean;
   thread_id: string;
   kind: AgentThreadKind;
   project_id: string | null;
@@ -4106,8 +4107,6 @@ export interface AgentThread {
   agent: AgentRunConfig | null;
   /** What this kind's agent can do, one line per capability of its granted verbs. */
   capabilities: string[];
-  /** The backend queues this thread's sends behind a running turn. */
-  can_queue: boolean;
 }
 
 export interface AgentThreadList {
