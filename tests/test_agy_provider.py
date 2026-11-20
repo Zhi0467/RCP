@@ -416,4 +416,4 @@ def test_staged_tools_are_names_the_custom_agent_registry_accepts():
 
     accepted = set(json.loads((FIXTURES / "agent_registry_tools.json").read_text()))
     for capability in ("work_auto", "orchestrate", "discuss"):
-        assert set(_tools(capability, None)) <= accepted
+        assert set(_tools(capability)) <= accepted
