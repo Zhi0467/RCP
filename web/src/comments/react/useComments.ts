@@ -1,10 +1,10 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { api } from "../../core/api";
 import type { ResourceProfile } from "../../core/resourceStore";
 import { resourceKeyId } from "../../core/resourceStore";
-import { useRefreshRuntime } from "../../core/useResource";
+import { useRefreshRuntime, useResource } from "../../core/useResource";
 import { projectResourceKey, useProjectResource } from "../../projects/projectResources";
-import { createCommentsClient } from "../api.ts";
+import { createCommentsClient, createScopedCommentsClient, type CommentScope } from "../api.ts";
 import type { CommentMember, CommentTarget, CommentThread } from "../types.ts";
 import { targetThreads } from "./threadModel.ts";
 import { useCommentActions, type CommentsController } from "./useCommentActions";
@@ -15,18 +15,28 @@ export type { CommentsController, DockThreads };
 /** Every thread on these targets of one kind, or on every reply in `chatId` in one
  *  read. Any post or thread change moves the `comments` watermark, which re-reads it;
  *  a new target set is a new read, so a slower answer for the previous file or chat
- *  never shows here. */
+ *  never shows here. A Space thread's comments have no watermark; each action re-reads. */
 function threadsProfile(
-  projectId: string,
+  scope: CommentScope,
   kind: CommentTarget["kind"],
   ids: readonly string[],
   chatId: string | null,
 ): ResourceProfile<CommentThread[]> {
   const query = chatId ? `chat:${chatId}` : `threads:${kind}:${ids.join(",")}`;
   return {
-    key: projectResourceKey(projectId, "comments", { query }),
+    key:
+      scope.kind === "project"
+        ? projectResourceKey(scope.projectId, "comments", { query })
+        : {
+            backend: "",
+            member: "",
+            project: "",
+            name: "agent_threads",
+            entity: scope.threadId,
+            query: `comments:${query}`,
+          },
     fetch: async (signal) => {
-      const client = createCommentsClient(projectId, (path, init) =>
+      const client = createScopedCommentsClient(scope, (path, init) =>
         api(path, { ...init, signal }),
       );
       if (chatId) return (await client.listChatReplies(chatId)).threads;
@@ -49,7 +59,7 @@ function membersPickerProfile(projectId: string): ResourceProfile<CommentMember[
 /** Threads on `ids` (one target kind), the project's members for the picker, and
  *  the actions every comment surface shares. */
 export function useComments({
-  projectId,
+  scope,
   kind,
   ids,
   canPost,
@@ -57,7 +67,7 @@ export function useComments({
   picker,
   chatId = null,
 }: {
-  projectId: string;
+  scope: CommentScope;
   kind: CommentTarget["kind"];
   ids: readonly string[];
   /** Reply threads: read the whole chat at once; `ids` still picks which show. */
@@ -67,27 +77,43 @@ export function useComments({
   /** Whether an editor is on screen, so its `@` picker needs the members. */
   picker: boolean;
 }): CommentsController {
-  const { store } = useRefreshRuntime();
   const idKey = ids.join(",");
+  const scopeId = scope.kind === "project" ? scope.projectId : scope.threadId;
   const profile = useMemo(
-    () => (ids.length ? threadsProfile(projectId, kind, ids, chatId) : null),
+    () => (ids.length ? threadsProfile(scope, kind, ids, chatId) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [projectId, kind, idKey, chatId],
+    [scope.kind, scopeId, kind, idKey, chatId],
   );
-  const resource = useProjectResource(profile);
+  const projectThreads = useProjectResource(scope.kind === "project" ? profile : null);
+  const spaceThreads = useResource("space-comments", scope.kind === "space" ? profile : null);
+  const resource = scope.kind === "project" ? projectThreads : spaceThreads;
+  const { store, scheduler } = useRefreshRuntime();
+  const spaceKey = scope.kind === "space" ? profile?.key : undefined;
+  useEffect(() => {
+    if (!spaceKey) return;
+    const { project, name, ref, entity } = spaceKey;
+    return scheduler.watchAgentThreads((version, observation) =>
+      store.observe(project, [{ name, ref, entity, version: version ?? "" }], observation),
+    );
+  }, [spaceKey, scheduler, store]);
   const threads = useMemo(
     () => targetThreads(resource.value ?? [], kind, ids),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [resource.value, kind, idKey],
   );
+  const projectId = scope.kind === "project" ? scope.projectId : null;
   const memberResource = useProjectResource(
     useMemo(
-      () => (picker && canPost ? membersPickerProfile(projectId) : null),
+      () => (projectId && picker && canPost ? membersPickerProfile(projectId) : null),
       [projectId, picker, canPost],
     ),
   );
   const members = useMemo(() => memberResource.value ?? [], [memberResource.value]);
-  const client = useMemo(() => createCommentsClient(projectId, api), [projectId]);
+  const client = useMemo(
+    () => createScopedCommentsClient(scope, api),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [scope.kind, scopeId],
+  );
   const reload = useCallback(() => {
     if (profile) store.invalidate(resourceKeyId(profile.key));
   }, [store, profile]);

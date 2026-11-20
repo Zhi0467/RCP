@@ -177,7 +177,7 @@ export function PaperTurnDiff({
     return () => controller.abort();
   }, [apiBase, operationId, path]);
   const comments = useComments({
-    projectId,
+    scope: { kind: "project", projectId },
     kind: "reply",
     ids: [operationId],
     chatId,

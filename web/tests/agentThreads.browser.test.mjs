@@ -660,18 +660,27 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
       await project.getByText("Approved the proposed action", { exact: true }).count(),
       0,
     );
-    const projectComment = project.getByRole("button", { name: "Comment on this answer" });
-    assert.equal(
-      await projectComment.evaluate((button) => button.getBoundingClientRect().width),
-      1,
-    );
-    await projectComment.focus();
-    await projectComment.press("Enter");
-    const selection = page.getByRole("textbox", { name: "Select answer text" });
-    await selection.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
-    await page.getByRole("button", { name: "Comment on selection" }).click();
-    await page.getByRole("textbox", { name: "Comment", exact: true }).fill("Show the comparison");
-    await page.getByRole("textbox", { name: "Comment", exact: true }).press("Enter");
+    const commentOn = async (region, text) => {
+      await region.evaluate((element) => {
+        const answer = element.querySelector(".chat-annotatable-answer");
+        const walker = document.createTreeWalker(answer, NodeFilter.SHOW_TEXT);
+        const node = walker.nextNode();
+        const range = document.createRange();
+        range.setStart(node, 0);
+        range.setEnd(node, Math.min(node.length, 12));
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+      });
+      await page.locator(".chat-selection-comment").click();
+      const field = page.getByRole("textbox", { name: "Comment", exact: true });
+      await field.fill(text);
+      await page
+        .getByRole("dialog", { name: "Comment" })
+        .getByRole("button", { name: "Comment", exact: true })
+        .click();
+      await region.locator(".chat-annotation-count").waitFor();
+    };
+    await commentOn(project, "Show the comparison");
     await project
       .locator('input[type="file"]')
       .setInputFiles({ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("notes") });
@@ -683,49 +692,14 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
       location.hash = "#/agent/space";
     });
     const space = page.getByRole("region", { name: "Pip" });
-    const spaceComment = space.getByRole("button", { name: "Comment on this answer" });
-    await spaceComment.focus();
-    await spaceComment.press("Enter");
-    await page
-      .getByRole("textbox", { name: "Select answer text" })
-      .press(process.platform === "darwin" ? "Meta+A" : "Control+A");
-    await page.getByRole("button", { name: "Comment on selection" }).click();
-    await page
-      .getByRole("textbox", { name: "Comment", exact: true })
-      .fill("Keep the Space comparison");
-    await page.getByRole("textbox", { name: "Comment", exact: true }).press("Enter");
+    await commentOn(space, "Keep the Space comparison");
     admitProjectSend();
-    // The completed project's comments and draft clear while Space keeps its own comment.
     await page.waitForFunction(
-      () =>
-        !localStorage.getItem("rcp:member-draft:alex:agent-window-comments:p1:moss") &&
-        !localStorage.getItem("rcp:member-draft:alex:agent-window:p1:moss"),
+      () => !localStorage.getItem("rcp:member-draft:alex:agent-window:p1:moss"),
     );
-    assert.equal(await space.getByRole("button", { name: "1 annotation" }).count(), 1);
-    await page.evaluate(() => {
-      const key = "rcp:member-draft:alex:agent-window-comments:space:space";
-      sessionStorage.setItem(key, localStorage.getItem(key));
-      localStorage.removeItem(key);
-      sessionStorage.setItem("test:block-local-writes", "1");
-    });
-    await page.addInitScript(() => {
-      if (!sessionStorage.getItem("test:block-local-writes")) return;
-      const setItem = Storage.prototype.setItem;
-      Storage.prototype.setItem = function (key, value) {
-        if (this === localStorage) throw new DOMException("full", "QuotaExceededError");
-        return setItem.call(this, key, value);
-      };
-    });
-    await page.reload();
-    await space.getByRole("button", { name: "1 annotation" }).waitFor();
-    await page.evaluate(() => sessionStorage.removeItem("test:block-local-writes"));
-    await page.reload();
-    await space.getByRole("button", { name: "1 annotation" }).waitFor();
-    await page.evaluate(() => sessionStorage.clear());
-    await page.reload();
-    await space.getByRole("button", { name: "1 annotation" }).waitFor();
+    assert.equal(await space.getByRole("button", { name: "1 comment" }).count(), 1);
     const sent = writes.find((write) => write.path === "/api/projects/p1/tasks/project_chat");
-    assert.ok(sent.body.message.includes("Show the comparison"));
+    assert.deepEqual(sent.body.comment_thread_ids, ["comment-1"]);
     assert.equal(sent.body.attachment_set_id, "set-1");
     assert.equal(typeof sent.body.attachment_client_id, "string");
     assert.ok(writes.some((write) => write.path === "/api/projects/p1/chats/moss/attachments"));
@@ -763,7 +737,7 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
       () => document.querySelector('textarea[aria-label="Message"]').value === "",
     );
     const spaceSent = writes.find((write) => write.path === "/api/agent-threads/space/turns");
-    assert.ok(spaceSent.body.message.includes("Keep the Space comparison"));
+    assert.deepEqual(spaceSent.body.comment_thread_ids, ["comment-2"]);
     assert.equal(spaceSent.body.attachment_set_id, "set-1");
     assert.equal(typeof spaceSent.body.attachment_client_id, "string");
     assert.equal("artifact_context" in spaceSent.body, false);
@@ -776,7 +750,7 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
   }
 });
 
-test("Pip refreshes an inline artifact version and sends its displayed version with a selection", async () => {
+test("Pip refreshes an inline artifact version and docks a comment drawn on its displayed version", async () => {
   await withFixture(async (browser, base) => {
     const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
     const writes = [];
@@ -890,21 +864,25 @@ test("Pip refreshes an inline artifact version and sends its displayed version w
     );
     const comment = page.getByRole("textbox", { name: "Comment", exact: true });
     await comment.fill("Tighten this");
-    await comment.press("Enter");
+    await page
+      .getByRole("dialog", { name: "Comment" })
+      .getByRole("button", { name: "Comment", exact: true })
+      .click();
+    await space.locator(".chat-annotation-count").waitFor();
     await space.getByRole("textbox", { name: "Message" }).fill("Revise it");
     await space.getByRole("button", { name: "Send", exact: true }).click();
     await page.waitForFunction(
       () => document.querySelector('textarea[aria-label="Message"]').value === "",
     );
     const sent = writes.find((write) => write.path === "/api/agent-threads/space/turns");
-    assert.equal(sent.body.artifact_context.artifact_id, "report");
-    assert.equal(sent.body.artifact_context.operation_id, "op-space");
-    assert.equal(sent.body.artifact_context.base_version, "v2");
-    assert.deepEqual(
-      sent.body.artifact_context.selections.map((selection) => [selection.text, selection.comment]),
-      [["Rendered report", "Tighten this"]],
+    assert.deepEqual(sent.body.comment_thread_ids, ["comment-1"]);
+    const saved = writes.find(
+      (write) =>
+        write.path === "/api/agent-threads/space/comment-threads" && write.method === "POST",
     );
-    assert.equal(sent.body.message.includes("Tighten this"), false);
+    assert.deepEqual(saved.body.target, { kind: "artifact", id: "report" });
+    assert.equal(saved.body.drawn_version, "v2");
+    assert.equal(saved.body.text, "Tighten this");
     const beats = writes.filter((write) => write.path === "/api/resource-watermarks");
     assert.ok(beats.length > 0);
     assert.ok(beats.every((beat) => beat.body.open.every((project) => project.project_id !== "")));

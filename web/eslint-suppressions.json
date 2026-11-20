@@ -16,7 +16,7 @@
   },
   "src/agentWindow/useAgentWindowArtifacts.tsx": {
     "rcp/no-comments": {
-      "count": 32
+      "count": 26
     }
   },
   "src/agentWindow/useAgentWindowScroll.ts": {
@@ -204,11 +204,6 @@
       "count": 2
     }
   },
-  "src/chat/answerComments.tsx": {
-    "rcp/no-comments": {
-      "count": 25
-    }
-  },
   "src/chat/bulletinModel.ts": {
     "rcp/no-comments": {
       "count": 6
@@ -216,7 +211,7 @@
   },
   "src/chat/chatInput.ts": {
     "rcp/no-comments": {
-      "count": 5
+      "count": 1
     }
   },
   "src/chat/chatWorkspace.ts": {
@@ -906,7 +901,7 @@
   },
   "tests/agentThreads.browser.test.mjs": {
     "rcp/no-comments": {
-      "count": 52
+      "count": 51
     }
   },
   "tests/agentThreads.test.mjs": {
@@ -996,7 +991,7 @@
   },
   "tests/chatInput.test.mjs": {
     "rcp/no-comments": {
-      "count": 8
+      "count": 3
     }
   },
   "tests/chatMarkdown.test.mjs": {

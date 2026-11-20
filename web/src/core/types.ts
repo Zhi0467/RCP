@@ -4111,7 +4111,12 @@ export interface AgentThreadTurnRequest {
   references?: ProjectReferenceSelector[];
   attachment_set_id?: string;
   attachment_client_id?: string;
-  artifact_context?: ArtifactContextRequest | null;
+  /** Shared comment threads the turn carries. */
+  comment_thread_ids?: string[];
+  /** A project thread only: the turn's worktree and its one repository. */
+  worktree?: boolean;
+  run_truth_scope?: string[];
+  worktree_integration?: WorktreeIntegrationOption["id"];
   message: string;
   provider?: ProviderId;
   model?: string;

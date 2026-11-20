@@ -155,7 +155,7 @@ export function usePaperComments({
   const [selected, setSelected] = useState<string | null>(null);
   const [offer, setOffer] = useState<CommentOffer | null>(null);
   const comments = useComments({
-    projectId,
+    scope: { kind: "project", projectId },
     kind: "paper",
     ids,
     canPost,

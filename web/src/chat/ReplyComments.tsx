@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { MessageSquare } from "lucide-react";
 import { findText } from "../comments/anchors.ts";
 import type { Point } from "../comments/box.ts";
+import type { CommentScope } from "../comments/api.ts";
 import type { CommentThread } from "../comments/types.ts";
 import {
   CommentComposer,
@@ -66,7 +67,7 @@ function threadRange(root: HTMLElement, thread: CommentThread): Range | null {
  *  pin at each open thread's quote that opens it, and the header count that lists
  *  the chat's threads. Threads go to the chat through its composer's sender. */
 export function useReplyComments({
-  projectId,
+  scope,
   chatId,
   replyIds,
   linesRef,
@@ -74,7 +75,7 @@ export function useReplyComments({
   dock,
   artifacts,
 }: {
-  projectId: string;
+  scope: CommentScope;
   chatId: string;
   /** The operation ids of this chat's replies, which name their threads. */
   replyIds: readonly string[];
@@ -88,7 +89,7 @@ export function useReplyComments({
   const [shown, setShown] = useState<{ threadId: string; point: Point | null } | null>(null);
   const [listPoint, setListPoint] = useState<Point | null>(null);
   const comments = useComments({
-    projectId,
+    scope,
     kind: "reply",
     ids: replyIds,
     chatId,
@@ -104,7 +105,7 @@ export function useReplyComments({
     setShown(null);
     setListPoint(null);
     setSelected(null);
-  }, [projectId, chatId]);
+  }, [chatId]);
 
   const resolve = (selection: Selection): SelectionCommentOffer | null => {
     const root = linesRef.current;
@@ -158,15 +159,15 @@ export function useReplyComments({
 
   const request = useCommentThreadRequest();
   useEffect(() => {
-    if (!comments.loaded || request?.targetKind !== "reply") return;
+    if (!comments.loaded || request?.targetKind !== "reply" || scope.kind !== "project") return;
     if (!replyIds.includes(request.targetId)) return;
-    const threadId = takeCommentThreadRequest(projectId, "reply", request.targetId);
+    const threadId = takeCommentThreadRequest(scope.projectId, "reply", request.targetId);
     const thread = comments.threads.find((item) => item.thread_id === threadId);
     if (!thread) return;
     locateRef.current(thread);
     window.setTimeout(() => setShown({ threadId: thread.thread_id, point: position(thread) }), 400);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- the reply set is named by its key
-  }, [request, projectId, replyKey, comments.loaded, comments.threads]);
+  }, [request, scope, replyKey, comments.loaded, comments.threads]);
 
   const shownThread =
     shown && comments.threads.find((thread) => thread.thread_id === shown.threadId);

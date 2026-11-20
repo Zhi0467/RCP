@@ -47,12 +47,10 @@ import { providerChange } from "../projects/providers";
 import { ChatComposer, ComposerField } from "../chat/ChatComposer";
 import { createComposerDraft, useComposerDraft, type ComposerDraft } from "../chat/composerDraft";
 import { useComposerAttachments } from "../chat/composerAttachments";
-import {
-  assembleChatTurn,
-  stagedArtifactContext,
-  type StagedChatAnnotation,
-} from "../chat/chatInput";
-import { AnswerCommentLayers, transcriptSource, useAnswerComments } from "../chat/answerComments";
+import { chatDockScope, useCommentDock } from "../comments/react/CommentDock";
+import type { CommentScope } from "../comments/api.ts";
+import { useReplyComments } from "../chat/ReplyComments";
+import { useInlineArtifactComments } from "../chat/inlineArtifactComments";
 import { AgentStatusStrip } from "../chat/AgentStatusStrip";
 import { AgentWindowTranscript } from "../agentWindow/AgentWindowTranscript";
 import {
@@ -61,10 +59,13 @@ import {
 } from "../agentWindow/useAgentWindowLines";
 import { AgentWindowLines } from "../agentWindow/AgentWindowLines";
 import type { AgentWindowScroll } from "../agentWindow/useAgentWindowScroll";
+import { useAgentWindowArtifacts } from "../agentWindow/useAgentWindowArtifacts";
 import {
-  stagedInlineComments,
-  useAgentWindowArtifacts,
-} from "../agentWindow/useAgentWindowArtifacts";
+  WorktreeChooser,
+  WorktreeControls,
+  useConversationWorktree,
+} from "../chat/WorktreeControls";
+import { worktreeRepositoryChoices } from "../chat/worktreeRepositories";
 import {
   projectAgentWindowEndpoints,
   spaceAgentWindowEndpoints,
@@ -89,6 +90,7 @@ import type {
   SteerRequest,
   ProviderReadiness,
   WatcherRecord,
+  WorktreeIntegrationOption,
 } from "../core/types";
 import type { VoiceAgent } from "../voice/useVoiceAgent";
 import {
@@ -690,7 +692,7 @@ type PendingThreadTurn = PendingAgentWindowTurn & {
   requestId: string;
   draft: string;
   request: AgentThreadTurnRequest;
-  annotations: StagedChatAnnotation[];
+  threadIds: string[];
   clearAttachments: () => void;
   steering?: { taskId: string; request: SteerRequest };
   /** Waits in the thread's queue instead of starting; it never shows as a transcript line. */
@@ -788,14 +790,15 @@ export function AgentThreadView({
     return draft.subscribe(persist);
   }, [draft, draftKey]);
   const setSubmitError = (text: string | null) => updateComposer(composerKey, { error: text });
-  const comments = useAnswerComments({
-    storageKey: memberDraftKey(actorId, `agent-window-comments:${endpoints.scopeKey}`),
-    enabled: true,
-    busy: Boolean(composer.sending && !composer.error),
-    sources: [transcriptSource(linesRef)],
-    message: textareaRef,
-    onError: setSubmitError,
-  });
+  const commentDock = useCommentDock(chatDockScope(thread.project_id ?? "space", thread.thread_id));
+  const commentScope = useMemo<CommentScope>(
+    () =>
+      thread.project_id
+        ? { kind: "project", projectId: thread.project_id }
+        : { kind: "space", threadId: thread.thread_id },
+    [thread.project_id, thread.thread_id],
+  );
+  const dockedIds = commentDock.items.map((item) => item.thread_id);
   const graph = useResource(
     `agent-window:${thread.thread_id}:references`,
     thread.project_id && !project ? graphProfile(thread.project_id) : null,
@@ -859,19 +862,40 @@ export function AgentThreadView({
     setTurnTasks((current) => new Map(current).set(taskId, task));
     return task;
   };
+  const inlineArtifactComments = useInlineArtifactComments({
+    scope: commentScope,
+    canPost: true,
+    dock: commentDock.dock,
+  });
+  const replyIds = useMemo(
+    () => [
+      ...new Set(
+        lines.transcript
+          .filter((line) => line.role === "agent" && line.text && !line.running)
+          .map((line) => line.taskId),
+      ),
+    ],
+    [lines.transcript],
+  );
+  const replyComments = useReplyComments({
+    scope: commentScope,
+    chatId: thread.thread_id,
+    replyIds,
+    linesRef,
+    canPost: true,
+    dock: commentDock.dock,
+    artifacts: inlineArtifactComments.artifacts,
+  });
   const artifacts = useAgentWindowArtifacts({
     endpoints,
     chatId: thread.thread_id,
     relatedTasks: tasks,
     transcript: lines.transcript,
-    inlineComments: stagedInlineComments(comments, setSubmitError),
+    inlineComments: inlineArtifactComments.handlers,
     onRefreshTask: refreshTask,
     repositories: snapshot?.repositories ?? [],
   });
-  const artifactContext = stagedArtifactContext(comments.annotations);
-  const draftSendable = useComposerDraft(draft, (text) =>
-    Boolean(assembleChatTurn(text, comments.annotations)),
-  );
+  const draftSendable = useComposerDraft(draft, (text) => Boolean(text.trim()));
 
   // Every answer names the thread it was asked for; one for a thread no longer open is dropped,
   // and so is one older than a reload already shown.
@@ -1085,6 +1109,29 @@ export function AgentThreadView({
   const config = thread.agent
     ? { ...thread.agent, run_on: thread.agent.run_on || picker?.value.run_on || "" }
     : (picker?.value ?? null);
+  const worktreeRepositories =
+    thread.project_id && snapshot && config
+      ? worktreeRepositoryChoices(snapshot, config.run_on)
+      : [];
+  const [worktreeRepositoryPick, setWorktreeRepositoryPick] = useState<{
+    threadId: string;
+    alias: string;
+  } | null>(null);
+  const worktreeRepository =
+    worktreeRepositoryPick?.threadId === thread.thread_id &&
+    worktreeRepositories.includes(worktreeRepositoryPick.alias)
+      ? worktreeRepositoryPick.alias
+      : (worktreeRepositories[0] ?? null);
+  const worktree = useConversationWorktree(
+    thread.project_id ?? "",
+    thread.thread_id,
+    "project",
+    null,
+    config?.run_on ?? "",
+    worktreeRepository ? [worktreeRepository] : [],
+    tasks.map((task) => `${task.operation_id}:${task.updated_at}`).join("\0"),
+    Boolean(thread.project_id && config),
+  );
   const [spaceSkills, setSpaceSkills] = useState<SkillSource | null>(null);
   useEffect(() => {
     if (thread.project_id || spaceSkills) return;
@@ -1120,7 +1167,7 @@ export function AgentThreadView({
   const send = async (pending: PendingThreadTurn) => {
     const target = thread;
     const key = composerKey;
-    const sentComments = pending.annotations;
+    const docked = commentDock;
     updateComposer(key, { sending: pending, error: null });
     try {
       if (pending.steering) {
@@ -1137,7 +1184,8 @@ export function AgentThreadView({
           };
       }
       pending.clearAttachments();
-      comments.discard(sentComments);
+      docked.clear(pending.threadIds);
+      if (pending.request.worktree || pending.request.worktree_integration) worktree.refresh();
       if (isCurrent(target.thread_id)) {
         scroll.current?.follow();
         await refresh();
@@ -1156,8 +1204,15 @@ export function AgentThreadView({
       updateComposer(key, { sending: { ...pending, error }, error });
     }
   };
+  const agentFields = config
+    ? {
+        provider: config.provider,
+        ...(config.model ? { model: config.model } : {}),
+        ...(config.reasoning ? { reasoning: config.reasoning } : {}),
+      }
+    : {};
   const pausedTask = latest && !latest.active && latest.can_resume ? latest : null;
-  const steerable = steeringTask && !attachments.staged && !artifactContext ? steeringTask : null;
+  const steerable = steeringTask && !attachments.staged ? steeringTask : null;
   const queue = view?.queue ?? NO_QUEUE;
   const queues = thread.kind === "project";
   const queueable =
@@ -1165,7 +1220,7 @@ export function AgentThreadView({
     Boolean(
       latest?.active || queue.some((item) => item.kind === "handoff" || !item.refusal_reason),
     );
-  const sendBlocked = Boolean(queueable ? artifactContext : latest?.active && !steerable);
+  const sendBlocked = Boolean(queueable ? dockedIds.length : latest?.active && !steerable);
   const action = steerable ? "Steer" : queueable ? "Queue" : "Send";
   // A disabled Send says why on hover.
   const sendReason = inFlight
@@ -1174,26 +1229,28 @@ export function AgentThreadView({
       ? queueable
         ? "Comments wait until this thread is idle"
         : steeringTask
-          ? "Attachments and comments wait until this turn ends"
+          ? "Attachments wait until this turn ends"
           : "Wait until this turn ends"
       : attachments.unready
         ? "Attachments are still uploading"
-        : !comments.complete
-          ? "Finish the comment first"
-          : !(draftSendable || artifactContext)
-            ? "Write a message"
-            : undefined;
+        : !(draftSendable || dockedIds.length)
+          ? "Write a message"
+          : undefined;
   /** Takes the composer's action; the Queue beside Steer queues instead, and a requeue after a failure reuses its key. */
   const submit = (queueing = action === "Queue") => {
-    const text = assembleChatTurn(draft.get(), comments.annotations);
-    if (
-      sendBlocked ||
-      !(text || artifactContext) ||
-      attachments.unready ||
-      inFlight ||
-      !comments.requireComplete()
-    )
+    const text = draft.get().trim();
+    const threadIds = dockedIds;
+    if (sendBlocked || (queueing && threadIds.length)) return;
+    if (!(text || threadIds.length) || attachments.unready || inFlight) return;
+    const worktreeTurn = worktree.chosen && !steerable && !queueing;
+    if (worktreeTurn && !worktree.state?.can_choose) {
+      setSubmitError(
+        worktree.error ??
+          worktree.state?.unavailable_reason ??
+          "Worktree eligibility has not been confirmed.",
+      );
       return;
+    }
     const fields = attachments.turnFields();
     const request: AgentThreadTurnRequest = {
       message: text,
@@ -1207,20 +1264,20 @@ export function AgentThreadView({
                 }
               : {}),
           }),
-      ...(artifactContext ? { artifact_context: artifactContext } : {}),
+      ...(threadIds.length ? { comment_thread_ids: threadIds } : {}),
+      ...(worktreeTurn
+        ? {
+            worktree: true,
+            ...(worktreeRepository ? { run_truth_scope: [worktreeRepository] } : {}),
+          }
+        : {}),
       ...(thread.project_id
         ? skills.fields
         : {
             invoked_workflow_ids: skills.fields.invoked_workflow_ids,
             invoked_skill_ids: skills.fields.invoked_skill_ids,
           }),
-      ...(config
-        ? {
-            provider: config.provider,
-            ...(config.model ? { model: config.model } : {}),
-            ...(config.reasoning ? { reasoning: config.reasoning } : {}),
-          }
-        : {}),
+      ...agentFields,
       timezone: browserTimezone(),
     };
     const failed = composer.error && composer.sending?.queue ? composer.sending : null;
@@ -1236,7 +1293,7 @@ export function AgentThreadView({
       timestamp: new Date().toISOString(),
       mode: "work",
       attachments: attachments.ready,
-      annotations: comments.annotations,
+      threadIds,
       clearAttachments: attachments.clear,
       ...(queueing ? { queue: true as const } : {}),
       ...(steerable && !queueing
@@ -1248,11 +1305,34 @@ export function AgentThreadView({
                 attempt: steerable.attempt,
                 expected_turn_id: steerable.steer_turn_id!,
                 message: text,
+                ...(threadIds.length ? { comment_thread_ids: threadIds } : {}),
               },
             },
           }
         : {}),
       request,
+    });
+  };
+
+  const integrateWorktree = async (option: WorktreeIntegrationOption) => {
+    if (inFlight || latest?.active) return;
+    const requestId = crypto.randomUUID();
+    await send({
+      clientId: requestId,
+      requestId,
+      text: option.label,
+      draft: draft.get(),
+      timestamp: new Date().toISOString(),
+      mode: "work",
+      attachments: [],
+      threadIds: [],
+      clearAttachments: () => undefined,
+      request: {
+        message: option.label,
+        worktree_integration: option.id,
+        ...agentFields,
+        timezone: browserTimezone(),
+      },
     });
   };
 
@@ -1276,8 +1356,7 @@ export function AgentThreadView({
     !inFlight &&
     queue.length === 0 &&
     !attachments.unready &&
-    comments.complete &&
-    (draftSendable || artifactContext);
+    (draftSendable || dockedIds.length > 0);
   const stopped = !latest?.active;
   const submitNow = useRef(submit);
   useEffect(() => {
@@ -1462,6 +1541,7 @@ export function AgentThreadView({
             onChanged={() => void refreshUpcoming()}
           />
           {/* The context ring sits just left of the menu, as in a project chat. */}
+          {replyComments.headerButton}
           <AgentStatusStrip tasks={lines.statusTasks} />
           <OverflowMenu
             label="Thread menu"
@@ -1534,7 +1614,6 @@ export function AgentThreadView({
             />
           )}
           artifacts={artifacts}
-          comments={comments}
           endpoints={endpoints}
           compactionByLine={lines.compactionByLine}
           continuedTaskIds={lines.continuedTaskIds}
@@ -1672,9 +1751,25 @@ export function AgentThreadView({
       <ThreadQueue key={thread.thread_id} items={queue} onRemove={removeQueued} />
       <ChatComposer
         composer={attachments}
-        comments={comments}
+        docked={commentDock}
         skills={skills.props}
         addDisabled={attachments.full || attachments.preparing || inFlight}
+        addOptionCount={Number(worktree.chosen)}
+        addOptions={
+          thread.project_id && (
+            <WorktreeChooser
+              state={worktree.state}
+              chosen={worktree.chosen}
+              disabled={Boolean(latest?.active || inFlight)}
+              onChoose={worktree.choose}
+              repositories={worktreeRepositories}
+              repository={worktreeRepository}
+              onRepository={(alias) =>
+                setWorktreeRepositoryPick({ threadId: thread.thread_id, alias })
+              }
+            />
+          )
+        }
         field={
           <ThreadTextarea
             draft={draft}
@@ -1694,7 +1789,20 @@ export function AgentThreadView({
             }}
           />
         }
-        tools={null}
+        tools={
+          thread.project_id && (
+            <WorktreeControls
+              key={thread.thread_id}
+              state={worktree.state}
+              error={worktree.error}
+              disabled={Boolean(latest?.active || inFlight)}
+              onIntegrate={integrateWorktree}
+              onRemove={worktree.remove}
+              onPreviewRemove={worktree.previewRemoval}
+              onRefresh={worktree.refresh}
+            />
+          )
+        }
         actions={
           <>
             {cards.unavailable && <AgentCardsUnavailable />}
@@ -1727,8 +1835,11 @@ export function AgentThreadView({
                 className="icon-button chat-queue-button"
                 type="button"
                 aria-label="Queue"
-                title={sendReason ?? "Queue"}
-                disabled={sendReason !== undefined}
+                title={
+                  sendReason ??
+                  (dockedIds.length ? "Comments wait until this thread is idle" : "Queue")
+                }
+                disabled={sendReason !== undefined || dockedIds.length > 0}
                 onClick={() => submit(true)}
               >
                 <ListPlus size={16} />
@@ -1754,7 +1865,8 @@ export function AgentThreadView({
         }
         notice={composer.error && <span role="alert">{composer.error}</span>}
       />
-      <AnswerCommentLayers comments={comments} />
+      {replyComments.layers}
+      {inlineArtifactComments.layer}
     </div>
   );
 }

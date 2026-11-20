@@ -91,6 +91,7 @@ from rcp.api.result_views import router as result_views_router
 from rcp.api.server_status import router as server_status_router
 from rcp.api.service_connections import router as service_connections_router
 from rcp.api.share_links import router as share_links_router
+from rcp.api.space_comments import router as space_comments_router
 from rcp.api.space_machines import router as space_machines_router
 from rcp.api.sync import router as sync_router
 from rcp.api.task_requests import _resolved_graph_request, resolved_agent_surface
@@ -2937,6 +2938,7 @@ def create_app(
     app.include_router(experiments_router)
     app.include_router(chats_router)
     app.include_router(agent_threads_router)
+    app.include_router(space_comments_router)
     app.include_router(questions_router)
     app.include_router(approval_cards_router)
     app.include_router(approval_cards_membership_router)

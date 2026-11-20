@@ -2158,7 +2158,7 @@ cannot select a different project, conversation, branch, authorizer, or graph
 target.
 
 Unsent drafts kept in browser storage (graph drafts, chat messages, chat
-references and staged comments, and project Settings edits) are keyed by the
+references, and project Settings edits) are keyed by the
 signed-in member's user id, so another member on the same browser never sees
 or submits them. Until a member is verified, no draft is restored or saved.
 Drafts stored before this scoping have no known owner; the web client deletes
@@ -2352,6 +2352,13 @@ the fresh-session flag. New turns and steers take `comment_thread_ids` beside
 their message, which may be empty when threads are present. `/tasks` refuses a
 client-built artifact context that carries selections. A new turn and the
 viewer route key repeats on `Idempotency-Key`, and a steer on its `message_id`.
+
+A Space thread keeps its own threads under `/api/agent-threads/{thread_id}`
+([Space comment routes](../../src/rcp/api/space_comments.py)): the same list,
+read, create, posts, resolve, and reopen routes, for replies and turn artifacts
+of that thread only. Only the thread's owner reads or writes them; anyone else
+gets 404. They have no members, mentions, or watermark. Its turns and steers
+take `comment_thread_ids` like a project chat's.
 
 Saving a post records one mention row per readable member it names. A
 `comment_mention` notification goes at most once per thread and mentioned
@@ -2578,12 +2585,12 @@ and the client id. Turn admission claims that set under its idempotency lock and
 releases it if no task was recorded. Retry retains the claimed batch.
 
 A Space thread sends with `POST /api/agent-threads/{thread_id}/turns`, body
-`{message?, provider?, model?, reasoning?, timezone?, attachment_set_id?, attachment_client_id?, artifact_context?}`.
+`{message?, provider?, model?, reasoning?, timezone?, attachment_set_id?, attachment_client_id?, comment_thread_ids?}`.
 The attachment fields must be supplied together. A turn needs a nonempty message
-or an `artifact_context`: a comment on an artifact one of this thread's own turns
-produced. It returns 202 with
-`{operation_id}`, 404 for a project or unowned thread, 422 for an invalid or empty
-artifact comment or one on another thread's task, or 409 when admission refuses,
+or `comment_thread_ids`: saved threads on this thread's replies or on artifacts
+its own turns produced ([Space comments](#comment-api)). It returns 202 with
+`{operation_id}`, 404 for a project or unowned thread, 422 for an invalid
+artifact comment, or 409 when admission refuses,
 such as a busy thread. It needs a patch-capable identity. Admission
 honors a UUID4 `Idempotency-Key` through the same durable receipt as
 project chat: a replay by the same member and route returns the original operation.

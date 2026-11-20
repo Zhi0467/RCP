@@ -1,15 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  assembleChatTurn,
-  chatAnnotationComposerPosition,
-  chatSelectionCommentPosition,
-  parseStagedChatAnnotations,
-  replaceTextSpan,
-  stagedArtifactContext,
-  unsentChatAnnotations,
-} from "../src/chat/chatInput.ts";
+import { chatSelectionCommentPosition, replaceTextSpan } from "../src/chat/chatInput.ts";
 
 test("dictation inserts at the captured cursor and revises only its active span", () => {
   const first = replaceTextSpan("before  after", { start: 7, end: 7 }, "partial");
@@ -17,131 +9,6 @@ test("dictation inserts at the captured cursor and revises only its active span"
 
   const revised = replaceTextSpan(first.value, { start: 7, end: first.end }, "final words");
   assert.deepEqual(revised, { value: "before final words after", end: 18 });
-});
-
-test("chat annotations become plain selected text and comments in the outgoing turn", () => {
-  const annotations = [
-    { selectedText: "First answer sentence.", comment: "Be more specific." },
-    { selectedText: "Second answer sentence.", comment: "  Is this measured?  " },
-  ];
-
-  for (const [draft, selected] of [
-    ["Check both points.", annotations],
-    ["", annotations.slice(0, 1)],
-  ]) {
-    const result = assembleChatTurn(draft, selected);
-    if (draft) assert.ok(result.includes(draft));
-    for (const annotation of selected) {
-      assert.ok(result.includes(annotation.selectedText));
-      assert.ok(result.includes(annotation.comment.trim()));
-    }
-  }
-});
-
-test("artifact comments are chips like answer comments, numbered as their selections", () => {
-  const context = { source: "task", operation_id: "operation", artifact_id: "artifact" };
-  const box = { kind: "box", rect: { x: 0, y: 0, width: 1, height: 1 }, comment: "" };
-  const chips = [
-    {
-      id: "a",
-      selectedText: "boxed plot",
-      comment: "Why flat?",
-      artifact: { context, name: "r.html", selection: box },
-    },
-    { id: "b", selectedText: "An answer sentence.", comment: "Source?" },
-    {
-      id: "c",
-      selectedText: '"the spike"',
-      comment: "Cause?",
-      artifact: { context, name: "r.html", selection: { ...box, kind: "text" } },
-    },
-  ];
-  // A chip survives the tab's draft storage with its artifact target.
-  const staged = parseStagedChatAnnotations(JSON.stringify(chips));
-  assert.deepEqual(staged, chips);
-
-  // Only answer comments are written into the text; artifact comments ride the selections.
-  const turn = assembleChatTurn("", staged);
-  assert.ok(turn.includes("An answer sentence.\ncomment: Source?"));
-  assert.ok(!turn.includes("Why flat?") && !turn.includes("Cause?"));
-
-  // The turn carries the artifact selections in the order they are numbered, with
-  // the comment as edited on the chip.
-  assert.deepEqual(stagedArtifactContext(staged), {
-    ...context,
-    selections: [
-      { ...box, comment: "Why flat?" },
-      { ...box, kind: "text", comment: "Cause?" },
-    ],
-  });
-  assert.equal(stagedArtifactContext(staged.filter((chip) => !chip.artifact)), null);
-});
-
-test("a comment's source travels with its quote and survives the tab's draft storage", () => {
-  const preview = {
-    id: "p",
-    selectedText: "The claim.",
-    comment: "Cite it.",
-    where: "notes.md, line 9",
-  };
-  const answer = { id: "a", selectedText: "An answer.", comment: "Why?" };
-  const [staged] = parseStagedChatAnnotations(JSON.stringify([preview]));
-  assert.deepEqual(staged, preview);
-  const long = parseStagedChatAnnotations(JSON.stringify([{ ...preview, where: "x".repeat(500) }]));
-  assert.equal(long[0].where.length, 200);
-  assert.deepEqual(parseStagedChatAnnotations(JSON.stringify([{ ...preview, where: 9 }])), []);
-
-  const turn = assembleChatTurn("", [staged, answer]);
-  const [withSource, withoutSource] = turn.split("\n\n");
-  assert.ok(withSource.startsWith(preview.where));
-  assert.ok(withSource.indexOf(preview.where) < withSource.indexOf(preview.selectedText));
-  assert.ok(withoutSource.startsWith(answer.selectedText));
-});
-
-test("a sent turn clears only the comments it carried", () => {
-  const sent = [{ id: "a", selectedText: "A", comment: "1" }];
-  const later = { id: "b", selectedText: "B", comment: "2" };
-  assert.deepEqual(unsentChatAnnotations([...sent, later], sent), [later]);
-  assert.deepEqual(unsentChatAnnotations(sent, sent), []);
-  // Nothing sent is still staged: the list is left as it is.
-  const current = [later];
-  assert.equal(unsentChatAnnotations(current, sent), current);
-});
-
-test("annotation composer stays beside the selection and inside the viewport", () => {
-  assert.deepEqual(
-    chatAnnotationComposerPosition(
-      { left: 100, right: 180, top: 140 },
-      { left: 0, top: 0, width: 1000, height: 800 },
-      { width: 320, height: 228 },
-    ),
-    { left: 190, top: 140 },
-  );
-  assert.deepEqual(
-    chatAnnotationComposerPosition(
-      { left: 700, right: 790, top: 760 },
-      { left: 0, top: 0, width: 800, height: 800 },
-      { width: 320, height: 228 },
-    ),
-    { left: 370, top: 560 },
-  );
-  assert.deepEqual(
-    chatAnnotationComposerPosition(
-      { left: 4, right: 796, top: -10 },
-      { left: 0, top: 0, width: 800, height: 800 },
-      { width: 320, height: 228 },
-    ),
-    { left: 12, top: 12 },
-  );
-
-  assert.deepEqual(
-    chatAnnotationComposerPosition(
-      { left: 720, right: 760, top: 400 },
-      { left: 0, top: 48, width: 844, height: 196 },
-      { width: 320, height: 172 },
-    ),
-    { left: 390, top: 60 },
-  );
 });
 
 test("the selection Comment offer sits on top of the selection and stays on screen", () => {

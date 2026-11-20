@@ -1219,13 +1219,17 @@ export function AgentChatView({
       if (sent) dockKeys.current.done();
     });
   };
+  const commentScope = useMemo(
+    () => ({ kind: "project" as const, projectId: project.id }),
+    [project.id],
+  );
   const inlineArtifactComments = useInlineArtifactComments({
-    projectId: project.id,
+    scope: commentScope,
     canPost: canSendThreads,
     dock: readOnly ? (allowArtifactComments ? sendSaved : null) : commentDock.dock,
   });
   const replyComments = useReplyComments({
-    projectId: project.id,
+    scope: commentScope,
     chatId,
     replyIds,
     linesRef: chatLinesRef,

@@ -773,17 +773,13 @@ keyboard text-control alternative. In agent threads it shows only while keyboard
 focus is on it, because a mouse or touch selection already opens the comment. The comment editor stays within the keyboard-adjusted
 viewport at every width.
 
-In project chats, a comment on a reply saves a
-[shared thread](paper-artifacts-and-result-views.md#shared-comments) on that
-reply turn. A pin at its quote opens the thread as a popover, and a count in the
-chat header lists the chat's open threads. The composer sends ticked threads as
-message text after the typed text.
-
-Space threads keep comments as per-chat drafts with a count, editable and
-removable; blank comments block send until completed or removed. Sending appends
-copied text and `comment: <comment>` to the human message, with no source ids,
-offsets or durable annotation model. Acceptance clears drafts; refusal retains
-them.
+In project chats and agent threads, Space threads included, a comment on a
+reply saves a [shared thread](paper-artifacts-and-result-views.md#shared-comments)
+on that reply turn. A pin at its quote opens the thread as a popover, and a count
+in the chat header lists the chat's open threads. Saved threads dock at the
+composer, which sends them as message text after the typed text. Acceptance
+clears the dock; refusal keeps it. A Space thread's comments are its owner's
+alone.
 
 ## Common episode parent
 

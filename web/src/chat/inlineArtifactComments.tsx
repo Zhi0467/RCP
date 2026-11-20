@@ -8,14 +8,15 @@ import {
 } from "../comments/react/CommentComposer";
 import { CommentThreadCard } from "../comments/react/CommentThreadCard";
 import { useComments, type DockThreads } from "../comments/react/useComments";
+import type { CommentScope } from "../comments/api.ts";
 import type { CommentThread } from "../comments/types.ts";
 
 export function useInlineArtifactComments({
-  projectId,
+  scope,
   canPost,
   dock,
 }: {
-  projectId: string;
+  scope: CommentScope;
   canPost: boolean;
   dock: DockThreads | null;
 }) {
@@ -48,7 +49,7 @@ export function useInlineArtifactComments({
       return next;
     });
   const comments = useComments({
-    projectId,
+    scope,
     kind: "artifact",
     ids: artifactIds,
     canPost,

@@ -33,8 +33,19 @@ export function fetchRequest(fetcher: typeof fetch = fetch): CommentRequest {
   };
 }
 
+/** Where a surface's threads live: a project, or one member's Space agent thread. */
+export type CommentScope =
+  { kind: "project"; projectId: string } | { kind: "space"; threadId: string };
+
 export function createCommentsClient(projectId: string, request: CommentRequest) {
-  const base = `/api/projects/${encodeURIComponent(projectId)}`;
+  return createScopedCommentsClient({ kind: "project", projectId }, request);
+}
+
+export function createScopedCommentsClient(scope: CommentScope, request: CommentRequest) {
+  const base =
+    scope.kind === "project"
+      ? `/api/projects/${encodeURIComponent(scope.projectId)}`
+      : `/api/agent-threads/${encodeURIComponent(scope.threadId)}`;
   const threadPath = (id: string) => `${base}/comment-threads/${encodeURIComponent(id)}`;
   const send = <T>(path: string, method = "GET", body?: unknown, key?: string): Promise<T> => {
     const sent = method === "GET" ? body : (body ?? {});

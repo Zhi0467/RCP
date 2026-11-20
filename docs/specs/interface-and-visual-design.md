@@ -549,20 +549,21 @@ Board chats and threads
 share the agent window transcript, scrolling, artifact rendering, comments, and
 composer parts. Project threads support node references, saved artifacts, and
 artifact-selection comments. Space threads render their own turn artifacts and
-accept files, answer comments, and inline artifact-selection comments, which
-open in comment mode like a project thread's. A Space comment travels with the
-next message as numbered selections on that turn file, and the agent writes a
-revision at its original tracked path. Space turns synchronize earlier files and
+accept files and the same shared comments on replies and inline artifacts, which
+open in comment mode like a project thread's. A Space artifact comment travels
+with the next message as numbered selections on that turn file, and the agent
+writes a revision at its original tracked path. Space turns synchronize earlier files and
 publish changes as the same artifact's next version, just as project turns do.
 Space has no Keep, node references, version controls or comment panel in its
 opened viewer. Both open artifacts in the shared in-app viewer,
 including on desktop. Voice and handoff source icons sit inside the human message
-bubble. Answer comments join the next message only in Space threads. In a
-project chat, selected reply text starts a
+bubble. In every chat and thread, selected reply text starts a
 [shared comment thread](paper-artifacts-and-result-views.md#shared-comments): a pin
 just past the quote's end opens it, the header count lists the chat's reply and
-inline-artifact threads, and Send
-to agent carries threads through the composer's own send, a steer while a turn runs.
+inline-artifact threads, and saved threads dock at the composer, whose next send
+carries them, a steer while a turn runs. A thread with docked comments refuses
+Queue. A project thread offers Work in a worktree in its + menu like a project
+chat.
 A pending Experiment or Auto-research plan card sits in the chat's dock, in
 threads, shared chats and node chats alike; once settled it stays inside its
 raising turn's answer. Both share one body. An Experiment plan shows the node,

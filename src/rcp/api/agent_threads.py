@@ -82,12 +82,14 @@ from rcp.artifact_comments import supports_comments
 from rcp.artifact_views import ViewerPresentation
 from rcp.attachments import ChatAttachmentStore, ChatAttachmentUpload, ProjectReferenceSelector
 from rcp.comments.models import COMMENT_MEDIA_TYPES
+from rcp.comments.send import chat_turn_send, thread_send_text
 from rcp.config import load_manifest
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphTargetRef
 from rcp.history import ReplayHalted
 from rcp.limits import (
     AGENT_THREAD_QUEUE_MAX_CHARS,
+    ARTIFACT_CONTEXT_MAX_SELECTIONS,
     CHAT_ATTACHMENT_MAX_COUNT,
     CHAT_DOCK_ENDED_EPISODE_WINDOW,
     SPACE_RUNNING_MAX_ROWS,
@@ -126,6 +128,7 @@ from rcp.storage.agent_threads import (
     thread_binds_task,
 )
 from rcp.storage.chat_names import ChatNameError, chat_titles
+from rcp.storage.comments import CommentError
 from rcp.storage.models import EpisodeRecord, ProjectRecord
 from rcp.storage.notifications import question_recipients
 from rcp.storage.question_models import QuestionRecord
@@ -1019,7 +1022,9 @@ class SpaceTurnBody(BaseModel):
     timezone: str | None = None
     attachment_set_id: str | None = Field(default=None, min_length=1)
     attachment_client_id: str | None = Field(default=None, min_length=1)
-    artifact_context: ArtifactContextRequest | None = None
+    comment_thread_ids: list[str] = Field(
+        default_factory=list, max_length=ARTIFACT_CONTEXT_MAX_SELECTIONS
+    )
     invoked_workflow_ids: list[str] = Field(default_factory=list)
     invoked_skill_ids: list[str] = Field(default_factory=list)
 
@@ -1030,18 +1035,17 @@ class SpaceTurnBody(BaseModel):
 
     @model_validator(mode="after")
     def validate_message(self) -> Self:
-        if not self.message and self.artifact_context is None:
-            raise ValueError("A Space turn needs a message or an artifact comment")
+        if not self.message and not self.comment_thread_ids:
+            raise ValueError("A Space turn needs a message or a comment")
         return self
 
 
 def _space_artifact_comment(
-    store: AppStore, thread: AgentThreadRecord, body: SpaceTurnBody
+    store: AppStore, thread: AgentThreadRecord, context: ArtifactContextRequest | None, text: str
 ) -> tuple[ArtifactContextRequest | None, str]:
     """Admit comments on an artifact one of this thread's own turns produced."""
-    context = body.artifact_context
     if context is None:
-        return None, body.message
+        return None, text
     try:
         if context.source != "task":
             raise ValueError("A Space comment names a turn's artifact.")
@@ -1060,7 +1064,7 @@ def _space_artifact_comment(
         context = context.model_copy(
             update={"base_version": _edit_version(store, artifact, context), "fresh_session": False}
         )
-        message = artifact_comment_message(body.message, context)
+        message = artifact_comment_message(text, context)
     except (HTTPException, ValueError) as exc:
         detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
         raise HTTPException(status_code=422, detail=detail) from exc
@@ -1094,21 +1098,42 @@ def space_turn(
 ):
     authorized = identity_access.require_patch_capable_identity(request)
     thread = owned_space_thread(store, thread_id, authorized.user_id)
+    key = str(idempotency_key) if idempotency_key is not None else None
+    sent = (
+        chat_turn_send(
+            store,
+            store.space_id,
+            authorized.user_id,
+            body.comment_thread_ids,
+            key or "",
+            message=body.message,
+            chat_id=thread_id,
+            paper=False,
+        )
+        if body.comment_thread_ids
+        else None
+    )
     try:
         with store.client_request_admission(
             store.space_id,
             authorized.user_id,
-            str(idempotency_key) if idempotency_key is not None else None,
+            key,
             f"agent-threads/{thread_id}/turns",
         ) as existing:
             if existing is not None:
+                if sent is not None:
+                    record = store.agent_task(existing.operation_id or "")
+                    assert record is not None
+                    sent.require_replay_of(record)
+                    store.mark_threads_sent(
+                        sent.rendered_through, record.operation_id, key or "", authorized.user_id
+                    )
                 return {"operation_id": existing.operation_id}
-            with (
-                store.artifact_lock(body.artifact_context.artifact_id)
-                if body.artifact_context is not None
-                else nullcontext()
-            ):
-                artifact_context, message = _space_artifact_comment(store, thread, body)
+            context = sent.context if sent is not None else None
+            with store.artifact_lock(context.artifact_id) if context is not None else nullcontext():
+                artifact_context, message = _space_artifact_comment(
+                    store, thread, context, sent.text if sent is not None else body.message
+                )
                 workflows, skills = admit_space_invocations(
                     body.invoked_workflow_ids, body.invoked_skill_ids
                 )
@@ -1153,6 +1178,12 @@ def space_turn(
                         operation_id=operation_id,
                         authorized_by=authorized,
                     )
+                if sent is not None:
+                    store.mark_threads_sent(
+                        sent.rendered_through, task.operation_id, key or "", authorized.user_id
+                    )
+    except CommentError:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"operation_id": task.operation_id}
@@ -1282,6 +1313,20 @@ def steer_space_task(
     owner = task_owner(store, task, catalog=catalog)
     if not isinstance(owner, SpaceThreadOwner):
         raise HTTPException(status_code=404, detail="Space thread not found")
+    sent = (
+        thread_send_text(
+            store,
+            store.space_id,
+            authorized.user_id,
+            body.comment_thread_ids,
+            str(body.message_id),
+            message=body.message,
+            chat_id=thread_id,
+            paper=False,
+        )
+        if body.comment_thread_ids
+        else None
+    )
     try:
         delivery = begin_chat_steer(
             owner,
@@ -1290,9 +1335,20 @@ def steer_space_task(
             message_id=str(body.message_id),
             attempt=body.attempt,
             expected_turn_id=body.expected_turn_id,
-            text=body.message,
+            text=sent.text if sent is not None else body.message,
         )
-        return finish_chat_steer(owner, background_tasks, task, delivery)
+        message = finish_chat_steer(owner, background_tasks, task, delivery)
+        if (
+            sent is not None
+            and message.steering is not None
+            and message.steering.status != "refused"
+        ):
+            store.mark_threads_sent(
+                sent.rendered_through, operation_id, str(body.message_id), authorized.user_id
+            )
+        return message
+    except CommentError:
+        raise
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except OSError as exc:

@@ -1,6 +1,5 @@
 import { useCallback, useLayoutEffect, useRef, type ComponentProps, type ReactNode } from "react";
 import { SkillPicker, type SkillPickerProps } from "../core/SkillPicker";
-import { StagedAnswerComments, type AnswerComments } from "./answerComments";
 import { DockedComments, type CommentDock } from "../comments/react/CommentDock";
 import {
   ComposerAddPicker,
@@ -17,7 +16,6 @@ import {
 export function ChatComposer({
   hint,
   composer,
-  comments,
   docked,
   skills,
   addDisabled = false,
@@ -32,7 +30,6 @@ export function ChatComposer({
   /** A caller-owned hint above staged comments, such as a provider switch. */
   hint?: ReactNode;
   composer?: ComposerAttachments;
-  comments?: AnswerComments;
   /** Saved comment threads the next message carries. */
   docked?: CommentDock;
   skills?: SkillPickerProps;
@@ -56,7 +53,6 @@ export function ChatComposer({
     >
       {skills && <SkillPicker {...skills} />}
       {hint}
-      {comments && <StagedAnswerComments comments={comments} />}
       {docked && <DockedComments dock={docked} busy={false} />}
       {composer && <ComposerAttachmentChips composer={composer} />}
       <div className="chat-composer-row">
