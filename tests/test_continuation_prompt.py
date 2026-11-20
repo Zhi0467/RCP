@@ -167,7 +167,6 @@ def test_a_resumed_chat_learns_a_new_skill_from_its_delta(branch_services) -> No
             repositories=[],
             compute_profiles=[],
             skill_pointers=pointers,
-            experiment_watcher_resources=[],
             workspace="workspace",
         )
 

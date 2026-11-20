@@ -112,7 +112,6 @@ from rcp.background import (
     StartupEffectFence,
 )
 from rcp.build_identity import build_identity
-from rcp.compute_jobs.jobs import helper_cancel_action
 from rcp.compute_jobs.probe import (
     machine_compute_routes,
     probe_compute_backend,
@@ -286,7 +285,6 @@ from rcp.storage import (
     GraphWatcherRecord,
     StoredWatcherRecord,
     TeamAuthenticationError,
-    WatcherRecord,
 )
 from rcp.storage.comments import CommentError
 from rcp.storage.models import MACHINE_LOGIN_ID
@@ -985,7 +983,6 @@ def create_app(
                 )
             ),
             graph_state=service.history.state,
-            machine_id=request.run_on,
             apply_patch=apply_auto_research_patch,
             merge=merge_owned_branch,
             on_graph_applied=lambda: evaluate_graph_wake_boundary(
@@ -993,12 +990,6 @@ def create_app(
                 None,
                 graph_target=task.graph_target,
                 source="Auto-research in-turn Apply",
-            ),
-            on_watcher_ready=lambda ready_project_id: evaluate_graph_wake_boundary(
-                ready_project_id,
-                None,
-                graph_target=task.graph_target,
-                source="Auto-research graph condition",
             ),
             experiment_coordinator=auto_research_experiment_coordinator,
             branch_head=lambda target: service.for_graph_target(target).history.head_ref(),
@@ -1261,13 +1252,6 @@ def create_app(
     def resume_experiment_from_work(resume: WorkExperimentResume) -> EpisodeRecord:
         return resume_work_experiment(catalog, background_tasks, experiment_operation_lock, resume)
 
-    def cancel_watcher_from_work(
-        project_id: str, watcher_id: str, requested_by: str
-    ) -> WatcherRecord:
-        with experiment_operation_lock(project_id):
-            store.require_project_accepts_new_work(project_id)
-            return watcher_poller.cancel(project_id, watcher_id, requested_by)
-
     # One per process: admission and the machine card share its cache.
     dependency_checker = DependencyChecker(space_kind=lambda: store.space_kind)
     background_tasks = BackgroundAgentTasks(
@@ -1284,7 +1268,6 @@ def create_app(
         episode_controls=MemberEpisodeControls(
             catalog, lambda: background_tasks, experiment_operation_lock, experiment_admission
         ),
-        watcher_canceller=cancel_watcher_from_work,
         paper_live=paper_live,
     )
 
@@ -1727,7 +1710,6 @@ def create_app(
         store,
         on_completed=deliver_watcher_group,
         on_poll_completed=after_watcher_poll,
-        helper_cancel_action=lambda watcher: helper_cancel_action(store, watcher),
     )
     consolidation_poller = ConsolidationPoller(
         store,

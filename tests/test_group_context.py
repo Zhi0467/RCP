@@ -87,7 +87,6 @@ def test_group_payload_and_read_roots_leave_writes_unchanged(
             repositories=[],
             compute_profiles=[],
             skill_pointers=[],
-            experiment_watcher_resources=[],
             workspace="workspace",
         )
 

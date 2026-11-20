@@ -1127,7 +1127,6 @@ def space_master_values(
                 ],
                 compute_profiles=[],
                 skill_pointers=[],
-                experiment_watcher_resources=[],
                 workspace=project.scope.workspace_root,
             )
             for project in found.writers

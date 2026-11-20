@@ -30,7 +30,6 @@ def auto_research_allowed_verbs(
         "resume",
         "stop",
         "message",
-        "watch_graph",
         "episode",
         "inbox",
         "finish",

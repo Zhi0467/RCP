@@ -27,8 +27,6 @@ from rcp.agents.command_protocol import (
     StatusArguments,
     StatusCommandRequest,
     StopCommandRequest,
-    WatchGraphArguments,
-    WatchGraphCommandRequest,
 )
 from rcp.background import BackgroundAgentTasks
 from rcp.core.authority import AgentDispatchAuthority, AgentDispatchScope
@@ -42,7 +40,6 @@ from rcp.runs.auto_research import (
     AutoResearchCommandEffectResult,
     AutoResearchCommandFile,
     AutoResearchRunRequest,
-    request_auto_research_stop,
 )
 from rcp.runs.auto_research_admission import (
     AutoResearchChildResumeResult,
@@ -68,8 +65,6 @@ from rcp.storage import (
     AutoResearchStateRecord,
     EpisodeNotRunning,
     EpisodeRecord,
-    GraphWatcherRecord,
-    NodeStatusGraphCondition,
     ProjectRecord,
     WatcherContinuation,
     WatcherRecord,
@@ -412,7 +407,6 @@ def _effects(
     background,
     *,
     state=None,
-    on_watcher_ready=None,
     apply_patch=None,
     on_graph_applied=None,
     branch_head=None,
@@ -423,10 +417,8 @@ def _effects(
         validate=lambda _context, _arguments: AutoResearchCommandEffectResult(),
         worker_request_factory=_worker_request,
         graph_state=lambda: state or _blocker_state(),
-        machine_id="backend",
         apply_patch=apply_patch,
         on_graph_applied=on_graph_applied,
-        on_watcher_ready=on_watcher_ready,
         branch_head=branch_head,
     )
 
@@ -1370,85 +1362,6 @@ def test_new_message_stays_pending_when_an_older_bounded_batch_starts(
     wait_for_task(store, delivery_operation_id)
 
 
-def test_watch_graph_uses_live_state_and_the_explicit_machine(tmp_path) -> None:
-    store, auto_research, root = _setup_auto_research(tmp_path)
-    background = BackgroundAgentTasks(store, _successful_stream)
-    ready: list[str] = []
-    calls = 0
-
-    def live_state() -> GraphState:
-        nonlocal calls
-        calls += 1
-        return _blocker_state(status="resolved", revision=2)
-
-    effects = auto_research_command_effects(
-        store=store,
-        background=background,
-        validate=lambda _context, _arguments: AutoResearchCommandEffectResult(),
-        worker_request_factory=_worker_request,
-        graph_state=live_state,
-        machine_id="gpu-card",
-        on_watcher_ready=ready.append,
-    )
-    context = _context(store, auto_research, root)
-    planned_watcher_id = str(uuid.uuid4())
-
-    assert (
-        effects.seat_node_type(
-            auto_research.project_id,
-            auto_research.episode_id,
-            "blk/check",
-        )
-        == "blocker"
-    )
-    outcome = effects.watch_graph(
-        context,
-        WatchGraphArguments(
-            condition=NodeStatusGraphCondition(
-                node_id="blk/check",
-                status_in=["resolved"],
-            ),
-            reason="Continue after the canonical blocker is resolved.",
-        ),
-        planned_watcher_id,
-    )
-
-    assert outcome.result["watcher_id"] == planned_watcher_id
-    assert outcome.result["disposition"] == "created"
-    watcher = store.watcher(str(outcome.result["watcher_id"]))
-    assert isinstance(watcher, GraphWatcherRecord)
-    assert watcher.machine_id == "gpu-card"
-    assert watcher.status == "completed"
-    assert outcome.result["completed_immediately"] is True
-    assert ready == [auto_research.project_id]
-    assert calls == 2
-
-
-def test_graph_watcher_born_after_stop_reports_its_durable_stopped_status(tmp_path) -> None:
-    store, auto_research, root = _setup_auto_research(tmp_path)
-    background = BackgroundAgentTasks(store, _successful_stream)
-    effects = _effects(store, background, state=_blocker_state(status="resolved"))
-    request_auto_research_stop(store, auto_research.episode_id)
-
-    outcome = effects.watch_graph(
-        _context(store, auto_research, root),
-        WatchGraphArguments(
-            condition=NodeStatusGraphCondition(
-                node_id="blk/check",
-                status_in=["resolved"],
-            ),
-            reason="Retain this condition under the existing Stop intent.",
-        ),
-        str(uuid.uuid4()),
-    )
-
-    watcher = store.watcher(str(outcome.result["watcher_id"]))
-    assert isinstance(watcher, GraphWatcherRecord)
-    assert watcher.status == "stopped"
-    assert outcome.result["status"] == "stopped"
-    assert outcome.result["completed_immediately"] is False
-
-
 def test_finish_fences_completed_and_unknown_reconciliation_never_reexecutes(tmp_path) -> None:
     store, auto_research, root = _setup_auto_research(tmp_path)
     background = BackgroundAgentTasks(store, _successful_stream)
@@ -1967,7 +1880,6 @@ def test_experiment_kickoff_reports_an_exhausted_shared_allowance(tmp_path) -> N
         validate=lambda _context, _arguments: AutoResearchCommandEffectResult(),
         worker_request_factory=_worker_request,
         graph_state=_blocker_state,
-        machine_id="backend",
         experiment_coordinator=ExhaustedCoordinator(),  # type: ignore[arg-type]
     )
     arguments = ExperimentKickoffArguments(
@@ -2076,72 +1988,6 @@ def test_unknown_message_reconciliation_returns_the_exact_row_without_redelivery
     assert [
         message.message_id for message in store.auto_research_messages(auto_research.episode_id)
     ] == [planned_message_id]
-
-
-def test_unknown_graph_watch_reconciliation_is_read_only_and_fail_closed(tmp_path) -> None:
-    store, auto_research, root = _setup_auto_research(tmp_path)
-    background = BackgroundAgentTasks(store, _successful_stream)
-    ready: list[str] = []
-    graph_reads = 0
-
-    def live_state() -> GraphState:
-        nonlocal graph_reads
-        graph_reads += 1
-        return _blocker_state(status="resolved", revision=2)
-
-    effects = auto_research_command_effects(
-        store=store,
-        background=background,
-        validate=lambda _context, _arguments: AutoResearchCommandEffectResult(),
-        worker_request_factory=_worker_request,
-        graph_state=live_state,
-        machine_id="gpu-card",
-        on_watcher_ready=ready.append,
-    )
-    context = _context(store, auto_research, root)
-    planned_watcher_id = str(uuid.uuid4())
-    request = WatchGraphCommandRequest(
-        mailbox_id=MAILBOX_ID,
-        request_id="e" * 32,
-        credential=CREDENTIAL,
-        verb="watch_graph",
-        idempotency_key="watch-once",
-        arguments={
-            "condition": {"node_id": "blk/check", "status_in": ["resolved"]},
-            "reason": "Continue after the durable condition is satisfied.",
-        },
-    )
-
-    created = effects.watch_graph(context, request.arguments, planned_watcher_id)
-    assert graph_reads == 1
-    assert ready == [auto_research.project_id]
-
-    reconciled = effects.reconcile_unknown(context, request, planned_watcher_id)
-
-    assert reconciled is not None
-    assert reconciled.result == {
-        **created.result,
-        "disposition": "existing",
-    }
-    assert graph_reads == 1
-    assert ready == [auto_research.project_id]
-    assert effects.reconcile_unknown(context, request, str(uuid.uuid4())) is None
-    assert effects.reconcile_unknown(context, request, "not-a-uuid") is None
-    mismatched = request.model_copy(
-        update={
-            "arguments": request.arguments.model_copy(
-                update={
-                    "condition": NodeStatusGraphCondition(
-                        node_id="blk/check",
-                        status_in=["open"],
-                    )
-                }
-            )
-        }
-    )
-    assert effects.reconcile_unknown(context, mismatched, planned_watcher_id) is None
-    assert graph_reads == 1
-    assert ready == [auto_research.project_id]
 
 
 def test_individual_worker_stop_routes_to_the_current_attempt_and_never_stops_the_parent(

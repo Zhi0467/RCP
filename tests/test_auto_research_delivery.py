@@ -10,14 +10,13 @@ import pytest
 
 import rcp.runs.auto_research_delivery as delivery_module
 from rcp.agents import AgentEvent, AgentProcessControl
-from rcp.agents.command_protocol import MessageArguments, MessageCommandRequest, WatchGraphArguments
+from rcp.agents.command_protocol import MessageArguments, MessageCommandRequest
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.models import Blocker, GraphState
 from rcp.core.transition_models import GraphHeadRef
 from rcp.limits import AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS
 from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.auto_research import (
-    AutoResearchCommandContext,
     AutoResearchRunRequest,
     AutoResearchStartRequest,
 )
@@ -27,13 +26,11 @@ from rcp.runs.auto_research_admission import (
     start_auto_research_turn,
 )
 from rcp.runs.auto_research_delivery import (
-    arm_auto_research_graph_condition,
     deliver_auto_research_watcher_group,
     deliver_pending_auto_research_lifecycle,
     deliver_pending_auto_research_mail,
     pending_auto_research_lifecycle_episodes,
     pending_auto_research_mail_recipients,
-    reconcile_auto_research_graph_condition,
     reconcile_pending_auto_research_lifecycle,
     reconcile_pending_auto_research_mail,
     record_auto_research_message,
@@ -48,8 +45,10 @@ from rcp.storage import (
     GraphWatcherRecord,
     NodeStatusGraphCondition,
     ProjectRecord,
+    WatcherContinuation,
 )
 from rcp.storage.models import _required_timestamp
+from rcp.watchers import WatcherBinding, arm_watchers
 
 from .helpers import (
     async_wait_until,
@@ -199,21 +198,40 @@ def _arm_completed_graph_condition(
         description="The auto_research continues after this blocker resolves.",
         status="resolved",
     )
-    watcher = arm_auto_research_graph_condition(
+    request = AutoResearchRunRequest.model_validate(origin.request)
+    assert request.provider is not None and request.run_on is not None
+    binding = store.auto_research_actor_binding(origin.operation_id)
+    (watcher,) = arm_watchers(
         store,
-        AutoResearchCommandContext(
-            episode=current,
-            task=origin,
-            request=AutoResearchRunRequest.model_validate(origin.request),
+        [],
+        WatcherBinding(
+            project_id=origin.project_id,
+            origin_operation_id=origin.operation_id,
+            origin_task_kind="auto_research",
+            chat_id=binding.actor_operation_id,
+            node_id=request.control_node_id,
+            episode_id=current.episode_id,
+            graph_target=origin.graph_target,
+            machine_id=origin.stage_machine_id or "backend",
+            continuation=WatcherContinuation(
+                browser_requested=current.browser_requested,
+                provider=request.provider,
+                model=request.model,
+                reasoning=request.reasoning,
+                run_on=request.run_on,
+                run_truth_scope=request.run_truth_scope,
+                workflow_ids=request.workflow_ids or [],
+                skill_ids=request.skill_ids or [],
+                invoked_workflow_ids=request.invoked_workflow_ids,
+                invoked_skill_ids=request.invoked_skill_ids,
+                resolved_skill_packages=request.resolved_skill_packages or [],
+            ),
         ),
-        WatchGraphArguments(
-            condition=condition,
-            reason="Continue after the canonical result is available.",
-        ),
-        watcher_id=watcher_id,
+        graph_conditions=[condition],
         state=GraphState(revision=2, nodes={blocker.id: blocker}),
-        machine_id=origin.stage_machine_id or "backend",
+        watcher_ids=[watcher_id],
     )
+    assert isinstance(watcher, GraphWatcherRecord)
     assert watcher.watcher_id == watcher_id
     assert watcher.status == "completed"
     assert watcher.origin_task_kind == "auto_research"
@@ -224,7 +242,7 @@ def _arm_completed_graph_condition(
     return watcher
 
 
-def test_auto_research_effect_ids_are_exact_and_graph_reconciliation_is_read_only(tmp_path) -> None:
+def test_auto_research_message_keeps_its_planned_identity(tmp_path) -> None:
     store = _store(tmp_path)
     stage = tmp_path / "auto_research-stage"
     stage.mkdir()
@@ -254,72 +272,6 @@ def test_auto_research_effect_ids_are_exact_and_graph_reconciliation_is_read_onl
     )
     assert message.message_id == "planned-message"
     assert store.auto_research_message("planned-message") == message
-
-    watcher = _arm_completed_graph_condition(
-        store,
-        auto_research,
-        root,
-        watcher_id="planned-watcher",
-    )
-    context = AutoResearchCommandContext(
-        episode=auto_research,
-        task=root,
-        request=AutoResearchRunRequest.model_validate(root.request),
-    )
-    arguments = WatchGraphArguments(
-        condition=watcher.condition,
-        reason="Continue after the canonical result is available.",
-    )
-    events_before = store.agent_task_events(root.operation_id)
-    receipts_before = store.agent_task_receipts(root.operation_id)
-
-    assert (
-        reconcile_auto_research_graph_condition(
-            store,
-            context,
-            arguments,
-            watcher_id="planned-watcher",
-            machine_id=root.stage_machine_id or "backend",
-        )
-        == watcher
-    )
-    assert (
-        reconcile_auto_research_graph_condition(
-            store,
-            context,
-            arguments,
-            watcher_id="missing-watcher",
-            machine_id=root.stage_machine_id or "backend",
-        )
-        is None
-    )
-    mismatched_arguments = WatchGraphArguments(
-        condition=NodeStatusGraphCondition(node_id="blk/other", status_in=["resolved"]),
-        reason=arguments.reason,
-    )
-    assert (
-        reconcile_auto_research_graph_condition(
-            store,
-            context,
-            mismatched_arguments,
-            watcher_id="planned-watcher",
-            machine_id=root.stage_machine_id or "backend",
-        )
-        is None
-    )
-    assert (
-        reconcile_auto_research_graph_condition(
-            store,
-            context,
-            arguments,
-            watcher_id="planned-watcher",
-            machine_id="different-machine",
-        )
-        is None
-    )
-    assert store.agent_task_events(root.operation_id) == events_before
-    assert store.agent_task_receipts(root.operation_id) == receipts_before
-    assert store.watcher("planned-watcher") == watcher
 
 
 def test_auto_research_graph_watcher_wake_is_one_atomic_paid_actor_continuation(tmp_path) -> None:

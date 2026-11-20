@@ -147,10 +147,6 @@ def get_attachment_store(request: Request) -> ChatAttachmentStore:
     return _api_services(request).attachment_store
 
 
-def get_watcher_poller(request: Request) -> WatcherPoller:
-    return _api_services(request).watcher_poller
-
-
 def get_artifact_mutation_locks(request: Request) -> KeyedLocks:
     return _api_services(request).artifact_mutation_locks
 
@@ -309,7 +305,6 @@ __all__ = [
     "get_setup",
     "get_store",
     "get_watcher_delivery",
-    "get_watcher_poller",
     "project_write_admission",
     "require_registered_project",
     "require_project_membership",

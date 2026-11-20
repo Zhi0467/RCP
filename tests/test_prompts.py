@@ -93,40 +93,6 @@ def test_chat_master_context_preserves_context_and_skill_paths() -> None:
     assert master.count(REPLY_STYLE) == 2
 
 
-def test_chat_master_preserves_experiment_watcher_resource_paths_and_host() -> None:
-    resource = {
-        "control_node_id": "exp/example",
-        "episode_id": "episode-1",
-        "execution_host": "episode.example",
-        "watcher_state_path": "/stage/inputs/exp-example-watchers.json",
-        "watch_path": "/stage/workspace/experiment-watch-example.json",
-    }
-    master = PromptFactory.chat_master_context(
-        project_name="Example",
-        graph_target=GraphTargetRef(),
-        ontology_path="/state/graph.json#ontology",
-        ontology_extensions=False,
-        graph_path="/state/graph.json",
-        research_path="/state/research.md",
-        graph_revision=7,
-        focused_node_id="exp/example",
-        repositories=[],
-        paper_path=None,
-        patch_path="/stage/workspace/patch.json",
-        workspace_path="/stage/workspace",
-        output_schema_path="/stage/inputs/schema.json",
-        command_client="python3 /stage/inputs/validate.py",
-        watch_path="/stage/workspace/watch.json",
-        execution_host="chat.example",
-        experiment_watcher_resources=[resource],
-    )
-
-    assert resource["watcher_state_path"] in master
-    assert resource["watch_path"] in master
-    assert resource["execution_host"] in master
-    assert "/stage/workspace/watch.json" in master
-
-
 @pytest.mark.parametrize("bootstrap", [False, True])
 @pytest.mark.parametrize("mode", ["discuss", "work"])
 def test_chat_turn_preserves_human_message_and_input_paths(mode, bootstrap) -> None:

@@ -874,9 +874,9 @@ Readiness separates graph and operational reasons and adds
 `isolated_start_reasons` for a prospective branch. Run waits while other-target
 loops load; failed/partial reads report unknown overlap but leave Run available.
 Every Experiment-node chat/wake receives this target's loop status, authorizer,
-Stop attribution, other-target loops and refreshed watcher-state file, without
-maintenance authority. Agents able to ask should clarify interference with other
-branches; children pause conflicting work and tell their orchestrator. Branch
+Stop attribution, other-target loops and refreshed watcher-state file. Agents
+able to ask should clarify interference with other branches; children pause
+conflicting work and tell their orchestrator. Branch
 turns also receive read-only main graph and shared-checkout/Git pointers.
 
 A completed, abandoned or superseded Experiment cannot start fresh until an
@@ -1246,15 +1246,6 @@ Stop fences continuation and leaves the action available for still-live work.
 Cancellation failures permit explicit retry. Transfer and offline restore
 remove executable actions; ordinary restart preserves them.
 
-A member's ordinary Work chat, the same turns that may start an Experiment, holds
-the `watcher` verb over the watchers its own Work turns armed for the chat: the
-chat id, project and Work continuation match. `watcher --list` shows the live
-ones. `watcher --stop <id>` retires one under the same storage rule as the
-human's stop, recorded as stopped by `agent`. `watcher --cancel <id>` is the
-member's Cancel, attributed to that member, under the same write admission. An
-Experiment loop's watcher wakes its episode, not the chat, so it is refused with
-`watcher_not_armed_here` like another chat's; it stops with that episode.
-
 Prompt guidance lets short jobs finish inline and recommends a watcher for
 roughly more than ten minutes of waiting. This is not a runtime cutoff.
 
@@ -1317,27 +1308,6 @@ succeeded current child task. A repeated delivery cannot create a second wake. A
 undelivered watcher is waiting, which blocks the root's guarded finish. Episode
 Stop and the root's child `stop` verb retire the child's watchers within their
 admission fence. They never cancel the observed jobs.
-
-## Watcher maintenance authority
-
-An authorized node Work chat may maintain only its focused Experiment resource;
-authorized project Work may maintain live Experiment resources in that project
-and exact graph target. A historical Discuss turn may inspect staged state but cannot mutate it.
-Origin chat, provider, path, or maintenance machine grants no authority.
-
-Maintenance uses its own Work task/session, spends no Experiment invocation,
-does not create an attempt, and never replaces the episode's native-session
-binding. Stop, watcher claim, and competing maintenance have one atomic winner.
-
-A Work turn is not an episode turn, even on the episode's own session, so its
-maintenance cannot end the episode. A file that stops watchers and arms none is
-refused when, after its stops, the episode has no pending turn, no live watcher,
-and no undelivered completion. The refusal rolls back. Its diagnostic states
-that episode state and enters the ordinary maintenance correction round. The
-agent either drops a stop, so that watcher still wakes the loop, or arms an
-observer for replacement work it already launched. Completion and authority
-pauses remain the episode turn's Patch exits, recorded when a watcher wakes it,
-and a human **Stop loop** remains the other way to end the loop.
 
 ## Live artifact reconciliation
 

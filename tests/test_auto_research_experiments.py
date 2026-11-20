@@ -1240,7 +1240,6 @@ def _command_effects(service, store, background, coordinator, parent_id, root_id
         validate=lambda *_args: AutoResearchCommandEffectResult(),
         worker_request_factory=lambda *_args: RunRequest(),
         graph_state=service.history.state,
-        machine_id="backend",
         experiment_coordinator=coordinator,
     )
     return context, effects

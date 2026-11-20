@@ -42,7 +42,6 @@ from rcp.storage import (
     AgentTaskRecord,
     ExperimentEpisodeRecord,
     ExperimentLoopRuntime,
-    ExperimentWatcherResourceRecord,
     GraphCondition,
     GraphWatcherRecord,
     StoredWatcherRecord,
@@ -126,36 +125,6 @@ class ExperimentLoopSemanticEnding:
         return self.ending == "human_pause"
 
 
-@dataclass(frozen=True)
-class StagedExperimentWatcherResource:
-    """One live node-and-episode watcher resource exposed to a chat turn."""
-
-    resource: ExperimentWatcherResourceRecord
-    host: str
-    watcher_state_path: str
-    watch_path: str
-
-    def prompt_value(self) -> dict[str, str]:
-        return {
-            "control_node_id": self.resource.control_node_id,
-            "episode_id": self.resource.episode_id,
-            "execution_host": self.host,
-            "watcher_state_path": self.watcher_state_path,
-            "watch_path": self.watch_path,
-        }
-
-
-def experiment_watcher_output_name(
-    control_node_id: str,
-    graph_target: GraphTargetRef,
-) -> str:
-    """Return the stable physical filename that selects one Experiment resource."""
-
-    target = graph_target
-    digest = hashlib.sha256(f"{target.key}\0{control_node_id}".encode()).hexdigest()
-    return f"{_EXPERIMENT_WATCH_OUTPUT_PREFIX}{digest}{_EXPERIMENT_WATCH_OUTPUT_SUFFIX}"
-
-
 def _experiment_watcher_output_names(
     workspace: Path,
     remote_stage: RemoteRunStage | None,
@@ -184,57 +153,6 @@ def _experiment_watcher_output_names(
             )
         names.append(entry.name)
     return sorted(names)
-
-
-def clear_stale_experiment_watcher_outputs(
-    workspace: Path,
-    remote_stage: RemoteRunStage | None,
-    resources: list[ExperimentWatcherResourceRecord],
-) -> None:
-    """Remove prior-turn resource outputs from a reusable chat workspace."""
-
-    if remote_stage is not None:
-        names = set(_experiment_watcher_output_names(workspace, remote_stage))
-    else:
-        try:
-            with os.scandir(workspace) as entries:
-                names = {
-                    entry.name
-                    for entry in entries
-                    if entry.name.startswith(_EXPERIMENT_WATCH_OUTPUT_PREFIX)
-                    and entry.name.endswith(_EXPERIMENT_WATCH_OUTPUT_SUFFIX)
-                }
-        except OSError as exc:
-            raise StateUnavailable(f"could not inspect stale chat watcher outputs: {exc}") from exc
-    # Exact current paths are removed even when a previous agent replaced one
-    # with a symlink; the remote regular-file listing deliberately omits symlinks.
-    names.update(
-        experiment_watcher_output_name(item.control_node_id, item.graph_target)
-        for item in resources
-    )
-    for name in sorted(names):
-        if remote_stage is not None:
-            remote_stage.remove_workspace_file(name)
-        else:
-            path = workspace / name
-            if path.is_dir() and not path.is_symlink():
-                raise ValueError(f"Experiment watcher output path is an unsafe directory: {name}")
-            path.unlink(missing_ok=True)
-
-
-def read_experiment_watcher_outputs(
-    workspace: Path,
-    remote_stage: RemoteRunStage | None,
-) -> dict[str, str]:
-    """Read each physical Experiment watcher file written by this turn."""
-
-    outputs: dict[str, str] = {}
-    for name in _experiment_watcher_output_names(workspace, remote_stage):
-        if remote_stage is not None:
-            outputs[name] = remote_stage.read_text(remote_stage.workspace / name)
-        else:
-            outputs[name] = (workspace / name).read_text(encoding="utf-8")
-    return outputs
 
 
 def preflight_episode_wake(
@@ -970,7 +888,6 @@ def persist_experiment_watchers_idempotently(
     graph_conditions: list[GraphCondition] | None = None,
     graph_state: GraphState | None = None,
     armed_revision: int | None = None,
-    expected_watcher_snapshot_token: str | None = None,
 ) -> list[StoredWatcherRecord]:
     """Persist one validated handoff once across Retry/crash recovery."""
 
@@ -990,7 +907,6 @@ def persist_experiment_watchers_idempotently(
         desired,
         stops=stops,
         binding=binding,
-        expected_watcher_snapshot_token=expected_watcher_snapshot_token,
     )
 
 
@@ -1127,7 +1043,7 @@ def stage_chat_loop_status(
     graph_target: GraphTargetRef,
     read_scope: GraphReadScope | None,
 ) -> dict[str, object] | None:
-    """Fresh read-only status, independent of live watcher-maintenance resources."""
+    """Fresh read-only loop status for a chat turn on a control node."""
 
     if request.chat_scope != "node" or request.node_id is None:
         return None
@@ -1159,101 +1075,6 @@ def stage_chat_loop_status(
         local_stage, remote_stage, f"loop-status-watchers-{digest}.json", content
     )
     return {**chat_loop_status(status), "watcher_state_path": path}
-
-
-async def stage_chat_experiment_watcher_resources(
-    request: RunRequest,
-    execution: AgentTaskExecution | None,
-    local_stage: Path | None,
-    remote_stage: RemoteRunStage | None,
-    *,
-    workspace: Path,
-    token: str,
-    clear_stale: bool,
-) -> list[StagedExperimentWatcherResource]:
-    """Stage live Experiment watcher state within the chat's resolved node scope."""
-
-    if execution is None:
-        return []
-    task = execution.store.agent_task(execution.operation_id)
-    if task is None:
-        raise ValueError("The chat operation is no longer available for watcher resource staging.")
-    all_resources = execution.store.experiment_watcher_resources(
-        task.project_id,
-        graph_target=task.graph_target,
-    )
-    if clear_stale:
-        clear_stale_experiment_watcher_outputs(workspace, remote_stage, all_resources)
-
-    def visible_resources(
-        resources: list[ExperimentWatcherResourceRecord],
-    ) -> list[ExperimentWatcherResourceRecord]:
-        return (
-            [item for item in resources if item.control_node_id == request.node_id]
-            if request.chat_scope == "node"
-            else resources
-        )
-
-    visible = visible_resources(all_resources)
-    for _attempt in range(3):
-        watcher_states = await asyncio.gather(
-            *(
-                asyncio.to_thread(
-                    _watcher_state,
-                    execution,
-                    resource.control_node_id,
-                    [],
-                    resource.episode_id,
-                    "resume",
-                )
-                for resource in visible
-            )
-        )
-        refreshed = visible_resources(
-            execution.store.experiment_watcher_resources(
-                task.project_id,
-                graph_target=task.graph_target,
-            )
-        )
-        if {
-            (item.control_node_id, item.graph_target.key): item.watcher_snapshot_token
-            for item in visible
-        } == {
-            (item.control_node_id, item.graph_target.key): item.watcher_snapshot_token
-            for item in refreshed
-        }:
-            break
-        visible = refreshed
-    else:
-        raise StateUnavailable(
-            "Experiment watcher state changed repeatedly while staging this chat turn."
-        )
-    staged: list[StagedExperimentWatcherResource] = []
-    for resource, watcher_state in zip(visible, watcher_states, strict=True):
-        digest = hashlib.sha256(
-            f"{resource.graph_target.key}\0{resource.control_node_id}".encode()
-        ).hexdigest()[:16]
-        watcher_state_path = _stage_json_task_input(
-            local_stage,
-            remote_stage,
-            f"task-{token}-experiment-watchers-{digest}.json",
-            watcher_state,
-        )
-        staged.append(
-            StagedExperimentWatcherResource(
-                resource=resource,
-                host=host_of(execution.store, resource.machine_id),
-                watcher_state_path=watcher_state_path,
-                watch_path=str(
-                    workspace
-                    / experiment_watcher_output_name(
-                        resource.control_node_id,
-                        resource.graph_target,
-                    )
-                ),
-            )
-        )
-    return staged
 
 
 def _delivered_watcher_groups(
@@ -1570,7 +1391,6 @@ def commit_experiment_episode_handoff(
     graph_result: str,
     context_baseline: dict[str, object],
     stops: list[WatcherStopRequest] | None = None,
-    expected_watcher_snapshot_token: str | None = None,
     ending_signal: dict[str, object] | None = None,
 ) -> list[StoredWatcherRecord]:
     """Commit prepared watchers and the episode binding as one handoff."""
@@ -1613,7 +1433,6 @@ def commit_experiment_episode_handoff(
         graph_result=graph_result,
         context_baseline=context_baseline,
         stops=stops,
-        expected_watcher_snapshot_token=expected_watcher_snapshot_token,
         ending_signal=ending_signal,
         replace_binding=replacement_authorized,
         replacement_provenance=replacement_provenance,

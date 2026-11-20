@@ -643,11 +643,6 @@ _OTHER_MACHINES = {
     ProjectStoreMixin.delete_project_records: "project deletion, a catalog machine",
     ProjectTransferStoreMixin._insert_transfer_episodes: "project transfer, a catalog machine",
     ProjectTransferStoreMixin._insert_transfer_watchers: "project transfer, a catalog machine",
-    WatcherStoreMixin.claim_watcher_cancel: "human Cancel, the compute job catalog machine",
-    WatcherStoreMixin.complete_watcher_cancel: "human Cancel, the compute job catalog machine",
-    WatcherStoreMixin.record_watcher_cancel_result: (
-        "human Cancel, the compute job catalog machine"
-    ),
     WatcherStoreMixin._stop_chat_watchers: "closing an agent thread, the schedules explorer's",
     WatcherStoreMixin.create_watcher_notification_task: (
         "generic Work wakes; an Experiment wake is create_experiment_watcher_invocation"

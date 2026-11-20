@@ -157,7 +157,6 @@ from rcp.runs.tasks.episode_report import report_rebootstrap_pending
 from rcp.runs.tasks.work import (
     _WORK_PRIMARY_ANSWER_ROLE,
     WorkTurn,
-    _AppliedWorkTurn,
     _bounded_graph_messages,
     _capture_retry_deliverable_baseline,
     _clears_stale_turn_handoffs,
@@ -196,6 +195,7 @@ from rcp.runs.tasks.work import (
 from rcp.runs.tasks.work_staging import WorkStageLayout, stage_work_turn
 from rcp.runs.tasks.work_turn_runtime import (
     WorkFinalizationContext,
+    _AppliedWorkTurn,
     _PreparedWorkPatch,
     apply_work_patch,
     failed_graph_update,

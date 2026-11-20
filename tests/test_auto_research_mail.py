@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -38,7 +37,6 @@ from rcp.runs.auto_research_mail import (
     parse_auto_research_mail_delivery,
     stage_auto_research_mail_delivery,
 )
-from rcp.runs.experiment_loop import experiment_watcher_output_name
 from rcp.runs.tasks.auto_research_child_work import (
     _stage_auto_research_child_work_mail,
     stream_auto_research_child_work_run,
@@ -53,8 +51,6 @@ from rcp.storage import (
     AutoResearchStateRecord,
     EpisodeRecord,
     ProjectRecord,
-    WatcherContinuation,
-    WatcherRecord,
 )
 from rcp.transport import RepositoryAccess
 from rcp.transport.workspace_mailbox import RunStageMailbox, clear_turn_handoff_files
@@ -70,7 +66,7 @@ from .helpers import (
     store_test_claude_token,
     wait_for_task,
 )
-from .test_api import ScriptedLauncher, _experiment_fixture_patch
+from .test_api import ScriptedLauncher
 
 _RUN_TRUTH_SCOPE = ["repo-a"]
 
@@ -905,203 +901,3 @@ async def test_ordinary_child_work_prompt_and_mail_continuation_keep_narrow_auth
         and receipt.payload.get("reason") == "native_session_mismatch"
         for receipt in store.agent_task_receipts(resumed_task.operation_id)
     )
-
-
-@pytest.mark.asyncio
-async def test_ordinary_child_work_cannot_see_or_maintain_active_experiment_watchers(
-    manifest,
-    tmp_path,
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    append_fixture_patch(service, _experiment_fixture_patch())
-    project_id = app.state.default_project_id
-    store = app.state.background_tasks.store
-    experiment_id = "exp/bounded-loop"
-    loop_episode_id = "00000000-0000-4000-8000-000000000461"
-    loop_operation_id = "00000000-0000-4000-8000-000000000462"
-    loop_chat_id = "00000000-0000-4000-8000-000000000463"
-    watcher_id = "active-experiment-watcher"
-    graph_revision = service.history.state().revision
-    loop_request = RunRequest(
-        provider="codex",
-        run_on="backend",
-        run_truth_scope=["repo-a"],
-        chat_scope="node",
-        node_id=experiment_id,
-        chat_id=loop_chat_id,
-        message="Begin the bounded Experiment loop.",
-        mode="work",
-        trigger="experiment_run",
-        patch_kind="experiment_loop",
-        control_node_id=experiment_id,
-        control_revision=graph_revision,
-        control_episode_id=loop_episode_id,
-        control_invocation=1,
-        control_invocation_ceiling=2,
-    )
-    now = store.now()
-    store.create_experiment_episode_with_invocation(
-        AgentTaskRecord(
-            operation_id=loop_operation_id,
-            project_id=project_id,
-            episode_id=loop_episode_id,
-            kind="node_chat",
-            status="queued",
-            request=loop_request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
-            status_message="queued",
-            authorized_by=fabricated_authorizer(),
-        )
-    )
-    store.complete_agent_task(loop_operation_id, applied_revision=None, result={})
-    continuation = WatcherContinuation(
-        provider="codex",
-        run_on="backend",
-        run_truth_scope=["repo-a"],
-        patch_kind="experiment_loop",
-        control_node_id=experiment_id,
-        control_revision=graph_revision,
-        control_episode_id=loop_episode_id,
-        control_invocation=1,
-        control_invocation_ceiling=2,
-    )
-    store.create_watchers(
-        [
-            WatcherRecord(
-                watcher_id=watcher_id,
-                project_id=project_id,
-                origin_operation_id=loop_operation_id,
-                origin_task_kind="node_chat",
-                chat_id=loop_chat_id,
-                node_id=experiment_id,
-                episode_id=loop_episode_id,
-                continuation=continuation,
-                check_command="false",
-                log_path="/tmp/active-experiment-watcher.log",
-                cwd="/tmp",
-                created_at=store.now(),
-            )
-        ]
-    )
-    loop_stage = tmp_path / "loop-stage"
-    loop_stage.mkdir()
-    store.commit_experiment_episode_turn(
-        episode_id=loop_episode_id,
-        project_id=project_id,
-        control_node_id=experiment_id,
-        provider="codex",
-        machine_id="backend",
-        native_session_id="loop-session",
-        stage_machine_id="backend",
-        stage_root=str(loop_stage),
-        chat_id=loop_chat_id,
-        operation_id=loop_operation_id,
-        invocation=1,
-        graph_result="no graph change",
-        watcher_ids=[watcher_id],
-        context_baseline={},
-    )
-    assert [item.control_node_id for item in store.experiment_watcher_resources(project_id)] == [
-        experiment_id
-    ]
-
-    output_name = experiment_watcher_output_name(experiment_id, GraphTargetRef())
-    launcher = ScriptedLauncher(
-        [
-            {
-                output_name: json.dumps(
-                    {
-                        "external": [
-                            {
-                                "stop_watcher_id": watcher_id,
-                                "reason": "Child Work must not have this authority.",
-                            }
-                        ],
-                        "graph": [],
-                    }
-                )
-            }
-        ],
-        message="The delegated Experiment check completed.",
-    )
-
-    async def stream(project_id, kind, request, execution):
-        if kind == "auto_research":
-            yield 'data: {"event":"session","session_id":"root-session"}\n\n'
-            yield 'data: {"event":"done"}\n\n'
-            return
-        route = store.auto_research_child_work_for_operation(execution.operation_id)
-        run = stream_auto_research_child_work_run if route is not None else stream_work_run
-        kwargs = {"route": route} if route is not None else {}
-        async for frame in run(
-            service,
-            launcher,
-            request,
-            tmp_path / "data",
-            execution=execution,
-            **kwargs,
-        ):
-            yield frame
-
-    background = BackgroundAgentTasks(store, stream)
-    episode, root = start_auto_research(
-        background,
-        project_id,
-        AutoResearchStartRequest(
-            invocation_ceiling=5,
-            code_worktree=False,
-            provider="codex",
-            run_on="backend",
-            run_truth_scope=["repo-a"],
-        ),
-        authorized_by=fabricated_authorizer(),
-        graph_base_head=GraphHeadRef(revision=0),
-        ensure_graph_target=lambda _episode: None,
-        episode_id="ordinary-child-experiment-authority-episode",
-        operation_id="ordinary-child-experiment-authority-root",
-    )
-    root = wait_for_task(store, root.operation_id, expect="succeeded")
-    worker_id = "00000000-0000-4000-8000-000000000464"
-    instruction = "Inspect the focused Experiment without changing its watcher lifecycle."
-    child = start_auto_research_child_work(
-        background,
-        episode.episode_id,
-        RunRequest(
-            provider="codex",
-            run_on="backend",
-            run_truth_scope=["repo-a"],
-            chat_scope="node",
-            node_id=experiment_id,
-            chat_id=worker_id,
-            message=instruction,
-            mode="work",
-            trigger="orchestrator",
-            patch_kind="work",
-        ),
-        admitted_by_operation_id=root.operation_id,
-        worker_id=worker_id,
-        instruction=instruction,
-        instruction_sha256=hashlib.sha256(instruction.encode("utf-8")).hexdigest(),
-    )
-    child = wait_for_task(store, child.operation_id, expect="succeeded")
-    assert child.graph_target == episode.graph_target == root.graph_target
-
-    master_path = Path(launcher.prompts[0].splitlines()[1])
-    master = master_path.read_text(encoding="utf-8")
-    assert output_name not in master
-    assert loop_episode_id not in master
-    assert not [name for name in launcher.input_snapshots[0] if "experiment-watchers" in name]
-    watcher = store.watcher(watcher_id)
-    assert watcher is not None and watcher.status == "active"
-    receipts = store.agent_task_receipts(child.operation_id)
-    rejection = next(
-        item for item in receipts if item.category == "experiment_watcher_maintenance_rejected"
-    )
-    assert "not staged" in str(rejection.payload["problem"])
-    assert not [item for item in receipts if item.category == "experiment_watchers_maintained"]
-    assert child.result is not None
-    assert child.result["messages"][-1] == "The delegated Experiment check completed."
-    assert service.history.state().revision == graph_revision

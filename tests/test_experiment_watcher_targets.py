@@ -7,7 +7,6 @@ import pytest
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.machine_cards import BACKEND_MACHINE_ID
-from rcp.runs.experiment_loop import experiment_watcher_output_name
 from rcp.storage import AgentTaskRecord, AppStore, WatcherContinuation, WatcherRecord
 
 _PROJECT_ID = "project"
@@ -138,41 +137,6 @@ def _watcher(
         status=status,
         created_at=created_at,
         completed_at=created_at if status == "completed" else None,
-    )
-
-
-def _watcher_snapshot(store: AppStore, graph_target: GraphTargetRef) -> str:
-    with store.connection() as connection:
-        return store._experiment_watcher_snapshot_token(  # noqa: SLF001
-            connection,
-            _PROJECT_ID,
-            _CONTROL_NODE_ID,
-            graph_target,
-        )
-
-
-def test_same_node_watcher_snapshot_and_file_identity_are_target_local(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    main = GraphTargetRef()
-    branch = GraphTargetRef(kind="branch", branch_id=str(uuid.uuid4()))
-    main_root = _loop_task(store, "main-root", str(uuid.uuid4()), graph_target=main)
-    _branch_episode_id, branch_root = _create_episode(store, "branch-root", branch)
-
-    empty_main = _watcher_snapshot(store, main)
-    empty_branch = _watcher_snapshot(store, branch)
-    assert empty_main == empty_branch
-
-    store.create_watchers([_watcher(store, "main-watcher", main_root, status="active")])
-    main_only = _watcher_snapshot(store, main)
-    assert main_only != empty_main
-    assert _watcher_snapshot(store, branch) == empty_branch
-
-    store.create_watchers([_watcher(store, "branch-watcher", branch_root, status="active")])
-    assert _watcher_snapshot(store, main) == main_only
-    assert _watcher_snapshot(store, branch) != empty_branch
-    assert experiment_watcher_output_name(_CONTROL_NODE_ID, main) != experiment_watcher_output_name(
-        _CONTROL_NODE_ID,
-        branch,
     )
 
 

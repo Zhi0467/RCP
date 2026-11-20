@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import sqlite3
 import uuid
@@ -38,11 +37,8 @@ from rcp.storage.models import (
     ExperimentControlProjectionSnapshot,
     ExperimentEpisodeProjectionSnapshot,
     ExperimentEpisodeRecord,
-    ExperimentEpisodeUnwakeable,
     ExperimentLoopRuntime,
-    ExperimentWatcherResourceRecord,
     StoredWatcherRecord,
-    WatcherClaimConflict,
     WatcherContinuation,
     WatcherRecord,
     WatcherStopRequest,
@@ -1429,7 +1425,6 @@ class ExperimentStoreMixin(StoreMixinBase):
         *,
         binding: WatcherBinding,
         stops: list[WatcherStopRequest] | None = None,
-        expected_watcher_snapshot_token: str | None = None,
     ) -> list[StoredWatcherRecord]:
         """Persist one loop handoff in the caller's transaction.
 
@@ -1468,17 +1463,6 @@ class ExperimentStoreMixin(StoreMixinBase):
         if len(stop_ids) != len(set(stop_ids)):
             raise ValueError("Experiment watcher stop ids must be unique")
         watcher_ids = [record.watcher_id for record in records]
-        resource = self._admit_experiment_watcher_maintenance(connection, binding)
-        if resource is not None:
-            if expected_watcher_snapshot_token is None:
-                raise ValueError(
-                    "Experiment watcher maintenance requires its staged watcher snapshot."
-                )
-            if expected_watcher_snapshot_token != resource.watcher_snapshot_token:
-                raise WatcherClaimConflict(
-                    "Experiment watcher state changed after it was staged; inspect the "
-                    "current resource before maintaining it."
-                )
         episode = self._experiment_episode_row(connection, episode_id)
         if episode is not None and (
             episode["project_id"] != (records[0].project_id if records else binding.project_id)
@@ -1533,8 +1517,6 @@ class ExperimentStoreMixin(StoreMixinBase):
                 else desired
             )
             self._insert_watcher(connection, persisted)
-        if resource is not None and not records:
-            self._reject_unwakeable_maintained_episode(connection, binding, stop_ids)
         stored_rows = []
         if watcher_ids:
             placeholders = ",".join("?" for _ in watcher_ids)
@@ -1544,49 +1526,6 @@ class ExperimentStoreMixin(StoreMixinBase):
             ).fetchall()
         stored_by_id = {str(row["watcher_id"]): self._watcher_record(row) for row in stored_rows}
         return [stored_by_id[watcher_id] for watcher_id in watcher_ids]
-
-    def _reject_unwakeable_maintained_episode(
-        self,
-        connection: sqlite3.Connection,
-        binding: WatcherBinding,
-        stop_ids: list[str],
-    ) -> None:
-        """Refuse a Work edit that retires the last way the running loop can wake.
-
-        Only the episode's own turn may leave it without watchers, and only with an
-        explicit exit that ends the episode. A Work turn is never that turn, so its
-        edit must leave a wake. The check reads the same runtime the Runs card
-        projects, after this transaction's stops, and the refusal states that
-        runtime so a generic correction can act on it.
-        """
-
-        control_node_id = binding.continuation.control_node_id
-        assert control_node_id is not None
-        runtime = self._project_experiment_loop_runtimes(
-            binding.project_id,
-            {control_node_id},
-            graph_target=binding.graph_target,
-            _connection=connection,
-        ).get((control_node_id, binding.graph_target.key))
-        if runtime is not None and (
-            runtime.task_active
-            or runtime.detached_work_active
-            or runtime.watcher_completion_pending
-        ):
-            return
-        invocations = (
-            f"{runtime.invocations_used} of {runtime.invocation_ceiling} invocations used"
-            if runtime is not None
-            else "invocation use unknown"
-        )
-        raise ExperimentEpisodeUnwakeable(
-            f"Experiment episode {binding.continuation.control_episode_id} on "
-            f"{control_node_id} is still running ({invocations}) with no pending turn. "
-            f"This file stops {', '.join(stop_ids)} and arms nothing, which would leave it "
-            "0 watchers, so nothing could wake it again. This Work turn cannot end the "
-            "episode. Drop a stop item so that watcher can still wake the loop, or arm an "
-            "observer for replacement work that is already running."
-        )
 
     @staticmethod
     def _experiment_observer_identity(
@@ -1756,7 +1695,6 @@ class ExperimentStoreMixin(StoreMixinBase):
         *,
         binding: WatcherBinding,
         stops: list[WatcherStopRequest] | None = None,
-        expected_watcher_snapshot_token: str | None = None,
     ) -> list[StoredWatcherRecord]:
         """Persist one loop handoff atomically with the episode's graceful stop."""
 
@@ -1769,7 +1707,6 @@ class ExperimentStoreMixin(StoreMixinBase):
                 records,
                 stops=stops,
                 binding=binding,
-                expected_watcher_snapshot_token=expected_watcher_snapshot_token,
             )
         return stored
 
@@ -1784,7 +1721,6 @@ class ExperimentStoreMixin(StoreMixinBase):
             return
         episode_id = binding.continuation.control_episode_id
         with self.connection() as connection:
-            self._admit_experiment_watcher_maintenance(connection, binding)
             episode = self._experiment_episode_row(connection, str(episode_id))
             self._validate_and_apply_agent_watcher_stops(
                 connection,
@@ -1793,314 +1729,6 @@ class ExperimentStoreMixin(StoreMixinBase):
                 episode,
                 apply=False,
             )
-
-    def experiment_watcher_resources(
-        self,
-        project_id: str,
-        *,
-        control_node_ids: set[str] | None = None,
-        graph_target: GraphTargetRef | None = None,
-    ) -> list[ExperimentWatcherResourceRecord]:
-        """Return live Experiment resources visible within one already-resolved scope."""
-
-        with self.connection() as connection:
-            rows = connection.execute(
-                """
-                SELECT DISTINCT json_extract(request_json, '$.control_node_id') AS control_node_id,
-                                graph_target_json
-                FROM graph_runs
-                WHERE project_id = ? AND parent_operation_id IS NULL
-                  AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
-                """,
-                (project_id,),
-            ).fetchall()
-            resources: list[ExperimentWatcherResourceRecord] = []
-            for row in rows:
-                control_node_id = row["control_node_id"]
-                if not isinstance(control_node_id, str) or not control_node_id:
-                    continue
-                if control_node_ids is not None and control_node_id not in control_node_ids:
-                    continue
-                target = GraphTargetRef.model_validate_json(row["graph_target_json"])
-                if graph_target is not None and target != graph_target:
-                    continue
-                try:
-                    resource = self._current_experiment_watcher_resource(
-                        connection,
-                        project_id,
-                        control_node_id,
-                        graph_target=target,
-                    )
-                except ValueError:
-                    continue
-                resources.append(resource)
-        return sorted(resources, key=lambda item: (item.control_node_id, item.graph_target.key))
-
-    def admit_experiment_watcher_maintenance(
-        self,
-        binding: WatcherBinding,
-    ) -> ExperimentWatcherResourceRecord | None:
-        """Authorize one node-attached watcher handoff from its durable Work task.
-
-        A loop turn returns ``None`` before its first episode binding exists. A
-        conversation maintenance turn always returns the current resource and
-        fails closed when durable node, episode, or session identity is absent.
-        """
-
-        with self.connection() as connection:
-            return self._admit_experiment_watcher_maintenance(connection, binding)
-
-    def _admit_experiment_watcher_maintenance(
-        self,
-        connection: sqlite3.Connection,
-        binding: WatcherBinding,
-    ) -> ExperimentWatcherResourceRecord | None:
-        task_row = connection.execute(
-            "SELECT project_id, kind, request_json, graph_target_json "
-            "FROM graph_runs WHERE operation_id = ?",
-            (binding.origin_operation_id,),
-        ).fetchone()
-        if task_row is None:
-            raise ValueError("Experiment watcher maintenance permission denied: actor is missing.")
-        request = json.loads(task_row["request_json"])
-        if task_row["project_id"] != binding.project_id:
-            raise ValueError(
-                "Experiment watcher maintenance permission denied: project scope does not match."
-            )
-        actor_graph_target = GraphTargetRef.model_validate_json(task_row["graph_target_json"])
-        if actor_graph_target != binding.graph_target:
-            raise ValueError(
-                "Experiment watcher maintenance permission denied: graph target does not match."
-            )
-        if request.get("mode") != "work" or task_row["kind"] not in {
-            "node_chat",
-            "project_chat",
-        }:
-            raise ValueError(
-                "Experiment watcher maintenance permission denied: Work capability is required."
-            )
-        if (
-            request.get("chat_id") != binding.chat_id
-            or task_row["kind"] != binding.origin_task_kind
-        ):
-            raise ValueError(
-                "Experiment watcher maintenance permission denied: actor provenance does not match."
-            )
-
-        continuation = binding.continuation
-        control_node_id = continuation.control_node_id
-        episode_id = continuation.control_episode_id
-        if continuation.patch_kind != "experiment_loop" or not control_node_id or not episode_id:
-            raise ValueError(
-                "Experiment watcher maintenance requires an explicit node and episode resource."
-            )
-        if binding.node_id != control_node_id:
-            raise ValueError(
-                "Experiment watcher maintenance permission denied: target node does not match."
-            )
-
-        actor_patch_kind = request.get("patch_kind")
-        if actor_patch_kind == "experiment_loop":
-            if (
-                request.get("control_node_id") != control_node_id
-                or request.get("control_episode_id") != episode_id
-            ):
-                raise ValueError(
-                    "Experiment watcher maintenance permission denied: loop binding does not match."
-                )
-            episode_row = self._experiment_episode_row(connection, episode_id)
-            if episode_row is not None and (
-                episode_row["project_id"] != binding.project_id
-                or episode_row["control_node_id"] != control_node_id
-                or self._experiment_episode_record(episode_row).graph_target != binding.graph_target
-            ):
-                raise ValueError("Experiment watcher maintenance targets a different episode.")
-            return None
-
-        if actor_patch_kind != "work":
-            raise ValueError(
-                "Experiment watcher maintenance permission denied: captured Patch policy is invalid."
-            )
-        if task_row["kind"] == "node_chat" and request.get("node_id") != control_node_id:
-            raise ValueError(
-                "Experiment watcher maintenance permission denied: node scope does not include "
-                f"{control_node_id}."
-            )
-        resource = self._current_experiment_watcher_resource(
-            connection,
-            binding.project_id,
-            control_node_id,
-            expected_episode_id=episode_id,
-            graph_target=binding.graph_target,
-        )
-        if binding.machine_id != resource.machine_id:
-            raise ValueError("Experiment watcher maintenance must use the episode machine.")
-        if continuation != resource.continuation:
-            raise ValueError(
-                "Experiment watcher maintenance no longer matches the live episode policy."
-            )
-        return resource
-
-    def _current_experiment_watcher_resource(
-        self,
-        connection: sqlite3.Connection,
-        project_id: str,
-        control_node_id: str,
-        *,
-        expected_episode_id: str | None = None,
-        graph_target: GraphTargetRef,
-    ) -> ExperimentWatcherResourceRecord:
-        target = graph_target
-        root_row = connection.execute(
-            """
-            SELECT kind, request_json, graph_target_json FROM graph_runs
-            WHERE project_id = ? AND parent_operation_id IS NULL
-              AND json_extract(request_json, '$.patch_kind') = 'experiment_loop'
-              AND json_extract(request_json, '$.control_node_id') = ?
-              AND json_extract(graph_target_json, '$.kind') = ?
-              AND json_extract(graph_target_json, '$.branch_id') IS ?
-            ORDER BY created_at DESC, rowid DESC
-            LIMIT 1
-            """,
-            (project_id, control_node_id, target.kind, target.branch_id),
-        ).fetchone()
-        if root_row is None:
-            raise ValueError("Experiment watcher maintenance requires a current live episode.")
-        root_request = json.loads(root_row["request_json"])
-        episode_id = root_request.get("control_episode_id")
-        if not isinstance(episode_id, str) or not episode_id:
-            raise ValueError(
-                "Experiment watcher maintenance cannot prove the current episode identity."
-            )
-        if expected_episode_id is not None and expected_episode_id != episode_id:
-            raise ValueError("Experiment watcher maintenance targets a stale episode.")
-        episode_row = self._experiment_episode_row(connection, episode_id)
-        if episode_row is None:
-            raise ValueError(
-                "Experiment watcher maintenance cannot prove the episode session binding."
-            )
-        episode = self._experiment_episode_record(episode_row)
-        if (
-            episode.project_id != project_id
-            or episode.control_node_id != control_node_id
-            or episode.graph_target != target
-            or not episode.session_bound
-        ):
-            raise ValueError(
-                "Experiment watcher maintenance cannot prove the episode session binding."
-            )
-        if episode.stop_requested_at is not None or episode.stop_settled_at is not None:
-            raise ValueError("Experiment watcher maintenance requires a live, unstopped episode.")
-        exited = connection.execute(
-            """
-            SELECT 1 FROM graph_run_receipts AS receipt
-            JOIN graph_runs AS run ON run.operation_id = receipt.operation_id
-            WHERE run.project_id = ?
-              AND json_extract(run.request_json, '$.control_episode_id') = ?
-              AND receipt.category = 'experiment_loop_exit'
-            LIMIT 1
-            """,
-            (project_id, episode_id),
-        ).fetchone()
-        if exited is not None:
-            raise ValueError("Experiment watcher maintenance requires a live, unexited episode.")
-        if not episode.last_turn_operation_id:
-            raise ValueError(
-                "Experiment watcher maintenance cannot prove the episode's latest turn."
-            )
-        turn_row = connection.execute(
-            "SELECT request_json FROM graph_runs WHERE operation_id = ? AND project_id = ?",
-            (episode.last_turn_operation_id, project_id),
-        ).fetchone()
-        if turn_row is None:
-            raise ValueError(
-                "Experiment watcher maintenance cannot prove the episode's latest turn."
-            )
-        turn_request = json.loads(turn_row["request_json"])
-        continuation_data = {
-            key: turn_request[key]
-            for key in WatcherContinuation.model_fields
-            if key in turn_request
-        }
-        for nullable_list in ("workflow_ids", "skill_ids", "resolved_skill_packages"):
-            if continuation_data.get(nullable_list) is None:
-                continuation_data[nullable_list] = []
-        continuation = WatcherContinuation.model_validate(continuation_data)
-        if (
-            continuation.patch_kind != "experiment_loop"
-            or continuation.control_node_id != control_node_id
-            or continuation.control_episode_id != episode_id
-        ):
-            raise ValueError(
-                "Experiment watcher maintenance cannot prove the episode continuation policy."
-            )
-        wake_task_kind = root_row["kind"]
-        if wake_task_kind != "node_chat":
-            raise ValueError("Experiment watcher maintenance has an invalid wake task binding.")
-        if not episode.chat_id:
-            # The wake target is derived, never guessed: without the episode's own
-            # conversation there is nothing to wake, so fail closed with a diagnostic
-            # rather than an AssertionError that -O would strip.
-            raise ValueError(
-                "Experiment watcher maintenance cannot prove the episode's wake conversation."
-            )
-        return ExperimentWatcherResourceRecord(
-            project_id=project_id,
-            control_node_id=control_node_id,
-            episode_id=episode_id,
-            graph_target=target,
-            machine_id=episode.machine_id or "",
-            wake_task_kind=wake_task_kind,
-            wake_chat_id=episode.chat_id,
-            continuation=continuation,
-            watcher_snapshot_token=self._experiment_watcher_snapshot_token(
-                connection,
-                project_id,
-                control_node_id,
-                target,
-            ),
-        )
-
-    @staticmethod
-    def _experiment_watcher_snapshot_token(
-        connection: sqlite3.Connection,
-        project_id: str,
-        control_node_id: str,
-        graph_target: GraphTargetRef,
-    ) -> str:
-        """Fingerprint the node's observer membership, and nothing else.
-
-        This defends exactly one gap. Every retirement is already a
-        compare-and-swap inside the arming transaction, so a delivery claim, a
-        **Stop loop**, or an already-resolved stop is caught per item without a
-        fingerprint. Arming is not: new observers are plain inserts, so two
-        maintenance turns could each retire the old set and each arm
-        replacements, leaving the Experiment double-observed.
-
-        Membership answers that and stays blind to everything RCP merely
-        observed. Status and consecutive-error counts deliberately do not appear:
-        a degraded observer is re-checked on the S84 backoff, so fingerprinting
-        observation would reject the maintenance turn that exists to repair that
-        very observer. Retired rows keep their id, so the set only grows and a
-        concurrent retirement does not collide with an unrelated repair.
-        """
-
-        rows = connection.execute(
-            """
-            SELECT watcher_id FROM watchers
-            WHERE project_id = ? AND node_id = ?
-              AND json_extract(graph_target_json, '$.kind') = ?
-              AND json_extract(graph_target_json, '$.branch_id') IS ?
-              AND json_extract(continuation_json, '$.patch_kind') = 'experiment_loop'
-            ORDER BY watcher_id
-            """,
-            (project_id, control_node_id, graph_target.kind, graph_target.branch_id),
-        ).fetchall()
-        snapshot = json.dumps(
-            [str(row["watcher_id"]) for row in rows],
-            separators=(",", ":"),
-        )
-        return hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
 
     def experiment_handoff_has_live_watcher_after_stops(
         self,
@@ -2688,7 +2316,6 @@ class ExperimentStoreMixin(StoreMixinBase):
         graph_result: str,
         context_baseline: dict[str, object],
         stops: list[WatcherStopRequest] | None = None,
-        expected_watcher_snapshot_token: str | None = None,
         ending_signal: dict[str, object] | None = None,
         replace_binding: bool = False,
         replacement_provenance: dict[str, object] | None = None,
@@ -2720,7 +2347,6 @@ class ExperimentStoreMixin(StoreMixinBase):
                 records,
                 stops=stops,
                 binding=binding,
-                expected_watcher_snapshot_token=expected_watcher_snapshot_token,
             )
             self._commit_experiment_episode_turn(
                 connection,

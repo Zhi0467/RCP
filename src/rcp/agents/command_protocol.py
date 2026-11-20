@@ -29,7 +29,6 @@ from rcp.limits import (
     GRAPH_HISTORY_COMMAND_IDS_MAX_COUNT,
 )
 from rcp.providers import ProviderId
-from rcp.storage import GraphCondition
 
 COMMAND_PROTOCOL_VERSION = 1
 COMMAND_OK = 0
@@ -53,7 +52,6 @@ CommandVerb = Literal[
     "resume",
     "stop",
     "message",
-    "watch_graph",
     "episode",
     "inbox",
     "finish",
@@ -62,7 +60,6 @@ CommandVerb = Literal[
     "bulletin",
     "name",
     "flag",
-    "watcher",
 ]
 CommandStatus = Literal["ok", "invalid", "unavailable"]
 MutatingCommandVerb = Literal[
@@ -76,7 +73,6 @@ MutatingCommandVerb = Literal[
     "resume",
     "stop",
     "message",
-    "watch_graph",
     "episode",
     "inbox",
     "finish",
@@ -85,7 +81,6 @@ MutatingCommandVerb = Literal[
     "bulletin",
     "name",
     "flag",
-    "watcher",
 ]
 
 MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
@@ -100,7 +95,6 @@ MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
         "resume",
         "stop",
         "message",
-        "watch_graph",
         "episode",
         "inbox",
         "finish",
@@ -109,7 +103,6 @@ MUTATING_COMMAND_VERBS: frozenset[CommandVerb] = frozenset(
         "bulletin",
         "name",
         "flag",
-        "watcher",
     }
 )
 
@@ -373,21 +366,6 @@ class MessageArguments(BaseModel):
         stripped = value.strip()
         if not stripped:
             raise ValueError("message body must not be blank")
-        return stripped
-
-
-class WatchGraphArguments(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    condition: GraphCondition
-    reason: str = Field(min_length=1, max_length=2_000)
-
-    @field_validator("reason")
-    @classmethod
-    def strip_nonblank_reason(cls, value: str) -> str:
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("watch reason must not be blank")
         return stripped
 
 
@@ -769,11 +747,6 @@ class MessageCommandRequest(_CommandRequest):
     arguments: MessageArguments
 
 
-class WatchGraphCommandRequest(_CommandRequest):
-    verb: Literal["watch_graph"]
-    arguments: WatchGraphArguments
-
-
 class EpisodeCommandRequest(_CommandRequest):
     verb: Literal["episode"]
     arguments: EpisodeArguments
@@ -848,24 +821,6 @@ class ScheduleCommandRequest(_CommandRequest):
         return self
 
 
-class WatcherArguments(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    action: Literal["list", "stop", "cancel"]
-    watcher_id: str | None = Field(default=None, min_length=1, max_length=200)
-
-    @model_validator(mode="after")
-    def id_matches_action(self) -> WatcherArguments:
-        if (self.action == "list") != (self.watcher_id is None):
-            raise ValueError("watcher stop and cancel name one watcher id; list names none")
-        return self
-
-
-class WatcherCommandRequest(_CommandRequest):
-    verb: Literal["watcher"]
-    arguments: WatcherArguments
-
-
 class FlagCommandRequest(_CommandRequest):
     verb: Literal["flag"]
     arguments: FlagArguments
@@ -916,7 +871,6 @@ CommandRequest: TypeAlias = Annotated[
     | ResumeCommandRequest
     | StopCommandRequest
     | MessageCommandRequest
-    | WatchGraphCommandRequest
     | EpisodeCommandRequest
     | InboxCommandRequest
     | FinishCommandRequest
@@ -925,8 +879,7 @@ CommandRequest: TypeAlias = Annotated[
     | ScheduleCommandRequest
     | NameCommandRequest
     | BulletinCommandRequest
-    | FlagCommandRequest
-    | WatcherCommandRequest,
+    | FlagCommandRequest,
     Field(discriminator="verb"),
 ]
 COMMAND_REQUEST_ADAPTER = TypeAdapter(CommandRequest)

@@ -21,7 +21,6 @@ from rcp.agents.prompts import (
     _pointer,
     _repository_pointers,
     _watcher_execution_host,
-    _work_experiment_watcher_resource_section,
     compute_connection_section,
     message_part,
     render_chat_read_context,
@@ -564,43 +563,6 @@ explicit exit, by the watcher-correction rules of your master contract. Do not r
 Experiment, resubmit work, or cause a new external side effect.
 - Watcher diagnostic: `{diagnostics_path}`"""
     ]
-
-
-def experiment_watcher_maintenance_rules(
-    resource: dict[str, str], *, work_execution_host: str
-) -> str:
-    """The maintenance rules of one node-attached watcher resource, for a staged file.
-
-    The turn may have gained the resource after its session master was written, so no
-    earlier file is guaranteed to hold them.
-    """
-
-    return _work_experiment_watcher_resource_section(
-        [resource], work_execution_host=work_execution_host
-    ).strip()
-
-
-def experiment_watcher_maintenance_correction_contract(
-    *,
-    watch_path: str,
-    rules_path: str,
-    diagnostics_path: str,
-) -> str:
-    """Repair one node-attached watcher file by that resource's own maintenance rules."""
-
-    if not diagnostics_path or not watch_path or not rules_path:
-        raise ValueError(
-            "Experiment watcher maintenance correction is missing diagnostics, watch, or rules path."
-        )
-    return f"""# RCP Experiment watcher maintenance correction
-
-RCP rejected the node-attached Experiment watcher maintenance file this Work turn wrote. Rewrite
-only `{watch_path}`, by the maintenance rules in `{rules_path}`; the diagnostic grants no new
-authority. Do not rerun an Experiment, resubmit work, repeat an external side effect, change
-`patch.json` or this conversation's own watcher file, or add a target or control field.
-- Maintenance diagnostic: `{diagnostics_path}`
-
-Your final response should only confirm that the file was rewritten."""
 
 
 def experiment_loop_patch_correction_contract(*, diagnostics_path: str) -> list[str]:

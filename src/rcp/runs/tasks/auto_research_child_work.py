@@ -68,12 +68,10 @@ from rcp.runs.shared import (
     _parent_task_contract_path,
     _sse,
     _stage_task_contract,
-    _task_token,
     note_link_lost_before_provider,
     retry_original_contract_path,
 )
 from rcp.runs.tasks.compute_commands import WorkComputeCommands
-from rcp.runs.tasks.experiment_watcher_maintenance import _process_experiment_watcher_maintenance
 from rcp.runs.tasks.work import (
     PATCH_CORRECTION_MAX_ROUNDS,
     WorkFinalizationContext,
@@ -84,7 +82,6 @@ from rcp.runs.tasks.work import (
     _finalize_work_artifacts,
     _finalize_work_turn,
     _launch_and_stream_work_turn,
-    _maintenance_continuation,
     _prepare_work_chat_prompt,
     _record_work_finalization_context,
     _recorded_retry_deliverable_baseline,
@@ -862,35 +859,6 @@ async def settle_child_work_deliverables(
     if settled.stop:
         return
 
-    (
-        maintenance_frames,
-        native_session_id,
-        maintenance_paused,
-    ) = await _process_experiment_watcher_maintenance(
-        service=finalization.service,
-        launcher=launcher,
-        request=finalization.request,
-        execution=finalization.execution,
-        staged_resources=[],
-        workspace=finalization.workspace,
-        remote_stage=finalization.remote_stage,
-        local_stage=finalization.local_stage,
-        token=_task_token(finalization.execution),
-        native_session_id=settled.native_session_id,
-        read_dirs=launch_turn.read_dirs if launch_turn is not None else [],
-        write_dirs=launch_turn.write_dirs if launch_turn is not None else [],
-        write_scope=finalization.write_scope,
-        execution_host=finalization.execution_host,
-        provider_binary=launch_turn.provider_binary if launch_turn is not None else None,
-        retry_output_digests=retry_baseline.experiment_watch_digests,
-        maximum_corrections=maximum_corrections,
-        continuation=_maintenance_continuation(launch_turn, composed),
-    )
-    settled.native_session_id = native_session_id
-    for frame in maintenance_frames:
-        yield frame
-    if maintenance_paused:
-        return
     async with aclosing(
         _settle_watch_deliverable(
             finalization,

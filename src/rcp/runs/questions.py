@@ -22,7 +22,6 @@ from rcp.agents.command_protocol import (
     GraphLogCommandRequest,
     NameCommandRequest,
     ScheduleCommandRequest,
-    WatcherCommandRequest,
 )
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.core.models import AuthorizedHuman
@@ -31,10 +30,8 @@ from rcp.runs.evidence_flag_commands import handle_flag
 from rcp.runs.graph_history_queries import handle_graph_history_command
 from rcp.runs.work_experiment_commands import (
     handle_work_episode_command,
-    member_work_chat_turn,
     work_experiment_allowed,
 )
-from rcp.runs.work_watcher_commands import handle_work_watcher_command
 from rcp.storage import AgentTaskRecord, AppStore
 from rcp.storage.agent_threads import AgentThreadRecord, bound_thread
 from rcp.storage.question_models import (
@@ -401,7 +398,6 @@ WORK_THREAD_VERB_CAPABILITIES: dict[CommandVerb, str | None] = {
     "validate": "Answers questions about the graph and records results in it",
     "projects": "Reads your other projects when you ask",
     "launch": _JOBS_CAPABILITY,
-    "watcher": _JOBS_CAPABILITY,
     "episode": "Starts, pauses, steers, extends and stops experiments and Auto-research you ask for",
     "ask": "Asks your approval to merge a branch",
     "schedule": "Schedules reminders and weekly catch-ups",
@@ -543,11 +539,6 @@ class WorkCommandHandler:
     ) -> CommandResponse:
         return handle_work_episode_command(execution, self.mailbox, request)
 
-    def _watcher(
-        self, execution: AgentTaskExecution, request: WatcherCommandRequest
-    ) -> CommandResponse:
-        return handle_work_watcher_command(execution, request)
-
     def _ask(self, execution: AgentTaskExecution, request: AskCommandRequest) -> CommandResponse:
         try:
             current = question_origin(execution)
@@ -607,11 +598,6 @@ _BROKER_VERBS: dict[type, tuple[Callable[..., CommandResponse], str, str | None]
     EpisodeCommandRequest: (
         WorkCommandHandler._episode,
         "Episode commands require this Work turn's broker authority.",
-        None,
-    ),
-    WatcherCommandRequest: (
-        WorkCommandHandler._watcher,
-        "Watcher control requires this Work turn's broker authority.",
         None,
     ),
     AskCommandRequest: (
@@ -818,8 +804,6 @@ def work_command_handler(
         card_member = approval_card_member(execution.store, task) if task else None
     if work_experiment_allowed(execution):
         verbs.add("episode")
-    if member_work_chat_turn(execution):
-        verbs.add("watcher")
     return WorkCommandHandler(
         execution,
         compute_commands,

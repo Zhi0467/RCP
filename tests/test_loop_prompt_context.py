@@ -206,11 +206,6 @@ async def test_later_node_turn_refreshes_status_without_maintenance_authority(
         assert not Path(before["watcher_state_path"]).exists()
     elif state == "none":
         assert "current" not in status and watchers == []
-    if state in {"stopped", "none", "unavailable"}:
-        assert (
-            loop.store.experiment_watcher_resources(loop.project_id, graph_target=GraphTargetRef())
-            == []
-        )
 
 
 def test_experiment_loop_prompt_receives_other_target_rows_from_shared_renderer(

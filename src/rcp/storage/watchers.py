@@ -1035,85 +1035,6 @@ class WatcherStoreMixin(StoreMixinBase):
             context[1],
         )
 
-    def claim_watcher_cancel(
-        self, project_id: str, watcher_id: str, requested_by: str
-    ) -> WatcherRecord | None:
-        """Claim one human action before execution, including across concurrent requests."""
-
-        if not requested_by.strip():
-            raise ValueError("Cancellation requires an attributed human.")
-        with self.connection() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT * FROM watchers WHERE watcher_id = ? AND project_id = ?",
-                (watcher_id, project_id),
-            ).fetchone()
-            if row is None:
-                raise KeyError(watcher_id)
-            current = self._watcher_record(row)
-            if not isinstance(current, WatcherRecord) or not current.cancel_command:
-                raise ValueError("This watcher has no cancel command.")
-            if not current.can_cancel:
-                return None
-            connection.execute(
-                "UPDATE watchers SET cancel_requested_by = ?, cancel_requested_at = ?, "
-                "cancel_error = NULL WHERE watcher_id = ?",
-                (requested_by, self.now(), watcher_id),
-            )
-            return self._watcher_record(
-                connection.execute(
-                    "SELECT * FROM watchers WHERE watcher_id = ?", (watcher_id,)
-                ).fetchone()
-            )
-
-    def record_watcher_cancel_result(
-        self, watcher_id: str, *, requested_at: str | None, error: str | None
-    ) -> WatcherRecord:
-        """An action receipt never changes observation or continuation state."""
-
-        with self.connection() as connection:
-            connection.execute(
-                "UPDATE watchers SET cancel_error = ? "
-                "WHERE watcher_id = ? AND cancel_requested_at IS ?",
-                (error, watcher_id, requested_at),
-            )
-        stored = self.watcher(watcher_id)
-        if not isinstance(stored, WatcherRecord):
-            raise KeyError(watcher_id)
-        return stored
-
-    def complete_watcher_cancel(
-        self, watcher_id: str, *, requested_at: str, cancel_performed: bool = True
-    ) -> WatcherRecord:
-        """Settle the helper observation, attributing only a performed cancellation."""
-        timestamp = self.now()
-        with self.connection() as connection:
-            connection.execute(
-                """
-                UPDATE watchers
-                SET status = CASE WHEN status = 'stopped' THEN 'stopped' ELSE 'completed' END,
-                    completed_at = COALESCE(completed_at, ?), last_checked_at = ?,
-                    last_exit_code = 0, last_error = NULL, next_check_at = NULL,
-                    consecutive_error_count = 0, cancel_error = NULL,
-                    cancel_requested_by = CASE WHEN ? THEN cancel_requested_by ELSE NULL END,
-                    cancel_requested_at = CASE WHEN ? THEN cancel_requested_at ELSE NULL END
-                WHERE watcher_id = ? AND cancel_requested_at = ?
-                  AND status IN ('active', 'degraded', 'stopped', 'completed')
-                """,
-                (
-                    timestamp,
-                    timestamp,
-                    cancel_performed,
-                    cancel_performed,
-                    watcher_id,
-                    requested_at,
-                ),
-            )
-        stored = self.watcher(watcher_id)
-        if not isinstance(stored, WatcherRecord):
-            raise KeyError(watcher_id)
-        return stored
-
     def record_watcher_check(
         self,
         watcher_id: str,
@@ -1122,7 +1043,6 @@ class WatcherStoreMixin(StoreMixinBase):
         exit_code: int | None,
         error: str | None,
         checked_at: str | None = None,
-        include_stopped: bool = False,
     ) -> WatcherRecord:
         if status == "degraded" and not error:
             raise ValueError("a degraded watcher requires a check error")
@@ -1139,15 +1059,14 @@ class WatcherStoreMixin(StoreMixinBase):
             current = self._watcher_record(row)
             if not isinstance(current, WatcherRecord):
                 raise ValueError("a graph condition cannot receive a shell check result")
-            stopped = include_stopped and current.status == "stopped"
-            if not stopped and (current.status not in {"active", "degraded"} or current.notified):
+            if current.status not in {"active", "degraded"} or current.notified:
                 return current
             consecutive_error_count = (
                 current.consecutive_error_count + 1 if status == "degraded" else 0
             )
             next_check_at = (
                 watcher_next_check_at(watcher_id, timestamp, consecutive_error_count)
-                if not stopped and status in {"active", "degraded"}
+                if status in {"active", "degraded"}
                 else None
             )
             cursor = connection.execute(
@@ -1162,7 +1081,7 @@ class WatcherStoreMixin(StoreMixinBase):
                 WHERE watcher_id = ? AND status = ? AND notified = ?
                 """,
                 (
-                    "stopped" if stopped else status,
+                    status,
                     timestamp,
                     exit_code,
                     error,

@@ -36,7 +36,6 @@ from rcp.limits import COMMAND_CLIENT_WAIT_SECONDS
 from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
 from rcp.providers.browser_grant import BrowserGrant
 from rcp.runs.chat import _ChatPatchInputs
-from rcp.runs.experiment_loop import StagedExperimentWatcherResource
 from rcp.runs.patch_validator import (
     PatchValidationBudget,
     PatchValidationResult,
@@ -268,8 +267,6 @@ class StagedWorkInputs:
     token: str
     artifact_scope_id: str
     artifact_directory: Path | PurePosixPath
-    experiment_resources: list[StagedExperimentWatcherResource]
-    experiment_resource_pointers: list[dict[str, object]]
     skill_selection: SkillSelection
     skill_pointers: list[dict[str, object]]
     attachment_pointers: list[dict[str, object]]
@@ -300,7 +297,6 @@ class WorkFinalizationContext:
     outcome: _ProviderOutcome
     artifact_scope_id: str
     artifact_directory: Path | PurePosixPath
-    experiment_resources: list[StagedExperimentWatcherResource]
     skill_selection: SkillSelection
     compute_commands: WorkComputeCommands | None
     #: The contract role this owner retained its launch under, when it retained
@@ -366,7 +362,6 @@ class ComposedWorkPrompt:
 class RetryDeliverableBaseline:
     patch_digest: str | None
     watch_digest: str | None
-    experiment_watch_digests: dict[str, str]
     outcome_digest: str | None = None
 
 

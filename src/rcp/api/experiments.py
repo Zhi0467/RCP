@@ -17,7 +17,6 @@ from rcp.api.dependencies import (
     get_store,
     require_project_membership,
     require_project_write_admission,
-    require_registered_project,
 )
 from rcp.api.episode_branches import ensure_episode_graph_target
 from rcp.api.episodes import _episode_for_http, child_experiment_on_owned_branch
@@ -329,22 +328,6 @@ def resume_work_experiment(
             raise ValueError(str(exc.detail)) from exc
 
 
-@router.post("/api/projects/{project_id}/experiments/{node_id:path}/watchers/stop")
-def stop_experiment_watchers(
-    project_id: str,
-    node_id: str,
-    *,
-    catalog: CatalogDependency,
-) -> list[dict[str, object]]:
-    """Reject the retired bulk watcher control in favor of graceful Stop loop."""
-
-    require_registered_project(catalog, project_id)
-    raise HTTPException(
-        status_code=409,
-        detail="This control was retired. Use Stop loop for the current Experiment episode.",
-    )
-
-
 def stop_bound_experiment_episode(
     project_id: str,
     episode: EpisodeRecord,
@@ -560,8 +543,6 @@ def continue_experiment_episode(
     return continuation
 
 
-# Register this after ``.../watchers/stop``: ``{node_id:path}`` is greedy, so
-# the stop-loop route would otherwise swallow that path.
 @router.post("/api/projects/{project_id}/experiments/{node_id:path}/stop")
 def stop_experiment_loop(
     project_id: str,
@@ -630,5 +611,4 @@ __all__ = [
     "run_experiment",
     "stop_bound_experiment_episode",
     "stop_experiment_loop",
-    "stop_experiment_watchers",
 ]

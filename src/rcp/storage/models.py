@@ -3197,10 +3197,6 @@ class WatcherClaimConflict(ValueError):
     """A watcher delivery already won the atomic claim."""
 
 
-class ExperimentEpisodeUnwakeable(ValueError):
-    """A watcher maintenance edit would leave a running episode nothing to wake it."""
-
-
 class WatcherStopRequest(BaseModel):
     """An Experiment agent's narrow request to retire one staged observer."""
 
@@ -3414,22 +3410,6 @@ class GraphWatcherRecord(WatcherDeliveryRecord):
 
 
 StoredWatcherRecord = WatcherRecord | GraphWatcherRecord
-
-
-class ExperimentWatcherResourceRecord(BaseModel):
-    """The current node-and-episode owner of one Experiment watcher file."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    project_id: str
-    control_node_id: str
-    episode_id: str
-    graph_target: GraphTargetRef = Field(default_factory=GraphTargetRef)
-    machine_id: str
-    wake_task_kind: Literal["node_chat"]
-    wake_chat_id: str
-    continuation: WatcherContinuation
-    watcher_snapshot_token: str
 
 
 def watcher_next_check_at(
@@ -3935,7 +3915,6 @@ __all__ = [
     "AutoResearchSpaceRunTaskState",
     "ChatSessionContextRecord",
     "ExperimentEpisodeRecord",
-    "ExperimentEpisodeUnwakeable",
     "ExperimentEpisodeProjectionSnapshot",
     "ExperimentControlProjectionSnapshot",
     "ExperimentLoopRuntime",
@@ -3957,7 +3936,6 @@ __all__ = [
     "EpisodeStatus",
     "EpisodeWrapupState",
     "EpisodeWrapupRecord",
-    "ExperimentWatcherResourceRecord",
     "GraphCondition",
     "GraphWatcherRecord",
     "MemberRemovalPreviewRecord",

@@ -1,17 +1,15 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from rcp.agents.command_protocol import WatchGraphArguments
-from rcp.core.models import AuthorizedHuman, GraphState
+from rcp.core.models import AuthorizedHuman
 from rcp.limits import (
     AUTO_RESEARCH_LIFECYCLE_MAX_NOTICES,
     AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS,
 )
 from rcp.machine_sleep import seconds_until_automatic_launch
-from rcp.runs.auto_research import AutoResearchCommandContext, AutoResearchRunRequest
+from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.auto_research_admission import (
     ensure_auto_research_child_work_spawned,
     ensure_auto_research_wake_spawned,
@@ -34,16 +32,11 @@ from rcp.storage import (
     EpisodeNotRunning,
     GraphWatcherRecord,
     StoredWatcherRecord,
-    WatcherContinuation,
 )
 from rcp.storage.models import _required_timestamp
-from rcp.watchers import WatcherBinding, arm_watchers
 
 if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks
-
-
-AutoResearchWatcherReadyHook = Callable[[str], None]
 
 
 def record_auto_research_message(
@@ -568,134 +561,6 @@ def _standalone_mail_prefix(
                 break
         selected.append(message)
     return selected
-
-
-def arm_auto_research_graph_condition(
-    store: AppStore,
-    context: AutoResearchCommandContext,
-    arguments: WatchGraphArguments,
-    *,
-    watcher_id: str,
-    state: GraphState,
-    machine_id: str,
-    on_ready: AutoResearchWatcherReadyHook | None = None,
-) -> GraphWatcherRecord:
-    """Arm one orchestrator graph condition through the existing watcher store."""
-
-    if not isinstance(watcher_id, str) or not watcher_id.strip():
-        raise ValueError("a auto_research graph watcher id must not be blank")
-    binding = _auto_research_graph_watcher_binding(store, context, machine_id=machine_id)
-    records = arm_watchers(
-        store,
-        [],
-        binding,
-        graph_conditions=[arguments.condition],
-        state=state,
-        watcher_ids=[watcher_id],
-    )
-    if len(records) != 1 or not isinstance(records[0], GraphWatcherRecord):
-        raise RuntimeError("auto_research graph condition did not produce one graph watcher")
-    watcher = records[0]
-    store.record_agent_task_event(
-        context.task.operation_id,
-        f"Graph condition {watcher.watcher_id[:8]} armed: {arguments.reason}",
-    )
-    store.record_agent_task_receipt(
-        context.task.operation_id,
-        "auto_research_graph_condition_armed",
-        {
-            "watcher_id": watcher.watcher_id,
-            "condition": arguments.condition.model_dump(mode="json"),
-            "reason": arguments.reason,
-            "completed_immediately": watcher.status == "completed",
-        },
-    )
-    if watcher.status == "completed" and on_ready is not None:
-        on_ready(context.task.project_id)
-    return watcher
-
-
-def reconcile_auto_research_graph_condition(
-    store: AppStore,
-    context: AutoResearchCommandContext,
-    arguments: WatchGraphArguments,
-    *,
-    watcher_id: str,
-    machine_id: str,
-) -> GraphWatcherRecord | None:
-    """Read one planned graph watcher without arming or delivering it again."""
-
-    if not isinstance(watcher_id, str) or not watcher_id.strip():
-        return None
-    binding = _auto_research_graph_watcher_binding(store, context, machine_id=machine_id)
-    watcher = store.watcher(watcher_id)
-    if not isinstance(watcher, GraphWatcherRecord):
-        return None
-    if (
-        watcher.project_id != binding.project_id
-        or watcher.origin_operation_id != binding.origin_operation_id
-        or watcher.origin_task_kind != binding.origin_task_kind
-        or watcher.chat_id != binding.chat_id
-        or watcher.node_id != binding.node_id
-        or watcher.episode_id != context.episode.episode_id
-        or watcher.machine_id != binding.machine_id
-        or watcher.condition != arguments.condition
-        or watcher.continuation != binding.continuation
-        or watcher.armed_revision is None
-    ):
-        return None
-    return watcher
-
-
-def _auto_research_graph_watcher_binding(
-    store: AppStore,
-    context: AutoResearchCommandContext,
-    *,
-    machine_id: str,
-) -> WatcherBinding:
-    request = context.request
-    if request.role != "orchestrator":
-        raise ValueError("only the auto_research orchestrator may arm a graph condition")
-    if not request.provider or not request.run_on:
-        raise ValueError("auto_research watcher continuation has no pinned launch profile")
-    if (
-        context.task.kind != "auto_research"
-        or context.task.project_id != context.episode.project_id
-        or context.task.episode_id != context.episode.episode_id
-    ):
-        raise ValueError("auto_research watcher context conflicts with its auto_research")
-    canonical = store.auto_research_actor_binding(context.task.operation_id)
-    actor_operation_id = request.actor_operation_id or context.task.operation_id
-    if (
-        canonical.episode_id != context.episode.episode_id
-        or canonical.actor_operation_id != actor_operation_id
-        or canonical.role != request.role
-        or canonical.control_node_id != request.control_node_id
-    ):
-        raise ValueError("auto_research watcher context conflicts with its canonical actor")
-    return WatcherBinding(
-        project_id=context.task.project_id,
-        origin_operation_id=context.task.operation_id,
-        origin_task_kind="auto_research",
-        chat_id=canonical.actor_operation_id,
-        node_id=request.control_node_id,
-        episode_id=context.episode.episode_id,
-        graph_target=context.task.graph_target,
-        machine_id=machine_id,
-        continuation=WatcherContinuation(
-            browser_requested=context.episode.browser_requested,
-            provider=request.provider,
-            model=request.model,
-            reasoning=request.reasoning,
-            run_on=request.run_on,
-            run_truth_scope=request.run_truth_scope,
-            workflow_ids=request.workflow_ids or [],
-            skill_ids=request.skill_ids or [],
-            invoked_workflow_ids=request.invoked_workflow_ids,
-            invoked_skill_ids=request.invoked_skill_ids,
-            resolved_skill_packages=request.resolved_skill_packages or [],
-        ),
-    )
 
 
 def deliver_auto_research_watcher_group(
