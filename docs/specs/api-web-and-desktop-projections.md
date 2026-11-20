@@ -2360,12 +2360,14 @@ their message, which may be empty when threads are present. `/tasks` refuses a
 client-built artifact context that carries selections. A new turn and the
 viewer route key repeats on `Idempotency-Key`, and a steer on its `message_id`.
 
-A Space thread keeps its own threads under `/api/agent-threads/{thread_id}`
-([Space comment routes](../../src/rcp/api/space_comments.py)): the same list,
-read, create, posts, resolve, and reopen routes, for replies and turn artifacts
-of that thread only. Only the thread's owner reads or writes them; anyone else
-gets 404. They have no members, mentions, or watermark. Its turns and steers
-take `comment_thread_ids` like a project chat's.
+Per-agent comments use `/api/agent-threads/{thread_id}`
+([agent comment routes](../../src/rcp/api/space_comments.py)): list, read,
+create, posts, resolve, and reopen share the project comment handlers. The
+agent's placement resolves its storage scope, project membership, and private
+ownership once; every target must belong to that agent. Project comment routes
+remain compatible and also serve project-wide paper and artifact targets.
+A Space agent's comments are owner-only, with no members, mentions, or watermark.
+Its turns and steers take `comment_thread_ids` like a project agent's.
 
 Saving a post records one mention row per readable member it names. A
 `comment_mention` notification goes at most once per thread and mentioned
@@ -2553,11 +2555,22 @@ rows come from the thread projection: `title` is `agent_name`, `label` is
 the member come first, each group newest `at` first. `needs` and `total` are
 counted before the list is cut to `SPACE_RUNNING_MAX_ROWS`.
 
-Thread title, read and browser routes under `/api/agent-threads/{id}`
-require ownership; another member gets 404. The transcript route there serves
-only the Space thread. A project thread otherwise uses the ordinary project chat,
-task and question routes. Its Send must be
+Every per-agent action has one route under `/api/agent-threads/{thread_id}`:
+`turns`, `transcript`, `tasks/{operation_id}` with its `steer`, `pause`,
+`resume` and `retry`, `queue`, `attachments`, `title`, `read`, `browser`,
+`archive`, `branch`, and `comment-threads`. Each handler resolves the agent once
+([`resolve_agent`](../../src/rcp/agents/agent_owner.py)); its placement picks
+the storage scope and write admission, and another member's private agent
+returns 404. A project agent that has no row yet takes a `project_id` query
+parameter, checked against membership; once the row exists, a different
+`project_id` returns 404. A project agent's `turns` body is the project chat
+send, and a `chat_id` naming another agent returns 422. `archive` and `branch`
+serve project agents only. A private project thread's Send must be
 `project_chat` Work on main; anything else returns 422.
+
+The old project chat and task routes for these actions remain for one release
+as aliases that call the same handlers. `tests/test_route_inventory.py` lists
+them and refuses any new copy. The web calls only the agent routes.
 
 A project thread's waiting work lives at `/api/agent-threads/{thread_id}/queue`;
 a Space or unowned thread gets 404
@@ -2586,10 +2599,9 @@ Retry-parent hop.
 Space threads upload and remove attachments at
 `POST /api/agent-threads/{thread_id}/attachments` and
 `DELETE /api/agent-threads/{thread_id}/attachments/{attachment_id}`, using the
-ordinary chat attachment request and response shapes. Both require an open Space
-thread owned by the acting member; closed threads, project threads, and other
-members receive 404.
-The attachment owner binds each set to the Space id, the thread id from the path,
+ordinary chat attachment request and response shapes. Another member's
+private agent receives 404.
+The attachment owner binds each set to the agent's scope, the thread id from the path,
 and the client id. Turn admission claims that set under its idempotency lock and
 releases it if no task was recorded. Retry retains the claimed batch.
 
@@ -2598,7 +2610,7 @@ A Space thread sends with `POST /api/agent-threads/{thread_id}/turns`, body
 The attachment fields must be supplied together. A turn needs a nonempty message
 or `comment_thread_ids`: saved threads on this thread's replies or on artifacts
 its own turns produced ([Space comments](#comment-api)). It returns 202 with
-`{operation_id}`, 404 for a project or unowned thread, 422 for an invalid
+`{operation_id}`, 404 for an unowned thread, 422 for an invalid
 artifact comment, or 409 when admission refuses,
 such as a busy thread. It needs a patch-capable identity. Admission
 honors a UUID4 `Idempotency-Key` through the same durable receipt as

@@ -359,6 +359,21 @@ def test_chat_filter_lists_that_chats_reply_threads(comments_app):
     listed = client.get(base, params={"target_kind": "reply", "chat_id": "chat"}).json()["threads"]
     assert [thread["target_id"] for thread in listed] == ["one", "two"]
     assert {thread["chat_id"] for thread in listed} == {"chat"}
+    canonical = "/api/agent-threads/chat/comment-threads"
+    assert client.get(canonical, params={"target_kind": "reply", "chat_id": "chat"}).json() == {
+        "threads": listed
+    }
+    comment_id = listed[0]["thread_id"]
+    assert (
+        client.get(f"{canonical}/{comment_id}").json() == client.get(f"{base}/{comment_id}").json()
+    )
+    assert (
+        client.get(canonical, params={"target_kind": "reply", "target_id": "other"}).status_code
+        == 404
+    )
+    posted = client.post(f"{canonical}/{comment_id}/posts", json={"text": "Follow up"})
+    assert posted.status_code == 200, posted.text
+    assert posted.json() == client.get(f"{base}/{comment_id}").json()
     private = {"target_kind": "reply", "chat_id": private_chat.thread_id}
     assert client.get(base, params=private).status_code == 404
     assert client.get(base, params={"target_kind": "paper", "chat_id": "chat"}).status_code == 422

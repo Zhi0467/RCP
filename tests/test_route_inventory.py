@@ -102,6 +102,10 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/agent-threads/{thread_id}/title"),
     (("POST",), "/api/agent-threads/{thread_id}/agent"),
     (("POST",), "/api/agent-threads/{thread_id}/read"),
+    (("GET",), "/api/agent-threads/{thread_id}/browser"),
+    (("POST",), "/api/agent-threads/{thread_id}/archive"),
+    (("GET",), "/api/agent-threads/{thread_id}/branch"),
+    (("POST",), "/api/agent-threads/{thread_id}/branch"),
     (("PUT",), "/api/agent-threads/{thread_id}/browser"),
     (("POST",), "/api/agent-threads/{thread_id}/turns"),
     (("POST",), "/api/agent-threads/{thread_id}/attachments"),
@@ -398,25 +402,31 @@ _AGENT_PREFIXES = (
     "/api/projects/{project_id}",
 )
 
-_DUPLICATED_AGENT_ACTIONS: frozenset[tuple[str, str]] = frozenset(
+_LEGACY_AGENT_ROUTES: frozenset[RouteEntry] = frozenset(
     {
-        ("DELETE", "/attachments/{}"),
-        ("GET", "/artifacts/{}/state"),
-        ("GET", "/comment-threads"),
-        ("GET", "/comment-threads/{}"),
-        ("GET", "/tasks/{}"),
-        ("POST", "/attachments"),
-        ("POST", "/comment-threads"),
-        ("POST", "/comment-threads/{}/posts"),
-        ("POST", "/comment-threads/{}/reopen"),
-        ("POST", "/comment-threads/{}/resolve"),
-        ("POST", "/read"),
-        ("POST", "/tasks/{}/pause"),
-        ("POST", "/tasks/{}/resume"),
-        ("POST", "/tasks/{}/retry"),
-        ("POST", "/tasks/{}/steer"),
-        ("POST", "/title"),
-        ("PUT", "/browser"),
+        (("GET",), "/api/projects/{project_id}/chats/{chat_id}/browser"),
+        (("PUT",), "/api/projects/{project_id}/chats/{chat_id}/browser"),
+        (("POST",), "/api/projects/{project_id}/chats/{chat_id}/archive"),
+        (("GET",), "/api/projects/{project_id}/chats/{chat_id}/branch"),
+        (("POST",), "/api/projects/{project_id}/chats/{chat_id}/branch"),
+        (("POST",), "/api/projects/{project_id}/chats/{chat_id}/title"),
+        (("POST",), "/api/projects/{project_id}/chats/{chat_id}/read"),
+        (("POST",), "/api/projects/{project_id}/chats/{chat_id}/attachments"),
+        (("DELETE",), "/api/projects/{project_id}/chats/{chat_id}/attachments/{attachment_id}"),
+        (("POST",), "/api/projects/{project_id}/tasks/{kind}"),
+        (("GET",), "/api/projects/{project_id}/chats/{chat_id}"),
+        (("GET",), "/api/projects/{project_id}/artifacts/{artifact_id}/state"),
+        (("GET",), "/api/projects/{project_id}/comment-threads"),
+        (("POST",), "/api/projects/{project_id}/comment-threads"),
+        (("GET",), "/api/projects/{project_id}/comment-threads/{thread_id}"),
+        (("POST",), "/api/projects/{project_id}/comment-threads/{thread_id}/posts"),
+        (("POST",), "/api/projects/{project_id}/comment-threads/{thread_id}/resolve"),
+        (("POST",), "/api/projects/{project_id}/comment-threads/{thread_id}/reopen"),
+        (("GET",), "/api/projects/{project_id}/tasks/{operation_id}"),
+        (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/steer"),
+        (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/pause"),
+        (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/resume"),
+        (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/retry"),
     }
 )
 
@@ -424,6 +434,8 @@ _DUPLICATED_AGENT_ACTIONS: frozenset[tuple[str, str]] = frozenset(
 def _duplicated_agent_actions(inventory: Iterable[RouteEntry]) -> frozenset[tuple[str, str]]:
     prefixes: dict[tuple[str, str], set[str]] = defaultdict(set)
     for methods, path in inventory:
+        if (methods, path) in _LEGACY_AGENT_ROUTES:
+            continue
         prefix = next((item for item in _AGENT_PREFIXES if path.startswith(item + "/")), None)
         if prefix is None:
             continue
@@ -434,12 +446,35 @@ def _duplicated_agent_actions(inventory: Iterable[RouteEntry]) -> frozenset[tupl
     return frozenset(action for action, found in prefixes.items() if len(found) > 1)
 
 
-def test_no_new_agent_action_lives_under_two_prefixes() -> None:
-    """An agent action has one route. The exceptions are today's copies and only shrink."""
-    duplicated = _duplicated_agent_actions(_FROZEN_ROUTE_INVENTORY)
-    assert duplicated - _DUPLICATED_AGENT_ACTIONS == frozenset()
-    assert _DUPLICATED_AGENT_ACTIONS - duplicated == frozenset(), "delete the retired exceptions"
-    assert len(_DUPLICATED_AGENT_ACTIONS) <= 17
+def test_no_new_agent_action_lives_under_two_prefixes(route_app: FastAPI) -> None:
+    """Only the frozen compatibility routes may duplicate a canonical agent action."""
+    inventory = frozenset(_route_entry(route) for route in _walk_routes(route_app.routes))
+    assert not _duplicated_agent_actions(inventory)
+    assert inventory >= _LEGACY_AGENT_ROUTES, "delete the retired aliases"
+    assert len(_LEGACY_AGENT_ROUTES) <= 23
+
+
+@pytest.mark.parametrize("action", ["turns", "queue", "archive", "fork", "stop-and-send"])
+def test_agent_route_guard_rejects_new_copies(action: str) -> None:
+    inventory = (
+        (("POST",), f"/api/agent-threads/{{thread_id}}/{action}"),
+        (("POST",), f"/api/projects/{{project_id}}/chats/{{chat_id}}/{action}"),
+    )
+    if action == "archive":
+        inventory = (inventory[0], (("POST",), f"/api/projects/{{project_id}}/{action}"))
+    assert _duplicated_agent_actions(inventory) == frozenset({("POST", f"/{action}")})
+
+
+@pytest.mark.parametrize("action", ["pause", "resume", "retry", "steer"])
+def test_legacy_turn_control_is_the_canonical_handler(route_app: FastAPI, action: str) -> None:
+    handlers = {
+        route.path: route.endpoint
+        for route in _walk_routes(route_app.routes)
+        if isinstance(route, APIRoute) and "POST" in route.methods
+    }
+    canonical = f"/api/agent-threads/{{thread_id}}/tasks/{{operation_id}}/{action}"
+    legacy = f"/api/projects/{{project_id}}/tasks/{{operation_id}}/{action}"
+    assert handlers[canonical] is handlers[legacy]
 
 
 def _walk_routes(routes: Iterable[object]) -> Iterable[object]:
@@ -471,8 +506,8 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     entries = tuple(_route_entry(route) for route in routes)
 
     assert len(entries) == len(_FROZEN_ROUTE_INVENTORY)
-    assert len(_FROZEN_ROUTE_INVENTORY) == 351
+    assert len(_FROZEN_ROUTE_INVENTORY) == 355
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
-    assert sum(isinstance(route, APIRoute) for route in routes) == 347
+    assert sum(isinstance(route, APIRoute) for route in routes) == 351
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4

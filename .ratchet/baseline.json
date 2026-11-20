@@ -35,7 +35,7 @@
   "src/rcp/agents/steering.py": {"comment": 5},
   "src/rcp/agents/write_scope.py": {"comment": 32},
   "src/rcp/api/agent_schedules.py": {"comment": 1},
-  "src/rcp/api/agent_threads.py": {"comment": 2},
+  "src/rcp/api/agent_threads.py": {"comment": 1},
   "src/rcp/api/app.py": {"comment": 91},
   "src/rcp/api/approval_cards.py": {"comment": 6},
   "src/rcp/api/artifacts.py": {"comment": 11},

@@ -6,12 +6,10 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from rcp.agents.agent_owner import comment_write_admission, require_comment_writable
 from rcp.api.dependencies import (
-    get_catalog,
     get_identity_access,
-    get_project_writer,
     get_store,
-    project_write_admission,
     require_project_membership,
 )
 from rcp.comments.models import CommentPostBody, CreateCommentThread
@@ -38,8 +36,7 @@ def _route(
 def _sender(store: AppStore, request: Request, project: str) -> str | None:
     try:
         user = get_identity_access(request).require_patch_capable_identity(request)
-        store.require_project_accepts_new_work(project)
-        get_project_writer(get_catalog(request), project).history.require_writable()
+        require_comment_writable(project, request)
     except (HTTPException, ValueError, ReplayHalted):
         return None
     return user.user_id
@@ -68,14 +65,13 @@ def _respond(
 
 @contextmanager
 def _write(request: Request, project: str) -> Iterator[str]:
-    with project_write_admission(project, request):
-        try:
-            get_project_writer(get_catalog(request), project).history.require_writable()
+    try:
+        with comment_write_admission(project, request):
             yield get_identity_access(request).acting_user(request).user_id
-        except CommentError:
-            raise
-        except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except CommentError:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/api/projects/{project_id}/comment-threads")

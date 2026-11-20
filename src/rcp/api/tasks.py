@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import UUID4, BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
+from rcp.agents.agent_owner import resolve_agent_task, task_retry_overrides, task_write_admission
 from rcp.api.dependencies import (
     get_artifact_mutation_locks,
     get_attachment_store,
@@ -24,7 +25,6 @@ from rcp.api.dependencies import (
     get_identity_access,
     get_store,
     get_watcher_delivery,
-    project_write_admission,
     require_project_membership,
     require_project_write_admission,
     require_registered_project,
@@ -95,6 +95,7 @@ from rcp.transport import StateUnavailable
 from rcp.watchers import WatcherDelivery
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
+agent_router = APIRouter()
 
 CatalogDependency = Annotated[ProjectCatalog, Depends(get_catalog)]
 IdentityDependency = Annotated[IdentityAccess, Depends(get_identity_access)]
@@ -778,18 +779,24 @@ def _without_turn_messages(response: dict[str, object]) -> dict[str, object]:
 
 
 @router.get("/api/projects/{project_id}/tasks/{operation_id}")
+@agent_router.get("/api/agent-threads/{thread_id}/tasks/{operation_id}")
 def agent_task(
-    project_id: str,
     operation_id: str,
+    request: Request,
     *,
-    catalog: CatalogDependency,
+    project_id: str | None = None,
+    thread_id: str | None = None,
     store: StoreDependency,
+    identity_access: IdentityDependency,
     background_tasks: BackgroundTasksDependency,
 ) -> dict[str, object]:
-    require_registered_project(catalog, project_id)
-    record = store.agent_task(operation_id)
-    if record is None or record.project_id != project_id or not record.visible:
-        raise HTTPException(status_code=404, detail="Agent task not found")
+    record = resolve_agent_task(
+        store,
+        operation_id,
+        identity_access.acting_user(request).user_id,
+        project_id=project_id,
+        thread_id=thread_id,
+    )
     detail = _agent_task_response(
         store,
         record,
@@ -810,21 +817,28 @@ def agent_task(
 
 
 @router.post("/api/projects/{project_id}/tasks/{operation_id}/steer")
+@agent_router.post("/api/agent-threads/{thread_id}/tasks/{operation_id}/steer")
 def steer_agent_task(
-    project_id: str,
     operation_id: str,
     body: SteerAgentTaskRequest,
     http_request: Request,
     *,
+    project_id: str | None = None,
+    thread_id: str | None = None,
     catalog: CatalogDependency,
     store: StoreDependency,
     identity_access: IdentityDependency,
     background_tasks: BackgroundTasksDependency,
 ) -> ChatMessage:
     author = identity_access.require_patch_capable_identity(http_request)
-    record = store.agent_task(operation_id)
-    if record is None or record.project_id != project_id or not record.visible:
-        raise HTTPException(status_code=404, detail="Agent task not found")
+    record = resolve_agent_task(
+        store,
+        operation_id,
+        identity_access.acting_user(http_request).user_id,
+        project_id=project_id,
+        thread_id=thread_id,
+    )
+    project_id = record.project_id
     sent = (
         thread_send_text(
             store,
@@ -839,9 +853,9 @@ def steer_agent_task(
         if body.comment_thread_ids
         else None
     )
-    service = cast(ProjectService, task_owner(store, record, catalog=catalog))
+    service = task_owner(store, record, catalog=catalog)
     try:
-        with project_write_admission(project_id, http_request):
+        with task_write_admission(record, http_request):
             delivery = begin_chat_steer(
                 service,
                 background_tasks,
@@ -1145,18 +1159,24 @@ def keep_agent_artifact(
 
 
 @router.post("/api/projects/{project_id}/tasks/{operation_id}/pause", status_code=202)
+@agent_router.post("/api/agent-threads/{thread_id}/tasks/{operation_id}/pause", status_code=202)
 def pause_agent_task(
-    project_id: str,
     operation_id: str,
+    request: Request,
     *,
-    catalog: CatalogDependency,
+    project_id: str | None = None,
+    thread_id: str | None = None,
     store: StoreDependency,
+    identity_access: IdentityDependency,
     background_tasks: BackgroundTasksDependency,
 ) -> dict[str, object]:
-    require_registered_project(catalog, project_id)
-    record = store.agent_task(operation_id)
-    if record is None or record.project_id != project_id or not record.visible:
-        raise HTTPException(status_code=404, detail="Agent task not found")
+    record = resolve_agent_task(
+        store,
+        operation_id,
+        identity_access.acting_user(request).user_id,
+        project_id=project_id,
+        thread_id=thread_id,
+    )
     return pause_task_as(record, background_tasks).model_dump(mode="json")
 
 
@@ -1172,16 +1192,14 @@ def pause_task_as(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@router.post(
-    "/api/projects/{project_id}/tasks/{operation_id}/resume",
-    status_code=202,
-    dependencies=[Depends(require_project_write_admission)],
-)
+@router.post("/api/projects/{project_id}/tasks/{operation_id}/resume", status_code=202)
+@agent_router.post("/api/agent-threads/{thread_id}/tasks/{operation_id}/resume", status_code=202)
 def resume_agent_task(
-    project_id: str,
     operation_id: str,
     request: Request,
     *,
+    project_id: str | None = None,
+    thread_id: str | None = None,
     catalog: CatalogDependency,
     store: StoreDependency,
     identity_access: IdentityDependency,
@@ -1189,9 +1207,14 @@ def resume_agent_task(
     experiment_admission: ExperimentAdmissionDependency,
     idempotency_key: Annotated[UUID4 | None, Header()] = None,
 ) -> dict[str, object]:
-    previous = store.agent_task(operation_id)
-    if previous is None or previous.project_id != project_id or not previous.visible:
-        raise HTTPException(status_code=404, detail="Agent task not found")
+    previous = resolve_agent_task(
+        store,
+        operation_id,
+        identity_access.acting_user(request).user_id,
+        project_id=project_id,
+        thread_id=thread_id,
+    )
+    project_id = previous.project_id
     _reject_history_only_control(previous)
     if previous.kind == "branch_merge":
         raise HTTPException(
@@ -1199,14 +1222,16 @@ def resume_agent_task(
             detail="Dispatch a new Merge to main task from the episode detail.",
         )
     authorized_by = identity_access.require_patch_capable_identity(request)
-    project_id = catalog.resolve_project_id(project_id)
     try:
-        with store.client_request_admission(
-            project_id,
-            authorized_by.user_id,
-            str(idempotency_key) if idempotency_key is not None else None,
-            f"tasks/{operation_id}/resume",
-        ) as existing:
+        with (
+            task_write_admission(previous, request),
+            store.client_request_admission(
+                project_id,
+                authorized_by.user_id,
+                str(idempotency_key) if idempotency_key is not None else None,
+                f"tasks/{operation_id}/resume",
+            ) as existing,
+        ):
             if existing is not None:
                 record = store.agent_task(existing.operation_id or "")
                 assert record is not None
@@ -1412,17 +1437,15 @@ def apply_agent_task_graph_update_again(
     return _agent_task_response(store, record, background_tasks)
 
 
-@router.post(
-    "/api/projects/{project_id}/tasks/{operation_id}/retry",
-    status_code=202,
-    dependencies=[Depends(require_project_write_admission)],
-)
+@router.post("/api/projects/{project_id}/tasks/{operation_id}/retry", status_code=202)
+@agent_router.post("/api/agent-threads/{thread_id}/tasks/{operation_id}/retry", status_code=202)
 def retry_agent_task(
-    project_id: str,
     operation_id: str,
     request: Request,
     body: RetryAgentTaskRequest | None = None,
     *,
+    project_id: str | None = None,
+    thread_id: str | None = None,
     catalog: CatalogDependency,
     store: StoreDependency,
     identity_access: IdentityDependency,
@@ -1430,9 +1453,14 @@ def retry_agent_task(
     experiment_admission: ExperimentAdmissionDependency,
     idempotency_key: Annotated[UUID4 | None, Header()] = None,
 ) -> dict[str, object]:
-    previous = store.agent_task(operation_id)
-    if previous is None or previous.project_id != project_id or not previous.visible:
-        raise HTTPException(status_code=404, detail="Agent task not found")
+    previous = resolve_agent_task(
+        store,
+        operation_id,
+        identity_access.acting_user(request).user_id,
+        project_id=project_id,
+        thread_id=thread_id,
+    )
+    project_id = previous.project_id
     _reject_history_only_control(previous)
     if previous.kind == "branch_merge":
         raise HTTPException(
@@ -1442,14 +1470,16 @@ def retry_agent_task(
     if _discuss_chat_turn(previous):
         raise HTTPException(status_code=409, detail="Send it again as an ordinary turn.")
     authorized_by = identity_access.require_patch_capable_identity(request)
-    project_id = catalog.resolve_project_id(project_id)
     try:
-        with store.client_request_admission(
-            project_id,
-            authorized_by.user_id,
-            str(idempotency_key) if idempotency_key is not None else None,
-            f"tasks/{operation_id}/retry",
-        ) as existing:
+        with (
+            task_write_admission(previous, request),
+            store.client_request_admission(
+                project_id,
+                authorized_by.user_id,
+                str(idempotency_key) if idempotency_key is not None else None,
+                f"tasks/{operation_id}/retry",
+            ) as existing,
+        ):
             if existing is not None:
                 record = store.agent_task(existing.operation_id or "")
                 assert record is not None
@@ -1457,7 +1487,9 @@ def retry_agent_task(
             return retry_task_as(
                 previous,
                 authorized_by,
-                body.model_dump(exclude_none=True) if body is not None else {},
+                task_retry_overrides(
+                    previous, body.model_dump(exclude_none=True) if body is not None else {}, store
+                ),
                 catalog=catalog,
                 background_tasks=background_tasks,
                 experiment_admission=experiment_admission,
