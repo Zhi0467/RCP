@@ -1075,6 +1075,95 @@
 .approval-fold:hover {
   color: var(--ink);
 }
+/* Runs that ask nothing: one folded line that opens into a row per run. */
+.dock-runs {
+  animation: agent-pop-in 0.18s ease-out;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-sizing: border-box;
+  margin: 0 auto 24px;
+  max-width: 820px;
+  width: 100%;
+}
+.dock-runs-fold {
+  align-items: center;
+  background: none;
+  border: 0;
+  border-radius: 12px;
+  color: var(--muted);
+  display: flex;
+  font: inherit;
+  font-size: var(--type-sm);
+  gap: 8px;
+  padding: 10px 14px;
+  text-align: left;
+  width: 100%;
+}
+.dock-runs-fold > span {
+  flex: 1;
+  min-width: 0;
+}
+.dock-runs-fold:hover {
+  color: var(--ink);
+}
+.dock-runs-fold svg {
+  transition: transform 0.18s ease;
+}
+.dock-runs[data-open] .dock-runs-fold svg {
+  transform: rotate(180deg);
+}
+.dock-runs ul {
+  animation: agent-pop-in 0.18s ease-out;
+  border-top: 1px solid var(--line);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.dock-run {
+  align-items: center;
+  display: flex;
+  font-size: var(--type-sm);
+  gap: 10px;
+  min-height: 38px;
+  padding: 4px 6px 4px 10px;
+}
+.dock-run + .dock-run {
+  border-top: 1px solid var(--line);
+}
+.dock-run-icon {
+  align-items: center;
+  background: var(--amber-soft);
+  border-radius: 7px;
+  color: color-mix(in srgb, var(--mustard) 70%, var(--ink));
+  display: inline-flex;
+  flex: none;
+  height: 24px;
+  justify-content: center;
+  width: 24px;
+}
+.dock-run a {
+  color: var(--ink);
+  flex: 1;
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dock-run-state,
+.dock-run-error {
+  color: var(--muted);
+  flex: none;
+  font-size: var(--type-xs);
+}
+.dock-run-error {
+  color: var(--danger);
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 /* Pip's dock: the member's open cards, directly above the composer. */
 .approval-dock {
   margin: 0 auto 10px;
@@ -1084,7 +1173,8 @@
 }
 .approval-dock .approval-card,
 .approval-dock .approval-stack,
-.approval-dock .approval-quiet {
+.approval-dock .approval-quiet,
+.approval-dock .dock-runs {
   margin: 0 0 8px;
   max-width: none;
 }
@@ -1281,6 +1371,8 @@
   .upcoming-popover,
   .approval-card,
   .approval-quiet,
+  .dock-runs,
+  .dock-runs ul,
   .thread-welcome,
   .thread-agent-picker .agent-config.compact {
     animation: none;
@@ -1290,6 +1382,9 @@
   }
   .thread-queue-row {
     animation: none;
+  }
+  .dock-runs-fold svg {
+    transition: none;
   }
   .thread-queue-row[data-leaving] {
     animation: thread-queue-leave 0.01s forwards;
