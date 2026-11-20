@@ -221,9 +221,9 @@ fields. Launch-time validation remains necessary after a successful save.
 
 ## Agent browser Web consumers
 
-The chat Options menu reads and updates `/api/agent-threads/{chat_id}/browser`,
-with a `project_id` query parameter before the agent row exists, with the
-`browser_requested` preference. The strict PUT body contains only that
+The chat Options menu reads and updates the `browser_requested` preference at
+`/api/agent-threads/{chat_id}/browser`. The API also accepts an optional
+`project_id` query parameter for a project agent that has no row yet. The strict PUT body contains only that
 boolean. The preference exists before the chat has messages. Turning it off
 deletes the chat's browser profile after the response; an active turn keeps its
 browser until it ends. A failed write
