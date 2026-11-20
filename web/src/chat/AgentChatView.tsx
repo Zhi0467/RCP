@@ -1265,7 +1265,7 @@ export function AgentChatView({
           composer.turnFields(),
           skills.selection,
           skills.providerSkillNames,
-          configOverride,
+          [config.provider, config.model, config.reasoning],
         ])
       : null;
     const requestId =
