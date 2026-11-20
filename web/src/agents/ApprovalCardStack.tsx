@@ -4,6 +4,10 @@ import {
   ChevronRight,
   FlaskConical,
   Files,
+  Pause,
+  Play,
+  RotateCcw,
+  Square,
   Telescope,
   SquareStack,
 } from "lucide-react";
@@ -25,6 +29,7 @@ import type {
   AskedApprovalCardView,
   DockEpisode,
   Episode,
+  EpisodeHealth,
   AgentTask,
   ProposalCardView,
   RelayedQuestion,
@@ -33,9 +38,11 @@ import { AskedTime, QuestionCard } from "../chat/QuestionCard";
 import { retryBackoffMs } from "../core/resourceStore";
 import { episodeProjection, episodeReportPreviewUrl } from "../experiments/campaigns";
 import { EpisodeControls } from "../experiments/EpisodeControls";
+import { episodeControlProjection } from "../experiments/runProjection";
+import { OverflowMenu, type OverflowMenuItem } from "../ui/OverflowMenu";
 import { EpisodeReportLink } from "../experiments/EpisodeReportLink";
 import { EpisodePlanDraftProvider } from "./EpisodePlanCard";
-import { useEpisodeActions } from "../experiments/episodeActions";
+import { useEpisodeActions, type EpisodeTaskAction } from "../experiments/episodeActions";
 import { experimentIndexProfile } from "../experiments/episodeResources";
 import { useResource } from "../core/useResource";
 import { AskedApprovalCard, ProposalApprovalCard } from "./ApprovalCard";
@@ -187,6 +194,22 @@ export function stackLater(memory: StackMemory, keys: readonly string[]): StackM
   };
 }
 
+const RUNNING: ReadonlySet<EpisodeHealth> = new Set([
+  "starting",
+  "active",
+  "recovering",
+  "stopping",
+  "wrapping_up",
+]);
+
+/** A run that asks nothing of the human: it waits in the folded runs list, not the stack. */
+export function isRunningRun(card: StackCard): card is Extract<StackCard, { kind: "run" }> {
+  return card.kind === "run" && RUNNING.has(card.run.episode.health);
+}
+
+/** Whether each stack's runs list is unfolded, per stack key. */
+const runsOpen = new Set<string>();
+
 /** Each rendered stack's place, per stack key; a reload restores server order. */
 const memories = new Map<string, StackMemory>();
 const FRESH: StackMemory = { order: [], index: 0, later: [] };
@@ -266,8 +289,10 @@ export function ApprovalCardStack({
   const frontRef = useRef<HTMLDivElement>(null);
   const foldRef = useRef<HTMLButtonElement>(null);
   const focusNext = useRef<"front" | "fold" | null>(null);
-  const open = cards.filter(cardIsOpen);
-  const settled = cards.filter((card) => !cardIsOpen(card));
+  const running = cards.filter(isRunningRun);
+  const stacked = cards.filter((card) => !isRunningRun(card));
+  const open = stacked.filter(cardIsOpen);
+  const settled = stacked.filter((card) => !cardIsOpen(card));
   const keys = open.map((card) => card.key);
   const memory = memories.get(stackKey) ?? FRESH;
   const putAway = memory.later.filter((key) => keys.includes(key));
@@ -295,6 +320,14 @@ export function ApprovalCardStack({
     redraw();
   };
   const front = open.find((card) => card.key === order[index]);
+  const runHandlers = (run: DockEpisode) => ({
+    state: runStates[run.episode.episode_id] ?? EMPTY_RUN,
+    onState: (patch: Partial<RunState>) => updateRun(run.episode.episode_id, patch),
+    onOperateTask: (task: AgentTask, action: EpisodeTaskAction) =>
+      perform(run, "taskActionId", task.operation_id, () => actions.operateTask(task, action)),
+    onStop: (id: string) =>
+      perform(run, "busyAction", `stop:${id}`, () => actions.stop(id, run.episode.tasks)),
+  });
   const render = (card: StackCard, onLater?: () => void) =>
     card.kind === "plan" ? (
       <Fragment key={card.key}>{renderPlanCard?.(card.question)}</Fragment>
@@ -303,20 +336,9 @@ export function ApprovalCardStack({
         key={card.key}
         run={card.run}
         onLater={onLater}
-        state={runStates[card.run.episode.episode_id] ?? EMPTY_RUN}
-        onState={(patch) => updateRun(card.run.episode.episode_id, patch)}
-        onOperateTask={(task, action) =>
-          perform(card.run, "taskActionId", task.operation_id, () =>
-            actions.operateTask(task, action),
-          )
-        }
+        {...runHandlers(card.run)}
         onContinue={(id, turns) =>
           perform(card.run, "busyAction", `continue:${id}`, () => actions.addTurns(id, turns))
-        }
-        onStop={(id) =>
-          perform(card.run, "busyAction", `stop:${id}`, () =>
-            actions.stop(id, card.run.episode.tasks),
-          )
         }
       />
     ) : card.kind === "question" ? (
@@ -425,7 +447,112 @@ export function ApprovalCardStack({
           </div>
         )
       )}
+      {running.length > 0 && (
+        <div className="dock-runs" data-open={runsOpen.has(stackKey) ? "" : undefined}>
+          <button
+            className="dock-runs-fold"
+            type="button"
+            aria-expanded={runsOpen.has(stackKey)}
+            onClick={() => {
+              if (!runsOpen.delete(stackKey)) runsOpen.add(stackKey);
+              redraw();
+            }}
+          >
+            <span>
+              {running.length} {running.length === 1 ? "run" : "runs"} in progress
+            </span>
+            <ChevronDown size={14} aria-hidden="true" />
+          </button>
+          {runsOpen.has(stackKey) && (
+            <ul>
+              {running.map((card) => (
+                <RunningRunRow key={card.key} run={card.run} {...runHandlers(card.run)} />
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
     </EpisodePlanDraftProvider>
+  );
+}
+
+/** A dock run as last acted on, with the Experiment control its loop reports. */
+function useDockRun(run: DockEpisode, state: RunState) {
+  const episode = state.updated?.source === run.episode ? state.updated.episode : run.episode;
+  const owner = useId();
+  const experimentIndex = useResource(
+    owner,
+    episode.mode === "experiment_loop" ? experimentIndexProfile(episode.project_id) : null,
+  );
+  const experimentControl =
+    experimentIndex.value?.entries.find((entry) => entry.episode.episode_id === episode.episode_id)
+      ?.control ?? null;
+  const projection = episodeProjection(episode);
+  const Icon = episode.mode === "auto_research" ? Telescope : FlaskConical;
+  return { episode, experimentControl, projection, Icon };
+}
+
+const TASK_ACTIONS: Record<EpisodeTaskAction, { label: string; icon: typeof Pause }> = {
+  pause: { label: "Pause", icon: Pause },
+  resume: { label: "Resume", icon: Play },
+  retry: { label: "Retry", icon: RotateCcw },
+};
+
+/** A running child episode in the folded runs list: its state and a menu of its controls. */
+function RunningRunRow({
+  run,
+  state,
+  onState,
+  onOperateTask,
+  onStop,
+}: {
+  run: DockEpisode;
+  state: RunState;
+  onState: (patch: Partial<RunState>) => void;
+  onOperateTask: (task: AgentTask, action: EpisodeTaskAction) => Promise<void>;
+  onStop: (episodeId: string) => Promise<void>;
+}) {
+  const { episode, experimentControl, projection, Icon } = useDockRun(run, state);
+  const controls = episodeControlProjection(episode, projection.taskControl, experimentControl);
+  const busy = state.busyAction !== null || state.taskActionId !== null;
+  const report = (act: () => Promise<void>) => {
+    onState({ error: null });
+    act().catch((error: unknown) =>
+      onState({ error: error instanceof Error ? error.message : String(error) }),
+    );
+  };
+  const items: OverflowMenuItem[] = [];
+  const task = controls.taskControl;
+  if (task)
+    items.push({
+      ...TASK_ACTIONS[task.kind],
+      disabled: busy,
+      onSelect: () => report(() => onOperateTask(task.task, task.kind)),
+    });
+  if (controls.canStop)
+    items.push({
+      label: "Stop",
+      icon: Square,
+      disabled: busy || controls.stopPending,
+      onSelect: () => report(() => onStop(episode.episode_id)),
+    });
+  return (
+    <li className="dock-run" data-health={projection.health}>
+      <span className="dock-run-icon" aria-hidden="true">
+        <Icon size={13} />
+      </span>
+      <a href={run.link}>{run.title}</a>
+      {state.error ? (
+        <span className="dock-run-error" role="alert" title={state.error}>
+          {state.error}
+        </span>
+      ) : (
+        <span className="dock-run-state">{projection.healthLabel}</span>
+      )}
+      {items.length > 0 && (
+        <OverflowMenu label={`${run.title} actions`} items={items} portal disabled={busy} />
+      )}
+    </li>
   );
 }
 
@@ -447,19 +574,9 @@ function EpisodeRunCard({
   onStop: ComponentProps<typeof EpisodeControls>["onStop"];
   onLater?: () => void;
 }) {
-  const episode = state.updated?.source === run.episode ? state.updated.episode : run.episode;
-  const owner = useId();
-  const experimentIndex = useResource(
-    owner,
-    episode.mode === "experiment_loop" ? experimentIndexProfile(episode.project_id) : null,
-  );
-  const experimentControl =
-    experimentIndex.value?.entries.find((entry) => entry.episode.episode_id === episode.episode_id)
-      ?.control ?? null;
+  const { episode, experimentControl, projection, Icon } = useDockRun(run, state);
   const { busyAction, taskActionId, error } = state;
   const setError = (error: string | null) => onState({ error });
-  const projection = episodeProjection(episode);
-  const Icon = episode.mode === "auto_research" ? Telescope : FlaskConical;
   return (
     <section
       className="approval-card open episode-run-card"

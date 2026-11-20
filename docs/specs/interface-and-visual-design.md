@@ -603,8 +603,12 @@ member's projects, each naming its project. A relayed question also names the
 run or chat that asked, and an answer removes it. A Project Agent uses the same
 dock for its own open Proposal and asked cards, then its pending plan cards,
 then its child episodes' questions, then that project's relayed questions,
-then the child runs that need action, then the other child runs. Only its
-Proposal and asked cards drop the project chip; its plain questions stay inline. A run card names the run,
+then the child runs that need action, then the ended child runs. Only its
+Proposal and asked cards drop the project chip; its plain questions stay inline. A child
+run that is starting, active, recovering, stopping or wrapping up asks nothing, so it
+is not a card: such runs share one folded line under the stack that opens into a
+row per run, with its linked title, its Runs state and a menu of the same
+controls. A run card names the run,
 linked to Runs, with its Runs state, its report once ended, and the controls
 Runs shows from the same projection: an Experiment's controls follow its Runs
 control state, including node readiness and Resume with the turns a pause left

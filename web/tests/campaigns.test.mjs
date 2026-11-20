@@ -976,11 +976,15 @@ test("a dock run card offers what its episode allows and links its run and repor
         [],
       ),
     );
-  const live = card({});
+  const running = card({});
+  assert.match(running, /dock-runs-fold/);
+  assert.doesNotMatch(running, /episode-run-card/);
+  const live = card({ health: "needs_action" });
   assert.match(live, /href="#\/run"/);
   assert.match(live, /campaign-stop/);
   assert.doesNotMatch(live, /campaign-reauthorize/);
   const ended = card({
+    health: "completed",
     can_stop: false,
     can_continue: true,
     task_control: null,
