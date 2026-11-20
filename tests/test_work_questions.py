@@ -224,6 +224,7 @@ def test_work_ask_requires_own_broker(tmp_path, authority, task_id):
 
 
 def test_discuss_resolves_ask_and_name(tmp_path):
+    from rcp.agents.agent_profile import UsageContext
     from rcp.runs.agent_names import name_command_usage
     from rcp.runs.tasks.discuss import _discuss_execution_instructions
 
@@ -241,12 +242,16 @@ def test_discuss_resolves_ask_and_name(tmp_path):
     for verb in ("lesson", "launch", "validate", "apply"):
         request = ask_request().model_copy(update={"verb": verb})
         assert handler(request, identity()).status == "invalid"
-    assert _work_execution_instructions(
+    work = work_command_handler(execution, None)
+    assert work.allowed_verbs == {"validate", "name"}
+    rendered = _work_execution_instructions(
         SimpleNamespace(
             execution=execution, compute_commands=None, service=None, graph_read_scope=None
         ),
         client="client",
-    ) == name_command_usage("client")
+    )
+    assert rendered == work.profile.instructions(UsageContext(client="client"))
+    assert name_command_usage("client") in rendered
     assert _discuss_execution_instructions(discuss_command_handler(None)) == ""
 
 
@@ -276,10 +281,10 @@ def test_artifact_edit_discuss_ask_follows_chat_authority(tmp_path, origin_bound
 
 
 def test_human_work_prompt_includes_ask_without_compute(tmp_path, monkeypatch):
+    from rcp.agents import prompts
     from rcp.agents.command_mailbox import stage_command_mailbox
     from rcp.agents.provider_accounts import ProviderAccounts
     from rcp.limits import ask_hold_seconds
-    from rcp.runs.tasks import work
 
     execution, _ = work_execution(tmp_path)
     store = execution.store
@@ -296,13 +301,13 @@ def test_human_work_prompt_includes_ask_without_compute(tmp_path, monkeypatch):
         ask_wait_seconds=hold,
     )
     rendered = []
-    contract = work.live_ask_contract
+    contract = prompts.live_ask_contract
 
     def render(wait):
         rendered.append(wait)
         return contract(wait)
 
-    monkeypatch.setattr(work, "live_ask_contract", render)
+    monkeypatch.setattr(prompts, "live_ask_contract", render)
     turn = SimpleNamespace(
         execution=execution,
         compute_commands=None,

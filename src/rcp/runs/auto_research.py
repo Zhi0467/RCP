@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from rcp.agents.auto_research_commands import auto_research_allowed_verbs
+from rcp.agents.agent_profile import SHARED_PROJECT, AgentTurn, resolve_agent_profile
 from rcp.agents.command_protocol import (
     MUTATING_COMMAND_VERBS,
     ApplyArguments,
@@ -2178,19 +2178,26 @@ class AutoResearchCommandDispatcher:
         allowed = (
             self.allowed_verbs
             if self.allowed_verbs is not None
-            else auto_research_allowed_verbs(
-                context.request.role,
-                can_self_name=(
-                    context.request.role == "orchestrator"
-                    and bool(
-                        task_agent_name_state(self.store, context.task.operation_id).get(
-                            "can_self_name"
+            else resolve_agent_profile(
+                SHARED_PROJECT,
+                "orchestrator"
+                if context.request.role == "orchestrator"
+                else "auto_research_worker",
+                AgentTurn(
+                    read_verbs=self.graph_read_scope.verbs
+                    if self.graph_read_scope
+                    else frozenset(),
+                    can_self_name=(
+                        context.request.role == "orchestrator"
+                        and bool(
+                            task_agent_name_state(self.store, context.task.operation_id).get(
+                                "can_self_name"
+                            )
                         )
-                    )
+                    ),
+                    bulletin=self.store.bulletin_enabled_for_task(context.task.operation_id),
                 ),
-                graph_read_scope=self.graph_read_scope,
-                bulletin=self.store.bulletin_enabled_for_task(context.task.operation_id),
-            )
+            ).ordered_verbs
         )
         if request.verb not in allowed:
             raise AutoResearchCommandInvalid(

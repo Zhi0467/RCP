@@ -12,6 +12,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict
 
 from rcp.agents import AgentEvent, AgentLauncher, PromptFactory
+from rcp.agents.agent_profile import AgentTurn, UsageContext, resolve_agent_profile
 from rcp.agents.continuation_prompt import (
     LaunchPhase,
     MasterRef,
@@ -31,7 +32,6 @@ from rcp.agents.prompts import (
     chat_master_contract_key,
     graph_read_contract,
     invoked_package_pointers,
-    live_ask_contract,
     render_chat_read_context,
     skill_prompt_values,
 )
@@ -145,14 +145,10 @@ def _discuss_execution_instructions(
     handler: WorkCommandHandler, wait_seconds: float = COMMAND_CLIENT_WAIT_SECONDS
 ) -> str:
     from rcp.agents.prompts import COMMAND_CLIENT
-    from rcp.runs.agent_names import name_command_usage
 
-    instructions = []
-    if "name" in handler.allowed_verbs:
-        instructions.append(name_command_usage(COMMAND_CLIENT))
-    if "ask" in handler.allowed_verbs:
-        instructions.append(live_ask_contract(wait_seconds))
-    return "\n\n".join(instructions)
+    return handler.profile.instructions(
+        UsageContext(client=COMMAND_CLIENT, ask_wait_seconds=wait_seconds)
+    )
 
 
 def resume_discuss_command_mailbox(
@@ -166,9 +162,8 @@ def resume_discuss_command_mailbox(
         execution,
         service=service() if scope is not None else None,
         graph_read_scope=GraphReadScope.model_validate(scope) if scope is not None else None,
+        ask_allowed=saved.get("ask_allowed") is True,
     )
-    if saved.get("ask_allowed") is not True:
-        handler = replace(handler, allowed_verbs=handler.allowed_verbs - {"ask"})
     return restore_work_validator_mailbox(
         execution,
         command_handler=handler,
@@ -1074,7 +1069,12 @@ async def stream_discuss_run(
                 execution, service=service, graph_read_scope=graph_read_scope
             )
             if request.artifact_edit is not None and request.artifact_edit.origin_bound:
-                handler = WorkCommandHandler(execution, None, frozenset())
+                handler = replace(
+                    handler,
+                    profile=resolve_agent_profile(
+                        handler.profile.placement, "discuss", AgentTurn()
+                    ),
+                )
             eligible = bool(handler.allowed_verbs)
             retained = _retained_chat_patch_values(
                 execution, request, ontology_extensions=context.ontology_extensions

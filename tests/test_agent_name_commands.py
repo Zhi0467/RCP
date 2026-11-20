@@ -5,10 +5,10 @@ import json
 import pytest
 
 from rcp.agents import staged_command_client
-from rcp.agents.auto_research_commands import auto_research_allowed_verbs
 from rcp.agents.command_protocol import NameArguments, NameCommandRequest, validate_command_request
 from rcp.runs.agent_names import stage_agent_name_pointer
 from rcp.runs.questions import discuss_command_handler, work_command_handler
+from tests.helpers import auto_research_verbs as auto_research_allowed_verbs
 
 from .test_work_questions import identity, work_execution
 
@@ -178,14 +178,14 @@ def test_name_prompt_renders_enforced_limit():
 def test_child_work_conversation_has_name_grant(tmp_path):
     from rcp.agents import AgentProcessControl
     from rcp.background import AgentTaskExecution
-    from rcp.runs.tasks.auto_research_child_work import _child_commands
+    from rcp.runs.tasks.auto_research_child_work import _child_profile
     from tests.test_auto_research_children_storage import _setup_parent, _work_pair
 
     store, parent, root = _setup_parent(tmp_path)
     work, task = _work_pair(store, parent, root, worker_id="worker")
     store.create_auto_research_child_work(work, task)
     execution = AgentTaskExecution(task.operation_id, store, AgentProcessControl())
-    assert "name" in _child_commands(execution, None, None)
+    assert "name" in _child_profile(execution, None, None).verbs
     assert stage_agent_name_pointer(execution, tmp_path, None)
 
 

@@ -10,10 +10,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
+from rcp.agents.agent_profile import AgentProfile, single_entry_client_profile
 from rcp.agents.command_mailbox import CommandTurnIdentity
 from rcp.agents.command_protocol import BulletinCommandRequest, CommandRequest, CommandResponse
 from rcp.agents.context import ChatContext
-from rcp.agents.graph_read_scope import GRAPH_HISTORY_VERBS, GraphReadScope
+from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.project_repositories import write_repositories
 from rcp.agents.prompts import render_graph_history
 from rcp.agents.staged_command_client import BULLETIN_ARTIFACT, BULLETIN_READ, bulletin_usages
@@ -74,25 +75,24 @@ class SpaceProjectClient:
     # Only a writer posts; a reader reads the Bulletin, as `handle_bulletin` enforces.
     posts: ClassVar[bool] = False
 
-    def _forms(self) -> dict[str, tuple[str, ...]]:
+    def _forms(self) -> tuple[str, ...]:
         forms = bulletin_usages(turn_artifacts=False)
         if not self.posts:
             reads = (BULLETIN_READ[1], BULLETIN_ARTIFACT[1])
             forms = tuple(form for form in forms if form.split()[1] in reads)
-        return {"bulletin": forms}
+        return forms
+
+    @property
+    def profile(self) -> AgentProfile:
+        """The graph read grant plus bulletin; the mailbox, guard and usage all use it."""
+        return single_entry_client_profile(self.read_scope.verbs, writer=self.posts)
 
     @property
     def verbs(self) -> frozenset[str]:
-        """The graph read grant plus bulletin; the mailbox, guard and usage all use it."""
-        return frozenset({*self.read_scope.verbs, *self._forms()})
+        return self.profile.verbs
 
     def usage(self, client: str) -> str:
-        forms = self._forms()
-        lines = [
-            f"- `{client} {form}`"
-            for verb in sorted(self.verbs - GRAPH_HISTORY_VERBS)
-            for form in forms[verb]
-        ]
+        lines = [f"- `{client} {form}`" for form in self._forms()]
         return "\n".join([*lines, render_graph_history(self.read_scope, client)])
 
     def command(self, request: CommandRequest, identity: CommandTurnIdentity) -> CommandResponse:
@@ -121,8 +121,8 @@ class SpaceProjectTurn(SpaceProjectClient):
     turn_id: str
     posts: ClassVar[bool] = True
 
-    def _forms(self) -> dict[str, tuple[str, ...]]:
-        return {**super()._forms(), "validate": (f"validate {self.patch_path}",)}
+    def _forms(self) -> tuple[str, ...]:
+        return (*super()._forms(), f"validate {self.patch_path}")
 
     @property
     def patch_path(self) -> Path:

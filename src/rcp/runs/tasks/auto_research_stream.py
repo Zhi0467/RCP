@@ -23,7 +23,7 @@ from rcp.agents import (
     ContextAssembler,
     agent_output_schema,
 )
-from rcp.agents.auto_research_commands import auto_research_allowed_verbs
+from rcp.agents.agent_profile import SHARED_PROJECT, AgentTurn, resolve_agent_profile
 from rcp.agents.auto_research_prompt import (
     AUTO_RESEARCH_POLICY_VERSION,
     auto_research_branch_read_pointers,
@@ -339,12 +339,15 @@ async def stream_auto_research_orchestrator_run(
             turn.task.project_id, service.history, context.group_context
         )
         # The one command surface this turn's prompt renders and its dispatcher enforces.
-        allowed_verbs = auto_research_allowed_verbs(
+        allowed_verbs = resolve_agent_profile(
+            SHARED_PROJECT,
             "orchestrator",
-            can_self_name=bool(resolve_agent_name_state(execution).get("can_self_name")),
-            graph_read_scope=graph_read_scope,
-            bulletin=execution.store.bulletin_enabled_for_task(turn.task.operation_id),
-        )
+            AgentTurn(
+                read_verbs=graph_read_scope.verbs,
+                can_self_name=bool(resolve_agent_name_state(execution).get("can_self_name")),
+                bulletin=execution.store.bulletin_enabled_for_task(turn.task.operation_id),
+            ),
+        ).ordered_verbs
         command_dispatcher = _bind_actor_dispatcher(
             command_dispatcher, service, turn.request, stage, graph_read_scope, allowed_verbs
         )
@@ -642,11 +645,14 @@ async def stream_auto_research_worker_run(
             turn.task.project_id, service.history, context.group_context
         )
         # The one command surface this turn's prompt renders and its dispatcher enforces.
-        allowed_verbs = auto_research_allowed_verbs(
-            "worker",
-            graph_read_scope=graph_read_scope,
-            bulletin=execution.store.bulletin_enabled_for_task(turn.task.operation_id),
-        )
+        allowed_verbs = resolve_agent_profile(
+            SHARED_PROJECT,
+            "auto_research_worker",
+            AgentTurn(
+                read_verbs=graph_read_scope.verbs,
+                bulletin=execution.store.bulletin_enabled_for_task(turn.task.operation_id),
+            ),
+        ).ordered_verbs
         command_dispatcher = _bind_actor_dispatcher(
             command_dispatcher, service, turn.request, stage, graph_read_scope, allowed_verbs
         )

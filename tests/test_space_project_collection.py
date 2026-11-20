@@ -253,7 +253,7 @@ async def _drive_reader_mailbox(reader, directory):
         budget=None,
         validate=None,
         command_handler=reader.command,
-        allowed_verbs=reader.verbs,
+        profile=reader.profile,
     )
     try:
         commands = {

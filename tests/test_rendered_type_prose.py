@@ -12,7 +12,6 @@ from hashlib import sha256
 
 import pytest
 
-from rcp.agents.auto_research_commands import auto_research_allowed_verbs
 from rcp.agents.auto_research_prompt import (
     _decision_disposition,
     auto_research_orchestrator_task_contract,
@@ -31,6 +30,7 @@ from rcp.core.models import GraphState
 from rcp.core.operations import ProposalContentChangeOperation
 from rcp.core.research_type import RESEARCH
 from rcp.core.validation import proposals
+from tests.helpers import auto_research_verbs as auto_research_allowed_verbs
 from tests.helpers import seed_patch
 from tests.test_prompts import _work_write_scope
 

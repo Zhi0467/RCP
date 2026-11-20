@@ -872,7 +872,7 @@ def test_every_provider_contract_contains_native_subagent_lifetime() -> None:
 @pytest.mark.parametrize("actor", ["orchestrator", "retry", "worker"])
 def test_auto_research_ask_contract_is_only_in_orchestrator_bootstraps(monkeypatch, actor):
     from rcp.agents import auto_research_prompt as auto
-    from rcp.agents.auto_research_commands import auto_research_allowed_verbs
+    from tests.helpers import auto_research_verbs as auto_research_allowed_verbs
 
     calls = []
 
@@ -920,7 +920,7 @@ def test_auto_research_ask_contract_is_only_in_orchestrator_bootstraps(monkeypat
 
 def test_auto_research_ask_rendering_follows_resolved_verbs():
     from rcp.agents import auto_research_prompt as auto
-    from rcp.agents.auto_research_commands import auto_research_allowed_verbs
+    from tests.helpers import auto_research_verbs as auto_research_allowed_verbs
 
     assert "ask" in auto_research_allowed_verbs("orchestrator")
     assert "ask" not in auto_research_allowed_verbs("worker")
@@ -941,9 +941,9 @@ def test_auto_research_ask_rendering_follows_resolved_verbs():
 
 @pytest.mark.parametrize("actor", ["orchestrator", "worker"])
 def test_auto_research_stable_values_capture_allowed_verbs_and_ask_limits(actor):
-    from rcp.agents.auto_research_commands import auto_research_allowed_verbs
     from rcp.agents.auto_research_prompt import auto_research_prompt_values
     from rcp.limits import ASK_CHOICE_MAX_COUNT, ASK_CHOICE_MAX_LENGTH, ASK_QUESTION_MAX_LENGTH
+    from tests.helpers import auto_research_verbs as auto_research_allowed_verbs
 
     allowed = auto_research_allowed_verbs(actor)
     values = auto_research_prompt_values(

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import shlex
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import AsyncExitStack, aclosing, suppress
@@ -22,7 +21,7 @@ from rcp.agents import (
     validate_agent_patch_shape,
     validate_work_patch,
 )
-from rcp.agents.auto_research_prompt import render_child_profile_choices
+from rcp.agents.agent_profile import UsageContext
 from rcp.agents.command_mailbox import (
     StagedCommandMailbox,
 )
@@ -46,7 +45,6 @@ from rcp.agents.prompts import (
     chat_master_contract_key,
     invoked_package_pointers,
     invoked_provider_skill_section,
-    live_ask_contract,
     render_chat_read_context,
 )
 from rcp.agents.write_scope import ProjectWriteScope
@@ -68,9 +66,7 @@ from rcp.limits import (
 )
 from rcp.machine_cards import BACKEND_MACHINE_ID, card, host_of
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
-from rcp.runs.auto_research_admission import auto_research_child_profile_choices
 from rcp.runs.browser_lifecycle import browser_turn
-from rcp.runs.bulletin import bulletin_command_usage
 from rcp.runs.chat import (
     _append_chat_exchange,
     _append_chat_graph_receipt,
@@ -106,7 +102,7 @@ from rcp.runs.consolidation import (
     retry_refused_correction,
     settlement_source_effect_id,
 )
-from rcp.runs.evidence_flag_commands import flag_command_usage, hold_consolidation_additions
+from rcp.runs.evidence_flag_commands import hold_consolidation_additions
 from rcp.runs.experiment_loop import (
     StagedExperimentWatcherResource,
     read_experiment_watcher_outputs,
@@ -217,8 +213,6 @@ from rcp.runs.tasks.work_turn_runtime import (
 from rcp.runs.tasks.work_turn_runtime import (
     stream_turn_agent_events as _stream_turn_agent_events,
 )
-from rcp.runs.work_episode_controls import work_episode_control_usage
-from rcp.runs.work_experiment_commands import work_experiment_command_usage
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
@@ -395,122 +389,29 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
     """The launch instructions, naming the helper relative to ``client`` when given."""
 
     lifecycle = getattr(turn, "validator_lifecycle", None)
-    if lifecycle is not None and lifecycle.allowed_verbs is not None:
-        verbs, artifacts = lifecycle.allowed_verbs, WORK_TURN_ARTIFACTS
-        handler = getattr(lifecycle, "command_handler", None)
-        approval_cards = getattr(handler, "approval_card_member", None) is not None
-    else:
+    handler = getattr(lifecycle, "command_handler", None)
+    profile = getattr(lifecycle, "profile", None)
+    if not isinstance(handler, WorkCommandHandler) and profile is None:
         handler = _work_turn_command_handler(turn)
-        verbs, artifacts, approval_cards = (
-            handler.allowed_verbs,
-            handler.turn_artifacts,
-            handler.approval_card_member is not None,
+    if profile is None:
+        assert isinstance(handler, WorkCommandHandler)
+        profile = handler.profile
+    approval_cards = getattr(handler, "approval_card_member", None) is not None
+    return profile.instructions(
+        UsageContext(
+            client=client or turn.patch_inputs.validator_staged.client_command(),
+            execution=turn.execution,
+            service=turn.service,
+            compute_commands=turn.compute_commands,
+            ask_wait_seconds=(
+                turn.patch_inputs.validator_staged.ask_wait_seconds
+                if "ask" in profile.verbs
+                else None
+            ),
+            approval_cards=approval_cards,
+            turn_artifacts=WORK_TURN_ARTIFACTS,
         )
-    assert verbs is not None
-    instructions = []
-    if "schedule" in verbs and turn.execution is not None:
-        from rcp.agents.staged_command_client import schedule_usages
-        from rcp.runs.agent_schedules import schedule_instructions
-
-        command = client or turn.patch_inputs.validator_staged.client_command()
-        instructions.append(
-            schedule_instructions(
-                turn.execution.store,
-                turn.execution.operation_id,
-                tuple(f"{command} {usage}" for usage in schedule_usages()),
-            )
-        )
-    if "flag" in verbs:
-        instructions.append(
-            flag_command_usage(client or turn.patch_inputs.validator_staged.client_command())
-        )
-    if "projects" in verbs:
-        from rcp.runs.agent_thread_commands import projects_command_usage
-
-        instructions.append(
-            projects_command_usage(client or turn.patch_inputs.validator_staged.client_command())
-        )
-    if "name" in verbs:
-        from rcp.runs.agent_names import name_command_usage
-
-        instructions.append(
-            name_command_usage(client or turn.patch_inputs.validator_staged.client_command())
-        )
-    if "bulletin" in verbs:
-        instructions.append(
-            bulletin_command_usage(
-                client or turn.patch_inputs.validator_staged.client_command(),
-                turn_artifacts=artifacts,
-            )
-        )
-    if "ask" in verbs:
-        instructions.append(live_ask_contract(turn.patch_inputs.validator_staged.ask_wait_seconds))
-        from rcp.runs.approval_cards import approval_card_usage
-
-        if approval_cards:
-            instructions.append(
-                approval_card_usage(client or turn.patch_inputs.validator_staged.client_command())
-            )
-    if "apply" in verbs:
-        instructions.append(
-            "Use apply --key <key> patch.json to commit patch.json and read the returned revision before reporting. "
-            "If apply returns unavailable, retry the same bytes with the same key. "
-            "This turn cannot create watchers."
-        )
-    if "watcher" in verbs:
-        from rcp.runs.work_watcher_commands import work_watcher_command_usage
-
-        instructions.append(
-            work_watcher_command_usage(
-                client or turn.patch_inputs.validator_staged.client_command()
-            )
-        )
-    if "episode" in verbs:
-        authorizer = (
-            turn.execution.store.agent_task_authorizer(turn.execution.operation_id)
-            if turn.execution is not None
-            else None
-        )
-        member_id = authorizer.user_id if authorizer else None
-        episode_client = client or turn.patch_inputs.validator_staged.client_command()
-        instructions.append(
-            work_experiment_command_usage(
-                episode_client,
-                render_child_profile_choices(
-                    auto_research_child_profile_choices(
-                        turn.service, kind="node_chat", member_id=member_id
-                    )
-                ),
-            )
-        )
-        instructions.append(
-            work_episode_control_usage(
-                episode_client,
-                render_child_profile_choices(
-                    auto_research_child_profile_choices(
-                        turn.service, kind="orchestrator", member_id=member_id
-                    )
-                ),
-            )
-        )
-    if turn.compute_commands is None or "launch" not in verbs:
-        return "\n\n".join(instructions)
-    arguments = (
-        "launch",
-        "--key",
-        "<idempotency-key>",
-        "--cwd",
-        "<working-directory>",
-        "--",
-        "<argv...>",
     )
-    command = (
-        f"{client} {shlex.join(arguments)}"
-        if client is not None
-        else turn.patch_inputs.validator_staged.client_command(*arguments)
-    )
-    instructions.append(turn.compute_commands.execution_instructions(command))
-    return "\n\n".join(instructions)
 
 
 def _work_launch_values(turn: WorkTurn) -> dict[str, object]:
@@ -3294,7 +3195,7 @@ def _start_work_validator_mailbox(
         execution=execution,
         budget=budget,
         command_handler=command_handler,
-        allowed_verbs=command_handler.allowed_verbs,
+        profile=command_handler.profile,
         serve=serve_patch_validation_mailbox,
         resume_context=_work_mailbox_context(
             run_truth_scope,
@@ -3405,10 +3306,9 @@ def _resume_work_command_handler(
             service=service() if context.graph_read_scope is not None else None,
             graph_read_scope=context.graph_read_scope,
             mailbox=mailbox,
+            ask_allowed=context.ask_allowed,
         )
-    if not context.ask_allowed:
-        handler = replace(handler, allowed_verbs=handler.allowed_verbs - {"ask"})
-    return handler if handler.allowed_verbs != {"validate"} else None
+    return handler if len(handler.allowed_verbs) > 1 else None
 
 
 def resume_work_command_mailbox(

@@ -15,7 +15,6 @@ from typing import Any, cast
 import pytest
 
 from rcp.agents import AgentEvent, AgentProcessControl
-from rcp.agents.auto_research_commands import auto_research_allowed_verbs
 from rcp.agents.command_mailbox import StagedCommandMailbox
 from rcp.agents.command_mailbox import stage_command_mailbox as _stage_command_mailbox
 from rcp.agents.command_protocol import GraphDiffCommandRequest, MessageCommandRequest
@@ -79,6 +78,7 @@ from rcp.storage import (
     SpaceMachineRecord,
 )
 from rcp.transport.workspace_mailbox import RunStageMailbox
+from tests.helpers import auto_research_verbs as auto_research_allowed_verbs
 from tests.helpers import unchecked_write_authority
 
 from .helpers import (
