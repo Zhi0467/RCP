@@ -524,10 +524,11 @@ async def _summarize_thread_session(
         raise _SessionSummaryUnavailable("sign_in")
     login = LoginKey(request.provider, machine_id, source.login_id)
     accounts = ProviderAccounts.for_store(execution.store)
+    task = execution.store.agent_task(execution.operation_id)
     resolved, _ = accounts.resolve_launch_login(
         request.provider,
         machine_id,
-        source.authorized_by.user_id if source.authorized_by else None,
+        task.authorized_by.user_id if task and task.authorized_by else None,
         session_id=source.native_session_id,
         lineage_login=login,
         exclude_operation_id=execution.operation_id,

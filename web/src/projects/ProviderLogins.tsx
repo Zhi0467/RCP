@@ -34,8 +34,6 @@ import {
   showsDeviceCode,
   showsPasteCode,
   signInsForMachine,
-  switchedSetting,
-  trayLayout,
   type ProviderSignIns,
   type Tray,
 } from "./providerLoginsModel";
@@ -261,8 +259,8 @@ function ProviderPanel({
   const sharedCards = entry.shared.map((row) =>
     row.login_id === ""
       ? card(row, {
-          name: "Machine sign-in",
-          nameHover: `This machine's own ${label} login.`,
+          name: "Shared sign-in",
+          nameHover: `The built-in ${label} login on ${machineName}.`,
           actions: entry.managed,
         })
       : card(row, {
@@ -320,18 +318,6 @@ function ProviderPanel({
       {adding === tray ? <LoaderCircle size={14} className="spin" /> : <Plus size={14} />}
     </button>
   );
-  const sharedTray = (props: Omit<TrayProps, "tray" | "title" | "hover" | "children">) => (
-    <SignInTray
-      key="shared"
-      tray="shared"
-      title={`Shared on ${machineName}`}
-      hover="Any member can use, add or remove these."
-      {...props}
-    >
-      {sharedCards}
-      {addSlot("shared", `Add a shared ${label} sign-in`)}
-    </SignInTray>
-  );
   const failed = failure ? (
     <button
       className="icon-button compact"
@@ -348,8 +334,8 @@ function ProviderPanel({
   const stored = data.settings?.settings.find(
     (item) => item.provider === entry.provider && item.machine_id === machineId,
   );
-  const setting = stored?.setting ?? "own";
-  const layout = trayLayout(setting);
+  const setting = stored?.setting ?? "own_then_shared";
+  const ownFirst = setting === "own_then_shared";
   const settingsReady = Boolean(stored) && !writesDisabled;
   const write = (value: ProviderLoginSettingValue) => {
     setFailure(null);
@@ -361,32 +347,27 @@ function ProviderPanel({
         setFailure({ message: errorMessage(cause), retry: () => write(value) }),
       );
   };
-  const toggle = (tray: Tray, on: boolean) => {
-    const next = switchedSetting(setting, tray, on);
-    if (next && next !== setting) write(next);
-  };
-  const trayProps = (tray: Tray) => ({
-    on: layout.on[tray],
-    switchable: true,
-    locked: layout.locked === tray,
-    switchDisabled: !settingsReady,
-    onToggle: (on: boolean) => toggle(tray, on),
-  });
-  const trays: Record<Tray, ReactNode> = {
-    own: (
-      <SignInTray
-        key="own"
-        tray="own"
-        title="Yours"
-        hover={`Your own ${label} account on ${machineName}. Only you can change it.`}
-        {...trayProps("own")}
-      >
-        {entry.own ? card(entry.own) : addSlot("own", `Add your own ${label} sign-in`)}
-      </SignInTray>
-    ),
-    shared: sharedTray(trayProps("shared")),
-  };
-  const swapHover = layout.swap ? "Swap the order" : "Turn both on to choose the order";
+  const ownTray = (
+    <SignInTray
+      key="own"
+      tray="own"
+      title="Personal sign-ins"
+      hover="Only you can use these sign-ins."
+    >
+      {entry.own ? card(entry.own) : addSlot("own", `Add your own ${label} sign-in`)}
+    </SignInTray>
+  );
+  const sharedTray = (
+    <SignInTray
+      key="shared"
+      tray="shared"
+      title={`Shared on ${machineName}`}
+      hover="Any member can use, add or remove these."
+    >
+      {sharedCards}
+      {addSlot("shared", `Add a shared ${label} sign-in`)}
+    </SignInTray>
+  );
   const members = membersSignedIn(entry.members, data.settings?.other_member_count ?? 0);
   return (
     <section
@@ -400,22 +381,20 @@ function ProviderPanel({
         {failed}
       </header>
       <div className="sign-ins-trays">
-        {trays[layout.order[0]]}
+        {ownFirst ? ownTray : sharedTray}
         <button
           className="sign-ins-swap"
           type="button"
           data-sign-ins-swap=""
-          aria-label={swapHover}
-          title={swapHover}
-          aria-disabled={!layout.swap || !settingsReady || undefined}
-          onClick={() => {
-            if (layout.swap && settingsReady) write(layout.swap);
-          }}
+          aria-label="Swap sign-in order"
+          title="Swap sign-in order"
+          disabled={!settingsReady}
+          onClick={() => write(ownFirst ? "shared_then_own" : "own_then_shared")}
         >
           <ArrowLeftRight size={15} className="sign-ins-swap-wide" aria-hidden="true" />
           <ArrowUpDown size={15} className="sign-ins-swap-narrow" aria-hidden="true" />
         </button>
-        {trays[layout.order[1]]}
+        {ownFirst ? sharedTray : ownTray}
       </div>
       {members.of > 0 ? (
         <Fold
@@ -438,46 +417,14 @@ interface TrayProps {
   tray: Tray;
   title: string;
   hover: string;
-  on: boolean;
-  switchable: boolean;
-  locked?: boolean;
-  switchDisabled?: boolean;
-  onToggle?: (on: boolean) => void;
   children: ReactNode;
 }
 
-function SignInTray({
-  tray,
-  title,
-  hover,
-  on,
-  switchable,
-  locked = false,
-  switchDisabled = false,
-  onToggle,
-  children,
-}: TrayProps) {
-  const switchHover = locked ? "One group must stay on" : on ? "Used" : "Not used";
+function SignInTray({ tray, title, hover, children }: TrayProps) {
   return (
-    <section className={`sign-ins-tray${on ? "" : " off"}`} data-tray={tray}>
+    <section className="sign-ins-tray" data-tray={tray}>
       <header>
         <strong title={hover}>{title}</strong>
-        {switchable ? (
-          <input
-            className="sign-ins-switch"
-            type="checkbox"
-            role="switch"
-            data-tray-switch={tray}
-            aria-label={title}
-            title={switchHover}
-            checked={on}
-            disabled={switchDisabled}
-            aria-disabled={locked || undefined}
-            onChange={(event) => {
-              if (!locked) onToggle?.(event.target.checked);
-            }}
-          />
-        ) : null}
       </header>
       <div className="sign-ins-cards">{children}</div>
     </section>
@@ -488,7 +435,7 @@ interface CardProps {
   row: ProviderLoginAccount;
   viewerUserId: string | null;
   writesDisabled: boolean;
-  /** Shown before the state on shared and members' cards; the Yours card has none. */
+  /** Shown before the state on shared and members' cards; the personal card has none. */
   name?: string;
   nameHover?: string;
   /** Members' cards and an unmanaged CLI offer nothing. */

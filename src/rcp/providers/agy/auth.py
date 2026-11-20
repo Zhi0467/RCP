@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.provider_auth import DeviceLogin, DeviceLoginStep, ProviderAuthentication
 
 if TYPE_CHECKING:
@@ -89,6 +90,8 @@ class AgyAuthentication(ProviderAuthentication):
         login_state: ProviderLoginStateRecord | None = None,
     ) -> bool:
         credentials.account_dir("agy", machine_id, login_id)
+        if machine_id == BACKEND_MACHINE_ID and not login_id:
+            return (Path.home() / TOKEN_PATH).is_file()
         return not login_id or (
             login_state is not None
             and login_state.state == "signed_in"

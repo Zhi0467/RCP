@@ -134,7 +134,7 @@ def test_automatic_launch_waits_for_the_earliest_allowed_lapse(accounts, monkeyp
     store.set_provider_login_setting("member", "claude", BACKEND_MACHINE_ID, "shared")
     assert (
         accounts.automatic_launch_wait("claude", BACKEND_MACHINE_ID, "member")
-        == PROVIDER_LOGIN_LIMIT_HINT_SECONDS
+        == PROVIDER_LOGIN_LIMIT_HINT_SECONDS - 3600
     )
     assert isinstance(accounts.resolve_login("claude", BACKEND_MACHINE_ID, "member")[0], LoginKey)
 
@@ -245,7 +245,7 @@ def test_lineage_ignores_setting_and_drain_while_usable(accounts, provider):
     )
     assert (
         accounts.resolve_login(provider, BACKEND_MACHINE_ID, "member", lineage_login=other)[0]
-        == other
+        == own
     )
     accounts.store.finish_provider_login_removal(shared, member_id="member")
     assert (
@@ -254,28 +254,47 @@ def test_lineage_ignores_setting_and_drain_while_usable(accounts, provider):
     )
 
 
-def test_codex_session_falls_back_to_another_members_login_when_member_has_none(accounts):
+def test_historical_cross_member_session_can_only_move_to_an_eligible_login(accounts):
+    from rcp.runs.provider_login import resolved_task_login
+
+    from .helpers import fabricated_authorizer
+
+    member = fabricated_authorizer()
     machine = _login(accounts, "codex", machine=True)
-    own = _login(accounts, "codex", own=True)
+    own = _login(accounts, "codex", own=True, member=member.user_id)
     other = _login(accounts, "codex", own=True, member="other")
     start = datetime.fromisoformat(accounts.store.now()) - timedelta(minutes=5)
-    _task(accounts.store, "earlier", machine, started=start.isoformat())
-    _task(accounts.store, "queued", machine, session="session")
+    _task(accounts.store, "earlier", other, started=start.isoformat(), member=member.user_id)
+    _task(accounts.store, "queued", other, session="session", member=member.user_id)
     accounts.store.mark_provider_login_signed_out(
         machine, member_id=None, source="restore", detail="expired"
     )
     accounts.store.set_provider_login_setting(
-        "member", "codex", BACKEND_MACHINE_ID, "own_then_shared"
+        member.user_id, "codex", BACKEND_MACHINE_ID, "own_then_shared"
     )
     assert accounts.resolve_launch_login(
-        "codex", BACKEND_MACHINE_ID, "member", session_id="session", exclude_operation_id="queued"
-    ) == (own, "unhealthy")
+        "codex",
+        BACKEND_MACHINE_ID,
+        member.user_id,
+        session_id="session",
+        exclude_operation_id="queued",
+    ) == (own, "different_owner")
     accounts.store.mark_provider_login_signed_out(
-        own, member_id="member", source="restore", detail="out"
+        own, member_id=member.user_id, source="restore", detail="out"
     )
-    assert accounts.resolve_launch_login(
-        "codex", BACKEND_MACHINE_ID, "member", session_id="session"
-    ) == (other, "unhealthy")
+    for session in (None, "session"):
+        selected, _ = accounts.resolve_launch_login(
+            "codex", BACKEND_MACHINE_ID, member.user_id, session_id=session, lineage_login=other
+        )
+        assert isinstance(selected, LoginRefusal)
+    with accounts.store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET authorized_space_id=?, authorized_display_name=? "
+            "WHERE operation_id='queued'",
+            (member.space_id, member.display_name),
+        )
+    assert resolved_task_login(accounts.store, accounts.store.agent_task("queued")) is None
+    assert accounts.resolve_login("codex", BACKEND_MACHINE_ID, "other")[0] == other
 
 
 def test_opencode_and_legacy_authorizer_use_machine(accounts):
@@ -326,10 +345,10 @@ def test_session_helpers_only_use_provider_started_matching_turns(accounts):
         ("own_then_shared", None, "own"),
         ("shared_then_own", None, "shared"),
         ("shared", None, "shared"),
-        ("own", "own", "own"),
+        ("own", "own", "shared"),
         ("own_then_shared", "own", "shared"),
         ("shared_then_own", "shared", "own"),
-        ("shared", "shared", "shared"),
+        ("shared", "shared", "own"),
         ("own_then_shared", "both", "own"),
         ("shared_then_own", "both", "shared"),
     ],

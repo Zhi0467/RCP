@@ -315,12 +315,6 @@ def test_null_login_park_re_resolves_setting_on_release(accounts, monkeypatch, e
     else:
         key = LoginKey("codex", BACKEND_MACHINE_ID, "")
     store.mark_provider_login_verified(key, member_id=member.user_id, detail="verified")
-    if event != "verify_own":
-        provider_login_changed(
-            background, key=key, reconcile_episodes=lambda: 0, watcher_delivery=watcher_delivery
-        )
-        assert launched == []
-        store.set_provider_login_setting(member.user_id, "codex", BACKEND_MACHINE_ID, "shared")
     provider_login_changed(
         background, key=key, reconcile_episodes=lambda: 0, watcher_delivery=watcher_delivery
     )

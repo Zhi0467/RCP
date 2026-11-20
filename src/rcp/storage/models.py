@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     ValidationInfo,
@@ -3755,7 +3756,20 @@ def _retention_reference_time(as_of: datetime | None) -> datetime:
 
 
 MACHINE_LOGIN_ID = ""
-ProviderLoginSetting = Literal["own", "own_then_shared", "shared_then_own", "shared"]
+
+
+def _login_priority(value: object) -> object:
+    """Keep the first source of legacy single-source settings and client requests."""
+    if value == "own":
+        return "own_then_shared"
+    if value == "shared":
+        return "shared_then_own"
+    return value
+
+
+ProviderLoginSetting = Annotated[
+    Literal["own_then_shared", "shared_then_own"], BeforeValidator(_login_priority)
+]
 
 
 class ProviderLoginAssignmentRecord(BaseModel):
@@ -3793,6 +3807,9 @@ class ProviderLoginStateRecord(BaseModel):
     source: Literal["turn", "report", "probe", "verify", "sign_out", "restore"] | None = None
     changed_at: str = ""
     changed_by: str | None = None
+
+    def permits_member(self, member_id: str | None) -> bool:
+        return self.member_id is None or self.member_id == member_id
 
 
 class ProviderReadinessSnapshotRecord(BaseModel):

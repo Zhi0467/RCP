@@ -86,6 +86,49 @@ def test_paste_code_stdin_once_owner_and_no_persisted_secret(tmp_path, monkeypat
             assert secret.encode() not in path.read_bytes()
 
 
+@pytest.mark.parametrize("previously_verified", [False, True])
+def test_missing_server_credential_offers_shared_sign_in(
+    tmp_path, monkeypatch, previously_verified
+):
+    from pathlib import Path
+
+    from rcp.provider_login_rows import provider_login_row
+    from rcp.providers.agy.auth import TOKEN_PATH
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    binary = tmp_path / "agy"
+    binary.write_text(
+        f"#!{sys.executable}\n"
+        "import pathlib, sys\n"
+        "if sys.argv[1:] == ['acp', '--login']:\n"
+        " print('https://accounts.google.com/o/oauth2/auth?state=test', flush=True)\n"
+        " assert sys.stdin.readline().strip()\n"
+        f" token = pathlib.Path.home() / {TOKEN_PATH!r}\n"
+        " token.parent.mkdir(parents=True, exist_ok=True)\n"
+        " token.write_text('test')\n"
+        "else:\n"
+        ' print(\'{"status":"SUCCESS"}\')\n'
+    )
+    binary.chmod(0o755)
+    runner = _runner(tmp_path, monkeypatch, binary)
+    key = LoginKey("agy", BACKEND_MACHINE_ID, "")
+    if previously_verified:
+        runner.store.mark_provider_login_verified(key, member_id="owner", detail="Previous login")
+
+    def card_state():
+        return provider_login_row(runner.store, runner.credentials, runner, key, viewer_id="owner")[
+            "state"
+        ]
+
+    assert not (Path.home() / TOKEN_PATH).exists()
+    assert card_state() == "signed_out"
+    attempt = runner.start_sign_in(key, member_id="owner").attempt_id
+    wait_until(lambda: runner.sign_in_status(attempt).awaiting_code, timeout=10)
+    runner.submit_code(attempt, "test-code", member_id="owner")
+    wait_until(lambda: runner.sign_in_status(attempt).state != "pending", timeout=10)
+    assert card_state() == "signed_in"
+
+
 @pytest.mark.parametrize("state", ["pending", "succeeded", "failed"])
 def test_code_endpoint_refuses_attempt_not_awaiting_code(tmp_path, monkeypatch, state):
     from rcp.runs.provider_sign_in import ProviderSignInStatus

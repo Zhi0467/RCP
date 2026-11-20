@@ -31,6 +31,7 @@ from tests.test_storage import _task_record
         "missing_session",
         "wrong_session",
         "signed_out",
+        "other_members_login",
         "empty",
         "source_missing",
         "bug",
@@ -125,6 +126,18 @@ def test_provider_switch_seed(manifest, tmp_path, monkeypatch, kind, result):
             source="sign_out",
             detail="expired",
         )
+    if result == "other_members_login":
+        from rcp.agents.provider_accounts import ProviderAccounts
+
+        from .test_provider_login_resolver import _login
+
+        owner_id = str(uuid.uuid4())
+        login = _login(ProviderAccounts.for_store(store), "claude", own=True, member=owner_id)
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE graph_runs SET login_id=?, authorized_user_id=? WHERE operation_id=?",
+                (login.login_id, owner_id, old.operation_id),
+            )
     preparations, launches = [], []
 
     async def prepare(old_request, source):
@@ -271,8 +284,8 @@ def test_provider_switch_seed(manifest, tmp_path, monkeypatch, kind, result):
         if success
         else "provider_switch_tail"
     )
-    assert len(preparations) == (0 if result in {"same", "signed_out", "source_missing"} else 1)
-    assert len(launches) == (0 if result in {"same", "signed_out", "source_missing"} else 1)
+    skipped = result in {"same", "signed_out", "source_missing", "other_members_login"}
+    assert len(preparations) == len(launches) == (0 if skipped else 1)
     assert store.agent_task(task.operation_id).native_session_id == task.native_session_id
     usage = store.agent_usage(task.project_id)
     assert len(usage) == (
@@ -281,6 +294,7 @@ def test_provider_switch_seed(manifest, tmp_path, monkeypatch, kind, result):
         in {
             "same",
             "signed_out",
+            "other_members_login",
             "source_missing",
             "wrong_session",
             "missing_transcript",
@@ -296,6 +310,7 @@ def test_provider_switch_seed(manifest, tmp_path, monkeypatch, kind, result):
         "timeout": "timeout",
         "oversize": "oversized",
         "signed_out": "sign_in",
+        "other_members_login": "sign_in",
         "auth_error": "sign_in",
         "missing_session": "session_missing",
         "wrong_session": "session_missing",

@@ -57,7 +57,7 @@ interface Props {
   cacheClearDisabled: boolean;
   onAllCachesCleared: (projectId: string, metrics: ProjectCacheMetrics) => void;
   onLoginChanged?: () => void;
-  /** The signed-in member; their own logins fill each "Yours" tray. */
+  /** The signed-in member; their own logins fill each personal sign-ins tray. */
   viewerUserId?: string | null;
   /** Open this login's "Sign-ins" fold, as a login notice asks. */
   focusSignIns?: { provider: string; machine_id: string } | null;

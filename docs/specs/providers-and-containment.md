@@ -563,7 +563,9 @@ output collection. Codex runs unsandboxed and disables shell, subagents, and web
 search. Claude disables tools,
 hooks, external settings sources, and MCP servers. OpenCode and Antigravity
 refuse this capability. An `unhidden` policy does not stop a summary. The [private-thread switch](conversations-episodes-and-watchers.md#private-agent-threads)
-owner records the tail fallback when the old provider cannot summarize safely.
+owner records the tail fallback when the old provider cannot summarize safely,
+including when the captured login belongs to someone other than the member
+requesting the switch.
 
 ### OpenCode
 
@@ -1320,7 +1322,9 @@ browser shims, prints one Google URL, and reads the authorization code on stdin.
 RCP shows the URL to the member who started the attempt, and
 `POST /api/providers/{provider}/logins/sign-in/{attempt_id}/code` writes their
 code to the process once. Exit 0 means the CLI took the code; the sign-in counts
-after `agy -p /usage` succeeds. Sign-out deletes the home's token file, since
+after `agy -p /usage` succeeds. On the backend machine, a missing native Antigravity
+credential makes the shared sign-in available immediately, including after a previously
+verified credential disappears. Sign-out deletes the home's token file, since
 agy's own logout is interactive only. Tokens travel through
 stdin/private environment, never argv, events, responses, receipts, logs or
 backups. The `providers` store is backup-excluded. Required missing credentials
@@ -1405,16 +1409,14 @@ Each machine keeps a set of shared logins per provider: the machine sign-in
 stored token for Claude) plus every login a member added as shared. Each member
 may also add one own login per provider and machine. Shared logins belong to the
 machine: any member may add, sign in, verify, sign out or remove them, except
-that the machine sign-in cannot be removed. Only the owner acts on an own login.
+that the machine sign-in cannot be removed. Only the owner can use or manage a personal login.
 OpenCode has only its machine sign-in, because RCP does not sign it in.
 
-Each member has one setting per `(provider, machine_id)`: `own`, `own_then_shared`,
-`shared_then_own` or `shared`. It names which sources are on and the order they
-are tried; "both off" cannot be stored. Lookup is the machine's row, then the
-member's `*` row, then the built-in default: `own` in a team space, `shared` in a
-personal one. The upgrade wrote `*` = `own_then_shared` for every team member
-not being removed, so their work kept using the shared logins. There is no team or
-owner default: a new team member must add their own login or turn Shared on.
+Each member chooses which source to try first per `(provider, machine_id)`.
+Both their own sign-in and the shared pool are eligible. Lookup uses the
+machine's row, then the member's `*` row. Team spaces default to
+`own_then_shared` and personal spaces to `shared_then_own`. Older `own` and
+`shared` settings give that source first priority.
 
 The member is the task's authorizer: the sender for chats, Work and Discuss; the episode's `authorized_by` for Auto-research, Experiment turns
 and reports; the origin task's member for watcher wakes; the schedule's for
@@ -1434,24 +1436,23 @@ The resolver in `agents/provider_accounts.py` picks one login, first match wins:
    sign-in.
 2. A transport reattempt or the initial `graph_repair` correction keeps its
    parent's login, and later provider passes in one task keep the turn's, while
-   that login is usable, whoever owns it, whatever the setting or drain.
-3. Otherwise walk the sources the setting turns on, in its order, and take the
+   that login is usable and shared or owned by the turn's authorizer. The
+   priority setting and drain do not interrupt this lineage.
+3. Otherwise walk both sources in the member's chosen order and take the
    first with an assignable login (usable and not draining) without the limit
    mark. For a continued session, a mark on another login that lapsed without
    evidence still counts, so a running session never moves on a lapse. When every
    allowed login is limited, a continued session keeps its previous login while
-   it is assignable and the sender's setting allows it; otherwise take the first
-   source with any assignable login.
+   it is assignable within these sources. Otherwise take the first source with
+   any assignable login.
 4. Inside the shared source, keep the session's previous login while it is
    assignable, allowed and not limited; otherwise take the one assigned longest ago,
    preferring unmarked ones, ties to the machine sign-in, then the oldest add.
-5. When the setting's sources hold no assignable login, any assignable login
-   on that machine qualifies, another member's own included, chosen the same
-   way. Members are one lab, and a run must not stop for want of a sign-in.
-6. Refuse, naming the setting's first source, only when no login on the
-   machine is assignable. A session's earlier login never blocks a usable one.
+5. When neither source holds an assignable login, refuse and name the first
+   source in the member's priority order.
 
-A switch receipt names the first applicable reason: `unhealthy`, `limited`,
+A switch receipt names the first applicable reason: `different_owner` (the
+previous login belongs to another member), `unhealthy`, `limited`,
 `sender_setting` (another member sent the turn), `setting_changed`, or
 `preferred_source_available`; `limited` reflects any recorded mark, lapsed or
 not. A session's previous login is its latest provider-started turn's; a fork is
@@ -1550,9 +1551,9 @@ settings do.
 
 Every provider resolves at each turn boundary, so a continued session moves to
 another allowed login when its previous one is unhealthy, removed, draining or
-limited. It runs on another member's own login only when the member has no
-assignable allowed login (step 5). A lineage login that
-became unusable or removed resolves the same way. Draining logins admit no new
+limited. When a historical session used another member's personal login, its
+next turn must select an eligible login or wait for sign-in. A lineage login
+that became unusable or removed resolves the same way. Draining logins admit no new
 choices but remain usable by lineage work until its running turns end. Removal retains session files and deletes only credentials; unreachable remote
 cleanup remains pending for reconciliation. Once nothing runs on the login, removal
 also walks its home without following links, unlinks each link and the provider's
@@ -1587,10 +1588,11 @@ from rearming that retry; Auto-research retains its recovery owner and Experimen
 uses ordinary Retry.
 
 Login-keyed release selects recoveries, queued work, Experiment retries and
-watcher groups by member setting. Verified credentials and changed settings use
+watcher groups by the task's authorizer. A shared or own login can release work
+for that member. Verified credentials and changed settings use
 the same release helper, and startup runs it once for every login, so work parked
 on a login that stayed unusable moves to a usable one without a new sign-in. Tasks with no selected login re-resolve the
-member setting on a setting change or verification of an allowed source.
+member's priority on a setting change or verification of either source.
 Authentication failures release after settlement records their park when another
 allowed login is available. Ordinary Work turns retain their authorizer. With a
 complete owned checkpoint and available continuation context, recovery resumes

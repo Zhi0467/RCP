@@ -154,8 +154,9 @@ async def test_gate_recheck_falls_back_to_another_login(accounts, tmp_path, prov
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("lineage", ["transport_auto_retry", "provider_login_lineage"])
-async def test_lineage_keeps_parent_login(accounts, tmp_path, lineage):
-    own = _login(accounts, "claude", own=True, member=MEMBER)
+@pytest.mark.parametrize("owner", [MEMBER, SPACE])
+async def test_lineage_keeps_parent_login_only_for_its_owner(accounts, tmp_path, lineage, owner):
+    own = _login(accounts, "claude", own=True, member=owner)
     shared = _login(accounts, "claude", machine=True)
     accounts.store.set_provider_login_setting(MEMBER, "claude", BACKEND_MACHINE_ID, "shared")
     _started_task(accounts, "parent", own)
@@ -164,8 +165,9 @@ async def test_lineage_keeps_parent_login(accounts, tmp_path, lineage):
     _, selected, _, _ = await _launch(
         accounts, tmp_path, shared, parent="parent", lineage=lineage == "provider_login_lineage"
     )
-    assert selected == [own]
-    assert accounts.store.agent_task("current").login_id == own.login_id
+    expected = own if owner == MEMBER else shared
+    assert selected == [expected]
+    assert accounts.store.agent_task("current").login_id == expected.login_id
 
 
 @pytest.mark.asyncio

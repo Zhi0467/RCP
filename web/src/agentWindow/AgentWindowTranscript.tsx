@@ -186,6 +186,7 @@ export function AgentWindowTranscript({
         .filter(
           (task) =>
             task.active &&
+            !(pendingTurn?.error && pendingTurn.clientId === task.operation_id) &&
             !transcript.some((line) => line.running && line.taskId === task.operation_id),
         )
         .map((task): TaskTranscriptLine => ({
@@ -258,7 +259,7 @@ export function AgentWindowTranscript({
           isNewestOfTurnClass(task, relatedTasks)
             ? task
             : null;
-        const pendingLine = pendingTurn?.clientId === line.taskId;
+        const pendingLine = line.role === "human" && pendingTurn?.clientId === line.taskId;
         const failedTurn = pendingLine && pendingTurn?.error ? pendingTurn : null;
         const collapsible =
           line.role === "human" && line.text.length > CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD;
@@ -496,7 +497,7 @@ export function AgentWindowTranscript({
                 </time>
               )}
             </div>
-            {line.role === "human" && !agentProgress && pendingLine && !task && !failedTurn && (
+            {!agentProgress && pendingLine && !task && !failedTurn && (
               <div className="agent-chat-view-line agent">
                 <InlineTaskProgress task={null} />
               </div>

@@ -372,7 +372,7 @@ class ProviderLoginStoreMixin(StoreMixinBase):
             user_id=user_id,
             provider=provider,
             machine_id=machine_id,
-            setting="own" if kind == "team" else "shared",
+            setting="own_then_shared" if kind == "team" else "shared_then_own",
         )
 
     def set_provider_login_setting(

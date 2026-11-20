@@ -283,7 +283,9 @@ def test_assignment_clock_does_not_invalidate_settings(tmp_path):
     assert store.agent_task("task").login_id == MACHINE_LOGIN_ID
 
 
-@pytest.mark.parametrize(("kind", "default"), [("team", "own"), ("personal", "shared")])
+@pytest.mark.parametrize(
+    ("kind", "default"), [("team", "own_then_shared"), ("personal", "shared_then_own")]
+)
 def test_setting_lookup_prefers_host_then_fallback_then_space_default(tmp_path, kind, default):
     store = AppStore(tmp_path / "state.sqlite3", space_kind=kind)
     assert store.provider_login_setting("member", "claude", "worker").setting == default

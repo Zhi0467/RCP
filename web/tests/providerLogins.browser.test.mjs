@@ -61,11 +61,11 @@ const panel = (page, provider) => page.locator(`[data-sign-ins-provider="${provi
 const card = (page, provider, loginId) =>
   panel(page, provider).locator(`.sign-in-card[data-login-id="${loginId}"]`);
 
-test("switches and swap write the setting at once and redraw the tray order", async (t) => {
+test("swap writes the preference immediately and both sign-in groups stay available", async (t) => {
   const { page, calls, state, errors } = await openSignIns(t, {
     onAction: (call, current) => {
       if (call.path.endsWith("/setting")) {
-        current.settings = settingsFor(call.body.setting, "shared");
+        current.settings = settingsFor(call.body.setting);
         return { json: { ...current.settings.settings[0], resumed: { checked: 0 } } };
       }
     },
@@ -81,28 +81,18 @@ test("switches and swap write the setting at once and redraw the tray order", as
     );
   assert.deepEqual(await trayOrder(), ["own", "shared"]);
 
-  await claude.locator('[data-tray-switch="own"]').click();
-  await settingIs("shared");
-  assert.deepEqual(await trayOrder(), ["shared", "own"]);
-  assert.equal(
-    await claude.locator('[data-tray="own"]').getAttribute("class"),
-    "sign-ins-tray off",
-  );
-  // One group on: its switch is locked and the swap writes nothing, even when pressed.
-  await claude.locator('[data-tray-switch="shared"]').click({ force: true });
-  await claude.locator("[data-sign-ins-swap]").click({ force: true });
-  assert.equal(await claude.locator('[data-tray-switch="shared"]').isChecked(), true);
-
-  await claude.locator('[data-tray-switch="own"]').click();
+  const swap = claude.getByRole("button", { name: "Swap sign-in order" });
+  assert.equal(await claude.getByRole("switch").count(), 0);
+  await swap.click();
   await settingIs("shared_then_own");
   assert.deepEqual(await trayOrder(), ["shared", "own"]);
-  await claude.locator("[data-sign-ins-swap]").click();
+  await swap.click();
   await settingIs("own_then_shared");
   assert.deepEqual(await trayOrder(), ["own", "shared"]);
 
   assert.deepEqual(
     calls.map((call) => [call.path, call.method, call.body]),
-    ["shared", "shared_then_own", "own_then_shared"].map((setting) => [
+    ["shared_then_own", "own_then_shared"].map((setting) => [
       "claude/logins/setting",
       "PUT",
       { machine_id: MACHINE, setting },
@@ -110,7 +100,7 @@ test("switches and swap write the setting at once and redraw the tray order", as
   );
   assert.equal(state.settings.settings[0].setting, "own_then_shared");
   // Each saved setting tells the app, so launch readiness follows it.
-  await page.waitForFunction(() => window.loginChanges === 3, null, { timeout: 5000 });
+  await page.waitForFunction(() => window.loginChanges === 2, null, { timeout: 5000 });
   assert.deepEqual(errors, []);
 });
 
@@ -119,21 +109,24 @@ test("a refused setting returns the drawn value and offers the write again", asy
   const { page, calls, errors } = await openSignIns(t, {
     onAction: (call, current) => {
       if (refuse) return { status: 503, json: { detail: "unavailable" } };
-      current.settings = settingsFor(call.body.setting, "shared");
+      current.settings = settingsFor(call.body.setting);
+      return { json: current.settings.settings[0] };
     },
   });
   const claude = panel(page, "claude");
-  await claude.locator('[data-tray-switch="shared"]').click();
+  await claude.getByRole("button", { name: "Swap sign-in order" }).click();
   await page.locator('[data-sign-ins-provider="claude"].failed').waitFor();
   assert.equal(await claude.getAttribute("data-setting"), "own_then_shared");
   refuse = false;
   await claude.locator(':scope > header [aria-label="Retry"]').click();
   await page.waitForFunction(
-    () => document.querySelector('[data-sign-ins-provider="claude"]')?.dataset.setting === "own",
+    () =>
+      document.querySelector('[data-sign-ins-provider="claude"]')?.dataset.setting ===
+      "shared_then_own",
   );
   assert.deepEqual(
     calls.map((call) => call.body.setting),
-    ["own", "own"],
+    ["shared_then_own", "shared_then_own"],
   );
   assert.deepEqual(errors, []);
 });
@@ -230,7 +223,13 @@ const codexRows = (sign_in) => [
 ];
 const codexSettings = {
   settings: [
-    { provider: "codex", machine_id: MACHINE, setting: "shared", changed_at: null, stored: true },
+    {
+      provider: "codex",
+      machine_id: MACHINE,
+      setting: "shared_then_own",
+      changed_at: null,
+      stored: true,
+    },
   ],
   other_member_count: 0,
 };
@@ -390,7 +389,9 @@ test("paste-code starts, fits a phone, submits once and clears the input", async
     viewport: { width: 390, height: 900 },
     rows: [row],
     settings: {
-      settings: [{ provider: "agy", machine_id: MACHINE, setting: "shared", stored: true }],
+      settings: [
+        { provider: "agy", machine_id: MACHINE, setting: "shared_then_own", stored: true },
+      ],
       other_member_count: 0,
     },
     onAction: (call) => {

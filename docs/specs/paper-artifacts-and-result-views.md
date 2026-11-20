@@ -179,7 +179,8 @@ the editor. HTTP(S) links open a new tab. A `#heading` link scrolls to the headi
 with that GitHub anchor. Other links are inert. Large files render
 after typing pauses. Typst runs in the browser with a compiler and fonts downloaded
 by the backend and pinned by hash. LaTeX runs hash-pinned Tectonic on the backend
-with `--untrusted` and bounded time, output, and concurrency. Compilation changes
+with `--untrusted` and bounded time, output, and concurrency. Paper installs its compiler
+on first use. The machine Dependencies panel reports host programs only. Compilation changes
 no state and is available to members. Identical concurrent requests join. A newer,
 different request cancels the project's older request and shows Retry. Previous
 PDFs remain readable within retention. An uploaded PDF renders in the in-app PDF

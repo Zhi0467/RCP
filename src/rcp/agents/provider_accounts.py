@@ -13,14 +13,17 @@ from rcp.storage import AgentTaskRecord, AppStore
 from rcp.storage.models import MACHINE_LOGIN_ID, ProviderLoginStateRecord, _required_timestamp
 
 LoginSwitchReason = Literal[
-    "unhealthy", "limited", "sender_setting", "setting_changed", "preferred_source_available"
+    "different_owner",
+    "unhealthy",
+    "limited",
+    "sender_setting",
+    "setting_changed",
+    "preferred_source_available",
 ]
 LoginSource = Literal["own", "shared"]
 _SETTING_SOURCES: dict[str, tuple[LoginSource, ...]] = {
-    "own": ("own",),
     "own_then_shared": ("own", "shared"),
     "shared_then_own": ("shared", "own"),
-    "shared": ("shared",),
 }
 
 
@@ -269,8 +272,8 @@ class ProviderAccounts:
         provider passes, and the initial graph-repair correction. The lineage and
         the session's previous login are kept while usable and allowed for the
         member; otherwise the member's setting order decides. A fork is a fresh
-        choice. Any login can continue any session (Codex logins share one
-        session store).
+        choice. An eligible login can continue an existing session (Codex
+        logins share one session store).
         """
         for key in (lineage_login, previous.login if previous else None):
             if key is not None and (key.provider, key.machine_id) != (provider, machine_id):
@@ -309,18 +312,9 @@ class ProviderAccounts:
             if not profile_for(provider).authentication.manages_login or member_id is None:
                 keys = [LoginKey(provider, machine_id, MACHINE_LOGIN_ID)]
             else:
-                setting = self.store.provider_login_setting(
-                    member_id, provider, machine_id, connection=connection
-                )
                 keys = [
                     LoginKey(provider, machine_id, row.login_id)
-                    for row in self._allowed_logins(
-                        connection,
-                        provider,
-                        machine_id,
-                        member_id,
-                        _SETTING_SOURCES[setting.setting],
-                    )
+                    for row in self._allowed_logins(connection, provider, machine_id, member_id)
                 ]
             return min(
                 (
@@ -345,18 +339,14 @@ class ProviderAccounts:
         provider: str,
         machine_id: str,
         member_id: str,
-        sources: tuple[LoginSource, ...],
     ) -> list[ProviderLoginStateRecord]:
-        """Assignable logins (usable, not draining) the member's setting allows."""
+        """Assignable sign-ins belonging to the member or the shared pool."""
         return [
             row
             for row in self.store.provider_logins(provider, machine_id, connection=connection)
-            if not row.draining_since
+            if row.permits_member(member_id)
+            and not row.draining_since
             and self._usable(machine_id, row)
-            and (
-                (row.member_id == member_id and "own" in sources)
-                or (row.member_id is None and "shared" in sources)
-            )
         ]
 
     def _resolve_login(
@@ -392,14 +382,10 @@ class ProviderAccounts:
             ), None
         if lineage_login is not None:
             state = self.store.provider_login_state(lineage_login, connection=connection)
-            if usable(state):
+            if state.permits_member(member_id) and usable(state):
                 return lineage_login, None
 
-        allowed = self._allowed_logins(connection, provider, machine_id, member_id, sources) or [
-            row
-            for row in self.store.provider_logins(provider, machine_id, connection=connection)
-            if not row.draining_since and usable(row)
-        ]
+        allowed = self._allowed_logins(connection, provider, machine_id, member_id)
 
         def key_for(row: ProviderLoginStateRecord) -> LoginKey:
             return LoginKey(provider, machine_id, row.login_id)
@@ -434,7 +420,7 @@ class ProviderAccounts:
             ]
             for source in sources
         ]
-        for group in [*groups, candidates]:
+        for group in groups:
             if group:
                 chosen = (
                     previous_row
@@ -451,8 +437,10 @@ class ProviderAccounts:
         if previous_login is None or selected == previous_login:
             return selected, None
         prior = self.store.provider_login_state(previous_login, connection=connection)
-        if prior.draining_since or not usable(prior):
-            reason: LoginSwitchReason = "unhealthy"
+        if not prior.permits_member(member_id):
+            reason: LoginSwitchReason = "different_owner"
+        elif prior.draining_since or not usable(prior):
+            reason = "unhealthy"
         elif self.store.provider_login_assignment(previous_login, connection=connection).limited_at:
             reason = "limited"
         elif previous is not None and previous.authorized_by != member_id:

@@ -167,6 +167,8 @@ def test_project_response_refreshes_viewer_logins_without_rewriting_shared_cache
 
 @pytest.mark.parametrize("existing", [False, True])
 def test_missing_own_login_notice_has_no_fabricated_login(manifest, tmp_path, existing):
+    from .test_provider_login_resolver import _login
+
     store = AppStore(tmp_path / "app.sqlite3", space_kind="team")
     accounts = ProviderAccounts.for_store(store)
     store.mark_provider_login_signed_out(
@@ -179,9 +181,13 @@ def test_missing_own_login_notice_has_no_fabricated_login(manifest, tmp_path, ex
         if existing
         else None
     )
-    rows = ProjectService.provider_logins_for(
-        manifest, AgentLauncher(accounts=accounts), None, viewer_id="new-member"
+    _login(accounts, "codex", own=True, member="other")
+    launcher = AgentLauncher(accounts=accounts)
+    rows = ProjectService.provider_logins_for(manifest, launcher, None, viewer_id="new-member")
+    readiness = launcher.member_readiness(
+        "codex", machine_id=BACKEND_MACHINE_ID, member_id="new-member"
     )
+    assert not readiness.authenticated
     codex = [row for row in rows if row["provider"] == "codex"]
     assert len(codex) == 1
     row = codex[0]
