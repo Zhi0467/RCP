@@ -475,7 +475,11 @@ class WatcherDelivery:
         *,
         retry_generation: WatcherRetryGeneration | None = None,
     ) -> None:
-        """Wake one agent for its ready watchers, through its episode when it has one."""
+        """Wake one agent for its ready watchers, through its episode when it has one.
+
+        A plain wake carries one member's authority, so a shared chat's watchers
+        armed by different members wake in separate turns, oldest member first.
+        """
 
         if not ready or not self._retry.generation_is_current(retry_generation):
             return
@@ -494,9 +498,13 @@ class WatcherDelivery:
         if episode is not None:
             self._episode_owners[episode.mode](agent_id, episode, ready, fence)
             return
-        authorized_by = self._store.resolve_watcher_authorizer(ids)
-        if authorized_by is not None:
-            self._plain_wake(agent_id, ready, authorized_by, fence)
+        for group in self._store.watcher_authorizer_groups(ids):
+            authorized_by = self._store.resolve_watcher_authorizer(group)
+            if authorized_by is not None:
+                members = set(group)
+                batch = [watcher for watcher in ready if watcher.watcher_id in members]
+                self._plain_wake(agent_id, batch, authorized_by, fence)
+                return
 
     def deliver_ready_watchers(
         self,

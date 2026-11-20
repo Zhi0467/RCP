@@ -460,14 +460,10 @@ def test_plain_delivery_is_authorized_by_the_arming_turns_human(store) -> None:
     )
 
 
-@pytest.mark.parametrize("case", ["missing", "unattributed", "conflicting"])
+@pytest.mark.parametrize("case", ["missing", "unattributed"])
 def test_unprovable_authorizer_closes_delivery_without_a_wake(store, case) -> None:
     if case == "unattributed":
         _chat_turn(store, "origin")
-    elif case == "conflicting":
-        _chat_turn(store, "origin", authorized_by=fabricated_authorizer("One"))
-        _chat_turn(store, "other", authorized_by=fabricated_authorizer("Two"))
-        armed(store, "second", origin_turn_id="other", completed=True)
     armed(store, "done", completed=True)
     calls = []
 
@@ -607,3 +603,37 @@ def test_removing_every_check_cancels_the_watcher_instead_of_leaving_it_empty(st
     stopped = store.watcher("pair")
     assert stopped.state == "cancelled" and stopped.cancelled_by == "agent"
     assert store.agent_watchers("chat", open_only=True) == []
+
+
+def test_two_members_watchers_on_one_shared_chat_each_wake_in_turn(store) -> None:
+    first_member = fabricated_authorizer("One")
+    second_member = fabricated_authorizer("Two")
+    _chat_turn(store, "origin", authorized_by=first_member)
+    _chat_turn(store, "other", authorized_by=second_member)
+    armed(store, "first", completed=True)
+    armed(store, "second", origin_turn_id="other", completed=True)
+    renamed = first_member.model_copy(update={"display_name": "One, renamed"})
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET authorized_display_name = ? WHERE operation_id = 'origin'",
+            (renamed.display_name,),
+        )
+    _chat_turn(store, "third", authorized_by=first_member)
+    armed(store, "third-watch", origin_turn_id="third", completed=True)
+    calls: list[tuple[list[str], str]] = []
+
+    def plain(agent_id, ready, authorized_by, _fence) -> None:
+        ids = [item.watcher_id for item in ready]
+        calls.append((ids, authorized_by.user_id))
+        with store.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            store.claim_watcher_wake(connection, agent_id, ids, f"wake-{len(calls)}")
+
+    delivery = _delivery(store, plain)
+    delivery.deliver_ready_watchers(source="test")
+    assert calls == [(["first", "third-watch"], first_member.user_id)]
+    assert [item.watcher_id for item in store.ready_watchers()] == ["second"]
+
+    delivery.deliver_ready_watchers(source="test")
+    assert calls[1] == (["second"], second_member.user_id)
+    assert store.ready_watchers() == []

@@ -260,6 +260,11 @@ def deliver_experiment_watchers(
             episode.project_id, control_node_id, graph_target=episode.graph_target
         )
         if runtime.episode_id != episode.episode_id or runtime.chat_id != agent_id:
+            store.cancel_watchers(
+                ids,
+                by="rcp",
+                reason="A newer Run of this Experiment replaced the one that armed this watcher.",
+            )
             return
 
         def diagnose(diagnostic: str | None) -> None:

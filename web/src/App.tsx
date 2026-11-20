@@ -1088,15 +1088,6 @@ function MemberApp({
     backendSessionReady && projectId ? watchersProfile(projectId, graphTarget) : null,
   );
   const watchers = useMemo(() => watcherView.value ?? [], [watcherView.value]);
-  const setWatchers = useCallback(
-    (update: WatcherRecord[] | ((current: WatcherRecord[]) => WatcherRecord[])) => {
-      if (!projectId) return;
-      const id = resourceKeyId(watcherResourceKey(projectId, graphTarget));
-      const current = store.view<WatcherRecord[]>(id).value ?? [];
-      store.write(id, typeof update === "function" ? update(current) : update);
-    },
-    [store, projectId, graphTarget],
-  );
   const {
     view,
     trustView,
@@ -1108,7 +1099,6 @@ function MemberApp({
     selectedExperimentRoute,
     selectedAutoResearchEpisodeId,
     experimentStopIds,
-    watcherCheckId,
     dockedNodeIds,
     dagRelationFocusId,
     panelRef,
@@ -1134,7 +1124,6 @@ function MemberApp({
     clearExperimentFocus,
     showExperiment,
     beginExperimentStop,
-    beginWatcherCheck,
     clearDagRelationFocus,
     forgetProjectViewport,
   } = useGraphSelection({
@@ -3293,27 +3282,6 @@ function MemberApp({
     },
     [requestExperimentStop],
   );
-
-  const checkExperimentWatcher = async (watcherId: string) => {
-    if (!apiBase || watcherCheckId || taskStarting || taskActionId || mutationsDisabled) return;
-    const watcher = watchers.find((candidate) => candidate.watcher_id === watcherId);
-    if (watcher?.episode_id && experimentStopIds.has(watcher.episode_id)) return;
-    const finishWatcherCheck = beginWatcherCheck(watcherId);
-    try {
-      const checked = await api<WatcherRecord>(
-        `${apiBase}/watchers/${encodeURIComponent(watcherId)}/check`,
-        { method: "POST" },
-      );
-      setWatchers((current) =>
-        current.map((watcher) => (watcher.watcher_id === checked.watcher_id ? checked : watcher)),
-      );
-      await reload();
-    } catch (error) {
-      setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
-    } finally {
-      finishWatcherCheck();
-    }
-  };
 
   const startExperiment = useCallback(
     async (
@@ -5666,7 +5634,6 @@ function MemberApp({
                     selectedAutoResearchEpisodeId={selectedAutoResearchEpisodeId}
                     runBusy={taskStarting}
                     stopBusyIds={experimentStopIds}
-                    watcherCheckBusyId={watcherCheckId}
                     taskActionId={taskActionId}
                     selectedExperimentConversation={selectedExperimentConversation}
                     mutationsDisabled={mutationsDisabled}
@@ -5705,7 +5672,6 @@ function MemberApp({
                     onStopExperiment={(nodeId, episodeId) =>
                       void stopExperimentLoop(nodeId, episodeId)
                     }
-                    onCheckExperimentWatcher={(watcherId) => void checkExperimentWatcher(watcherId)}
                     onStopExperimentWatcher={(watcherId) => void stopWatcher(watcherId)}
                     onRecoverExperiment={(task, action) => void operateTask(task, action, false)}
                     onSwitchExperimentProvider={chooseRetryTask}
