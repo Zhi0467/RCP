@@ -23,7 +23,7 @@ from rcp.agents import (
     ContextAssembler,
     agent_output_schema,
 )
-from rcp.agents.auto_research_commands import auto_research_allowed_verbs
+from rcp.agents.agent_profile import SHARED_PROJECT, AgentTurn, resolve_agent_profile
 from rcp.agents.auto_research_prompt import (
     AUTO_RESEARCH_POLICY_VERSION,
     auto_research_branch_read_pointers,
@@ -177,6 +177,14 @@ from rcp.transport import (
     StateUnavailable,
 )
 from rcp.transport.run_stage import remote_stage_name
+from rcp.watcher_folder import (
+    WatcherFile,
+    read_watcher_folder,
+    reconcile_watcher_files,
+    stage_watcher_folder,
+    watcher_binding,
+)
+from rcp.watchers import WatcherBinding
 
 _SAME_ALLOCATION_RECOVERY = frozenset({"resume", "retry"})
 _HANDOFFS_CLEARED_RECEIPT = "auto_research_worker_handoffs_cleared"
@@ -339,16 +347,20 @@ async def stream_auto_research_orchestrator_run(
             turn.task.project_id, service.history, context.group_context
         )
         # The one command surface this turn's prompt renders and its dispatcher enforces.
-        allowed_verbs = auto_research_allowed_verbs(
+        allowed_verbs = resolve_agent_profile(
+            SHARED_PROJECT,
             "orchestrator",
-            can_self_name=bool(resolve_agent_name_state(execution).get("can_self_name")),
-            graph_read_scope=graph_read_scope,
-            bulletin=execution.store.bulletin_enabled_for_task(turn.task.operation_id),
-        )
+            AgentTurn(
+                read_verbs=graph_read_scope.verbs,
+                can_self_name=bool(resolve_agent_name_state(execution).get("can_self_name")),
+                bulletin=execution.store.bulletin_enabled_for_task(turn.task.operation_id),
+            ),
+        ).ordered_verbs
         command_dispatcher = _bind_actor_dispatcher(
             command_dispatcher, service, turn.request, stage, graph_read_scope, allowed_verbs
         )
         _prepare_turn_handoffs(execution, turn, stage)
+        _stage_orchestrator_watchers(execution, turn, stage)
 
         messages_path = _stage_claimed_mail(execution, turn, stage)
         lifecycle_path = _stage_claimed_lifecycle(execution, turn, stage)
@@ -642,11 +654,14 @@ async def stream_auto_research_worker_run(
             turn.task.project_id, service.history, context.group_context
         )
         # The one command surface this turn's prompt renders and its dispatcher enforces.
-        allowed_verbs = auto_research_allowed_verbs(
-            "worker",
-            graph_read_scope=graph_read_scope,
-            bulletin=execution.store.bulletin_enabled_for_task(turn.task.operation_id),
-        )
+        allowed_verbs = resolve_agent_profile(
+            SHARED_PROJECT,
+            "auto_research_worker",
+            AgentTurn(
+                read_verbs=graph_read_scope.verbs,
+                bulletin=execution.store.bulletin_enabled_for_task(turn.task.operation_id),
+            ),
+        ).ordered_verbs
         command_dispatcher = _bind_actor_dispatcher(
             command_dispatcher, service, turn.request, stage, graph_read_scope, allowed_verbs
         )
@@ -1437,12 +1452,82 @@ def _prepare_turn_handoffs(
             "version": 1,
             "files": [
                 "patch.json",
-                "watch.json",
                 AUTO_RESEARCH_MAIL_HANDOFF_FILE,
                 AUTO_RESEARCH_LIFECYCLE_HANDOFF_FILE,
             ],
         },
     )
+
+
+def _orchestrator_watcher_binding(
+    execution: AgentTaskExecution,
+    turn: _CanonicalWorkerTurn | _CanonicalOrchestratorTurn,
+    stage: _WorkerStage,
+) -> WatcherBinding:
+    """The orchestrator's watchers belong to its chain's root episode, across continuations."""
+
+    return watcher_binding(
+        execution.store,
+        execution.operation_id,
+        execution.store.auto_research_chain_root(turn.task.project_id, turn.request.episode_id),
+        stage.machine.machine_id,
+    )
+
+
+def _stage_orchestrator_watchers(
+    execution: AgentTaskExecution,
+    turn: _CanonicalOrchestratorTurn,
+    stage: _WorkerStage,
+) -> None:
+    staged = execution.store.agent_task_contract(execution.operation_id, "watcher_folder:0")
+    if turn.recovering_allocation and staged is not None:
+        return
+    stage_watcher_folder(
+        execution.store,
+        _orchestrator_watcher_binding(execution, turn, stage),
+        stage.workspace,
+        stage.remote,
+    )
+
+
+async def _reconcile_orchestrator_watchers(
+    service: ProjectService,
+    execution: AgentTaskExecution,
+    turn: _CanonicalWorkerTurn | _CanonicalOrchestratorTurn,
+    stage: _WorkerStage,
+) -> None:
+    """Apply the orchestrator's watcher folder; a refusal is recorded and arms nothing."""
+
+    store = execution.store
+    try:
+        files = await asyncio.to_thread(read_watcher_folder, stage.workspace, stage.remote)
+        graphs = any(WatcherFile.model_validate_json(raw).graph for raw in files.values())
+        state = await asyncio.to_thread(service.history.state) if graphs else None
+        await asyncio.to_thread(
+            reconcile_watcher_files,
+            store,
+            _orchestrator_watcher_binding(execution, turn, stage),
+            json.loads(
+                store.agent_task_contract(execution.operation_id, "watcher_folder:0") or "{}"
+            ),
+            files,
+            state=state,
+        )
+    except (OSError, StateUnavailable, ValueError) as exc:
+        if not store.agent_task_has_receipt(execution.operation_id, "watcher_handoff_rejected"):
+            store.record_agent_task_receipt(
+                execution.operation_id,
+                "watcher_handoff_rejected",
+                {"problem": str(exc)[:1600], "correction_rounds": 0},
+                tier="diagnostic",
+            )
+            store.record_agent_task_event(
+                execution.operation_id,
+                f"Watcher handoff was not armed: {exc}",
+                level="warning",
+            )
+        return
+    execution.armed_graph_watchers |= graphs
 
 
 def _stage_claimed_mail(
@@ -1751,6 +1836,7 @@ def _orchestrator_prompt(
             compute_profiles=compute_profiles,
             paper_path=context.paper_path,
             parent_chat=parent_chat,
+            watchers_path=str(Path(patch_path).parent / "watchers"),
         )
 
     def start_contract() -> str:
@@ -2065,7 +2151,6 @@ class _ValidateOnlyAutoResearchCommandDispatcher(AutoResearchCommandDispatcher):
         *,
         planned_worker_id: str | None,
         planned_message_id: str | None,
-        planned_watcher_id: str | None,
         planned_apply_id: str | None,
         planned_resume_operation_id: str | None,
         planned_episode_effect_id: str | None,
@@ -2081,7 +2166,6 @@ class _ValidateOnlyAutoResearchCommandDispatcher(AutoResearchCommandDispatcher):
             request,
             planned_worker_id=planned_worker_id,
             planned_message_id=planned_message_id,
-            planned_watcher_id=planned_watcher_id,
             planned_apply_id=planned_apply_id,
             planned_resume_operation_id=planned_resume_operation_id,
             planned_episode_effect_id=planned_episode_effect_id,
@@ -2852,6 +2936,8 @@ async def _settle_actor_turn(
         yield frame
     if settlement.awaiting_remote_result:
         return
+    if orchestrator:
+        await _reconcile_orchestrator_watchers(service, execution, turn, stage)
     graph_update = settlement.graph_update
     if orchestrator:
         graph_updates = _ordered_orchestrator_graph_updates(execution)

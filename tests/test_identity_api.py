@@ -9,13 +9,16 @@ from rcp.service import ChatMessage, ChatTranscript, RunRequest
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
-    WatcherContinuation,
-    WatcherRecord,
 )
+from rcp.storage.models import WatcherCheckRecord, WatcherRecord
 from tests.helpers import signed_in_client, unchecked_write_authority
 from tests.paper_helpers import start_paper
 
 from .helpers import seed_patch
+
+
+def _chat_turn() -> dict[str, object]:
+    return {"chat_id": str(uuid.uuid4()), "message": "Explain."}
 
 
 def _assert_name_required(response) -> None:
@@ -72,27 +75,34 @@ def _agent_task(
 
 
 def _watcher(
+    store: AppStore,
     *,
     watcher_id: str,
     project_id: str,
     origin_operation_id: str,
 ) -> WatcherRecord:
-    return WatcherRecord(
-        watcher_id=watcher_id,
-        project_id=project_id,
-        origin_operation_id=origin_operation_id,
-        origin_task_kind="project_chat",
-        chat_id="watcher-chat",
-        check_command="true",
-        log_path="watcher.log",
-        cwd=".",
-        continuation=WatcherContinuation(
-            provider="codex",
-            run_on="backend",
-            run_truth_scope=["repo-a"],
-        ),
-        status="completed",
-        created_at="2026-08-11T00:00:00Z",
+    created_at = "2026-08-11T00:00:00+00:00"
+    return store.arm_watcher(
+        WatcherRecord(
+            watcher_id=watcher_id,
+            agent_id="watcher-chat",
+            project_id=project_id,
+            purpose="Job",
+            origin_turn_id=origin_operation_id,
+            created_at=created_at,
+            checks=[
+                WatcherCheckRecord(
+                    check_id=watcher_id,
+                    watcher_id=watcher_id,
+                    definition="external",
+                    check_command="true",
+                    log_path="/tmp/watcher.log",
+                    cwd="/tmp",
+                    created_at=created_at,
+                    completed_at=created_at,
+                )
+            ],
+        )
     )
 
 
@@ -249,8 +259,6 @@ def test_unnamed_personal_owner_gates_all_agent_api_admissions(
             json={"base_revision": current_revision},
         )
     )
-    for kind in ("seed", "refresh"):
-        _assert_name_required(client.post(f"/api/projects/{project_id}/tasks/{kind}", json={}))
 
     def unexpected_claim(*_args, **_kwargs):
         raise AssertionError("attachment claim ran before identity admission")
@@ -377,9 +385,9 @@ def test_unnamed_personal_owner_gates_all_agent_api_admissions(
     assert resumed_discuss.status_code == 202
     assert recovery_authorizers["discuss"] is not None
     assert recovery_authorizers["discuss"].display_name == "Researcher"
-    admitted = client.post(f"/api/projects/{project_id}/tasks/seed", json={})
+    admitted = client.post(f"/api/projects/{project_id}/tasks/project_chat", json=_chat_turn())
     assert admitted.status_code == 202
-    assert started_kinds[-1] == "seed"
+    assert started_kinds[-1] == "project_chat"
 
 
 def test_team_patch_admission_rejects_missing_or_invalid_principal_before_task_creation(
@@ -394,7 +402,9 @@ def test_team_patch_admission_rejects_missing_or_invalid_principal_before_task_c
     missing_app = create_app(str(manifest.path), data_dir=data_dir)
     missing_client = signed_in_client(missing_app)
     project_id = missing_app.state.default_project_id
-    missing = missing_client.post(f"/api/projects/{project_id}/tasks/seed", json={})
+    missing = missing_client.post(
+        f"/api/projects/{project_id}/tasks/project_chat", json=_chat_turn()
+    )
     assert missing.status_code == 401
     assert missing.json()["detail"]["code"] == "team_identity_required"
     assert missing_app.state.background_tasks.store.agent_tasks(project_id) == []
@@ -405,7 +415,9 @@ def test_team_patch_admission_rejects_missing_or_invalid_principal_before_task_c
         trusted_principal_resolver=lambda _request, _store: str(uuid.uuid4()),
     )
     invalid_client = signed_in_client(invalid_app)
-    invalid = invalid_client.post(f"/api/projects/{project_id}/tasks/seed", json={})
+    invalid = invalid_client.post(
+        f"/api/projects/{project_id}/tasks/project_chat", json=_chat_turn()
+    )
     assert invalid.status_code == 403
     assert invalid.json()["detail"]["code"] == "team_identity_invalid"
     assert invalid_app.state.background_tasks.store.agent_tasks(project_id) == []
@@ -445,7 +457,9 @@ def test_team_patch_admission_rejects_missing_or_invalid_principal_before_task_c
         )
 
     monkeypatch.setattr(valid_app.state.background_tasks, "start", fake_start)
-    admitted = signed_in_client(valid_app).post(f"/api/projects/{project_id}/tasks/seed", json={})
+    admitted = signed_in_client(valid_app).post(
+        f"/api/projects/{project_id}/tasks/project_chat", json=_chat_turn()
+    )
     assert admitted.status_code == 202
 
 
@@ -488,7 +502,7 @@ def test_personal_sync_and_task_records_keep_immutable_identity_snapshots(
         "_spawn_record",
         lambda record, _request, **_kwargs: record,
     )
-    seed = client.post(f"/api/projects/{project_id}/tasks/seed", json={})
+    seed = client.post(f"/api/projects/{project_id}/tasks/project_chat", json=_chat_turn())
     assert seed.status_code == 202, seed.text
     seed_record = app.state.background_tasks.store.agent_task(seed.json()["operation_id"])
     assert seed_record is not None
@@ -500,7 +514,7 @@ def test_personal_sync_and_task_records_keep_immutable_identity_snapshots(
     )
 
     assert client.patch("/api/identity", json={"display_name": "Later name"}).status_code == 200
-    refresh = client.post(f"/api/projects/{project_id}/tasks/refresh", json={})
+    refresh = client.post(f"/api/projects/{project_id}/tasks/project_chat", json=_chat_turn())
     assert refresh.status_code == 202, refresh.text
     refresh_record = app.state.background_tasks.store.agent_task(refresh.json()["operation_id"])
     assert refresh_record is not None
@@ -573,8 +587,9 @@ def test_team_sync_and_tasks_use_only_current_trusted_member_snapshot(
     )
     selected[0] = bob.user_id
     forged = client.post(
-        f"/api/projects/{project_id}/tasks/seed",
+        f"/api/projects/{project_id}/tasks/project_chat",
         json={
+            **_chat_turn(),
             "user_id": alice.user_id,
             "authorized_by": sync_authorizer.model_dump(mode="json"),
         },
@@ -594,7 +609,7 @@ def test_team_sync_and_tasks_use_only_current_trusted_member_snapshot(
     selected[0] = alice.user_id
     renamed = client.patch("/api/identity", json={"display_name": "Alice renamed"})
     assert renamed.status_code == 200
-    future = client.post(f"/api/projects/{project_id}/tasks/refresh", json={})
+    future = client.post(f"/api/projects/{project_id}/tasks/project_chat", json=_chat_turn())
     assert future.status_code == 202, future.text
     future_record = app.state.background_tasks.store.agent_task(future.json()["operation_id"])
     assert future_record is not None
@@ -699,7 +714,7 @@ def test_resume_retry_and_repair_capture_the_current_actor_instead_of_parent(
         assert captured[action].display_name == "Second"
 
 
-def test_automatic_watcher_delivery_inherits_one_origin_authorizer_and_refuses_ambiguity(
+def test_automatic_watcher_delivery_inherits_one_origin_authorizer_per_member_wake(
     manifest,
     tmp_path,
     monkeypatch,
@@ -740,73 +755,49 @@ def test_automatic_watcher_delivery_inherits_one_origin_authorizer_and_refuses_a
         )
 
     captured: list[AuthorizedHuman] = []
-
-    def fake_delivery(
-        _tasks, _project_id, _kind, _request, _watcher_ids, *, authorized_by, **_kwargs
-    ):
-        captured.append(authorized_by)
-        return None
-
-    monkeypatch.setattr("rcp.api.app.start_watcher_notification", fake_delivery)
-    callback = app.state.watcher_poller.on_completed
-    same_authorizer = [
-        _watcher(
-            watcher_id="same-authorizer-one",
-            project_id=project_id,
-            origin_operation_id="watcher-origin-first",
-        ),
-        _watcher(
-            watcher_id="same-authorizer-two",
-            project_id=project_id,
-            origin_operation_id="watcher-origin-first",
-        ),
-    ]
-    mixed = [
-        _watcher(
-            watcher_id="mixed-first",
-            project_id=project_id,
-            origin_operation_id="watcher-origin-first",
-        ),
-        _watcher(
-            watcher_id="mixed-second",
-            project_id=project_id,
-            origin_operation_id="watcher-origin-second",
-        ),
-    ]
-    legacy = [
-        _watcher(
-            watcher_id="legacy",
-            project_id=project_id,
-            origin_operation_id="watcher-origin-legacy",
-        )
-    ]
-    missing = [
-        _watcher(
-            watcher_id="missing",
-            project_id=project_id,
-            origin_operation_id="watcher-origin-missing",
-        )
-    ]
-    for watcher_group in (same_authorizer, mixed, legacy, missing):
-        for watcher in watcher_group:
-            store.create_watchers([watcher])
-
-    callback(same_authorizer)
-    assert captured == [first_authorizer]
-
-    callback(mixed)
-    callback(legacy)
-    callback(missing)
-
-    assert captured == [first_authorizer]
-    assert store.watcher("mixed-first").stop_reason is not None
-    assert "different human authorizers" in store.watcher("mixed-first").stop_reason
-    assert "predates durable human attribution" in store.watcher("legacy").stop_reason
-    assert "originating task is unavailable" in store.watcher("missing").stop_reason
-    assert all(
-        store.watcher(watcher_id).status == "stopped" and store.watcher(watcher_id).notified
-        for watcher_id in ("mixed-first", "mixed-second", "legacy", "missing")
+    delivery = app.state.services.watcher_delivery
+    monkeypatch.setattr(
+        delivery,
+        "_plain_wake",
+        lambda _agent_id, _ready, authorized_by, _fence: captured.append(authorized_by),
     )
+    groups = {
+        "same": [
+            ("same-authorizer-one", "watcher-origin-first"),
+            ("same-authorizer-two", "watcher-origin-first"),
+        ],
+        "mixed": [
+            ("mixed-first", "watcher-origin-first"),
+            ("mixed-second", "watcher-origin-second"),
+        ],
+        "legacy": [("legacy", "watcher-origin-legacy")],
+        "missing": [("missing", "watcher-origin-missing")],
+    }
+    armed = {
+        name: [
+            _watcher(
+                store, watcher_id=watcher_id, project_id=project_id, origin_operation_id=origin
+            )
+            for watcher_id, origin in members
+        ]
+        for name, members in groups.items()
+    }
+
+    for name in ("same", "mixed", "legacy", "missing"):
+        delivery.deliver_ready("watcher-chat", armed[name])
+
+    assert captured == [first_authorizer, first_authorizer]
+    for watcher_id in ("legacy", "missing"):
+        closed = store.watcher(watcher_id)
+        assert closed is not None and closed.delivery_closed_at is not None
+        assert closed.cancel_reason
+    for watcher_id in ("same-authorizer-one", "mixed-first", "mixed-second"):
+        ready = store.watcher(watcher_id)
+        assert ready is not None and ready.delivery_closed_at is None
+
+    delivery.deliver_ready("watcher-chat", armed["mixed"][1:])
+
+    assert captured[-1] == second_authorizer
 
 
 def test_reopened_poller_terminalizes_legacy_watcher_once_without_wake(
@@ -835,14 +826,11 @@ def test_reopened_poller_terminalizes_legacy_watcher_once_without_wake(
         request={"mode": "work", "chat_id": "watcher-chat"},
     )
     store.create_agent_task(origin)
-    store.create_watchers(
-        [
-            _watcher(
-                watcher_id="pre-upgrade-watcher",
-                project_id=project_id,
-                origin_operation_id=origin.operation_id,
-            )
-        ]
+    _watcher(
+        store,
+        watcher_id="pre-upgrade-watcher",
+        project_id=project_id,
+        origin_operation_id=origin.operation_id,
     )
     with store.connection() as connection:
         connection.execute(
@@ -856,29 +844,20 @@ def test_reopened_poller_terminalizes_legacy_watcher_once_without_wake(
         )
 
     reopened = create_app(str(manifest.path), data_dir=data_dir)
-    wake_attempts: list[list[str]] = []
+    reopened_store = reopened.state.background_tasks.store
+    delivery = reopened.state.services.watcher_delivery
 
-    def capture_wake(_tasks, _project_id, _kind, _request, watcher_ids, **_kwargs):
-        wake_attempts.append(watcher_ids)
-        return None
+    delivery.deliver_ready_watchers(source="test")
+    delivery.deliver_ready_watchers(source="test")
 
-    monkeypatch.setattr("rcp.api.app.start_watcher_notification", capture_wake)
-
-    first_pass = reopened.state.watcher_poller.poll_once()
-    second_pass = reopened.state.watcher_poller.poll_once()
-
-    terminal = reopened.state.background_tasks.store.watcher("pre-upgrade-watcher")
-    assert first_pass and [item.watcher_id for item in first_pass[0]] == ["pre-upgrade-watcher"]
-    assert second_pass == []
-    assert wake_attempts == []
+    terminal = reopened_store.watcher("pre-upgrade-watcher")
     assert terminal is not None
-    assert terminal.status == "stopped"
-    assert terminal.notified is True
-    assert terminal.stop_reason is not None
-    assert "predates durable human attribution" in terminal.stop_reason
-    assert [
-        task.operation_id for task in reopened.state.background_tasks.store.agent_tasks(project_id)
-    ] == [origin.operation_id]
+    assert terminal.delivery_closed_at is not None and terminal.wake_turn_id is None
+    assert terminal.cancel_reason
+    assert reopened_store.ready_watchers() == []
+    assert [task.operation_id for task in reopened_store.agent_tasks(project_id)] == [
+        origin.operation_id
+    ]
 
 
 def test_old_project_url_alias_is_canonicalized_for_tasks_chat_and_paper(

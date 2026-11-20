@@ -621,7 +621,7 @@ def test_slurm_keeps_helper_submission_and_separate_readiness(commands):
     scheduler = commands.probe.model_copy(update={"backend_id": "slurm"})
     commands.store.record_compute_backend_probe("project", scheduler, "scheduler")
     handler = replace(commands.handler, manifest=manifest)
-    assert handler.allowed_verbs == {"launch"}
+    assert handler.launch_available
     assert "helper-command" in handler.execution_instructions("helper-command")
     response = handler(
         _request("launch", "key", cwd=str(commands.workspace), argv=["true"]), commands.identity
@@ -640,7 +640,7 @@ def test_slurm_keeps_helper_submission_and_separate_readiness(commands):
 
 def test_missing_helper_owner_disables_only_helper_verb(commands, monkeypatch):
     monkeypatch.setattr(compute_commands, "resolve_context", lambda *_: (None, None))
-    assert commands.handler.allowed_verbs == frozenset()
+    assert not commands.handler.launch_available
     assert "helper-command" in commands.handler.execution_instructions("helper-command")
     assert commands.launch().status == "invalid"
     assert not commands.probe_calls and not commands.backend.starts

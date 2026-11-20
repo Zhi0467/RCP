@@ -158,7 +158,7 @@ def test_graph_baseline_restart_reopen_and_no_watchers(manifest, tmp_path, nonem
     restarted.run_pass()
     restarted.run_pass()
     assert {row["item_id"] for row in store.notification_outbox()} == {"blk/new", "blk/down"}
-    assert store.active_graph_watchers(project_id) == []
+    assert store.open_graph_checks(project_id) == []
     assert len(restarted.pending_desktop(device["device_id"])) == 2
 
 

@@ -12,6 +12,7 @@ from rcp.agents.continuation_prompt import SECTIONS
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.background import AgentTaskExecution
+from rcp.control import ExperimentInvocationAdmission
 from rcp.core.models import AuthorizedHuman, Patch
 from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
@@ -22,9 +23,7 @@ from rcp.runs.experiment_loop import (
     experiment_episode_context_values,
     experiment_graph_result_summary,
     experiment_watcher_delivery_request,
-    experiment_watcher_output_name,
     preflight_episode_wake,
-    stage_chat_experiment_watcher_resources,
 )
 from rcp.runs.shared import _parent_task_contract_path
 from rcp.runs.tasks import experiment_loop as experiment_loop_task_module
@@ -36,20 +35,15 @@ from rcp.runs.tasks.experiment_loop import (
     _stale_master_graph_rules,
     stream_experiment_loop_task,
 )
-from rcp.runs.tasks.experiment_watcher_maintenance import (
-    _process_experiment_watcher_maintenance,
-)
 from rcp.service import GraphUpdateResult, RunRequest, resolve_dispatch_authority
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
+    EpisodeRecord,
     EpisodeWrapupRecord,
     ExperimentEpisodeRecord,
     ExperimentLoopRuntime,
-    ExperimentWatcherResourceRecord,
-    GraphWatcherRecord,
-    NodeStatusGraphCondition,
-    WatcherContinuation,
+    WatcherCheckRecord,
     WatcherRecord,
 )
 from rcp.storage.episodes import compact_episode_receipt
@@ -154,43 +148,34 @@ def test_experiment_watcher_wake_keeps_packages_available_without_reinvoking_the
     tmp_path: Path,
 ) -> None:
     episode_id = "00000000-0000-4000-8000-000000000087"
-    continuation = WatcherContinuation(
+    runtime = ExperimentLoopRuntime(
+        episode_id=episode_id,
         provider="codex",
         run_on=BACKEND_MACHINE_ID,
         run_truth_scope=["repo-a"],
-        patch_kind="experiment_loop",
-        control_node_id=_EXPERIMENT_ID,
         control_revision=2,
-        control_episode_id=episode_id,
-        control_invocation=1,
-        control_invocation_ceiling=3,
-        skill_ids=["experiment-causality"],
-        invoked_skill_ids=["experiment-causality"],
-    )
-    watcher = WatcherRecord(
-        watcher_id="watcher-turn-local-invocation",
-        project_id="project-turn-local-invocation",
-        origin_operation_id="origin-turn-local-invocation",
-        origin_task_kind="node_chat",
         chat_id="chat-turn-local-invocation",
-        node_id=_EXPERIMENT_ID,
-        check_command="false",
-        log_path=str(tmp_path / "detached.log"),
-        cwd=str(tmp_path),
-        continuation=continuation,
-        status="completed",
+        skill_ids=["experiment-causality"],
+    )
+    episode = EpisodeRecord(
+        episode_id=episode_id,
+        project_id="project-turn-local-invocation",
+        mode="experiment_loop",
+        control_node_id=_EXPERIMENT_ID,
+        status="running",
+        invocation_ceiling=3,
+        invocations_used=1,
         created_at="2026-08-08T00:00:00Z",
+        updated_at="2026-08-08T00:00:00Z",
     )
 
     request = experiment_watcher_delivery_request(
-        [watcher],
-        trigger="watcher",
-        episode_id=episode_id,
-        invocation=2,
-        invocation_ceiling=3,
-        control_revision=2,
-        decision_bundle=[],
-        completion_criteria=[],
+        ["watcher-turn-local-invocation"],
+        episode=episode,
+        runtime=runtime,
+        admission=ExperimentInvocationAdmission(
+            episode_id=episode_id, invocation=2, invocation_ceiling=3, decision_bundle=[]
+        ),
         session_id="native-session",
     )
 
@@ -309,7 +294,7 @@ def _execution(
         assert stored is not None
     else:
         store.create_experiment_episode_with_invocation(
-            record, request.watcher_ids, continues_episode_id=continues_episode_id
+            record, continues_episode_id=continues_episode_id
         )
     store.mark_agent_task_running(operation_id)
     store.record_agent_task_receipt(
@@ -394,18 +379,19 @@ class _LoopLauncher:
         self.write_scopes.append(kwargs["write_scope"])
         self.read_dirs.append(kwargs["read_dirs"])
         if self.write_handoff:
-            (workspace / "watch.json").write_text(
+            folder = workspace / "watchers"
+            path = next(iter(folder.glob("*.json")), folder / f"{kwargs['operation_id']}.json")
+            path.write_text(
                 json.dumps(
                     {
-                        "external": [
+                        "purpose": "job finishes",
+                        "checks": [
                             {
-                                "purpose": "job finishes",
                                 "check_command": "false",
                                 "log_path": str(self.watcher_cwd / "detached.log"),
                                 "cwd": str(self.watcher_cwd),
                             }
                         ],
-                        "graph": [],
                     }
                 ),
                 encoding="utf-8",
@@ -464,7 +450,8 @@ async def test_experiment_message_wake_clears_stale_handoffs_in_split_workspace(
     )
     store.fail_agent_task(root.operation_id, "Interrupted before the message wake.")
     (workspace / "patch.json").write_text("stale patch", encoding="utf-8")
-    (workspace / "watch.json").write_text("stale watch", encoding="utf-8")
+    (workspace / "watchers").mkdir(exist_ok=True)
+    (workspace / "watchers" / "stale.json").write_text("stale watch", encoding="utf-8")
 
     wake_request = request.model_copy(
         update={
@@ -489,7 +476,7 @@ async def test_experiment_message_wake_clears_stale_handoffs_in_split_workspace(
     )
     try:
         assert not (workspace / "patch.json").exists()
-        assert not (workspace / "watch.json").exists()
+        assert not (workspace / "watchers" / "stale.json").exists()
         assert wake_turn.workspace == workspace
         assert wake_turn.write_scope.stage_root == str(stage)
         assert wake_turn.write_scope.workspace_root == str(workspace)
@@ -591,7 +578,7 @@ async def test_experiment_resume_requires_the_exact_saved_native_session(
     )
     revision_before = service.history.state().revision
     patch_count_before = len(service.history.load_patches())
-    watcher_ids_before = [item.watcher_id for item in store.watchers(project_id)]
+    watcher_ids_before = [item.watcher_id for item in store.project_watchers(project_id)]
     resume_request = initial_request.model_copy(update={"session_id": saved_session_id})
     resume_execution = _execution(
         store,
@@ -662,7 +649,7 @@ async def test_experiment_resume_requires_the_exact_saved_native_session(
     assert any("exact saved native session" in text for text in errors)
     assert service.history.state().revision == revision_before
     assert len(service.history.load_patches()) == patch_count_before
-    assert [item.watcher_id for item in store.watchers(project_id)] == watcher_ids_before
+    assert [item.watcher_id for item in store.project_watchers(project_id)] == watcher_ids_before
     assert bound_after.last_turn_operation_id == bound_before.last_turn_operation_id
     assert bound_after.native_session_id == saved_session_id
     assert any(
@@ -721,13 +708,11 @@ async def test_duplicate_observer_handoff_is_corrected_before_the_turn_ends(
                 "log_path": str(tmp_path / "detached.log"),
                 "cwd": str(tmp_path),
             }
+            purpose = observer.pop("purpose")
             repeated = len(self.contracts) == 1
-            (workspace / "watch.json").write_text(
+            (workspace / "watchers" / "job.json").write_text(
                 json.dumps(
-                    {
-                        "external": [observer, dict(observer)] if repeated else [observer],
-                        "graph": [],
-                    }
+                    {"purpose": purpose, "checks": [observer, observer] if repeated else [observer]}
                 ),
                 encoding="utf-8",
             )
@@ -748,9 +733,9 @@ async def test_duplicate_observer_handoff_is_corrected_before_the_turn_ends(
 
     assert not [event for event in events if event.event == "error"]
     assert len(launcher.contracts) == 2
-    assert any("arms one check twice" in item for item in launcher.diagnostics)
-    armed = app.state.background_tasks.store.watchers(project_id)
-    assert [item.check_command for item in armed] == ["false"]
+    assert any("duplicate check" in item for item in launcher.diagnostics)
+    armed = app.state.background_tasks.store.project_watchers(project_id)
+    assert [check.check_command for item in armed for check in item.checks] == ["false"]
 
 
 @pytest.mark.asyncio
@@ -787,7 +772,7 @@ async def test_patch_only_watcher_correction_accepts_unchanged_empty_watch_list(
             contract = _launch_text(prompt)
             self.contracts.append(contract)
             workspace = Path(kwargs["cwd"])
-            (workspace / "watch.json").write_text('{"external":[],"graph":[]}\n', encoding="utf-8")
+            assert not list((workspace / "watchers").iterdir())
             correcting = "watcher correction" in contract.partition("\n")[0].casefold()
             next_action = None if correcting else "Analyze and document the remaining results."
             (workspace / "patch.json").write_text(
@@ -835,7 +820,7 @@ async def test_patch_only_watcher_correction_accepts_unchanged_empty_watch_list(
     assert graph_update["status"] == "applied"
     assert service.history.state().nodes[_EXPERIMENT_ID].status == "completed"
     assert service.history.state().nodes[_EXPERIMENT_ID].next_action is None
-    assert app.state.background_tasks.store.watchers(project_id) == []
+    assert app.state.background_tasks.store.project_watchers(project_id) == []
 
 
 def test_retry_recovers_evicted_contract_from_same_stage_lineage(tmp_path: Path) -> None:
@@ -987,7 +972,7 @@ def test_episode_context_ontology_identity_changes_with_extension_definitions() 
     assert len(base["ontology"]["sha256"]) == 64
 
 
-def test_watcher_provenance_model_and_reasoning_do_not_select_or_block_session(
+def test_the_episode_session_alone_decides_wake_readiness(
     tmp_path: Path,
 ) -> None:
     stage = tmp_path / "episode-stage"
@@ -1013,41 +998,7 @@ def test_watcher_provenance_model_and_reasoning_do_not_select_or_block_session(
         created_at="2026-08-06T00:00:00Z",
         updated_at="2026-08-06T00:00:00Z",
     )
-    continuation = WatcherContinuation(
-        provider="codex",
-        model="older-watcher-model",
-        reasoning="low",
-        run_on=BACKEND_MACHINE_ID,
-        run_truth_scope=["repo-a"],
-        patch_kind="experiment_loop",
-        control_node_id=_EXPERIMENT_ID,
-        control_revision=2,
-        control_episode_id=episode.episode_id,
-        control_invocation=1,
-        control_invocation_ceiling=3,
-        control_decision_bundle=[],
-        control_completion_criteria=["The detached check is inspected."],
-    )
-    watcher = WatcherRecord(
-        watcher_id="watcher-model-provenance",
-        project_id=episode.project_id,
-        origin_operation_id="loop-initial",
-        origin_task_kind="node_chat",
-        chat_id="chat-native-wake",
-        node_id=_EXPERIMENT_ID,
-        episode_id=episode.episode_id,
-        machine_id=BACKEND_MACHINE_ID,
-        check_command="false",
-        log_path=str(tmp_path / "detached.log"),
-        cwd=str(tmp_path),
-        continuation=continuation,
-        status="completed",
-        created_at="2026-08-06T00:00:00Z",
-    )
-
-    readiness = preflight_episode_wake(
-        runtime, episode, [watcher], store=AppStore(tmp_path / "app.sqlite3")
-    )
+    readiness = preflight_episode_wake(runtime, episode, store=AppStore(tmp_path / "app.sqlite3"))
 
     assert readiness.readiness == "ready"
     assert readiness.session_id == episode.native_session_id
@@ -1164,7 +1115,9 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
         context_baseline={**initial_baseline, "repositories": []},
     )
     delivered_id = episode.last_watcher_ids[0]
-    store.record_watcher_check(delivered_id, status="completed", exit_code=0, error=None)
+    store.record_watcher_check(
+        store.watcher(delivered_id).checks[0].check_id, status="completed", exit_code=0, error=None
+    )
     wake_request = _loop_request(
         episode_id,
         chat_id,
@@ -1186,7 +1139,6 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
     assert wake_execution.stage_root is not None
     stale_workspace = Path(wake_execution.stage_root) / "workspace"
     (stale_workspace / "patch.json").write_text("stale Patch", encoding="utf-8")
-    (stale_workspace / "watch.json").write_text("stale watcher", encoding="utf-8")
     launcher.patch_payload = {
         "summary": "Tried to update an unavailable graph node.",
         "ops": [
@@ -1266,7 +1218,7 @@ async def test_wake_uses_compact_contract_and_commits_baseline_only_after_handof
 
     failed_delivered_id = committed.last_watcher_ids[0]
     store.record_watcher_check(
-        failed_delivered_id,
+        store.watcher(failed_delivered_id).checks[0].check_id,
         status="completed",
         exit_code=0,
         error=None,
@@ -1396,7 +1348,9 @@ async def test_report_restriction_is_retired_until_a_same_session_turn_succeeds(
         episode = store.experiment_episode(episode_id)
         assert episode is not None
         delivered = episode.last_watcher_ids[0]
-        store.record_watcher_check(delivered, status="completed", exit_code=0, error=None)
+        store.record_watcher_check(
+            store.watcher(delivered).checks[0].check_id, status="completed", exit_code=0, error=None
+        )
         return _loop_request(
             episode_id,
             "chat-report-rebootstrap",
@@ -2080,7 +2034,7 @@ async def test_experiment_retry_recovers_after_atomic_handoff_failure(
         if injected:
             injected = False
             assert [item for item in service.history.load_patches() if item.source_operation_id]
-            assert store.watchers(project_id) == []
+            assert store.project_watchers(project_id) == []
             episode = store.experiment_episode(episode_id)
             assert episode is not None and not episode.session_bound
             raise ValueError("injected compound handoff failure")
@@ -2102,7 +2056,9 @@ async def test_experiment_retry_recovers_after_atomic_handoff_failure(
     assert root.stage_root is not None
     workspace = Path(root.stage_root) / "workspace"
     patch_before = (workspace / "patch.json").read_bytes()
-    watch_before = (workspace / "watch.json").read_bytes()
+    folder = workspace / "watchers"
+    (original_path,) = folder.glob("*.json")
+    watch_before = original_path.read_text()
     store.checkpoint_agent_task(
         root.operation_id,
         native_session_id=native_session_id,
@@ -2135,16 +2091,17 @@ async def test_experiment_retry_recovers_after_atomic_handoff_failure(
     assert not [event for event in retry_events if event.event == "error"]
     assert retry_launcher.sessions == [native_session_id]
     assert (workspace / "patch.json").read_bytes() == patch_before
-    assert (workspace / "watch.json").read_bytes() == watch_before
+    (retry_path,) = folder.glob("*.json")
+    assert retry_path.read_text() == watch_before
     loop_patches = [
         item
         for item in service.history.load_patches()
         if item.kind == "experiment_loop" and item.source_operation_id == root.operation_id
     ]
     assert len(loop_patches) == 1
-    watchers = store.watchers(project_id)
+    watchers = store.project_watchers(project_id)
     assert len(watchers) == 1
-    assert watchers[0].origin_operation_id == root.operation_id
+    assert watchers[0].origin_turn_id == retry.operation_id
     episode = store.experiment_episode(episode_id)
     assert episode is not None
     assert episode.last_turn_operation_id == retry.operation_id
@@ -2156,15 +2113,14 @@ async def test_experiment_retry_recovers_after_atomic_handoff_failure(
     ]
     assert len(prepared) == 1
     assert prepared[0].payload["patch_sha256"] == hashlib.sha256(patch_before).hexdigest()
-    assert prepared[0].payload["watch_sha256"] == hashlib.sha256(watch_before).hexdigest()
+    assert (
+        prepared[0].payload["watch_sha256"]
+        == hashlib.sha256(
+            json.dumps({original_path.name: watch_before}, sort_keys=True).encode()
+        ).hexdigest()
+    )
     assert "watch_text" not in prepared[0].payload
-    retry_comparison = [
-        item
-        for item in store.agent_task_receipts(retry.operation_id)
-        if item.category == "retry_deliverable_comparison"
-        and item.payload.get("filename") == "watch.json"
-    ]
-    assert retry_comparison and retry_comparison[-1].payload["consumed"] is True
+    assert store.agent_task_contract(retry.operation_id, "watcher_folder:0") == "{}"
     retry_prepared = [
         item
         for item in store.agent_task_receipts(retry.operation_id)
@@ -2212,608 +2168,65 @@ def _store_task(
 
 
 def _store_watcher(
-    store: AppStore,
-    *,
-    watcher_id: str,
-    project_id: str,
-    episode_id: str,
-    status: str,
-    notified: bool = False,
-    machine_id: str = BACKEND_MACHINE_ID,
+    store: AppStore, watcher_id: str, *, agent_id: str, completed: bool = False
 ) -> None:
     now = store.now()
-    continuation = WatcherContinuation(
-        provider="codex",
-        reasoning="medium",
-        run_on=BACKEND_MACHINE_ID,
-        run_truth_scope=["repo-a"],
-        patch_kind="experiment_loop",
-        control_node_id=_EXPERIMENT_ID,
-        control_revision=2,
-        control_episode_id=episode_id,
-        control_invocation=1,
-        control_invocation_ceiling=3,
-        control_decision_bundle=[],
-        control_completion_criteria=["The detached check is inspected."],
-    )
-    store.create_watchers(
-        [
-            WatcherRecord(
-                watcher_id=watcher_id,
-                project_id=project_id,
-                origin_operation_id=f"origin-{episode_id}",
-                origin_task_kind="node_chat",
-                chat_id="watcher-state-chat",
-                node_id=_EXPERIMENT_ID,
-                episode_id=episode_id,
-                machine_id=machine_id,
-                check_command="false",
-                log_path=f"/tmp/{watcher_id}.log",
-                cwd="/tmp",
-                continuation=continuation,
-                status=status,
-                created_at=now,
-                completed_at=now if status == "completed" else None,
-                notified=notified,
-            )
-        ]
-    )
-
-
-def test_staged_graph_watcher_state_uses_condition_fields_without_shell_telemetry(
-    tmp_path: Path,
-) -> None:
-    store = AppStore(tmp_path / "graph-watcher-state.sqlite3")
-    project_id = "project-graph-watcher-state"
-    episode_id = "00000000-0000-4000-8000-000000000099"
-    _store_task(
-        store,
-        operation_id="graph-watcher-root",
-        project_id=project_id,
-        episode_id=episode_id,
-        status="running",
-    )
-    evaluated_at = "2026-08-12T00:00:00+00:00"
-    continuation = WatcherContinuation(
-        provider="codex",
-        reasoning="medium",
-        run_on=BACKEND_MACHINE_ID,
-        run_truth_scope=["repo-a"],
-        patch_kind="experiment_loop",
-        control_node_id=_EXPERIMENT_ID,
-        control_revision=2,
-        control_episode_id=episode_id,
-        control_invocation=1,
-        control_invocation_ceiling=3,
-        control_decision_bundle=[],
-        control_completion_criteria=["The canonical blocker is resolved."],
-    )
-    store.create_watchers(
-        [
-            GraphWatcherRecord(
-                watcher_id="graph-condition",
-                project_id=project_id,
-                origin_operation_id="graph-watcher-root",
-                origin_task_kind="node_chat",
-                chat_id="watcher-state-chat",
-                node_id=_EXPERIMENT_ID,
-                condition=NodeStatusGraphCondition(
-                    node_id="blk/result",
-                    status_in=["resolved"],
-                ),
-                armed_revision=2,
-                continuation=continuation,
-                status="active",
-                created_at=evaluated_at,
-                last_evaluated_at=evaluated_at,
-            )
-        ]
-    )
-    execution = AgentTaskExecution(
-        operation_id="graph-watcher-root",
-        store=store,
-        control=AgentProcessControl(),
-    )
-
-    state = _watcher_state(
-        execution,
-        _EXPERIMENT_ID,
-        [],
-        episode_id,
-        "initial_run",
-    )
-
-    assert len(state) == 1
-    item = state[0]
-    assert item["condition"] == {"node_id": "blk/result", "status_in": ["resolved"]}
-    assert item["armed_revision"] == 2
-    assert item["last_evaluated_at"] == evaluated_at
-    assert not {
-        "check_command",
-        "log_path",
-        "cwd",
-        "last_checked_at",
-        "last_exit_code",
-        "last_error",
-        "next_check_at",
-        "consecutive_error_count",
-        "group_id",
-        "group_label",
-    }.intersection(item)
-
-
-@pytest.mark.asyncio
-async def test_node_chat_stages_current_experiment_watcher_state_and_clears_stale_output(
-    tmp_path: Path,
-) -> None:
-    store = AppStore(tmp_path / "chat-resource.sqlite3")
-    project_id = "project-chat-resource"
-    episode_id = "00000000-0000-4000-8000-000000000098"
-    _store_task(
-        store,
-        operation_id="loop-resource-root",
-        project_id=project_id,
-        episode_id=episode_id,
-    )
-    machine = store.create_space_machine(name="Episode", host="episode.example", os_account="rcp")
-    store.commit_experiment_episode_turn(
-        episode_id=episode_id,
-        project_id=project_id,
-        control_node_id=_EXPERIMENT_ID,
-        provider="codex",
-        machine_id=machine.machine_id,
-        native_session_id="loop-resource-session",
-        stage_machine_id=None,
-        stage_root=str(tmp_path / "loop-resource-stage"),
-        chat_id="watcher-state-chat",
-        operation_id="loop-resource-root",
-        invocation=1,
-        graph_result="no graph change",
-        watcher_ids=[],
-        context_baseline={},
-    )
-    _store_watcher(
-        store,
-        watcher_id="resource-active",
-        project_id=project_id,
-        episode_id=episode_id,
-        status="active",
-        machine_id=machine.machine_id,
-    )
-    request = RunRequest(
-        chat_scope="node",
-        chat_id="maintenance-chat",
-        node_id=_EXPERIMENT_ID,
-        message="Inspect the observer.",
-        run_truth_scope=["repo-a"],
-        mode="discuss",
-    )
-    execution = _execution(
-        store,
-        project_id,
-        "maintenance-discuss",
-        request,
-    )
-    stage = tmp_path / "maintenance-stage"
-    workspace = stage / "workspace"
-    workspace.mkdir(parents=True)
-    stale = workspace / experiment_watcher_output_name(_EXPERIMENT_ID, GraphTargetRef())
-    stale.write_text("stale", encoding="utf-8")
-
-    resources = await stage_chat_experiment_watcher_resources(
-        request,
-        execution,
-        stage,
-        None,
-        workspace=workspace,
-        token="maintenance-discuss",
-        clear_stale=True,
-    )
-
-    assert len(resources) == 1
-    resource = resources[0]
-    assert resource.resource.control_node_id == _EXPERIMENT_ID
-    assert resource.resource.episode_id == episode_id
-    assert resource.host == "episode.example"
-    assert resource.watch_path == str(
-        workspace / experiment_watcher_output_name(_EXPERIMENT_ID, GraphTargetRef())
-    )
-    assert not stale.exists()
-    state = json.loads(Path(resource.watcher_state_path).read_text(encoding="utf-8"))
-    assert [item["watcher_id"] for item in state] == ["resource-active"]
-
-
-@pytest.mark.parametrize("task_target_kind", ["main", "branch"])
-@pytest.mark.asyncio
-async def test_chat_watcher_resource_staging_is_exact_target_and_file_names_do_not_collide(
-    tmp_path: Path,
-    task_target_kind: str,
-) -> None:
-    branch = GraphTargetRef(kind="branch", branch_id="branch-resource-owner")
-    task_target = GraphTargetRef() if task_target_kind == "main" else branch
-    other_target = branch if task_target_kind == "main" else GraphTargetRef()
-    project_id = "project-target-resource"
-
-    def watcher(target: GraphTargetRef, suffix: str) -> WatcherRecord:
-        episode_id = f"episode-{suffix}"
-        return WatcherRecord(
-            watcher_id=f"watcher-{suffix}",
-            project_id=project_id,
-            origin_operation_id=f"root-{suffix}",
-            origin_task_kind="node_chat",
-            graph_target=target,
-            chat_id=f"chat-{suffix}",
-            node_id=_EXPERIMENT_ID,
-            episode_id=episode_id,
-            machine_id=BACKEND_MACHINE_ID,
-            check_command="false",
-            log_path=f"/tmp/{suffix}.log",
-            cwd="/tmp",
-            continuation=WatcherContinuation(
-                provider="codex",
-                run_on=BACKEND_MACHINE_ID,
-                patch_kind="experiment_loop",
-                control_node_id=_EXPERIMENT_ID,
-                control_revision=2,
-                control_episode_id=episode_id,
-                control_invocation=1,
-                control_invocation_ceiling=3,
-            ),
-            status="active",
-            created_at="2026-08-17T00:00:00+00:00",
+    store.arm_watcher(
+        WatcherRecord(
+            watcher_id=watcher_id,
+            agent_id=agent_id,
+            project_id="project-watcher-state",
+            purpose=watcher_id,
+            origin_turn_id="current-root",
+            created_at=now,
+            checks=[
+                WatcherCheckRecord(
+                    check_id=watcher_id,
+                    watcher_id=watcher_id,
+                    definition="external",
+                    check_command="false",
+                    log_path=f"/tmp/{watcher_id}.log",
+                    cwd="/tmp",
+                    created_at=now,
+                    completed_at=now if completed else None,
+                )
+            ],
         )
-
-    main_watcher = watcher(GraphTargetRef(), "main")
-    branch_watcher = watcher(branch, "branch")
-    resources = [
-        ExperimentWatcherResourceRecord(
-            project_id=project_id,
-            control_node_id=_EXPERIMENT_ID,
-            episode_id=record.episode_id or "",
-            graph_target=record.graph_target,
-            machine_id=BACKEND_MACHINE_ID,
-            wake_task_kind="node_chat",
-            wake_chat_id=record.chat_id,
-            continuation=record.continuation,
-            watcher_snapshot_token=f"snapshot-{record.graph_target.key}",
-        )
-        for record in (main_watcher, branch_watcher)
-    ]
-    requested_targets: list[GraphTargetRef | None] = []
-
-    class Store:
-        def backend_space_machine(self) -> SimpleNamespace:
-            return SimpleNamespace(host="")
-
-        def agent_task(self, operation_id: str) -> SimpleNamespace:
-            assert operation_id == "target-resource-chat"
-            return SimpleNamespace(project_id=project_id, graph_target=task_target)
-
-        def watchers(self, requested_project_id: str) -> list[WatcherRecord]:
-            assert requested_project_id == project_id
-            return [main_watcher, branch_watcher]
-
-        def experiment_watcher_resources(
-            self,
-            requested_project_id: str,
-            *,
-            graph_target: GraphTargetRef | None = None,
-        ) -> list[ExperimentWatcherResourceRecord]:
-            assert requested_project_id == project_id
-            requested_targets.append(graph_target)
-            return [item for item in resources if item.graph_target == graph_target]
-
-    execution = SimpleNamespace(operation_id="target-resource-chat", store=Store())
-    request = RunRequest(
-        chat_scope="node",
-        chat_id="target-resource-chat",
-        node_id=_EXPERIMENT_ID,
-        message="Inspect only this graph target's observers.",
-        mode="discuss",
-    )
-    stage = tmp_path / f"stage-{task_target_kind}"
-    workspace = stage / "workspace"
-    workspace.mkdir(parents=True)
-
-    staged = await stage_chat_experiment_watcher_resources(
-        request,
-        execution,
-        stage,
-        None,
-        workspace=workspace,
-        token=f"target-resource-{task_target_kind}",
-        clear_stale=True,
     )
 
-    assert requested_targets == [task_target, task_target]
-    assert len(staged) == 1
-    assert staged[0].resource.graph_target == task_target
-    target_name = experiment_watcher_output_name(_EXPERIMENT_ID, task_target)
-    other_name = experiment_watcher_output_name(_EXPERIMENT_ID, other_target)
-    assert target_name != other_name
-    assert staged[0].watch_path == str(workspace / target_name)
-    state = json.loads(Path(staged[0].watcher_state_path).read_text(encoding="utf-8"))
-    assert [item["watcher_id"] for item in state] == [
-        "watcher-main" if task_target.kind == "main" else "watcher-branch"
-    ]
 
-
-@pytest.mark.asyncio
-async def test_unstaged_experiment_watcher_output_is_permission_rejected(tmp_path: Path) -> None:
-    """The unstaged path is rejected before graph-state access."""
-    store = AppStore(tmp_path / "unstaged-resource.sqlite3")
-    project_id = "project-unstaged-resource"
-    request = RunRequest(
-        chat_scope="node",
-        chat_id="maintenance-chat",
-        node_id=_EXPERIMENT_ID,
-        message="Try an unstaged resource.",
-        run_truth_scope=["repo-a"],
-        mode="work",
-    )
-    execution = _execution(store, project_id, "maintenance-work", request)
-    workspace = tmp_path / "unstaged-workspace"
-    workspace.mkdir()
-    guessed = workspace / experiment_watcher_output_name("exp/outside-scope", GraphTargetRef())
-    guessed.write_text('{"external":[],"graph":[]}', encoding="utf-8")
-
-    frames, session_id, paused = await _process_experiment_watcher_maintenance(
-        service=None,
-        launcher=_LoopLauncher("maintenance-session", tmp_path, write_handoff=False),
-        request=request,
-        execution=execution,
-        staged_resources=[],
-        workspace=workspace,
-        remote_stage=None,
-        local_stage=tmp_path / "unstaged-stage",
-        token="maintenance-work",
-        native_session_id="maintenance-session",
-        read_dirs=[],
-        write_dirs=[],
-        write_scope=_empty_project_write_scope(workspace, project_id),
-        execution_host="",
-        provider_binary=None,
-        retry_output_digests={},
-    )
-
-    assert frames == []
-    assert session_id == "maintenance-session"
-    assert paused is False
-    rejection = next(
-        item
-        for item in store.agent_task_receipts(execution.operation_id)
-        if item.category == "experiment_watcher_maintenance_rejected"
-    )
-    assert "not staged" in str(rejection.payload["problem"])
-
-
-@pytest.mark.asyncio
-async def test_retry_does_not_reapply_a_previous_attempts_watcher_file(tmp_path: Path) -> None:
-    """A Retry reuses the chat folder, so a survivor is not this attempt's handoff.
-
-    Applying it would commit the previous attempt's maintenance under this
-    attempt's authorization; conversation scratch belongs to the stable chat,
-    not to one turn (`clear_turn_handoff_files`).
-
-    An unchanged Retry survivor is skipped before graph-state access.
-    """
-
-    store = AppStore(tmp_path / "retry-survivor.sqlite3")
-    project_id = "project-retry-survivor"
-    request = RunRequest(
-        chat_scope="node",
-        chat_id="maintenance-chat",
-        node_id=_EXPERIMENT_ID,
-        message="Repair the observers.",
-        run_truth_scope=["repo-a"],
-        mode="work",
-    )
-    parent = _execution(
-        store,
-        project_id,
-        "maintenance-work",
-        request,
-    )
-    store.fail_agent_task(parent.operation_id, "Interrupted before watcher maintenance.")
-    execution = _execution(
-        store,
-        project_id,
-        "maintenance-retry",
-        request,
-        continuation="retry",
-        parent_operation_id="maintenance-work",
-    )
-    workspace = tmp_path / "retry-workspace"
-    workspace.mkdir()
-    survivor = workspace / experiment_watcher_output_name(_EXPERIMENT_ID, GraphTargetRef())
-    survivor_text = '{"external":[{"stop_watcher_id":"w-1","reason":"Superseded"}],"graph":[]}'
-    survivor.write_text(survivor_text, encoding="utf-8")
-    predecessor_digest = hashlib.sha256(survivor_text.encode("utf-8")).hexdigest()
-
-    frames, session_id, paused = await _process_experiment_watcher_maintenance(
-        service=None,
-        launcher=_LoopLauncher("maintenance-session", tmp_path, write_handoff=False),
-        request=request,
-        execution=execution,
-        staged_resources=[],
-        workspace=workspace,
-        remote_stage=None,
-        local_stage=tmp_path / "retry-stage",
-        token="maintenance-retry",
-        native_session_id="maintenance-session",
-        read_dirs=[],
-        write_dirs=[],
-        write_scope=_empty_project_write_scope(workspace, project_id),
-        execution_host="",
-        provider_binary=None,
-        retry_output_digests={survivor.name: predecessor_digest},
-    )
-
-    assert frames == []
-    assert session_id == "maintenance-session"
-    assert paused is False
-    receipts = store.agent_task_receipts("maintenance-retry")
-    comparisons = [item for item in receipts if item.category == "retry_deliverable_comparison"]
-    assert [item.payload["unchanged"] for item in comparisons] == [True]
-    assert not [
-        item for item in receipts if item.category == "experiment_watcher_maintenance_rejected"
-    ]
-
-
-def test_watcher_state_includes_current_and_compatible_stopped_history(
+def test_watcher_state_lists_the_agents_open_watchers_and_the_ones_that_woke_it(
     tmp_path: Path,
 ) -> None:
     store = AppStore(tmp_path / "watcher-state.sqlite3")
-    project_id = "project-watcher-state"
-    older_episode = "00000000-0000-4000-8000-000000000070"
-    stopped_episode = "00000000-0000-4000-8000-000000000071"
-    current_episode = "00000000-0000-4000-8000-000000000072"
-    _store_task(
-        store,
-        operation_id="older-root",
-        project_id=project_id,
-        episode_id=older_episode,
-    )
-    older_stopped = store.request_experiment_loop_stop(
-        project_id, _EXPERIMENT_ID, graph_target=GraphTargetRef()
-    )
-    assert older_stopped is not None and older_stopped.stop_settled_at is not None
-    _store_task(
-        store,
-        operation_id="stopped-root",
-        project_id=project_id,
-        episode_id=stopped_episode,
-    )
-    store.commit_experiment_episode_turn(
-        episode_id=stopped_episode,
-        project_id=project_id,
-        control_node_id=_EXPERIMENT_ID,
-        provider="codex",
-        machine_id=BACKEND_MACHINE_ID,
-        native_session_id="stopped-session",
-        stage_machine_id=None,
-        stage_root="/tmp/stopped-stage",
-        chat_id="watcher-state-chat",
-        operation_id="stopped-root",
-        invocation=1,
-        graph_result="no graph change",
-        watcher_ids=[],
-        context_baseline={},
-    )
-    stopped = store.request_experiment_loop_stop(
-        project_id, _EXPERIMENT_ID, graph_target=GraphTargetRef()
-    )
-    assert stopped is not None and stopped.stop_requested_at is not None
     _store_task(
         store,
         operation_id="current-root",
-        project_id=project_id,
-        episode_id=current_episode,
+        project_id="project-watcher-state",
+        episode_id="00000000-0000-4000-8000-000000000072",
         status="running",
     )
-
-    _store_watcher(
-        store,
-        watcher_id="older-stopped",
-        project_id=project_id,
-        episode_id=older_episode,
-        status="stopped",
-        notified=True,
-    )
-    _store_watcher(
-        store,
-        watcher_id="previous-stopped",
-        project_id=project_id,
-        episode_id=stopped_episode,
-        status="stopped",
-        notified=True,
-    )
-    _store_watcher(
-        store,
-        watcher_id="previous-completed-notified",
-        project_id=project_id,
-        episode_id=stopped_episode,
-        status="completed",
-        notified=True,
-    )
-    _store_watcher(
-        store,
-        watcher_id="current-active",
-        project_id=project_id,
-        episode_id=current_episode,
-        status="active",
-    )
-    _store_watcher(
-        store,
-        watcher_id="current-completed",
-        project_id=project_id,
-        episode_id=current_episode,
-        status="completed",
-    )
-    _store_watcher(
-        store,
-        watcher_id="current-stopped",
-        project_id=project_id,
-        episode_id=current_episode,
-        status="stopped",
-        notified=True,
-    )
-    _store_watcher(
-        store,
-        watcher_id="current-completed-notified",
-        project_id=project_id,
-        episode_id=current_episode,
-        status="completed",
-        notified=True,
-    )
-    _store_watcher(
-        store,
-        watcher_id="delivered-notified",
-        project_id=project_id,
-        episode_id=stopped_episode,
-        status="completed",
-        notified=True,
-    )
+    agent = "watcher-state-chat"
+    _store_watcher(store, "open", agent_id=agent)
+    _store_watcher(store, "ready", agent_id=agent, completed=True)
+    _store_watcher(store, "cancelled", agent_id=agent)
+    store.cancel_watchers(["cancelled"], by="agent")
+    _store_watcher(store, "delivered", agent_id=agent, completed=True)
+    with store.connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        assert store.claim_watcher_wake(connection, agent, ["delivered"], "earlier-wake")
+    _store_watcher(store, "other-agent", agent_id="another-chat")
     execution = AgentTaskExecution(
-        operation_id="current-root",
-        store=store,
-        control=AgentProcessControl(),
+        operation_id="current-root", store=store, control=AgentProcessControl()
     )
 
-    initial_ids = {
-        item["watcher_id"]
-        for item in _watcher_state(
-            execution,
-            _EXPERIMENT_ID,
-            [],
-            current_episode,
-            "initial_run",
-        )
+    assert {item["watcher_id"] for item in _watcher_state(execution, agent, [])} == {
+        "open",
+        "ready",
     }
-    assert initial_ids == {
-        "older-stopped",
-        "previous-stopped",
-        "current-active",
-        "current-completed",
-        "current-stopped",
-    }
-
-    wake_ids = {
-        item["watcher_id"]
-        for item in _watcher_state(
-            execution,
-            _EXPERIMENT_ID,
-            ["delivered-notified"],
-            current_episode,
-            "watcher_wake",
-        )
-    }
-    assert wake_ids == {
-        "delivered-notified",
-        "current-active",
-        "current-completed",
-        "current-stopped",
-    }
+    staged = _watcher_state(execution, agent, ["delivered"])
+    assert {item["watcher_id"] for item in staged} == {"open", "ready", "delivered"}
+    assert {item["watcher_id"]: item["state"] for item in staged}["ready"] == "finished"
 
 
 def test_experiment_graph_result_tells_the_next_wake_each_commit_certainty_apart() -> None:

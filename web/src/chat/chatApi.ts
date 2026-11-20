@@ -1,3 +1,4 @@
+import { projectAgentPath } from "../agents/agentRoutes.ts";
 import { graphTargetUrl, MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget";
 import type { GraphTargetRef } from "../core/types";
 import type { ChatSummary, ChatSummaryPage, ChatTranscript } from "../core/types";
@@ -96,7 +97,7 @@ export async function loadChatTranscript(
   graphTarget: GraphTargetRef = MAIN_GRAPH,
 ): Promise<ChatTranscript> {
   const transcript = await request(
-    graphTargetUrl(`${apiBase}/chats/${encodeURIComponent(chatId)}`, graphTarget),
+    graphTargetUrl(projectAgentPath(apiBase, chatId, "transcript"), graphTarget),
   );
   if (!sameGraphTarget(transcript.graph_target, graphTarget))
     throw new Error("Conversation returned a different graph target.");

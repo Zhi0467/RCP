@@ -14,21 +14,17 @@ import subprocess
 import tempfile
 import uuid
 from collections.abc import Iterable
-from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from rcp.limits import (
     CHAT_ARTIFACT_MAX_FILE_BYTES,
-    PROJECT_TRANSFER_MANIFEST_MAX_BYTES,
     REMOTE_ARTIFACT_READ_TIMEOUT_SECONDS,
     REMOTE_RUN_STAGE_COMMAND_TIMEOUT_SECONDS,
-    REMOTE_SOURCE_OPERATION_TIMEOUT_SECONDS,
     RUN_STAGE_INPUT_TRANSFER_TIMEOUT_SECONDS,
     RUN_STAGE_RETENTION_DAYS,
 )
 from rcp.rcp_home import rcp_temp_dir
 from rcp.regular_tree_reader import RegularTree
-from rcp.sources import ImportedProviderSourceInventory, ImportedProviderSourceStore
 from rcp.transport import remote_stage_root, state_transfer
 from rcp.transport.ssh import rsync_ssh_arguments, ssh_arguments
 from rcp.transport.state import (
@@ -68,13 +64,6 @@ def _ssh_failure(
     if result.returncode == 255:
         return StateUnreachable(detail)
     return answered(detail)
-
-
-@dataclass(frozen=True)
-class ImportedProviderSourceReadback:
-    fingerprint: str
-    file_count: int
-    payload_size_bytes: int
 
 
 def run_stage_partition(host: str, root: str | PurePosixPath | None) -> str | None:
@@ -433,85 +422,6 @@ print(json.dumps({'home':os.path.realpath(os.path.expanduser('~')),'paths':resol
         if reuse:
             self._reusable_inputs.add(safe_label)
         return str(remote)
-
-    def put_imported_provider_sources(
-        self,
-        source_store: ImportedProviderSourceStore,
-        inventory: ImportedProviderSourceInventory,
-        label: str,
-    ) -> str:
-        """Queue exactly one validated project-owned provider-history inventory."""
-
-        if self.root is None:
-            raise RuntimeError("remote run stage is not open")
-        if not inventory.files:
-            raise ValueError("imported provider source inventory is empty")
-        safe_label = _safe_label(label)
-        if safe_label != label:
-            raise ValueError("remote input label contains unsupported characters")
-        remote = self.root / "inputs" / safe_label
-        pending = self._pending_input_root() / safe_label
-        if pending.exists():
-            raise ValueError(f"immutable remote task input already exists: {safe_label}")
-        _copy_imported_provider_sources(source_store.root, pending, inventory)
-        return str(remote)
-
-    def verify_imported_provider_sources(
-        self,
-        inventory: ImportedProviderSourceInventory,
-        label: str,
-    ) -> ImportedProviderSourceReadback:
-        """Read back one immutable staged inventory without returning its contents."""
-
-        if self.root is None:
-            raise RuntimeError("remote run stage is not open")
-        if not inventory.files:
-            raise ValueError("imported provider source inventory is empty")
-        safe_label = _safe_label(label)
-        if safe_label != label:
-            raise ValueError("remote input label contains unsupported characters")
-        files = [item.model_dump(mode="json") for item in inventory.files]
-        encoded_inventory = json.dumps(files, separators=(",", ":")).encode()
-        if len(encoded_inventory) > PROJECT_TRANSFER_MANIFEST_MAX_BYTES:
-            raise ValueError("imported provider source inventory exceeds its byte bound")
-        result = self._ssh_bytes(
-            [
-                "python3",
-                "-I",
-                "-c",
-                _remote_script("remote_verify_imported_sources.py"),
-                str(self.root),
-                safe_label,
-                inventory.project_id,
-                inventory.fingerprint,
-                str(PROJECT_TRANSFER_MANIFEST_MAX_BYTES),
-            ],
-            input_data=encoded_inventory,
-            timeout_seconds=REMOTE_SOURCE_OPERATION_TIMEOUT_SECONDS,
-        )
-        error = result.stderr.decode("utf-8", errors="replace").strip()
-        if result.returncode == 255:
-            raise _ssh_failure(result, "could not verify staged provider sources")
-        if result.returncode:
-            raise ValueError(error or "staged provider sources differ from their inventory")
-        try:
-            payload = json.loads(result.stdout.decode("utf-8"))
-            readback = ImportedProviderSourceReadback(
-                fingerprint=payload["fingerprint"],
-                file_count=payload["file_count"],
-                payload_size_bytes=payload["payload_size_bytes"],
-            )
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise StateUnavailable(
-                "staged provider source verification returned invalid data"
-            ) from exc
-        if (
-            readback.fingerprint != inventory.fingerprint
-            or readback.file_count != len(inventory.files)
-            or readback.payload_size_bytes != inventory.payload_size_bytes
-        ):
-            raise ValueError("staged provider source readback differs from its inventory")
-        return readback
 
     def _remote_directory_matches(self, source: Path, remote: PurePosixPath) -> bool:
         if self.root is None:
@@ -1097,6 +1007,15 @@ finally:
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise StateUnavailable("remote artifact listing was invalid") from exc
 
+    def replace_watcher_folder(self, files: dict[str, str]) -> None:
+        source = (Path(__file__).parent / "watcher_workspace.py").read_text(encoding="utf-8")
+        result = self._ssh_bytes(
+            ["python3", "-I", "-c", source, str(self.workspace)],
+            input_data=json.dumps(files).encode("utf-8"),
+        )
+        if result.returncode:
+            raise _ssh_failure(result, "could not stage the watcher folder")
+
     def read_workspace_directory(
         self,
         name: str,
@@ -1314,99 +1233,6 @@ def _safe_label(value: str) -> str:
     if not label:
         raise ValueError("remote stage label is empty")
     return label
-
-
-def _copy_imported_provider_sources(
-    source_root: Path,
-    destination: Path,
-    inventory: ImportedProviderSourceInventory,
-) -> None:
-    """Copy only inventory-named files while rechecking every byte and parent."""
-
-    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    file_flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
-    descriptors: list[int] = []
-    provider_descriptors: dict[str, int] = {}
-    try:
-        root_descriptor = os.open(source_root, directory_flags)
-        descriptors.append(root_descriptor)
-        root_info = os.fstat(root_descriptor)
-        if not stat.S_ISDIR(root_info.st_mode) or stat.S_IMODE(root_info.st_mode) != 0o700:
-            raise ValueError("imported provider source root must be a private directory")
-        destination.mkdir(mode=0o700)
-        for item in inventory.files:
-            provider_descriptor = provider_descriptors.get(item.provider)
-            if provider_descriptor is None:
-                provider_descriptor = os.open(
-                    item.provider,
-                    directory_flags,
-                    dir_fd=root_descriptor,
-                )
-                descriptors.append(provider_descriptor)
-                provider_info = os.fstat(provider_descriptor)
-                if (
-                    not stat.S_ISDIR(provider_info.st_mode)
-                    or stat.S_IMODE(provider_info.st_mode) != 0o700
-                ):
-                    raise ValueError(
-                        "imported provider source provider root must be a private directory"
-                    )
-                provider_descriptors[item.provider] = provider_descriptor
-                (destination / item.provider).mkdir(mode=0o700)
-            source_descriptor = os.open(
-                item.sha256,
-                file_flags,
-                dir_fd=provider_descriptor,
-            )
-            target_descriptor = -1
-            try:
-                source_info = os.fstat(source_descriptor)
-                if (
-                    not stat.S_ISREG(source_info.st_mode)
-                    or stat.S_IMODE(source_info.st_mode) != 0o400
-                ):
-                    raise ValueError("imported provider source is not a read-only regular file")
-                target = destination / item.provider / item.sha256
-                target_descriptor = os.open(
-                    target,
-                    os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
-                    0o600,
-                )
-                digest = hashlib.sha256()
-                size = 0
-                while True:
-                    chunk = os.read(source_descriptor, 1024 * 1024)
-                    if not chunk:
-                        break
-                    view = memoryview(chunk)
-                    while view:
-                        written = os.write(target_descriptor, view)
-                        if written <= 0:
-                            raise OSError("short imported provider source stage write")
-                        view = view[written:]
-                    digest.update(chunk)
-                    size += len(chunk)
-                if (digest.hexdigest(), size) != (item.sha256, item.size_bytes):
-                    raise ValueError("imported provider source changed during remote staging")
-            finally:
-                os.close(source_descriptor)
-                if target_descriptor >= 0:
-                    os.close(target_descriptor)
-        observed = {
-            f"{provider.name}/{item.name}"
-            for provider in destination.iterdir()
-            for item in provider.iterdir()
-        }
-        expected = {f"{item.provider}/{item.sha256}" for item in inventory.files}
-        if observed != expected:
-            raise ValueError("staged provider source copy differs from its inventory")
-    except BaseException:
-        if destination.exists():
-            shutil.rmtree(destination)
-        raise
-    finally:
-        for descriptor in reversed(descriptors):
-            os.close(descriptor)
 
 
 def _tree_entries(root: Path) -> list[str]:

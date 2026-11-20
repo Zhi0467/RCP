@@ -103,10 +103,7 @@ class _OpenCodeRunTurn(_JsonlProviderTurn):
             request.hidden_read_scope,
             request.invocation_gate,
         )
-        if (
-            request.capability in {"discuss", "scratch_patch"}
-            and request.invocation_gate is not None
-        ):
+        if request.capability == "discuss" and request.invocation_gate is not None:
             self.command[self.command.index("--agent") + 1] = _agent_name(permission)
         self.environment = profile.launch_environment(request, permission=permission)
         self._session_seen = False
@@ -459,7 +456,7 @@ def _permission(
         # Work has an unbounded shell. Other capabilities keep their narrow
         # file-edit rules, including Discuss when its browser is granted.
         base["bash"] = "allow"
-    elif capability in {"discuss", "scratch_patch"}:
+    elif capability == "discuss":
         bash = {"*": "deny"}
         if (
             capability == "discuss"

@@ -6,11 +6,6 @@ import pytest
 
 from rcp.core.models import GraphState, Patch
 from rcp.history import HistoryManager, PatchRejected
-from rcp.machine_cards import BACKEND_MACHINE_ID
-from rcp.runs.tasks.graph import _read_prepared_graph_context, _stage_prepared_graph_context
-from rcp.service import RunRequest
-from rcp.storage import AgentTaskRecord
-from tests.helpers import create_named_app as create_app
 from tests.helpers import seed_patch, unchecked_write_authority
 
 
@@ -79,60 +74,3 @@ def test_old_graph_snapshot_discards_reading_report_without_mutating_input() -> 
     assert state.revision == 3
     assert "coverage" not in state.model_dump()
     assert raw["coverage"]["note"] == "Old report"
-
-
-def test_retained_stage_from_before_the_retirement_still_reuses_its_context(
-    manifest, tmp_path
-) -> None:
-    """An upgrade can land while a Seed or Refresh keeps a retained stage whose version-2 context
-    names `coverage_path`. `RunContext` forbids extras, so without the retirement allowlist a native
-    continuation would fail and force a rebuild. The file on disk stays as evidence, and only the
-    retired key is dropped.
-    """
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    context = service.assemble_run(RunRequest(run_truth_scope=["repo-a"]), surface="refresh")
-    stage = tmp_path / "stage"
-    stage.mkdir()
-    _stage_prepared_graph_context(
-        stage,
-        None,
-        project_id="project",
-        kind="refresh",
-        graph_revision=context.graph_revision,
-        machine_id=BACKEND_MACHINE_ID,
-        original_contract_path=str(stage / "inputs/task.md"),
-        context=context,
-    )
-    prepared_path = stage / "inputs/prepared-context.json"
-    payload = json.loads(prepared_path.read_text(encoding="utf-8"))
-    payload["context"]["coverage_path"] = str(manifest.research_dir / "coverage.json")
-    prepared_path.chmod(0o600)
-    prepared_path.write_text(json.dumps(payload), encoding="utf-8")
-
-    now = "2026-08-04T12:00:00+00:00"
-    record = AgentTaskRecord(
-        operation_id="parent",
-        project_id="project",
-        kind="refresh",
-        status="failed",
-        request={"provider": "codex"},
-        created_at=now,
-        updated_at=now,
-        status_message="failed",
-        attempt=1,
-        stage_root=str(stage),
-    )
-
-    prepared = _read_prepared_graph_context(record, app.state.background_tasks.store)
-
-    assert prepared.graph_revision == context.graph_revision
-    assert prepared.context.research_md_path == context.research_md_path
-    assert "coverage_path" not in prepared.context.model_dump()
-    assert json.loads(prepared_path.read_text(encoding="utf-8"))["context"]["coverage_path"]
-
-    payload["context"]["unrecognized_path"] = "/tmp/unknown"
-    prepared_path.write_text(json.dumps(payload), encoding="utf-8")
-
-    with pytest.raises(ValueError, match="unrecognized_path"):
-        _read_prepared_graph_context(record, app.state.background_tasks.store)

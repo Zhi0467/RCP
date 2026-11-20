@@ -1,3 +1,4 @@
+import { projectAgentPath, threadPath } from "./agents/agentRoutes.ts";
 import { projectGroupHash } from "./projects/projectGroups";
 import { EvidenceFlagProvider } from "./graph/EvidenceFlagContext";
 import { StaleEdgeProvider } from "./graph/StaleEdgeContext";
@@ -106,6 +107,7 @@ import {
   Network,
   RefreshCw,
   RotateCcw,
+  RotateCw,
   Settings,
   Telescope,
   SquareTerminal,
@@ -189,7 +191,6 @@ import {
 import {
   projectGraphMutationFailureLabel,
   projectGraphMutationsDisabled,
-  taskMayMutateGraph,
 } from "./graph/graphAuthority";
 import { buildGlossaryIndex } from "./graph/glossary";
 import {
@@ -1087,15 +1088,6 @@ function MemberApp({
     backendSessionReady && projectId ? watchersProfile(projectId, graphTarget) : null,
   );
   const watchers = useMemo(() => watcherView.value ?? [], [watcherView.value]);
-  const setWatchers = useCallback(
-    (update: WatcherRecord[] | ((current: WatcherRecord[]) => WatcherRecord[])) => {
-      if (!projectId) return;
-      const id = resourceKeyId(watcherResourceKey(projectId, graphTarget));
-      const current = store.view<WatcherRecord[]>(id).value ?? [];
-      store.write(id, typeof update === "function" ? update(current) : update);
-    },
-    [store, projectId, graphTarget],
-  );
   const {
     view,
     trustView,
@@ -1107,7 +1099,6 @@ function MemberApp({
     selectedExperimentRoute,
     selectedAutoResearchEpisodeId,
     experimentStopIds,
-    watcherCheckId,
     dockedNodeIds,
     dagRelationFocusId,
     panelRef,
@@ -1133,7 +1124,6 @@ function MemberApp({
     clearExperimentFocus,
     showExperiment,
     beginExperimentStop,
-    beginWatcherCheck,
     clearDagRelationFocus,
     forgetProjectViewport,
   } = useGraphSelection({
@@ -1404,15 +1394,12 @@ function MemberApp({
   const { floatingChat, draftConversations, selectedChatId, chatReads, chatTranscripts } =
     chatStateSnapshot;
   const {
-    runDialogOpen,
     autoResearchDialogOpen,
     autoResearchStartError,
     episodeAction,
     episodeRefreshError,
     episodes,
     liveAutoResearchEpisodes,
-    openRunDialog,
-    closeRunDialog,
     openAutoResearchDialog,
     closeAutoResearchDialog,
     reportAutoResearchStartError,
@@ -1892,6 +1879,19 @@ function MemberApp({
       );
     return profiles.map((profile) => resourceKeyId(profile.key));
   }, [backendSessionReady, projectId, graphTarget, apiBase, view, pinsProfile]);
+  const [projectReloading, setProjectReloading] = useState(false);
+  const reloadOpenProject = async () => {
+    if (projectReloading || !projectId) return;
+    setProjectReloading(true);
+    const ids = new Set([...panelRequiredIds, resourceKeyId(settingsProfile(projectId).key)]);
+    try {
+      await Promise.all(Array.from(ids, (id) => store.refresh(id)));
+    } catch (error) {
+      if (isActiveProject(projectId)) reportErrorNotice(errorMessage(error));
+    } finally {
+      setProjectReloading(false);
+    }
+  };
   const panelAdmission = useResourcePresentation("project-panel", panelKey, panelRequiredIds);
   const admittedGraph = panelAdmission.views[0]?.value as ProjectSnapshot | undefined;
   const graphAtAdmittedHead = Boolean(
@@ -2815,11 +2815,8 @@ function MemberApp({
   ]);
 
   useEffect(() => {
-    if (mutationsDisabled) {
-      closeRunDialog();
-      closeAutoResearchDialog();
-    }
-  }, [closeAutoResearchDialog, closeRunDialog, mutationsDisabled]);
+    if (mutationsDisabled) closeAutoResearchDialog();
+  }, [closeAutoResearchDialog, mutationsDisabled]);
 
   // A conversation a task names but the inventory lacks has unknown ownership,
   // so its composer stays closed; fetch the inventory once to resolve it.
@@ -3115,7 +3112,10 @@ function MemberApp({
       try {
         const task = await api<AgentTask>(
           kind === "node_chat" || kind === "project_chat"
-            ? graphTargetUrl(`${apiBase}/tasks/${kind}`, target)
+            ? graphTargetUrl(
+                projectAgentPath(apiBase, request.chat_id ?? admissionId, "turns"),
+                target,
+              )
             : `${apiBase}/tasks/${kind}`,
           {
             method: "POST",
@@ -3282,27 +3282,6 @@ function MemberApp({
     },
     [requestExperimentStop],
   );
-
-  const checkExperimentWatcher = async (watcherId: string) => {
-    if (!apiBase || watcherCheckId || taskStarting || taskActionId || mutationsDisabled) return;
-    const watcher = watchers.find((candidate) => candidate.watcher_id === watcherId);
-    if (watcher?.episode_id && experimentStopIds.has(watcher.episode_id)) return;
-    const finishWatcherCheck = beginWatcherCheck(watcherId);
-    try {
-      const checked = await api<WatcherRecord>(
-        `${apiBase}/watchers/${encodeURIComponent(watcherId)}/check`,
-        { method: "POST" },
-      );
-      setWatchers((current) =>
-        current.map((watcher) => (watcher.watcher_id === checked.watcher_id ? checked : watcher)),
-      );
-      await reload();
-    } catch (error) {
-      setNotice({ kind: "error", text: error instanceof Error ? error.message : String(error) });
-    } finally {
-      finishWatcherCheck();
-    }
-  };
 
   const startExperiment = useCallback(
     async (
@@ -3480,21 +3459,6 @@ function MemberApp({
     },
     [project, startExperiment],
   );
-
-  const runAgent = async (config: AgentRunConfig, message: string | null) => {
-    if (!project || taskStarting || mutationsDisabled) return;
-    const runKind = project.last_refresh_at ? "refresh" : "seed";
-    try {
-      await startAgentTask(runKind, {
-        ...config,
-        model: config.model || null,
-        message,
-      });
-      closeRunDialog();
-    } catch (caught) {
-      setNotice({ kind: "error", text: caught instanceof Error ? caught.message : String(caught) });
-    }
-  };
 
   const autoResearchRefusal = autoResearchStartRefusal({
     projectOpen: Boolean(project && apiBase),
@@ -3844,7 +3808,6 @@ function MemberApp({
     presentTask = true,
   ) => {
     if (taskActionId || !projectId) return;
-    if (action !== "pause" && mutationsDisabled && taskMayMutateGraph(task)) return;
     const finish = beginTaskAction(task.operation_id);
     if (!finish) return;
     try {
@@ -3927,11 +3890,16 @@ function MemberApp({
     const requestId = taskActionRequestIds.current.get(admissionKey) ?? crypto.randomUUID();
     taskActionRequestIds.current.set(admissionKey, requestId);
     try {
-      const next = await api<AgentTask>(`${apiBase}/tasks/${task.operation_id}/retry`, {
-        method: "POST",
-        headers: { "Idempotency-Key": requestId },
-        body,
-      });
+      const next = await api<AgentTask>(
+        task.request.chat_id
+          ? `${threadPath(task.request.chat_id)}/tasks/${encodeURIComponent(task.operation_id)}/retry`
+          : `${apiBase}/tasks/${encodeURIComponent(task.operation_id)}/retry`,
+        {
+          method: "POST",
+          headers: { "Idempotency-Key": requestId },
+          body,
+        },
+      );
       taskActionRequestIds.current.delete(admissionKey);
       mutation.settle(next);
       if (isActiveGraph(task.project_id)) {
@@ -3972,10 +3940,6 @@ function MemberApp({
       setComposerRetry(task);
       if (chatId && chatId !== floatingChat?.chatId && chatId !== selectedExperimentChatId)
         openChats(chatId);
-      return;
-    }
-    if (task.kind === "seed" || task.kind === "refresh") {
-      chooseRetryTask(task);
       return;
     }
     void operateTask(task, "retry");
@@ -4777,7 +4741,6 @@ function MemberApp({
   const attentionCount =
     pendingProposals.length + attentionDecisions.length + openBlockers.length + consolidationCount;
   const showTrustFilter = view === "scientific" || view === "dag";
-  const runKind = project.last_refresh_at ? "refresh" : "seed";
   const replayWarning = projectGraphMutationFailureLabel(project);
   const selectedExperimentExecution = projectExperimentExecution(
     Object.values(presentedGraph.nodes),
@@ -4990,17 +4953,15 @@ function MemberApp({
         {activeTask ? <span className="activity-pulse" /> : null}
       </button>
       <button
-        className="icon-button primary refresh-control"
-        disabled={
-          mutationsDisabled ||
-          projectReconciliation !== "authoritative" ||
-          !project.canonical_state.reachable ||
-          taskStarting
-        }
-        aria-label={runKind === "seed" ? "Seed project" : "Refresh project"}
-        onClick={openRunDialog}
+        className="icon-button refresh-control"
+        type="button"
+        aria-label="Refresh"
+        aria-busy={projectReloading}
+        title="Refresh"
+        disabled={projectReloading}
+        onClick={reloadOpenProject}
       >
-        <RefreshCw className={activeTask && !activeTask.pausing ? "spin" : ""} size={16} />
+        <RotateCw className={projectReloading ? "spin" : undefined} size={16} aria-hidden="true" />
       </button>
       <button
         className="icon-button space-settings-control"
@@ -5673,7 +5634,6 @@ function MemberApp({
                     selectedAutoResearchEpisodeId={selectedAutoResearchEpisodeId}
                     runBusy={taskStarting}
                     stopBusyIds={experimentStopIds}
-                    watcherCheckBusyId={watcherCheckId}
                     taskActionId={taskActionId}
                     selectedExperimentConversation={selectedExperimentConversation}
                     mutationsDisabled={mutationsDisabled}
@@ -5712,7 +5672,6 @@ function MemberApp({
                     onStopExperiment={(nodeId, episodeId) =>
                       void stopExperimentLoop(nodeId, episodeId)
                     }
-                    onCheckExperimentWatcher={(watcherId) => void checkExperimentWatcher(watcherId)}
                     onStopExperimentWatcher={(watcherId) => void stopWatcher(watcherId)}
                     onRecoverExperiment={(task, action) => void operateTask(task, action, false)}
                     onSwitchExperimentProvider={chooseRetryTask}
@@ -6103,14 +6062,6 @@ function MemberApp({
           </Suspense>
         </DraggableWindow>
       )}
-      <RunDialog
-        open={runDialogOpen}
-        kind={runKind}
-        project={project}
-        busy={taskStarting}
-        onClose={closeRunDialog}
-        onRun={(config, message) => void runAgent(config, message)}
-      />
       <AutoResearchDialog
         open={autoResearchDialogOpen}
         // Continue's handlers skip silently while any episode action runs, so the
@@ -6152,7 +6103,6 @@ function MemberApp({
       {retryTask && retryConfig && (
         <RunDialog
           open
-          mode="retry"
           kind={retryProfileKind(retryTask)}
           project={project}
           initialConfig={retryConfig}
@@ -6190,9 +6140,6 @@ function MemberApp({
           loading={taskInspectorLoading}
           actionBusy={Boolean(
             taskActionId || (activeTask && activeTask.operation_id !== taskInspectorId),
-          )}
-          mutatingActionsDisabled={Boolean(
-            mutationsDisabled && inspectedTask && taskMayMutateGraph(inspectedTask),
           )}
           onSelect={selectTaskInspector}
           onStop={() => {

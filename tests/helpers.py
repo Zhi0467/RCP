@@ -1086,3 +1086,24 @@ def trace_requests(app: Any) -> Iterator[RequestTrace]:
             yield trace
         finally:
             del store.connection
+
+
+def auto_research_verbs(
+    role: str,
+    *,
+    graph_read_scope=None,
+    bulletin: bool = True,
+    can_self_name: bool = False,
+):
+    """An Auto-research actor's ordered verbs, resolved through its agent profile."""
+    from rcp.agents.agent_profile import SHARED_PROJECT, AgentTurn, resolve_agent_profile
+
+    return resolve_agent_profile(
+        SHARED_PROJECT,
+        "orchestrator" if role == "orchestrator" else "auto_research_worker",
+        AgentTurn(
+            read_verbs=graph_read_scope.verbs if graph_read_scope is not None else frozenset(),
+            bulletin=bulletin,
+            can_self_name=can_self_name,
+        ),
+    ).ordered_verbs

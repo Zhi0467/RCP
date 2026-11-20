@@ -23,8 +23,6 @@ from rcp.agents.command_protocol import (
     SpawnArguments,
     StatusArguments,
     StopCommandRequest,
-    WatchGraphArguments,
-    WatchGraphCommandRequest,
 )
 from rcp.core.models import GraphState
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
@@ -50,10 +48,7 @@ from rcp.runs.auto_research_admission import (
     stop_auto_research_child_work,
 )
 from rcp.runs.auto_research_delivery import (
-    AutoResearchWatcherReadyHook,
-    arm_auto_research_graph_condition,
     deliver_pending_auto_research_mail,
-    reconcile_auto_research_graph_condition,
     record_auto_research_message,
 )
 from rcp.runs.auto_research_experiments import (
@@ -71,7 +66,6 @@ from rcp.storage import (
     AutoResearchInboxReceiptRecord,
     AutoResearchMessageRecord,
     EpisodeNotRunning,
-    GraphWatcherRecord,
 )
 from rcp.storage.auto_research_children import (
     AutoResearchInboxClearTooLarge,
@@ -104,11 +98,9 @@ def auto_research_command_effects(
     validate: AutoResearchValidateCommand,
     worker_request_factory: AutoResearchWorkerRequestFactory,
     graph_state: AutoResearchGraphState,
-    machine_id: str,
     apply_patch: AutoResearchApplyPatch | None = None,
     merge: AutoResearchMergeCommand | None = None,
     on_graph_applied: AutoResearchGraphApplied | None = None,
-    on_watcher_ready: AutoResearchWatcherReadyHook | None = None,
     experiment_coordinator: AutoResearchExperimentCoordinator | None = None,
     branch_head: Callable[[GraphTargetRef], GraphHeadRef] | None = None,
 ) -> AutoResearchCommandEffects:
@@ -482,25 +474,6 @@ def auto_research_command_effects(
             ),
         )
 
-    def watch_graph(
-        context: AutoResearchCommandContext,
-        arguments: WatchGraphArguments,
-        planned_watcher_id: str,
-    ) -> AutoResearchCommandEffectResult:
-        watcher = arm_auto_research_graph_condition(
-            store,
-            context,
-            arguments,
-            watcher_id=planned_watcher_id,
-            state=graph_state(),
-            machine_id=machine_id,
-            on_ready=on_watcher_ready,
-        )
-        return AutoResearchCommandEffectResult(
-            message="The graph condition was armed.",
-            result=_watcher_command_result(watcher, disposition="created"),
-        )
-
     def episode(
         context: AutoResearchCommandContext,
         arguments: ExperimentKickoffArguments | EpisodeControlArguments,
@@ -800,20 +773,6 @@ def auto_research_command_effects(
                     disposition="existing",
                 ),
             )
-        if isinstance(request, WatchGraphCommandRequest):
-            watcher = reconcile_auto_research_graph_condition(
-                store,
-                context,
-                request.arguments,
-                watcher_id=planned_effect_id,
-                machine_id=machine_id,
-            )
-            if watcher is None:
-                return None
-            return AutoResearchCommandEffectResult(
-                message=("The existing graph condition was recovered after interrupted arming."),
-                result=_watcher_command_result(watcher, disposition="existing"),
-            )
         return None
 
     def seat_node_type(_project_id: str, _episode_id: str, node_id: str) -> str | None:
@@ -879,7 +838,6 @@ def auto_research_command_effects(
         resume=resume,
         stop=stop,
         message=message,
-        watch_graph=watch_graph,
         episode=episode,
         inbox=inbox,
         finish=finish,
@@ -1060,25 +1018,6 @@ def _message_command_result(
         "delivery": "started" if delivery_operation_id is not None else "pending",
         "graph_authority": "none",
         "epistemic_status": "hearsay",
-        "disposition": disposition,
-    }
-
-
-def _watcher_command_result(
-    watcher: GraphWatcherRecord,
-    *,
-    disposition: str,
-) -> dict[str, object]:
-    completed_immediately = (
-        watcher.status == "completed"
-        and watcher.completed_at is not None
-        and watcher.completed_at == watcher.created_at
-        and watcher.last_evaluated_at == watcher.created_at
-    )
-    return {
-        "watcher_id": watcher.watcher_id,
-        "status": watcher.status,
-        "completed_immediately": completed_immediately,
         "disposition": disposition,
     }
 

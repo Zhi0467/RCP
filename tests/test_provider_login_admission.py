@@ -10,7 +10,6 @@ from rcp.background import BackgroundAgentTasks
 from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.runs.auto_research_admission import start_auto_research_child_work
 from rcp.runs.auto_research_delivery import (
-    deliver_auto_research_watcher_group,
     deliver_pending_auto_research_lifecycle,
     deliver_pending_auto_research_mail,
     record_auto_research_message,
@@ -27,6 +26,8 @@ from .test_auto_research_delivery import (
     _start_auto_research,
     _store,
 )
+from .test_auto_research_delivery import _deliver as _deliver_root
+from .test_watchers import armed
 
 
 def _signed_out(store):
@@ -150,14 +151,14 @@ def test_signed_out_root_wakes_preserve_pending_inputs_and_budget(tmp_path, monk
         elif wake == "lifecycle":
             result = deliver_pending_auto_research_lifecycle(tasks, episode_id=episode.episode_id)
         else:
-            result = deliver_auto_research_watcher_group(tasks, [watcher])
+            result = _deliver_root(tasks, watcher)
         assert result is None
         assert _counts(store) == before
         assert store.pending_auto_research_messages(episode.episode_id, root.operation_id) == [
             message
         ]
         assert store.pending_auto_research_lifecycle_notices(episode.episode_id) == notices
-        assert store.watcher(watcher.watcher_id).notified is False
+        assert store.watcher(watcher.watcher_id).wake_turn_id is None
 
 
 @pytest.mark.parametrize("wake", ["mail", "watcher"])
@@ -170,7 +171,7 @@ def test_signed_out_child_wakes_preserve_pending_inputs_and_budget(tmp_path, wak
         sender_role="orchestrator",
         sender_task_id=episode.root_operation_id,
         authorized_by=None,
-        recipient_task_id=watchers[0].worker_id,
+        recipient_task_id=watchers[0].agent_id,
         body="Inspect the pending result.",
     )
     _signed_out(store)
@@ -180,15 +181,15 @@ def test_signed_out_child_wakes_preserve_pending_inputs_and_budget(tmp_path, wak
             _deliver(tasks, episode, watchers)
             if wake == "watcher"
             else deliver_pending_auto_research_mail(
-                tasks, episode_id=episode.episode_id, recipient_task_id=watchers[0].worker_id
+                tasks, episode_id=episode.episode_id, recipient_task_id=watchers[0].agent_id
             )
         )
         assert result is None
         assert _counts(store) == before
-        assert store.pending_auto_research_messages(episode.episode_id, watchers[0].worker_id) == [
+        assert store.pending_auto_research_messages(episode.episode_id, watchers[0].agent_id) == [
             message
         ]
-        assert all(store.watcher(watcher.watcher_id).notified is False for watcher in watchers)
+        assert all(store.watcher(watcher.watcher_id).wake_turn_id is None for watcher in watchers)
 
 
 def test_signed_out_child_experiment_creates_no_task_or_budget(manifest, tmp_path):
@@ -432,8 +433,6 @@ def _limited_chat(tmp_path, monkeypatch):
     """A succeeded chat turn whose only sign-in then hit its usage limit."""
     from datetime import datetime
 
-    from rcp.storage import WatcherContinuation, WatcherRecord
-
     from .helpers import fabricated_authorizer, wait_for_task
     from .lifecycles.agent_task import seeded_store, work_request
 
@@ -457,59 +456,32 @@ def _limited_chat(tmp_path, monkeypatch):
     assert store.set_provider_login_limit(
         login, provider_started_at=(clock[0] - timedelta(seconds=1)).isoformat(), limited=True
     )
-    store.create_watchers(
-        [
-            WatcherRecord(
-                watcher_id="limited-watch",
-                project_id="project",
-                origin_operation_id=first.operation_id,
-                origin_task_kind="project_chat",
-                chat_id=request.chat_id,
-                check_command="true",
-                cwd=str(stage),
-                log_path=str(stage / "watch.log"),
-                continuation=WatcherContinuation(
-                    provider="codex",
-                    model="",
-                    reasoning="medium",
-                    run_on=BACKEND_MACHINE_ID,
-                    run_truth_scope=["repo"],
-                    patch_kind="work",
-                ),
-                status="completed",
-                created_at=store.now(),
-                completed_at=store.now(),
-            )
-        ]
+    watcher = armed(
+        store,
+        "limited-watch",
+        agent_id=request.chat_id,
+        origin_turn_id=first.operation_id,
+        completed=True,
+        cwd=str(stage),
     )
-    return store, tasks, clock, authorizer, request
+    return store, tasks, clock, authorizer, request, watcher
 
 
 def test_watcher_wake_waits_for_a_limited_login_to_lapse(tmp_path, monkeypatch):
     from rcp.limits import PROVIDER_LOGIN_LIMIT_HINT_SECONDS
-    from rcp.runs.watcher_admission import start_watcher_notification
+    from rcp.runs.watcher_admission import start_plain_watcher_wake
 
     from .helpers import wait_for_task
 
-    store, tasks, clock, authorizer, request = _limited_chat(tmp_path, monkeypatch)
-    wake_request = request.model_copy(
-        update={"trigger": "watcher", "watcher_ids": ["limited-watch"]}
-    )
+    store, tasks, clock, authorizer, request, watcher = _limited_chat(tmp_path, monkeypatch)
 
     def wake():
-        return start_watcher_notification(
-            tasks,
-            "project",
-            "project_chat",
-            wake_request,
-            ["limited-watch"],
-            authorized_by=authorizer,
-        )
+        return start_plain_watcher_wake(tasks, request.chat_id, [watcher], authorizer)
 
     before = _counts(store)
     assert wake() is None
     assert _counts(store) == before
-    assert store.watcher("limited-watch").status == "completed"
+    assert store.watcher("limited-watch").ready
     clock[0] += timedelta(seconds=PROVIDER_LOGIN_LIMIT_HINT_SECONDS)
     started = wake()
     assert started is not None
@@ -519,6 +491,6 @@ def test_watcher_wake_waits_for_a_limited_login_to_lapse(tmp_path, monkeypatch):
 def test_human_turn_launches_on_a_limited_login(tmp_path, monkeypatch):
     from .helpers import wait_for_task
 
-    store, tasks, _clock, authorizer, request = _limited_chat(tmp_path, monkeypatch)
+    store, tasks, _clock, authorizer, request, _watcher = _limited_chat(tmp_path, monkeypatch)
     turn = tasks.start("project", "project_chat", request, authorized_by=authorizer)
     wait_for_task(store, turn.operation_id, expect="succeeded")

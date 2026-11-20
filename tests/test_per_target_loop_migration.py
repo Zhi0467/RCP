@@ -10,8 +10,8 @@ import pytest
 from rcp.core.graph_targets import graph_target_json
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.machine_cards import BACKEND_MACHINE_ID
-from rcp.storage import AppStore, WatcherContinuation, WatcherRecord
-from tests.storage_helpers import downgrade_resource_watermarks
+from rcp.storage import AppStore, NodeStatusGraphCondition
+from tests.storage_helpers import downgrade_resource_watermarks, downgrade_watchers
 
 from .test_episode_storage import _episode, _operational_task
 
@@ -21,25 +21,6 @@ def _legacy_database(path: Path) -> AppStore:
     episode = _episode(store, "live-main", ceiling=3)
     _, _, task = store.create_episode_with_invocation(
         episode, _operational_task(store, "live-task", episode_id=episode.episode_id)
-    )
-    store.create_watchers(
-        [
-            WatcherRecord(
-                watcher_id="live-watcher",
-                project_id="project",
-                origin_operation_id=task.operation_id,
-                origin_task_kind="node_chat",
-                chat_id="node-chat",
-                node_id="experiment-node",
-                episode_id=episode.episode_id,
-                machine_id=BACKEND_MACHINE_ID,
-                check_command="true",
-                log_path="/tmp/loop.log",
-                cwd="/tmp",
-                continuation=WatcherContinuation(provider="codex", run_on=BACKEND_MACHINE_ID),
-                created_at=store.now(),
-            )
-        ]
     )
     store.create_episode(_episode(store, "parent", mode="auto_research"))
     with store.connection() as connection:
@@ -66,6 +47,23 @@ def _legacy_database(path: Path) -> AppStore:
             "WHERE state = 'pending'"
         )
         downgrade_resource_watermarks(connection)
+        downgrade_watchers(connection)
+        connection.execute(
+            "INSERT INTO watchers (watcher_id, project_id, origin_operation_id, "
+            "origin_task_kind, chat_id, node_id, episode_id, machine_id, check_command, "
+            "log_path, cwd, graph_condition_json, armed_revision, continuation_json, status, "
+            "created_at) VALUES ('live-watcher', 'project', ?, 'node_chat', 'node-chat', "
+            "'experiment-node', ?, ?, '', '', '', ?, 2, '{}', 'active', ?)",
+            (
+                task.operation_id,
+                episode.episode_id,
+                BACKEND_MACHINE_ID,
+                NodeStatusGraphCondition(
+                    node_id="experiment-node", status_in=["completed"]
+                ).model_dump_json(),
+                store.now(),
+            ),
+        )
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version >= 44")
         connection.execute("DROP TABLE client_requests")
         connection.execute(
@@ -102,7 +100,6 @@ def test_per_target_upgrade_rehearses_and_preserves_live_history(tmp_path: Path)
     episode = previous.episode("live-main")
     task = previous.agent_task("live-task")
     assert task is not None and task.login_id is None
-    watcher = previous.watcher("live-watcher")
     budget = previous.episode_budget_meter("live-main")
     previous.close()
     readonly = AppStore.open_read_only_snapshot(path)
@@ -119,9 +116,16 @@ def test_per_target_upgrade_rehearses_and_preserves_live_history(tmp_path: Path)
             == "pending"
         )
     upgraded = AppStore(path)
-    assert upgraded.episode("live-main") == episode
+    migrated = upgraded.episode("live-main")
+    assert migrated is not None
+    assert migrated.model_dump(exclude={"agent_id"}) == episode.model_dump(exclude={"agent_id"})
     assert upgraded.agent_task("live-task") == task.model_copy(update={"login_id": ""})
-    assert upgraded.watcher("live-watcher") == watcher
+    watcher = upgraded.watcher("live-watcher")
+    assert watcher is not None and watcher.open
+    assert (watcher.agent_id, watcher.origin_turn_id) == ("node-chat", task.operation_id)
+    assert [
+        (check.definition, check.graph_target, check.armed_head) for check in watcher.checks
+    ] == [("graph", GraphTargetRef(), 2)]
     assert upgraded.episode_budget_meter("live-main") == budget
     route = upgraded.auto_research_child_experiment("never-launched")
     assert route is not None and route.state == "cancelled"
@@ -135,8 +139,10 @@ def test_per_target_upgrade_rehearses_and_preserves_live_history(tmp_path: Path)
         assert "episodes_one_live_experiment_control" not in indexes
         assert "auto_research_pending_experiment_per_node" not in indexes
         assert "episodes_one_live_auto_project" not in indexes
-        for table in ("episodes", "graph_runs", "watchers", "graph_watcher_reconciliation"):
-            for row in connection.execute(f"SELECT graph_target_json FROM {table}"):
+        for table in ("episodes", "graph_runs", "watcher_checks", "graph_watcher_reconciliation"):
+            for row in connection.execute(
+                f"SELECT graph_target_json FROM {table} WHERE graph_target_json IS NOT NULL"
+            ):
                 assert (
                     row[0].encode()
                     == GraphTargetRef.model_validate_json(row[0]).model_dump_json().encode()

@@ -59,7 +59,7 @@ def _task(
         connection.execute(
             "INSERT INTO graph_runs(operation_id,project_id,kind,status,request_json,created_at,"
             "updated_at,status_message,native_session_id,stage_machine_id,login_id,authorized_user_id) "
-            "VALUES(?, 'project', 'refresh', 'queued', ?, ?, ?, 'queued', ?, ?, ?, ?)",
+            "VALUES(?, 'project', 'project_chat', 'queued', ?, ?, ?, 'queued', ?, ?, ?, ?)",
             (
                 operation_id,
                 json.dumps({"provider": key.provider}),

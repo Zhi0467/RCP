@@ -18,7 +18,6 @@ from rcp.limits import (
     TEAM_SESSION_LABEL_MAX_LENGTH,
     TEAM_SESSION_TOKEN_MAX_LENGTH,
     TEAM_SESSION_TOUCH_INTERVAL_SECONDS,
-    WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT,
 )
 from rcp.storage.episodes import _LIVE_EPISODE_STATUSES
 from rcp.storage.membership import live_project_member
@@ -29,7 +28,6 @@ from rcp.storage.models import (
     ProjectMemberRecord,
     SpaceKind,
     SpaceUserRecord,
-    StoredWatcherRecord,
     TeamAuthenticationError,
     TeamDevicePairingRecord,
     TeamInvitationRecord,
@@ -1532,67 +1530,3 @@ class SpaceStoreMixin(StoreMixinBase):
         if user is None or user.removal_started_at is not None or user.removed_at is not None:
             raise KeyError(f"Unknown active RCP space user {user_id}.")
         return user
-
-    @staticmethod
-    def _ready_group_members(
-        members: list[StoredWatcherRecord],
-    ) -> list[StoredWatcherRecord] | None:
-        """Return deliverable members only when a durable group is collectively ready."""
-
-        if not members or any(item.group_id is None for item in members):
-            return None
-        if len({item.graph_target.key for item in members}) != 1:
-            return None
-        if any(item.status == "stopped" and item.stopped_by != "agent" for item in members):
-            return None
-        deliverable = [
-            item
-            for item in members
-            if not (item.status == "stopped" and item.stopped_by == "agent")
-        ]
-        if not deliverable or any(item.notified for item in deliverable):
-            return None
-        if any(
-            item.status == "active"
-            or (
-                item.status == "degraded"
-                and item.consecutive_error_count < WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT
-            )
-            or item.status not in {"completed", "degraded"}
-            for item in deliverable
-        ):
-            return None
-        return deliverable
-
-    def _validate_watcher_notification_members(
-        self,
-        connection: sqlite3.Connection,
-        watchers: list[StoredWatcherRecord],
-    ) -> None:
-        """Require a delivery claim to contain every ready member of each group."""
-
-        requested = {item.watcher_id for item in watchers}
-        group_ids = {item.group_id for item in watchers if item.group_id is not None}
-        for watcher in watchers:
-            if watcher.group_id is None and not (
-                watcher.status == "completed"
-                or (
-                    watcher.status == "degraded"
-                    and watcher.consecutive_error_count >= WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT
-                )
-            ):
-                raise ValueError(
-                    "an ungrouped watcher must complete or stay unobservable before delivery"
-                )
-        for group_id in group_ids:
-            assert group_id is not None
-            rows = connection.execute(
-                "SELECT * FROM watchers WHERE group_id = ? ORDER BY created_at, watcher_id",
-                (group_id,),
-            ).fetchall()
-            ready = self._ready_group_members([self._watcher_record(row) for row in rows])
-            if ready is None:
-                raise ValueError("a watcher group is not ready for delivery")
-            ready_ids = {item.watcher_id for item in ready}
-            if ready_ids != (requested & {item.watcher_id for item in ready}):
-                raise ValueError("a watcher group must be claimed as one delivery unit")

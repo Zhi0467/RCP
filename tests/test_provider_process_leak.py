@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -58,8 +59,8 @@ def test_a_real_dispatch_without_a_lifespan_stages_no_provider_process(
     client = signed_in_client(app)
 
     started = client.post(
-        f"/api/projects/{project_id}/tasks/seed",
-        json={"run_truth_scope": ["repo-a"]},
+        f"/api/projects/{project_id}/tasks/project_chat",
+        json={"run_truth_scope": ["repo-a"], "chat_id": str(uuid.uuid4()), "message": "Hi."},
     )
     assert started.status_code == 202, started.text
     operation_id = started.json()["operation_id"]

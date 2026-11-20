@@ -42,7 +42,7 @@ def test_delete_project_route_stops_only_the_previewed_work(manifest, tmp_path) 
         AgentTaskRecord(
             operation_id="active-delete-test",
             project_id=project_id,
-            kind="seed",
+            kind="project_chat",
             status="queued",
             request={},
             created_at=now,

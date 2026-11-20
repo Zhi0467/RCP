@@ -43,7 +43,6 @@ _MUTATING = frozenset(
         "bulletin",
         "name",
         "flag",
-        "watcher",
         "apply",
         "spawn",
         "merge",
@@ -52,7 +51,6 @@ _MUTATING = frozenset(
         "resume",
         "stop",
         "message",
-        "watch_graph",
         "episode",
         "inbox",
         "finish",
@@ -119,10 +117,6 @@ EPISODE_CONTROLS = (
     EPISODE_MESSAGE,
     EPISODE_ANSWER,
 )
-WATCHER_LIST = ("list", "--list", None)
-WATCHER_STOP = ("stop", "--stop", "<watcher-id>")
-WATCHER_CANCEL = ("cancel", "--cancel", "<watcher-id>")
-WATCHER_ACTIONS = (WATCHER_LIST, WATCHER_STOP, WATCHER_CANCEL)
 
 
 def handoff_usage():
@@ -152,10 +146,6 @@ def episode_control_usage(option, *, required=(), optional=()):
         *(f"[{_option_usage(item)}]" for item in optional),
     ]
     return " ".join(parts)
-
-
-def watcher_usages():
-    return tuple(f"watcher {_option_usage(option)}" for option in WATCHER_ACTIONS)
 
 
 def merge_usage():
@@ -444,14 +434,6 @@ def _parser():
         bulletin.add_argument(option, dest=dest, metavar=value)
     bulletin.add_argument(BULLETIN_BODY[0], nargs="?", metavar=BULLETIN_BODY[1])
 
-    watcher = subparsers.add_parser("watcher")
-    watcher_action = watcher.add_mutually_exclusive_group(required=True)
-    for dest, flag, value in WATCHER_ACTIONS:
-        if value is None:
-            watcher_action.add_argument(flag, dest=dest, action="store_true")
-        else:
-            watcher_action.add_argument(flag, dest=dest, metavar=value)
-
     schedule = subparsers.add_parser("schedule")
     schedule.add_argument("action", choices=("add", "list", *SCHEDULE_KEYED_ACTIONS))
     for dest, flag, metavar in SCHEDULE_OPTIONS:
@@ -512,11 +494,6 @@ def _parser():
     message.add_argument("--key", required=True)
     message.add_argument("--recipient")
     message.add_argument("body")
-
-    watch = subparsers.add_parser("watch-graph")
-    watch.add_argument("--key", required=True)
-    watch.add_argument("--condition-json", required=True)
-    watch.add_argument("--reason", required=True)
 
     episode = subparsers.add_parser("episode")
     episode.add_argument("--key", required=True)
@@ -638,12 +615,6 @@ def _request_arguments(namespace, workspace):
             arguments.update({"from": namespace.from_head, "to": namespace.to_head})
             arguments["ids"] = namespace.ids + namespace.filter_ids
         return verb, None, arguments
-    if verb == "watcher":
-        if namespace.list:
-            return verb, None, {"action": "list"}
-        action = "stop" if namespace.stop is not None else "cancel"
-        watcher_id = _nonblank(getattr(namespace, action), "watcher id")
-        return verb, None, {"action": action, "watcher_id": watcher_id}
     if verb == "schedule":
         arguments = {"action": namespace.action}
         for field, flag, _ in SCHEDULE_OPTIONS[1:]:
@@ -813,17 +784,6 @@ def _request_arguments(namespace, workspace):
         arguments = {
             "recipient_task_id": recipient,
             "body": _nonblank(namespace.body, "message body"),
-        }
-    elif verb == "watch_graph":
-        try:
-            condition = json.loads(namespace.condition_json)
-        except ValueError as exc:
-            raise ClientInputError(f"graph condition is not valid JSON: {exc}") from exc
-        if not isinstance(condition, dict):
-            raise ClientInputError("graph condition must be one JSON object")
-        arguments = {
-            "condition": condition,
-            "reason": _nonblank(namespace.reason, "watch reason"),
         }
     elif verb == "episode":
         invocation_limit = namespace.invocation_limit
@@ -1412,7 +1372,6 @@ def _requested_verb(argv):
             "bulletin",
             "name",
             "flag",
-            "watcher",
             "validate",
             "merge-answers",
             "graph_diff",
@@ -1428,7 +1387,6 @@ def _requested_verb(argv):
             "resume",
             "stop",
             "message",
-            "watch-graph",
             "episode",
             "inbox",
             "finish",

@@ -241,6 +241,10 @@ EXPECTED_BOUNDARIES: dict[str, tuple[str, str]] = {
         "1358a21dea77572ad2e2a7d5e4377a9024d25ecc",
         "b89d9ed5ea76502667a7e12671f46d6d0d7eb14d4b4db83a46f6013928566afd",
     ),
+    "pre-agents-v51-0389869": (
+        "0389869e50478e0a84ba84f7ce8e705b05d70835",
+        "09c07881d57222b0a2fae4611e92c5a77888a74afb08163fa9048f890c4d08e7",
+    ),
 }
 
 

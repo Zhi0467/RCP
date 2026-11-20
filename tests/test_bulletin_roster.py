@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from rcp.bulletin import bulletin_roster
 from rcp.core.transition_models import GraphTargetRef
-from tests.test_auto_research_child_work_watchers_storage import _waiting_child
+from tests.test_auto_research_child_work_watchers_storage import _waiting_child, armed_watcher
 
 
 def test_roster_keeps_sleeping_worker_waiting_on_its_target(tmp_path) -> None:
@@ -41,28 +41,20 @@ def test_human_work_waits_for_undelivered_watcher_by_chat_id(tmp_path) -> None:
         }
     )
     store.create_agent_task(human)
-    observer = watcher.model_copy(
-        update={
-            "watcher_id": "human-observer",
-            "episode_id": None,
-            "worker_id": None,
-            "chat_id": "human-chat",
-            "graph_target": target,
-            "origin_operation_id": "human-earlier",
-        }
+    store.create_agent_task(human.model_copy(update={"operation_id": "human-earlier"}))
+    observer = armed_watcher(
+        store,
+        "human-observer",
+        agent_id="human-chat",
+        origin_turn_id="human-earlier",
+        project_id=episode.project_id,
     )
-    store.create_watchers([observer])
     assert bulletin_roster(store, episode.project_id, target)[0]["state"] == "waiting"
+    assert "human-chat" not in store.bulletin_waiting_chat_ids(
+        episode.project_id, episode.graph_target
+    )
     with store.connection() as connection:
-        connection.execute(
-            "UPDATE watchers SET notified=1 WHERE watcher_id=?", (observer.watcher_id,)
-        )
-    assert bulletin_roster(store, episode.project_id, target)[0]["state"] == "done"
-    with store.connection() as connection:
-        connection.execute(
-            "UPDATE watchers SET notified=0, graph_target_json=? WHERE watcher_id=?",
-            (episode.graph_target.model_dump_json(), observer.watcher_id),
-        )
+        store.close_watcher_delivery(connection, [observer.watcher_id], reason="Closed.")
     assert bulletin_roster(store, episode.project_id, target)[0]["state"] == "done"
 
 
@@ -82,12 +74,13 @@ def test_bulletin_watermark_ignores_live_status_and_observer_poll_ticks(tmp_path
             ("{}", store.now(), store.now(), work.current_operation_id),
         )
         connection.execute(
-            "UPDATE watchers SET last_checked_at=? WHERE watcher_id=?",
+            "UPDATE watcher_checks SET last_checked_at=? WHERE check_id=?",
             (store.now(), watcher.watcher_id),
         )
         assert generation() == before
         connection.execute(
-            "UPDATE watchers SET notified=1 WHERE watcher_id=?", (watcher.watcher_id,)
+            "UPDATE watchers SET delivery_closed_at=? WHERE watcher_id=?",
+            (store.now(), watcher.watcher_id),
         )
         assert generation() > before
         before = generation()

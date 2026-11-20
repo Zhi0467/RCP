@@ -36,10 +36,9 @@ from rcp.storage import (
     SpaceUserRecord,
     TeamAuthenticationError,
     TeamInvitationRecord,
-    WatcherContinuation,
-    WatcherRecord,
 )
 from rcp.storage.command_mailbox import CommandMailboxStore
+from rcp.storage.models import WatcherCheckRecord, WatcherRecord
 from rcp.storage.question_models import QuestionOrigin
 
 from .helpers import NON_UUID4, _TracingAppStore
@@ -420,7 +419,7 @@ def test_current_storage_schema_validator_rejects_corruption(tmp_path) -> None:
     path = tmp_path / "rcp.sqlite3"
     AppStore(path)
     with sqlite3.connect(path) as connection:
-        connection.execute("DROP INDEX watchers_due")
+        connection.execute("DROP INDEX watcher_checks_open")
 
     with pytest.raises(RuntimeError, match="storage schema validation failed"):
         AppStore(path)
@@ -1257,37 +1256,27 @@ def _create_experiment_runtime_fixture(
     else:
         raise ValueError(f"Unsupported Experiment fixture status: {status}")
     if arm_watcher:
-        store.create_watchers(
-            [
-                WatcherRecord(
-                    watcher_id=f"watcher-{operation_id}",
-                    project_id=project_id,
-                    origin_operation_id=operation_id,
-                    origin_task_kind="node_chat",
-                    chat_id=chat_id,
-                    node_id=control_node_id,
-                    machine_id="local",
-                    check_command="true",
-                    log_path=f"/tmp/{operation_id}.log",
-                    cwd="/tmp",
-                    continuation=WatcherContinuation(
-                        provider="codex",
-                        model="",
-                        reasoning="medium",
-                        run_on="local",
-                        run_truth_scope=["repo-a"],
-                        patch_kind="experiment_loop",
-                        control_node_id=control_node_id,
-                        control_revision=7,
-                        control_episode_id=episode_id,
-                        control_invocation=1,
-                        control_invocation_ceiling=3,
-                        control_decision_bundle=[],
-                        control_completion_criteria=["Detached work has finished."],
-                    ),
-                    created_at=now,
-                )
-            ]
+        store.arm_watcher(
+            WatcherRecord(
+                watcher_id=f"watcher-{operation_id}",
+                agent_id=chat_id,
+                project_id=project_id,
+                purpose="Detached work",
+                origin_turn_id=operation_id,
+                created_at=now,
+                checks=[
+                    WatcherCheckRecord(
+                        check_id=f"watcher-{operation_id}",
+                        watcher_id=f"watcher-{operation_id}",
+                        machine_id="local",
+                        definition="external",
+                        check_command="true",
+                        log_path=f"/tmp/{operation_id}.log",
+                        cwd="/tmp",
+                        created_at=now,
+                    )
+                ],
+            )
         )
     return episode_id, operation_id
 
@@ -2267,6 +2256,8 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "agent_schedules": 0,
         "space_turn_project_bindings": 0,
         "agent_threads": 0,
+        "agent_sessions": 0,
+        "agents": 0,
         "digest_events": 1,
         "digest_marks": 0,
         "digest_heads": 0,
@@ -2297,6 +2288,7 @@ def test_project_record_deletion_is_atomic_complete_and_project_scoped(tmp_path)
         "episode_isolation_states": 0,
         "compute_jobs": 0,
         "compute_backend_probes": 0,
+        "watcher_checks": 0,
         "watchers": 0,
         "graph_watcher_reconciliation": 0,
         "_legacy_campaign_invocations_archive": 0,
@@ -2924,7 +2916,7 @@ def test_v02_graph_run_migrates_to_recoverable_interrupted_agent_task(tmp_path) 
     assert record is not None
     assert record.status == "interrupted"
     assert record.can_resume is False
-    assert record.can_retry is True
+    assert record.can_retry is False
     assert record.attempt == 1
     assert record.result is None
     assert record.agent_status is None
@@ -3055,12 +3047,15 @@ def test_child_agent_tasks_use_only_the_explicitly_supplied_authorizer(tmp_path)
         display_name="Child Authorizer",
     )
     now = store.now()
-    request = RunRequest(run_truth_scope=["repo-a"])
-    dispatch_authority = resolve_dispatch_authority("refresh", request)
+    request = RunRequest(
+        run_truth_scope=["repo-a"], chat_scope="project", chat_id="chat-one", mode="work"
+    )
+    dispatch_authority = resolve_dispatch_authority("project_chat", request)
     assert dispatch_authority is not None
     store.create_agent_task(
         _task_record(
             now,
+            kind="project_chat",
             operation_id="parent",
             status="failed",
             request=request.model_dump(mode="json"),
@@ -3072,6 +3067,7 @@ def test_child_agent_tasks_use_only_the_explicitly_supplied_authorizer(tmp_path)
     store.create_agent_task(
         _task_record(
             now,
+            kind="project_chat",
             operation_id="explicit-child",
             status="succeeded",
             request=request.model_dump(mode="json"),
@@ -3084,6 +3080,7 @@ def test_child_agent_tasks_use_only_the_explicitly_supplied_authorizer(tmp_path)
     store.create_agent_task(
         _task_record(
             now,
+            kind="project_chat",
             operation_id="legacy-child",
             status="succeeded",
             request=request.model_dump(mode="json"),
@@ -3180,12 +3177,12 @@ def test_existing_watcher_database_opens_and_gains_scheduling_columns(tmp_path) 
     store = AppStore(path)
     record = store.watcher("old-watcher")
 
-    assert record is not None
-    assert record.next_check_at is None
-    assert record.consecutive_error_count == 0
-    assert record.group_id is None
-    assert record.stopped_by is None
-    assert store.pollable_watchers() == [record]
+    assert record is not None and record.open
+    assert record.agent_id == "chat" and record.origin_turn_id == "old-operation"
+    (check,) = record.checks
+    assert check.check_command == "squeue -j 1"
+    assert check.consecutive_error_count == 0
+    assert store.due_external_checks() == [check]
 
 
 def test_patch_recovery_output_is_bounded(tmp_path) -> None:

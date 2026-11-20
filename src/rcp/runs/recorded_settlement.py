@@ -20,9 +20,9 @@ from rcp.agents import AgentEvent
 from rcp.agents.provider_environment import unhidden_read_scope
 from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
 from rcp.providers import AgentCapability, ProviderTurnRequest
-from rcp.runs.experiment_loop import _experiment_watcher_output_names
 from rcp.runs.shared import _ProviderOutcome, _sse
 from rcp.transport import RemoteRunStage, StateUnavailable
+from rcp.transport.watcher_workspace import replace_watcher_folder
 
 if TYPE_CHECKING:
     from rcp.agents.write_scope import ProjectWriteScope
@@ -71,24 +71,16 @@ def write_recorded_patch(
     directory holds now would let a Patch that changed after the host finished
     be admitted as this turn's, or let a deleted one silently become no Patch at
     all -- while the answer and the rest of the turn are still accepted. The
-    watcher handoff is the other half of the same admission and gets the same
-    treatment, except where the host never snapshotted it: a journal written
-    before supervisors did so is silent about watch.json rather than saying
-    there was none, and restoring "none" over a real handoff would destroy it.
+    watcher folder is the other half of the same admission and gets the same
+    treatment when the host snapshotted it.
     """
 
     _restore(workspace, remote_stage, "patch.json", recorded.patch)
-    if recorded.watch_snapshotted:
-        _restore(workspace, remote_stage, "watch.json", recorded.watch)
-    if recorded.experiment_watch_snapshotted:
-        # Experiment watcher maintenance is read by discovery, so restoring the
-        # recorded files is not enough: the stage's set has to become the pass's
-        # set, or one added afterwards would be admitted as this turn's.
-        for name in _experiment_watcher_output_names(workspace, remote_stage):
-            if name not in recorded.experiment_watch:
-                _restore(workspace, remote_stage, name, None)
-        for name, content in sorted(recorded.experiment_watch.items()):
-            _restore(workspace, remote_stage, name, content)
+    if recorded.watcher_folder is not None:
+        if remote_stage is None:
+            replace_watcher_folder(workspace, recorded.watcher_folder)
+        else:
+            remote_stage.replace_watcher_folder(recorded.watcher_folder)
 
 
 def _restore(

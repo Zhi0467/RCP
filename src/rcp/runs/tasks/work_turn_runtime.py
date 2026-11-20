@@ -14,6 +14,7 @@ from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from rcp.agents import AgentEvent, AgentLauncher
+from rcp.agents.agent_profile import AgentProfile
 from rcp.agents.command_mailbox import (
     CommandHandler,
     CommandTurnCredential,
@@ -36,7 +37,6 @@ from rcp.limits import COMMAND_CLIENT_WAIT_SECONDS
 from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
 from rcp.providers.browser_grant import BrowserGrant
 from rcp.runs.chat import _ChatPatchInputs
-from rcp.runs.experiment_loop import StagedExperimentWatcherResource
 from rcp.runs.patch_validator import (
     PatchValidationBudget,
     PatchValidationResult,
@@ -131,9 +131,13 @@ class WorkValidatorMailboxLifecycle:
     suspension: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = None
     command_handler: CommandHandler | None = None
-    # The verbs this mailbox enforces, set by the owner that resolved them.
-    allowed_verbs: frozenset[str] | None = None
+    profile: AgentProfile | None = None
     _ownership_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    @property
+    def allowed_verbs(self) -> frozenset[str] | None:
+        """The verbs this mailbox enforces, from the profile its owner resolved."""
+        return self.profile.verbs if self.profile is not None else None
 
     def detach(self) -> None:
         if self.thread is None:
@@ -268,8 +272,6 @@ class StagedWorkInputs:
     token: str
     artifact_scope_id: str
     artifact_directory: Path | PurePosixPath
-    experiment_resources: list[StagedExperimentWatcherResource]
-    experiment_resource_pointers: list[dict[str, object]]
     skill_selection: SkillSelection
     skill_pointers: list[dict[str, object]]
     attachment_pointers: list[dict[str, object]]
@@ -300,7 +302,6 @@ class WorkFinalizationContext:
     outcome: _ProviderOutcome
     artifact_scope_id: str
     artifact_directory: Path | PurePosixPath
-    experiment_resources: list[StagedExperimentWatcherResource]
     skill_selection: SkillSelection
     compute_commands: WorkComputeCommands | None
     #: The contract role this owner retained its launch under, when it retained
@@ -366,7 +367,6 @@ class ComposedWorkPrompt:
 class RetryDeliverableBaseline:
     patch_digest: str | None
     watch_digest: str | None
-    experiment_watch_digests: dict[str, str]
     outcome_digest: str | None = None
 
 
@@ -605,7 +605,7 @@ def start_work_validator_mailbox(
     validate: Callable[[str], PatchValidationResult] | None,
     serve: Callable[..., Awaitable[None]] = serve_patch_validation_mailbox,
     command_handler: CommandHandler | None = None,
-    allowed_verbs: frozenset[str] | None = None,
+    profile: AgentProfile | None = None,
     resume_context: dict[str, object] | None = None,
     responses: dict[str, CommandResponse] | None = None,
     terminal: dict[str, str] | None = None,
@@ -628,7 +628,7 @@ def start_work_validator_mailbox(
             stop,
             task,
             command_handler=command_handler,
-            allowed_verbs=allowed_verbs,
+            profile=profile,
         )
 
     stop = threading.Event()
@@ -639,7 +639,7 @@ def start_work_validator_mailbox(
         stop,
         result,
         command_handler=command_handler,
-        allowed_verbs=allowed_verbs,
+        profile=profile,
     )
     responses = responses if responses is not None else {}
     terminal = terminal if terminal is not None else {}

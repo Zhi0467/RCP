@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from rcp.compute_jobs.models import ComputeJobRecord
 from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import ProviderSkill
+from rcp.storage.agents import delete_project_agents, move_project_agents
 from rcp.storage.compute_jobs import _compute_job_record
 from rcp.storage.digest import rewrite_digest_project_links
 from rcp.storage.episodes import _LIVE_EPISODE_STATUSES, EpisodeStoreMixin
@@ -20,9 +21,10 @@ from rcp.storage.models import (
     ProjectRecord,
     ProjectStageRecord,
     ProviderSkillInventoryRecord,
-    StoredWatcherRecord,
+    WatcherRecord,
     _canonical_uuid4,
 )
+from rcp.storage.watchers import _OPEN, _watcher_records
 
 # The rows a project's in-flight work lives in; deletion stops each before it deletes.
 _LIVE_TASKS = (
@@ -33,10 +35,6 @@ _LIVE_EPISODES = (
     f"({', '.join(repr(status) for status in _LIVE_EPISODE_STATUSES)})"
 )
 _LIVE_COMPUTE_JOBS = "SELECT * FROM compute_jobs WHERE project_id = ? AND status = 'running'"
-_LIVE_WATCHERS = (
-    "SELECT * FROM watchers WHERE project_id = ? "
-    "AND (status = 'active' OR (status IN ('degraded', 'completed') AND notified = 0))"
-)
 _UNFINISHED_TRANSFER = (
     "SELECT 1 FROM project_transfer_requests WHERE project_id = ? AND phase != 'completed' LIMIT 1"
 )
@@ -47,7 +45,7 @@ class ProjectLiveWork:
     tasks: list[AgentTaskRecord]
     episodes: list[EpisodeRecord]
     compute_jobs: list[ComputeJobRecord]
-    watchers: list[StoredWatcherRecord]
+    watchers: list[WatcherRecord]
     transfer_unfinished: bool
 
 
@@ -593,6 +591,11 @@ class ProjectStoreMixin(StoreMixinBase):
                     "compute_backend_probes": connection.execute(
                         "DELETE FROM compute_backend_probes WHERE project_id = ?", (project_id,)
                     ).rowcount,
+                    "watcher_checks": connection.execute(
+                        "DELETE FROM watcher_checks WHERE watcher_id IN "
+                        "(SELECT watcher_id FROM watchers WHERE project_id = ?)",
+                        (project_id,),
+                    ).rowcount,
                     "watchers": connection.execute(
                         "DELETE FROM watchers WHERE project_id = ?", (project_id,)
                     ).rowcount,
@@ -868,6 +871,7 @@ class ProjectStoreMixin(StoreMixinBase):
                 counts["agent_threads"] = connection.execute(
                     "DELETE FROM agent_threads WHERE project_id = ?", (project_id,)
                 ).rowcount
+                counts.update(delete_project_agents(connection, project_id))
                 counts["projects"] = connection.execute(
                     "DELETE FROM projects WHERE project_id = ?", (project_id,)
                 ).rowcount
@@ -898,10 +902,9 @@ class ProjectStoreMixin(StoreMixinBase):
                     _compute_job_record(row)
                     for row in connection.execute(_LIVE_COMPUTE_JOBS, (project_id,)).fetchall()
                 ],
-                watchers=[
-                    self._watcher_record(row)
-                    for row in connection.execute(_LIVE_WATCHERS, (project_id,)).fetchall()
-                ],
+                watchers=_watcher_records(
+                    connection, f"w.project_id = ? AND {_OPEN}", (project_id,)
+                ),
                 transfer_unfinished=connection.execute(
                     _UNFINISHED_TRANSFER, (project_id,)
                 ).fetchone()
@@ -1324,6 +1327,7 @@ class ProjectStoreMixin(StoreMixinBase):
                 "UPDATE graph_runs SET project_id = ? WHERE project_id = ?",
                 (project_id, legacy_id),
             )
+            move_project_agents(connection, legacy_id, project_id)
             connection.execute(
                 "UPDATE episodes SET project_id = ? WHERE project_id = ?",
                 (project_id, legacy_id),

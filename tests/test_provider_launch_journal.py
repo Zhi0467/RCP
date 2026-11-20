@@ -50,7 +50,7 @@ async def _drain(launcher: AgentLauncher, tmp_path: Path) -> list:
             cwd=tmp_path,
             machine_id=BACKEND_MACHINE_ID,
             host="",
-            capability="scratch_patch",
+            capability="discuss",
             operation_id="op-journal",
             runtime_id="exec",
         )
@@ -82,7 +82,7 @@ async def test_provider_process_leaves_two_journal_lines_and_none_of_its_output(
     exited = [r for r in caplog.records if "return_code=" in r.getMessage()]
     assert len(started) == 1 and len(exited) == 1
     start_line, exit_line = started[0].getMessage(), exited[0].getMessage()
-    assert "provider=codex" in start_line and "capability=scratch_patch" in start_line
+    assert "provider=codex" in start_line and "capability=discuss" in start_line
     assert "host=local" in start_line and "operation=op-journal" in start_line
     assert "executable=codex" in start_line and "executable=codex" in exit_line
     pid = next(part for part in start_line.split() if part.startswith("pid=")).removeprefix("pid=")
@@ -117,7 +117,7 @@ async def test_a_paused_provider_exit_is_logged_at_info(
             cwd=tmp_path,
             machine_id=BACKEND_MACHINE_ID,
             host="",
-            capability="scratch_patch",
+            capability="discuss",
             operation_id="op-pause",
             runtime_id="exec",
             control=control,

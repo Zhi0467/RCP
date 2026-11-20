@@ -39,10 +39,18 @@ from rcp.skill_registry import SkillDefaults, SkillSelection, official_registry
 from rcp.storage import AppStore
 from rcp.storage.agent_threads import AgentThreadRecord, bound_thread
 from rcp.turn_outcomes import TurnOutcome
+from rcp.watcher_folder import (
+    read_watcher_folder,
+    reconcile_watcher_files,
+    stage_watcher_folder,
+    watcher_binding,
+)
 
 if TYPE_CHECKING:
+    from rcp.agents.agent_profile import AgentProfile
     from rcp.agents.write_scope import CompositeWriteScope, RegisteredRepositoryRoot
     from rcp.runs.space_projects import SpaceProjects
+    from rcp.watchers import WatcherBinding
 
 
 def merge_space_hidden_read_scopes(scopes: list[HiddenReadScope]) -> HiddenReadScope:
@@ -84,6 +92,20 @@ class SpaceThreadOwner:
         if thread is None or thread.kind != "space" or thread.closed_at is not None:
             raise ValueError("Space thread is unavailable")
         return thread
+
+    def validate_stored_request(self, body: dict[str, object]) -> tuple[RunRequest, SkillSelection]:
+        """Admit one stored turn again, as its send was: open thread, enabled packages."""
+        _ = self.thread
+        request = RunRequest.model_validate(body)
+        workflows, skills = admit_space_invocations(
+            request.invoked_workflow_ids, request.invoked_skill_ids
+        )
+        return (
+            request.model_copy(
+                update={"invoked_workflow_ids": workflows, "invoked_skill_ids": skills}
+            ),
+            space_skill_selection(),
+        )
 
     def resolve_agent_profile(
         self,
@@ -305,13 +327,14 @@ async def stream_space_chat_run(
         owner, request, execution.operation_id, role="user", text=request.message or ""
     )
     turn.clear_fresh_outputs()
+    watchers = _stage_space_watchers(turn)
     lifecycles = []
     outcome = _ProviderOutcome(session_id=request.session_id)
     try:
         gate, handler = _start_space_mailboxes(turn, lifecycles)
         async with _space_browser(turn) as browser:
             prompt = render_space_prompt(
-                turn, handler.allowed_verbs, seed, _previous_space_results(owner.store, prior)
+                turn, handler.profile, seed, _previous_space_results(owner.store, prior)
             )
             _record_space_launch(turn, prompt)
             async with aclosing(
@@ -355,7 +378,9 @@ async def stream_space_chat_run(
         service=None,
     ):
         yield _sse(AgentEvent(event="artifact", artifact=artifact))
-    turn_outcome = settle_space_turn_outcome(turn.stage, summary)
+    turn_outcome = settle_space_turn_outcome(
+        turn.stage, summary, watcher_problem=_reconcile_space_watchers(turn, *watchers)
+    )
     execution.turn_outcome = turn_outcome
     answer = "\n\n".join(outcome.answers)
     append_space_message(
@@ -659,7 +684,7 @@ def _start_space_mailboxes(turn: _SpaceTurn, lifecycles: list):
                 budget=PatchValidationBudget() if writer else None,
                 validate=writer.validate if writer else None,
                 command_handler=client.command,
-                allowed_verbs=client.verbs,
+                profile=client.profile,
             )
         )
         _write_space_client(directory, staged.client_command())
@@ -676,7 +701,7 @@ def _start_space_mailboxes(turn: _SpaceTurn, lifecycles: list):
             budget=None,
             validate=None,
             command_handler=handler,
-            allowed_verbs=handler.allowed_verbs,
+            profile=handler.profile,
         )
     )
     _write_space_client(turn.stage, top.client_command())
@@ -699,12 +724,12 @@ def _space_browser(turn: _SpaceTurn):
 
 
 # Bumped by hand when the Space master's framing changes; its content digest also keys it.
-SPACE_MASTER_POLICY = "space-master-v6"
+SPACE_MASTER_POLICY = "space-master-v8"
 
 
 def render_space_prompt(
     turn: _SpaceTurn,
-    allowed_verbs: frozenset[str],
+    profile: AgentProfile,
     seed: str,
     last_results: dict[str, object] | None,
 ) -> str:
@@ -718,7 +743,7 @@ def render_space_prompt(
     from rcp.runs.session_master import continuation_session_master, start_session_master
 
     skill_pointers = _space_skill_pointers(turn)
-    fixed = render_space_master(turn, allowed_verbs)
+    fixed = render_space_master(turn, profile)
     values = space_master_values(turn.found, turn.request, skill_pointers=skill_pointers)
     content = _with_master_values(fixed, values)
     key = f"{SPACE_MASTER_POLICY}-{hashlib.sha256(fixed.encode()).hexdigest()[:16]}"
@@ -752,27 +777,34 @@ def _with_master_values(fixed: str, values: dict[str, object]) -> str:
     )
 
 
-def render_space_master(turn: _SpaceTurn, allowed_verbs: frozenset[str]) -> str:
+def render_space_master(turn: _SpaceTurn, profile: AgentProfile) -> str:
     """The Space contract that holds for a whole native session, without its values."""
+    from rcp.agents.agent_profile import UsageContext
     from rcp.agents.artifact_contract import artifact_contract
-    from rcp.agents.prompts import APP_PLACES, STAGED_SKILL_RULE, write_scope_section
-    from rcp.runs.agent_thread_commands import space_command_usages
+    from rcp.agents.prompts import (
+        APP_PLACES,
+        STAGED_SKILL_RULE,
+        watcher_section,
+        write_scope_section,
+    )
     from rcp.turn_outcomes import work_turn_outcome_contract
 
     stage = turn.stage
-    usages = "\n".join(f"- `{usage}`" for usage in space_command_usages(allowed_verbs))
+    usages = profile.instructions(UsageContext(client=str(stage / "rcp")))
     sections = [
         "You are the member's Space agent. Each turn is a captured Work turn. Read across "
         "their projects; make direct file and graph changes only inside the writable "
-        "projects below. Never create watch.json or a top-level patch.json; a project "
+        "projects below. Never create a top-level patch.json; a project "
         "Patch belongs only in its own projects/<id>/patch.json.",
         render_agent_graph_authority_contract(),
         f"Top-level command client: `{stage / 'rcp'}`. Available commands:\n{usages}",
-        space_limits_section(allowed_verbs, turn.scope, turn.found),
+        space_limits_section(profile.verbs, turn.scope, turn.found),
         write_scope_section(turn.scope),
         space_clients_section(turn.found, stage),
         APP_PLACES,
         STAGED_SKILL_RULE,
+        watcher_section(str(stage / "watchers"))
+        + "\nA Space watcher uses `checks`; graph conditions belong to a project's own agent.",
         f"Patch JSON schema: `{_stage_space_patch_schema(stage)}`.",
         work_turn_outcome_contract(str(stage / "outcome.json")),
         artifact_contract(
@@ -951,7 +983,35 @@ def _commit_space_session(turn: _SpaceTurn, session_id: str) -> None:
     )
 
 
-def settle_space_turn_outcome(stage: Path, summary: dict[str, dict[str, object]]) -> TurnOutcome:
+def _stage_space_watchers(turn: _SpaceTurn) -> tuple[WatcherBinding, dict[str, str]]:
+    store = turn.owner.store
+    binding = watcher_binding(
+        store, turn.execution.operation_id, turn.owner.thread_id, BACKEND_MACHINE_ID
+    )
+    saved = store.agent_task_contract(binding.origin_turn_id, "watcher_folder:0")
+    if saved is not None and turn.execution.continuation != "fresh":
+        return binding, json.loads(saved)
+    return binding, stage_watcher_folder(store, binding, turn.stage, None)
+
+
+def _reconcile_space_watchers(
+    turn: _SpaceTurn, binding: WatcherBinding, baseline: dict[str, str]
+) -> str | None:
+    try:
+        reconcile_watcher_files(
+            turn.owner.store, binding, baseline, read_watcher_folder(turn.stage, None)
+        )
+    except (OSError, ValueError) as exc:
+        return f"Watcher changes not applied: {exc}"
+    return None
+
+
+def settle_space_turn_outcome(
+    stage: Path,
+    summary: dict[str, dict[str, object]],
+    *,
+    watcher_problem: str | None = None,
+) -> TurnOutcome:
     """The agent's stated outcome, made partial when any project's update did not land.
 
     An unwritten outcome is not stated, as in project Work, never a failure.
@@ -976,9 +1036,13 @@ def settle_space_turn_outcome(stage: Path, summary: dict[str, dict[str, object]]
         for project_id, item in summary.items()
         if item["status"] in {"rejected", "unavailable"}
     ]
-    if not failed:
+    problems = [
+        *(["Project graph updates not applied: " + "; ".join(failed)] if failed else []),
+        *([watcher_problem] if watcher_problem else []),
+    ]
+    if not problems:
         return outcome
-    reason = " ".join(("Project graph updates not applied: " + "; ".join(failed)).split())
+    reason = " ".join(" ".join(problems).split())
     partial = WorkTurnOutcome(status="partial", reason=reason[:TURN_OUTCOME_REASON_MAX_CHARS])
     # The agent may have left a link here; replace it rather than write through it.
     clear_space_output(stage / "outcome.json")
@@ -1083,7 +1147,6 @@ def space_master_values(
                 ],
                 compute_profiles=[],
                 skill_pointers=[],
-                experiment_watcher_resources=[],
                 workspace=project.scope.workspace_root,
             )
             for project in found.writers

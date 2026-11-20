@@ -204,7 +204,6 @@ def test_a_kind_with_no_recorded_owner_waits_rather_than_being_settled(tmp_path)
 
     planned = _plan(store, stopped=lambda *_: True, read_journal=lambda *_: _journal(events=events))
 
-    assert store.agent_task("first").kind == "seed"
     assert planned[0].reconciliation.action == "wait"
     assert "No recorded-result owner" in planned[0].reconciliation.reason
     assert planned[0].actionable is False

@@ -124,10 +124,7 @@ async function openDemoProject(t, initialFreshness, options = {}) {
     default_run_truth_scope: [],
     providers,
     agent_profiles: Object.fromEntries(
-      ["seed", "refresh", "node_chat", "project_chat", "paper_coach", "orchestrator"].map((k) => [
-        k,
-        profile,
-      ]),
+      ["node_chat", "project_chat", "paper_coach", "orchestrator"].map((k) => [k, profile]),
     ),
     provider_readiness: { local: providers },
     provider_skill_inventories: {},
@@ -274,14 +271,14 @@ async function openDemoProject(t, initialFreshness, options = {}) {
       json = { items, total: items.length, offset: 0, limit: 200 };
     } else if (path.endsWith("/chat-display"))
       json = { archived: state.archivedChats, titles: {}, pinned: [] };
-    else if (/\/chats\/[^/]+\/archive$/.test(path)) {
+    else if (/^\/api\/agent-threads\/[^/]+\/archive$/.test(path)) {
       const chatId = path.split("/").at(-2);
       state.archivedChats = route.request().postDataJSON().archived
         ? [...new Set([...state.archivedChats, chatId])]
         : state.archivedChats.filter((id) => id !== chatId);
       json = { archived: state.archivedChats, titles: {}, pinned: [] };
-    } else if (/\/chats\/[^/]+$/.test(path)) {
-      const found = state.chats.find((chat) => chat.chat_id === path.split("/").at(-1));
+    } else if (/^\/api\/agent-threads\/[^/]+\/transcript$/.test(path)) {
+      const found = state.chats.find((chat) => chat.chat_id === path.split("/").at(-2));
       if (!found) return route.fulfill({ status: 404, json: { detail: "Chat not found" } });
       json = { ...found, messages: state.transcripts[found.chat_id] ?? [] };
     } else if (path.endsWith("/tasks") && state.taskListStatus !== 200) {
@@ -292,7 +289,7 @@ async function openDemoProject(t, initialFreshness, options = {}) {
     } else if (path.endsWith("/tasks")) json = state.tasks;
     else if (/\/tasks\/[^/]+$/.test(path) && route.request().method() === "GET")
       json = state.tasks.find((task) => task.operation_id === path.split("/").at(-1)) ?? null;
-    else if (path.endsWith("/tasks/project_chat")) {
+    else if (/^\/api\/agent-threads\/[^/]+\/turns$/.test(path)) {
       state.taskStarts++;
       if (state.taskRefusal) return route.fulfill({ status: 409, json: state.taskRefusal });
       return route.fulfill({ status: 500, json: { detail: "not modelled" } });
@@ -486,6 +483,8 @@ test("the actual App keeps global Space artifact interest out of project waterma
     [`${base}/read`, thread],
     [`${base}/queue`, { items: [] }],
     [`${base}/schedules`, { schedules: [] }],
+    [`${base}/watchers`, []],
+    [`${base}/comment-threads`, { threads: [] }],
     [
       `${base}/transcript`,
       transcript("space", [
@@ -893,6 +892,30 @@ test(
   },
 );
 
+for (const width of [390, 1280]) {
+  test(`project Refresh reloads the current graph without launching an agent at ${width}px`, async (t) => {
+    const { page, state, errors } = await openedShell(t, { viewport: { width, height: 844 } });
+    const menu = page.getByRole("button", { name: "Project menu", exact: true });
+    if (await menu.isVisible()) await menu.click();
+    const refresh = page.getByRole("button", { name: "Refresh", exact: true });
+    state.projectGate = Promise.withResolvers();
+    state.projectName = "Reloaded project";
+    const nextRead = page.waitForRequest(
+      (request) => new URL(request.url()).pathname === "/api/projects/demo",
+    );
+    await refresh.click();
+    await nextRead;
+    if (await menu.isVisible()) await menu.click();
+    assert.equal(await refresh.isDisabled(), true);
+    state.projectGate.resolve();
+    await page.locator('.refresh-control[aria-busy="false"]').waitFor();
+    assert.equal(await refresh.isEnabled(), true);
+    await page.getByText(state.projectName, { exact: true }).first().waitFor();
+    assert.equal(state.taskStarts, 0);
+    assert.deepEqual(errors, []);
+  });
+}
+
 test("a desktop refresh revalidates the shown project without holding it inert", async (t) => {
   const { page, state } = await openedShell(t, {
     desktop: true,
@@ -1249,13 +1272,13 @@ test(
     );
     const sourceReads = state.requests
       .slice(before)
-      .filter((path) => path === "/api/projects/demo/chats/source").length;
+      .filter((path) => path === "/api/agent-threads/source/transcript").length;
     // A fresh matching watermark may admit the retained transcript without a read.
     assert.ok(sourceReads <= 2, `source chat read ${sourceReads} times`);
 
     await menu.click();
     const archived = page.waitForResponse((response) =>
-      response.url().endsWith("/chats/source/archive"),
+      new URL(response.url()).pathname.endsWith("/agent-threads/source/archive"),
     );
     await page.getByRole("menuitem", { name: "Archive", exact: true }).click();
     await archived;
@@ -1780,13 +1803,13 @@ test("returning Agents admits the current transcript before its first frame at 3
   state.resourceVersions.chat = "updated-chat";
   state.transcripts["held-chat"] = [transcriptMessage("Current transcript")];
   const payload = Promise.withResolvers();
-  state.payloadGates.set("/api/projects/demo/chats/held-chat", payload);
+  state.payloadGates.set("/api/agent-threads/held-chat/transcript", payload);
   await recordReturningContent(page, ".agent-chat-view-lines", "Retained transcript");
   await page.locator(".phone-tab-bar").getByRole("button", { name: /^More/ }).click();
   await page.getByRole("button", { name: "Agents", exact: true }).click();
   assert.deepEqual(await sampleEntryFrames(page), []);
   const transcriptRequested = page.waitForRequest(
-    (request) => new URL(request.url()).pathname === "/api/projects/demo/chats/held-chat",
+    (request) => new URL(request.url()).pathname === "/api/agent-threads/held-chat/transcript",
   );
   gate.resolve();
   state.watermarkGate = null;
@@ -1801,11 +1824,11 @@ test("returning Agents admits the current transcript before its first frame at 3
   await editor.focus();
   const editorElement = await editor.elementHandle();
   const pollingPayload = Promise.withResolvers();
-  state.payloadGates.set("/api/projects/demo/chats/held-chat", pollingPayload);
+  state.payloadGates.set("/api/agent-threads/held-chat/transcript", pollingPayload);
   state.resourceVersions.chat = "next-chat";
   state.transcripts["held-chat"] = [transcriptMessage("Polled transcript")];
   const pollRequested = page.waitForRequest(
-    (request) => new URL(request.url()).pathname === "/api/projects/demo/chats/held-chat",
+    (request) => new URL(request.url()).pathname === "/api/agent-threads/held-chat/transcript",
   );
   await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
   await pollRequested;

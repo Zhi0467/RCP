@@ -137,7 +137,7 @@ def test_question_view_waiting_expires_and_resets_on_pending_round(tmp_path):
 def test_work_live_answer_receipt_requires_successful_settlement(tmp_path):
     execution, human = work_execution(tmp_path)
     handler = work_command_handler(execution, None)
-    assert handler.allowed_verbs == {"validate", "ask", "bulletin", "name", "watcher"}
+    assert handler.allowed_verbs == {"validate", "ask", "bulletin", "name"}
     request = ask_request()
     pending = handler(request, identity())
     assert pending.result["state"] == "pending"
@@ -224,6 +224,7 @@ def test_work_ask_requires_own_broker(tmp_path, authority, task_id):
 
 
 def test_discuss_resolves_ask_and_name(tmp_path):
+    from rcp.agents.agent_profile import UsageContext
     from rcp.runs.agent_names import name_command_usage
     from rcp.runs.tasks.discuss import _discuss_execution_instructions
 
@@ -241,12 +242,20 @@ def test_discuss_resolves_ask_and_name(tmp_path):
     for verb in ("lesson", "launch", "validate", "apply"):
         request = ask_request().model_copy(update={"verb": verb})
         assert handler(request, identity()).status == "invalid"
-    assert _work_execution_instructions(
+    work = work_command_handler(execution, None)
+    assert work.allowed_verbs == {"validate", "name"}
+    rendered = _work_execution_instructions(
         SimpleNamespace(
-            execution=execution, compute_commands=None, service=None, graph_read_scope=None
+            execution=execution,
+            compute_commands=None,
+            service=None,
+            graph_read_scope=None,
+            patch_inputs=SimpleNamespace(patch_path="patch.json"),
         ),
         client="client",
-    ) == name_command_usage("client")
+    )
+    assert rendered == work.profile.instructions(UsageContext(client="client"))
+    assert name_command_usage("client") in rendered
     assert _discuss_execution_instructions(discuss_command_handler(None)) == ""
 
 
@@ -276,10 +285,10 @@ def test_artifact_edit_discuss_ask_follows_chat_authority(tmp_path, origin_bound
 
 
 def test_human_work_prompt_includes_ask_without_compute(tmp_path, monkeypatch):
+    from rcp.agents import prompts
     from rcp.agents.command_mailbox import stage_command_mailbox
     from rcp.agents.provider_accounts import ProviderAccounts
     from rcp.limits import ask_hold_seconds
-    from rcp.runs.tasks import work
 
     execution, _ = work_execution(tmp_path)
     store = execution.store
@@ -296,19 +305,19 @@ def test_human_work_prompt_includes_ask_without_compute(tmp_path, monkeypatch):
         ask_wait_seconds=hold,
     )
     rendered = []
-    contract = work.live_ask_contract
+    contract = prompts.live_ask_contract
 
     def render(wait):
         rendered.append(wait)
         return contract(wait)
 
-    monkeypatch.setattr(work, "live_ask_contract", render)
+    monkeypatch.setattr(prompts, "live_ask_contract", render)
     turn = SimpleNamespace(
         execution=execution,
         compute_commands=None,
         service=None,
         graph_read_scope=None,
-        patch_inputs=SimpleNamespace(validator_staged=staged),
+        patch_inputs=SimpleNamespace(validator_staged=staged, patch_path="patch.json"),
     )
     prompt = _work_execution_instructions(turn, client="rcp-client")
     argv = staged.client_argv()
@@ -624,7 +633,7 @@ def test_a_project_thread_turn_is_told_how_to_raise_approval_cards(tmp_path, sou
                 compute_commands=None,
                 service=None,
                 graph_read_scope=None,
-                patch_inputs=SimpleNamespace(validator_staged=staged),
+                patch_inputs=SimpleNamespace(validator_staged=staged, patch_path="patch.json"),
                 validator_lifecycle=lifecycle,
             )
             return _work_execution_instructions(turn, client="rcp-client")
@@ -637,3 +646,19 @@ def test_a_project_thread_turn_is_told_how_to_raise_approval_cards(tmp_path, sou
         assert PROPOSAL_CARD_SHOWN in rendered
     finally:
         staged.cleanup()
+
+
+def test_a_resumed_shared_turn_without_a_graph_scope_keeps_projects(tmp_path):
+    from rcp.runs.tasks import work
+
+    execution, _ = work_execution(tmp_path)
+    execution.stage_root = str(tmp_path)
+    service = cast(ProjectService, SimpleNamespace(project_catalog=object()))
+    handler = work._resume_work_command_handler(
+        execution,
+        work._WorkMailboxContext(run_truth_scope=[], graph_read_scope=None),
+        lambda: service,
+    )
+    assert handler is not None and "projects" in handler.allowed_verbs
+    assert handler.service is None and handler.open_service is not None
+    assert handler.open_service() is service

@@ -97,6 +97,7 @@ _PATH_COLUMN_NAMES = frozenset(
         "jobs_root",
     }
 )
+_WATCHER_PATH_TABLES = ("watchers", "watcher_checks")
 
 
 class CandidateRehearsalRefused(RuntimeError):
@@ -751,14 +752,18 @@ def _rebind_local_stage_paths(connection: sqlite3.Connection, absent_root: Path)
                     "WHERE rowid = ? AND output_path IS NOT NULL",
                     (str(rebound / "output"), row["rowid"]),
                 )
-    if "watchers" in tables:
-        rows = connection.execute("SELECT rowid, machine_id FROM watchers").fetchall()
+    for table in _WATCHER_PATH_TABLES:
+        if "log_path" not in tables.get(table, set()):
+            continue
+        rows = connection.execute(
+            f"SELECT rowid, machine_id FROM {table} WHERE log_path IS NOT NULL"
+        ).fetchall()
         for row in rows:
             if not _is_backend_machine(row["machine_id"]):
                 continue
-            rebound = absent_root / "watchers" / str(row["rowid"])
+            rebound = absent_root / table / str(row["rowid"])
             connection.execute(
-                "UPDATE watchers SET log_path = ?, cwd = ? WHERE rowid = ?",
+                f"UPDATE {table} SET log_path = ?, cwd = ? WHERE rowid = ?",
                 (str(rebound / "log"), str(rebound / "cwd"), row["rowid"]),
             )
     if "compute_jobs" in tables:
@@ -818,7 +823,10 @@ def _validate_path_column_inventory(connection: sqlite3.Connection) -> None:
                 raise CandidateRehearsalRefused(
                     f"Copied table {table!r} unexpectedly owns {column!r}."
                 )
-            if column in {"log_path", "cwd"} and table not in {"watchers", "compute_jobs"}:
+            if column in {"log_path", "cwd"} and table not in {
+                *_WATCHER_PATH_TABLES,
+                "compute_jobs",
+            }:
                 raise CandidateRehearsalRefused(
                     f"Copied table {table!r} unexpectedly owns {column!r}."
                 )
@@ -902,9 +910,9 @@ def _validate_rebound_paths(
                     raise CandidateRehearsalRefused(
                         "A copied local browser workspace escaped its known-absent boundary."
                     )
-        if table == "watchers":
+        if table in _WATCHER_PATH_TABLES and "log_path" in columns:
             for row in connection.execute(
-                "SELECT machine_id, log_path, cwd FROM watchers"
+                f"SELECT machine_id, log_path, cwd FROM {table} WHERE log_path IS NOT NULL"
             ).fetchall():
                 if _is_backend_machine(row["machine_id"]) and any(
                     not Path(str(row[name])).is_relative_to(root) for name in ("log_path", "cwd")

@@ -1,3 +1,4 @@
+import { projectAgentPath } from "../agents/agentRoutes.ts";
 import {
   useCallback,
   useEffect,
@@ -9,6 +10,7 @@ import {
   type DragEvent,
   type RefObject,
   type SetStateAction,
+  type ReactNode,
 } from "react";
 import { File, FolderOpen, LoaderCircle, Plus, Upload, X } from "lucide-react";
 import { api, removeComposerAttachment, uploadComposerAttachment } from "../core/api";
@@ -374,8 +376,7 @@ export function useComposerAttachments({
   const [draftScope, setDraftScope] = useState(() => crypto.randomUUID());
   const scope = scopeId ?? draftScope;
   const uploadUrl =
-    attachmentsUrl ??
-    (apiBase ? `${apiBase}/chats/${encodeURIComponent(scope)}/attachments` : null);
+    attachmentsUrl ?? (apiBase ? projectAgentPath(apiBase, scope, "attachments") : null);
   const [references, setReferences] = useDraftReferences(referencesKey, apiBase);
   // Upload callbacks retain their owner across awaits. A different conversation starts
   // empty immediately, and a late upload removes its file from the old collection.
@@ -696,9 +697,14 @@ export function ComposerAttachmentChips({ composer }: { composer: ComposerAttach
 export function ComposerAddPicker({
   composer,
   disabled,
+  options,
+  optionCount = 0,
 }: {
   composer: ComposerAttachments;
   disabled: boolean;
+  /** The next turn's settings, such as Browser use and Worktree, below the file items. */
+  options?: ReactNode;
+  optionCount?: number;
 }) {
   const { project, addMenuOpen, setAddMenuOpen, pickerOpen, setPickerOpen } = composer.ui;
   const pickerRef = useRef<HTMLDivElement | null>(null);
@@ -733,37 +739,41 @@ export function ComposerAddPicker({
         }}
       >
         <Plus size={16} />
+        {optionCount > 0 && <strong className="chat-add-count">{optionCount}</strong>}
       </button>
-      {addMenuOpen && (
-        <div className="chat-add-menu" role="menu">
+      <div className="chat-add-menu" role="menu" hidden={!addMenuOpen}>
+        <button
+          type="button"
+          role="menuitem"
+          disabled={disabled}
+          onClick={() => {
+            setAddMenuOpen(false);
+            inputRef.current?.click();
+          }}
+        >
+          <Upload size={14} />
+          Upload file
+        </button>
+        {project && (
           <button
             type="button"
             role="menuitem"
-            disabled={disabled}
+            disabled={disabled || composer.ui.referencesDisabled}
             onClick={() => {
               setAddMenuOpen(false);
-              inputRef.current?.click();
+              setPickerOpen(true);
             }}
           >
-            <Upload size={14} />
-            Upload file
+            <FolderOpen size={14} />
+            From RCP…
           </button>
-          {project && (
-            <button
-              type="button"
-              role="menuitem"
-              disabled={disabled || composer.ui.referencesDisabled}
-              onClick={() => {
-                setAddMenuOpen(false);
-                setPickerOpen(true);
-              }}
-            >
-              <FolderOpen size={14} />
-              From RCP…
-            </button>
-          )}
-        </div>
-      )}
+        )}
+        {options && (
+          <fieldset className="chat-add-options" aria-label="Turn options">
+            {options}
+          </fieldset>
+        )}
+      </div>
       {project && pickerOpen && (
         <ProjectReferencePicker
           projectId={project.id}

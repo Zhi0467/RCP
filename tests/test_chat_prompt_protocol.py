@@ -138,7 +138,7 @@ def _execution(
 
 
 def _enable_graph_audit(service) -> None:
-    surfaces = ("seed", "refresh", "node_chat", "project_chat", "paper_coach")
+    surfaces = ("node_chat", "project_chat", "paper_coach")
     service.history.update_agent_settings(
         service.manifest.agent.default_run_truth_scope,
         {surface: service.manifest.agent_profile(surface) for surface in surfaces},

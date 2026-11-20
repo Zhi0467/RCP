@@ -24,7 +24,6 @@ export function useEpisodeDialogs({
   runsVisible = false,
 }: UseEpisodeDialogsOptions) {
   const { store } = useRefreshRuntime();
-  const [runDialogOpen, setRunDialogOpen] = useState(false);
   const [autoResearchDialogOpen, setAutoResearchDialogOpen] = useState(false);
   const [autoResearchStartError, setAutoResearchStartError] = useState<string | null>(null);
   const [episodeAction, setEpisodeAction] = useState<string | null>(null);
@@ -86,8 +85,6 @@ export function useEpisodeDialogs({
     [store],
   );
 
-  const openRunDialog = useCallback(() => setRunDialogOpen(true), []);
-  const closeRunDialog = useCallback(() => setRunDialogOpen(false), []);
   const openAutoResearchDialog = useCallback(() => {
     setAutoResearchStartError(null);
     setAutoResearchDialogOpen(true);
@@ -107,7 +104,6 @@ export function useEpisodeDialogs({
   );
 
   return {
-    runDialogOpen,
     autoResearchDialogOpen,
     autoResearchStartError,
     episodeAction,
@@ -115,8 +111,6 @@ export function useEpisodeDialogs({
     episodes,
     episodeMessages,
     liveAutoResearchEpisodes,
-    openRunDialog,
-    closeRunDialog,
     openAutoResearchDialog,
     closeAutoResearchDialog,
     reportAutoResearchStartError,

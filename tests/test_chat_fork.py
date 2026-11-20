@@ -128,9 +128,7 @@ def test_branch_chat_defers_fork_and_keeps_source_unchanged(manifest, tmp_path, 
     )
     assert response.status_code == 200, response.text
     branched = response.json()
-    replayed = client.post(
-        f"/api/projects/{project_id}/chats/{chat_id}/branch", json=branch_request
-    )
+    replayed = client.post(f"/api/agent-threads/{chat_id}/branch", json=branch_request)
     assert replayed.json() == branched
     assert branched["messages"] == []
     assert branched["chat_id"] != chat_id

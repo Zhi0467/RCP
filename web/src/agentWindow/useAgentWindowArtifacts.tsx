@@ -21,7 +21,6 @@ import {
   turnArtifactLocation,
 } from "../core/repositoryFileLinks";
 import { formatBytes } from "../chat/composerAttachments";
-import type { AnswerComments } from "../chat/answerComments";
 import type { AgentWindowEndpoints } from "./agentWindowEndpoints";
 import type { CommentThread } from "../comments/types.ts";
 import type { PickInlineThread } from "../artifacts/InlineArtifactPins";
@@ -39,82 +38,6 @@ export interface InlineComments {
   threads?(artifactId: string): readonly CommentThread[];
   selectedThread?: string | null;
   pickThread?: PickInlineThread;
-}
-
-export function stagedInlineComments(
-  comments: AnswerComments,
-  setSubmitError: (error: string | null) => void,
-): InlineComments {
-  const { annotations } = comments;
-  // A part of an artifact shown inside a reply, selected in its comment mode, is
-  // staged like answer text; the turn carries it as that artifact's selection.
-  const openInlineArtifactComment = (
-    taskId: string,
-    artifact: AgentArtifactDescriptor,
-    event: InlineArtifactSelectionEvent,
-  ) => {
-    if (
-      annotations.some(
-        (annotation) =>
-          annotation.artifact && annotation.artifact.context.artifact_id !== artifact.artifact_id,
-      )
-    ) {
-      setSubmitError(
-        "One message carries comments on one artifact. Send or remove the staged ones first.",
-      );
-      event.clear();
-      return;
-    }
-    // A prefill joins an unsent draft on this artifact below its text, keeping
-    // the draft's own selection, rather than replacing it.
-    const open = comments.composer?.step === "comment" ? comments.composer : null;
-    const draft = open ? comments.comment.trim() : "";
-    const prefill = event.initialText ?? "";
-    if (draft && prefill && open?.artifact?.context.artifact_id === artifact.artifact_id) {
-      if (!draft.includes(prefill)) comments.setComment(`${draft}\n\n${prefill}`);
-      comments.focusComment();
-      return;
-    }
-    comments.openExternal(
-      {
-        selectedText: event.description || artifact.name,
-        anchor: event.anchor,
-        artifact: {
-          context: {
-            source: "task",
-            operation_id: taskId,
-            artifact_id: artifact.artifact_id,
-            ...(event.freshSession ? { fresh_session: true } : {}),
-            ...(event.version ? { base_version: event.version } : {}),
-          },
-          name: artifact.name,
-          selection: event.selection ? { ...event.selection, comment: "" } : null,
-        },
-      },
-      { clear: event.clear, ...(prefill ? { draft: prefill } : {}) },
-    );
-  };
-
-  // A new version moves the parts a selection named, so comments on the old one,
-  // open or staged, would be sent against bytes the reader never saw.
-  const dropStaleArtifactComments = (artifact: AgentArtifactDescriptor) => {
-    const open =
-      comments.composer?.step === "comment" ? comments.composer.artifact?.context : undefined;
-    if (open?.artifact_id === artifact.artifact_id) comments.closeComment({ keepText: true });
-    const stale = annotations.filter(
-      (annotation) => annotation.artifact?.context.artifact_id === artifact.artifact_id,
-    );
-    if (!stale.length) return;
-    comments.discard(stale);
-    setSubmitError(
-      `${artifact.name} changed to a new version, so its staged comments were removed. Select the parts again.`,
-    );
-  };
-  return {
-    open: openInlineArtifactComment,
-    cancel: comments.cancelExternal,
-    versionChanged: dropStaleArtifactComments,
-  };
 }
 
 const INLINE_ARTIFACT_MAX_BYTES = 2 * 1024 * 1024;

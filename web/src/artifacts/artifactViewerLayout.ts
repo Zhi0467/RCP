@@ -1,3 +1,4 @@
+import type { DockedThread } from "../comments/react/CommentDock";
 import type { Point, Size } from "../ui/floatingWindow";
 
 export interface ViewerPlacement {
@@ -104,6 +105,34 @@ export function acceptsArtifactEditMessage(
     typeof data.operation_id === "string" &&
     data.operation_id,
   );
+}
+
+/** The threads a viewer saved for its origin chat's composer, or null for another message. */
+export function artifactDockMessage(
+  event: { source: unknown; origin: string; data: unknown },
+  frame: unknown,
+  origin: string,
+  artifactId: string,
+): DockedThread[] | null {
+  if (!frame || event.source !== frame || event.origin !== origin) return null;
+  const data = event.data as Record<string, unknown> | null;
+  if (
+    !data ||
+    data.type !== "rcp-artifact-comments-docked" ||
+    data.version !== 1 ||
+    data.artifact_id !== artifactId ||
+    !Array.isArray(data.threads)
+  )
+    return null;
+  const threads = data.threads.filter(
+    (item): item is DockedThread =>
+      Boolean(item) &&
+      typeof item.thread_id === "string" &&
+      Boolean(item.thread_id) &&
+      typeof item.quote === "string" &&
+      typeof item.text === "string",
+  );
+  return threads.length === data.threads.length && threads.length ? threads : null;
 }
 
 export function artifactVersionChanged(previous: string | null, current: string): boolean {

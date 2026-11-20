@@ -4,12 +4,6 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 
-import {
-  assembleChatTurn,
-  parseStagedChatAnnotations,
-  stagedArtifactContext,
-} from "../src/chat/chatInput.ts";
-
 const server = await createServer({
   root: new URL("..", import.meta.url).pathname,
   configFile: false,
@@ -211,40 +205,6 @@ test("shell messages are read only from that frame and bounded", () => {
   });
 });
 
-test("an inline comment travels as the artifact selection of a fresh-session edit", () => {
-  const context = stagedArtifactContext([
-    {
-      id: "a",
-      selectedText: "Loss chart",
-      comment: " Make it log scale ",
-      artifact: {
-        context: {
-          source: "task",
-          operation_id: "op-1",
-          artifact_id: "0123456789abcdef01234567",
-          fresh_session: true,
-        },
-        name: "loss.html",
-        selection: { kind: "text", text: "Loss", surrounding_text: "Loss by step", comment: "" },
-      },
-    },
-  ]);
-  assert.deepEqual(context, {
-    source: "task",
-    operation_id: "op-1",
-    artifact_id: "0123456789abcdef01234567",
-    fresh_session: true,
-    selections: [
-      {
-        kind: "text",
-        text: "Loss",
-        surrounding_text: "Loss by step",
-        comment: "Make it log scale",
-      },
-    ],
-  });
-});
-
 test("Markdown hands an embedded image to the reply's renderer and keeps other images", () => {
   const rendered = renderToStaticMarkup(
     createElement(MarkdownAnswer, {
@@ -306,23 +266,4 @@ test("inline errors accept only the current shell's bounded exact payload", () =
   assert.equal(read(payload, frame, "null"), null);
   assert.deepEqual(read({ kind: "rcp-artifact-error-clear" }), { kind: "error-clear" });
   assert.equal(read({ kind: "rcp-artifact-error-clear", extra: 1 }), null);
-});
-
-test("a whole-artifact inline draft keeps its target and sends only on turn assembly", () => {
-  const annotation = {
-    id: "error",
-    selectedText: "page.html",
-    comment: "failure",
-    artifact: {
-      name: "page.html",
-      selection: null,
-      context: { source: "task", operation_id: "op-1", artifact_id: "a", base_version: "v1" },
-    },
-  };
-  assert.deepEqual(parseStagedChatAnnotations(JSON.stringify([annotation])), [annotation]);
-  assert.equal(assembleChatTurn("", [annotation]), "failure");
-  assert.deepEqual(stagedArtifactContext([annotation]), {
-    ...annotation.artifact.context,
-    selections: [],
-  });
 });

@@ -158,10 +158,13 @@ test("a reply thread pins at its quote, opens from the pin and the header count,
     };
     await page.route("**/api/projects/*/chats/*/questions", (route) => route.fulfill({ json: [] }));
     const listed = [];
-    await page.route("**/api/projects/*/comment-threads?*", (route) => {
+    await page.route("**/api/agent-threads/viewport-regression/comment-threads?*", (route) => {
       listed.push(new URL(route.request().url()).search);
       return route.fulfill({ json: { threads: [thread] } });
     });
+    await page.route("**/api/agent-threads/viewport-regression/comment-threads/c1/posts", (route) =>
+      route.fulfill({ json: { thread } }),
+    );
     await page.route("**/api/projects/*/members", (route) => route.fulfill({ json: [] }));
     await page.route("**/api/projects/*/chats/*/cards", (route) =>
       route.fulfill({ json: { next_expiry_at: null, proposal_cards: [], asked_cards: [] } }),
@@ -169,25 +172,48 @@ test("a reply thread pins at its quote, opens from the pin and the header count,
     await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/chatAnnotationViewport.html`);
     const pin = page.getByRole("button", { name: "Comment 1" });
     await pin.waitFor();
-    const quoteEnd = await page.evaluate(() => {
+    await page.getByRole("button", { name: "Chat menu" }).click();
+    assert.equal(await page.getByRole("menuitem").first().textContent(), "Rename");
+    await page.keyboard.press("Escape");
+    const layout = await page.evaluate(() => {
       const answer = document.querySelector(".chat-annotatable-answer");
       const text = answer.textContent;
-      const at = text.indexOf("stronger comparison") + "stronger comparison".length;
+      const start = text.indexOf("stronger comparison");
+      const end = start + "stronger comparison".length;
       const walker = document.createTreeWalker(answer, NodeFilter.SHOW_TEXT);
+      const quote = document.createRange();
+      const lines = [];
       let offset = 0;
       for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-        if (at <= offset + node.length) {
-          const range = document.createRange();
-          range.setStart(node, at - offset - 1);
-          range.setEnd(node, at - offset);
-          return range.getBoundingClientRect().right;
-        }
+        if (start >= offset && start < offset + node.length) quote.setStart(node, start - offset);
+        if (end > offset && end <= offset + node.length) quote.setEnd(node, end - offset);
+        const whole = document.createRange();
+        whole.selectNodeContents(node);
+        lines.push(...[...whole.getClientRects()].map((rect) => rect.toJSON()));
         offset += node.length;
       }
-      return null;
+      const last = [...quote.getClientRects()].at(-1);
+      return {
+        line: last.top + last.height / 2,
+        textRight: Math.max(...lines.map((rect) => rect.right)),
+        lines,
+        highlighted: CSS.highlights.has("rcp-comment"),
+      };
     });
     const pinBox = await pin.boundingBox();
-    assert.ok(pinBox.x >= quoteEnd && pinBox.x < quoteEnd + 8);
+    assert.ok(Math.abs(pinBox.y + pinBox.height / 2 - layout.line) < 2, "Level with the quote");
+    assert.ok(pinBox.x >= layout.textRight - 1, "In the margin right of the answer text");
+    assert.ok(pinBox.x + pinBox.width <= 390, "On screen");
+    const overlaps = layout.lines.filter(
+      (rect) =>
+        rect.width &&
+        rect.left < pinBox.x + pinBox.width &&
+        pinBox.x < rect.right &&
+        rect.top < pinBox.y + pinBox.height &&
+        pinBox.y < rect.bottom,
+    );
+    assert.deepEqual(overlaps, [], "The pin covers no text");
+    assert.equal(layout.highlighted, true);
     assert.deepEqual(listed, ["?target_kind=reply&chat_id=viewport-regression"]);
     await pin.click();
     const popover = page.getByRole("dialog", { name: "Comment" });
@@ -196,15 +222,21 @@ test("a reply thread pins at its quote, opens from the pin and the header count,
     await popover.waitFor({ state: "detached" });
     await page.getByRole("button", { name: "1 open comment" }).click();
     const list = page.getByRole("dialog", { name: "Comments" });
-    await list.getByRole("button", { name: "Send to agent" }).click();
+    const listBox = await list.boundingBox();
+    assert.ok(listBox.x >= 0 && listBox.x + listBox.width <= 390, JSON.stringify(listBox));
+    await list.getByRole("textbox", { name: "Reply" }).fill("Use the tuned one.");
+    await list.getByRole("button", { name: "Reply", exact: true }).click();
+    await page.getByRole("button", { name: "1 comment" }).waitFor();
+    await page.keyboard.press("Escape");
+    const field = page.locator(".chat-composer textarea").first();
+    await field.fill("Please address this.");
+    await field.press("Enter");
     await page.waitForFunction(() => window.started?.length === 1);
     const [started] = await page.evaluate(() => window.started);
     assert.equal(started.kind, "project_chat");
     assert.deepEqual(started.request.comment_thread_ids, ["c1"]);
     assert.equal(started.request.chat_id, "viewport-regression");
     assert.match(started.requestId, /^[0-9a-f-]{36}$/);
-    const listBox = await list.boundingBox();
-    assert.ok(listBox.x >= 0 && listBox.x + listBox.width <= 390, JSON.stringify(listBox));
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     assert.deepEqual(errors, []);
   } finally {

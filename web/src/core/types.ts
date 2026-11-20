@@ -11,9 +11,12 @@ export type AppView =
   | "paper"
   | "settings"
   | "chats";
-export type AgentSurface = "seed" | "refresh" | "node_chat" | "project_chat" | "paper_coach";
+export type AgentSurface = "node_chat" | "project_chat" | "paper_coach";
 export type AgentExecutionProfile = AgentSurface | "orchestrator";
-export type AgentTaskKind = AgentSurface | "auto_research" | "branch_merge" | "artifact_edit";
+export type LegacyAgentTaskKind = "seed" | "refresh";
+export type StartableAgentTaskKind =
+  AgentSurface | "auto_research" | "branch_merge" | "artifact_edit";
+export type AgentTaskKind = StartableAgentTaskKind | LegacyAgentTaskKind;
 /**
  * Opaque on purpose, like `EpisodeStatus`. A task's lifecycle reaches the client
  * already answered, as `active`, `awaiting_human`, `settled`, `status_label`, and
@@ -35,7 +38,7 @@ export type SteerReceiptStatus = {
 export type ConversationMode = "discuss" | "work";
 export type TaskTrigger = "human" | "orchestrator" | "experiment_run" | "watcher" | "schedule";
 export type GraphPatchKind = "work" | "experiment_loop";
-export type AgentCapability = "discuss" | "work_auto" | "orchestrate" | "scratch_patch";
+export type AgentCapability = "discuss" | "work_auto" | "orchestrate";
 
 export const DISPLAY_NAME_MAX_LENGTH = 120;
 export const SPACE_NAME_MAX_LENGTH = 120;
@@ -334,7 +337,7 @@ export interface ProjectProvisioningRepositoryProjection {
 }
 
 export interface ProjectProvisioningProviderProjection {
-  profile: AgentExecutionProfile;
+  profile: AgentExecutionProfile | LegacyAgentTaskKind;
   provider: ProviderId;
   runtime_id: string;
   model: string;
@@ -1001,7 +1004,6 @@ interface WatcherDeliveryRecord {
   stop_reason: string | null;
   stopped_at: string | null;
   stop_operation_id: string | null;
-  can_check_now: boolean;
   can_stop_watching: boolean;
   wakes_chat: boolean;
   delivery_label: string;
@@ -2408,6 +2410,8 @@ export interface ArtifactViewerState {
   fresh_session_required: boolean;
   /** App hash of the thread the reply goes to, or null when it cannot be opened. */
   thread_href: string | null;
+  /** The chat whose composer saved viewer comments dock at; null sends them straight away. */
+  origin_chat_id: string | null;
   /** Same-origin viewer shell for the current version; null for PDF and download-only. */
   viewer_url: string | null;
   download_url: string;
@@ -2962,7 +2966,10 @@ export interface AgentUsageSnapshot {
   records: AgentUsageRecord[];
 }
 
-export type StartAgentTask = (kind: AgentTaskKind, request: AgentTaskRequest) => Promise<AgentTask>;
+export type StartAgentTask = (
+  kind: StartableAgentTaskKind,
+  request: AgentTaskRequest,
+) => Promise<AgentTask>;
 
 export interface ChatOrigin {
   source_chat_id: string;
@@ -4081,6 +4088,7 @@ export type AgentThreadLiveState =
 
 /** One of the member's private agent threads; the Space thread lists first. */
 export interface AgentThread {
+  archived: boolean;
   thread_id: string;
   kind: AgentThreadKind;
   project_id: string | null;
@@ -4109,7 +4117,12 @@ export interface AgentThreadTurnRequest {
   references?: ProjectReferenceSelector[];
   attachment_set_id?: string;
   attachment_client_id?: string;
-  artifact_context?: ArtifactContextRequest | null;
+  /** Shared comment threads the turn carries. */
+  comment_thread_ids?: string[];
+  /** A project thread only: the turn's worktree and its one repository. */
+  worktree?: boolean;
+  run_truth_scope?: string[];
+  worktree_integration?: WorktreeIntegrationOption["id"];
   message: string;
   provider?: ProviderId;
   model?: string;

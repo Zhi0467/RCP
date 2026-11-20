@@ -39,7 +39,6 @@ import { CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD, THREAD_TIME_GAP_MINUTES } from ".
 import { MarkdownAnswer } from "../core/chatMarkdown";
 import { BrowserTurnNotice } from "../core/BrowserControls";
 import { ArtifactCommentQuotes, artifactCommentLead } from "../chat/ArtifactCommentQuotes";
-import { AnswerCommentButton, type AnswerComments } from "../chat/answerComments";
 import { SentAttachments } from "../chat/SentAttachments";
 import { CompactionDivider } from "../chat/AgentStatusStrip";
 import { compactionAnchors } from "../chat/agentStatusModel";
@@ -57,9 +56,6 @@ interface Props {
   questions: AgentQuestion[];
   endpoints: AgentWindowEndpoints;
   artifacts: ReturnType<typeof useAgentWindowArtifacts>;
-  /** Each answer offers its keyboard Comment, staged in the composer; a project chat's
-   *  replies take shared threads instead. */
-  comments?: AnswerComments;
   compactionByLine: ReturnType<typeof compactionAnchors>;
   continuedTaskIds: Set<string>;
   latestGraphReceiptLineIds: Set<string>;
@@ -117,7 +113,6 @@ export function AgentWindowTranscript({
   questions,
   endpoints,
   artifacts,
-  comments,
   compactionByLine,
   continuedTaskIds,
   latestGraphReceiptLineIds,
@@ -351,7 +346,6 @@ export function AgentWindowTranscript({
                           {artifacts.repositoryFileErrors.get(messageId)}
                         </strong>
                       )}
-                      {!readOnly && comments && <AnswerCommentButton comments={comments} />}
                     </>
                   )
                 )
@@ -677,7 +671,13 @@ export function agentWindowEntries(
   }
   return grouped;
 }
-function InlineTaskProgress({ task, control }: { task: AgentTask | null; control?: ReactNode }) {
+export function InlineTaskProgress({
+  task,
+  control,
+}: {
+  task: AgentTask | null;
+  control?: ReactNode;
+}) {
   const running = task
     ? turnCommands(task)
         .filter((command) => command.seconds === null)

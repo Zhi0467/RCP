@@ -40,9 +40,6 @@ from rcp.core.operations import GraphOperation, HumanEditCause, NewGlossaryTerm,
 #: One physical Experiment watcher output, named for the resource it selects.
 #: The launch supervisor snapshots these by pattern and the settling turn reads
 #: them by name, so both sides spell the layout from here rather than twice.
-EXPERIMENT_WATCH_OUTPUT_PREFIX = "experiment-watch-"
-EXPERIMENT_WATCH_OUTPUT_SUFFIX = ".json"
-EXPERIMENT_WATCH_OUTPUT_GLOB = f"{EXPERIMENT_WATCH_OUTPUT_PREFIX}*{EXPERIMENT_WATCH_OUTPUT_SUFFIX}"
 
 _SLUG = r"[a-z0-9]+(?:-[a-z0-9]+)*"
 _NODE_ID = rf"[a-z][a-z0-9]*(?:_[a-z0-9]+)*/{_SLUG}"
@@ -597,7 +594,7 @@ def _agent_patch_shape_error(exc: ValidationError) -> ValueError:
 def prepare_agent_patch(
     draft: AgentPatch | OrchestratorAgentPatch,
     *,
-    kind: Literal["seed", "refresh", "work", "experiment_loop"],
+    kind: Literal["work", "experiment_loop"],
     run_truth_scope: list[str],
     read_scope: RepositoryReadScope,
     source_operation_id: str | None = None,
@@ -607,12 +604,9 @@ def prepare_agent_patch(
 ) -> Patch:
     """Wrap one semantic agent deliverable in RCP-owned canonical metadata (invariant 10).
 
-    Conversation and ingestion are different lifecycles that share launch
-    plumbing only: the agent Patch schema has no coverage or cursor operation
-    and `processed_cursors` is always empty here, so a chat turn can never
-    advance an ingestion watermark or cursor
-    (`tests/test_direct_ingestion_contract.py`,
-    `tests/test_api.py::test_chat_does_not_assemble_or_project_transcripts`).
+    The agent Patch schema has no coverage or cursor operation and
+    `processed_cursors` is always empty here, so an agent turn can never
+    advance the ingestion watermark or a cursor that older Patches recorded.
     """
 
     resolved_profile = _agent_patch_profile(draft, profile)

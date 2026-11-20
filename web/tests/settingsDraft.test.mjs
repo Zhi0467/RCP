@@ -38,9 +38,9 @@ test("a staged profile written before runtime selection is dropped", () => {
       profiles: {
         // A provider switch with no runtime beside it. Provider and runtime are
         // one choice, and nothing can name the missing half.
-        seed: { provider: "claude", model: "", reasoning: "medium", run_on: "local" },
+        project_chat: { provider: "claude", model: "", reasoning: "medium", run_on: "local" },
         // An empty runtime is the same incomplete pair spelled differently.
-        refresh: {
+        paper_coach: {
           provider: "codex",
           runtime: "",
           model: "",
@@ -64,7 +64,7 @@ test("a staged profile written before runtime selection is dropped", () => {
 
 test("a dropped staged profile leaves the manifest profile intact", () => {
   const saved = {
-    seed: {
+    node_chat: {
       provider: "codex",
       runtime: "exec",
       model: "",
@@ -76,7 +76,9 @@ test("a dropped staged profile leaves the manifest profile intact", () => {
     JSON.stringify({
       version: 3,
       scope: ["repo"],
-      profiles: { seed: { provider: "claude", model: "", reasoning: "medium", run_on: "local" } },
+      profiles: {
+        node_chat: { provider: "claude", model: "", reasoning: "medium", run_on: "local" },
+      },
     }),
   );
 
@@ -179,8 +181,6 @@ test("a migrated five-profile v1 draft keeps the saved orchestrator profile", ()
     run_on: "local",
   });
   const saved = {
-    seed: runConfig("saved-seed"),
-    refresh: runConfig("saved-refresh"),
     node_chat: runConfig("saved-node-chat"),
     project_chat: runConfig("saved-project-chat"),
     paper_coach: runConfig("saved-paper-coach"),
@@ -202,7 +202,9 @@ test("a migrated five-profile v1 draft keeps the saved orchestrator profile", ()
 
   assert.ok(legacy);
   assert.deepEqual(mergeAgentProfiles(saved, legacy.profiles), {
-    ...legacy.profiles,
+    node_chat: legacy.profiles.node_chat,
+    project_chat: legacy.profiles.project_chat,
+    paper_coach: legacy.profiles.paper_coach,
     orchestrator: saved.orchestrator,
   });
 });

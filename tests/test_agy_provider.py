@@ -64,7 +64,7 @@ def test_recorded_failures(fixture):
         assert "command" in errors[-1].text
 
 
-@pytest.mark.parametrize("capability", ["discuss", "scratch_patch"])
+@pytest.mark.parametrize("capability", ["discuss"])
 def test_scratch_policy_and_host_staging(tmp_path, capability):
     turn = AGY.runtime(AGY.legacy_runtime_id).turn(request(tmp_path, capability))
     command = turn.command
@@ -124,7 +124,7 @@ def test_catalog_skills_and_auth():
 
 
 def test_version_and_summary_refusal(tmp_path):
-    for capability in ["discuss", "scratch_patch", "work_auto", "orchestrate"]:
+    for capability in ["discuss", "work_auto", "orchestrate"]:
         with pytest.raises(ValueError):
             AGY.validate_readiness_version("1.5.7", capability=capability)
     with pytest.raises(ValueError):
@@ -179,8 +179,8 @@ def test_work_tools_and_exact_write_roots(tmp_path, capability):
     assert set(tools) <= set(known)
 
 
-@pytest.mark.parametrize("capability", ["scratch_patch", "discuss"])
-def test_client_only_grants_scratch_shell(tmp_path, capability):
+def test_discuss_client_gate_grants_no_shell(tmp_path):
+    capability = "discuss"
     import shlex
 
     from rcp.agents.invocation_broker import ProviderInvocationGate
@@ -199,11 +199,11 @@ def test_client_only_grants_scratch_shell(tmp_path, capability):
     )
     policy = json.loads(turn.command[turn.command.index("--settings") + 1])
     grant = f"command({shlex.join(gate.client_executable_argv())})"
-    assert (grant in policy["permissions"]["allow"]) == (capability == "scratch_patch")
+    assert grant not in policy["permissions"]["allow"]
     assert "write_file(/client)" in policy["permissions"]["deny"]
     subprocess.run(_wrapped(turn.command), cwd=tmp_path, check=True, capture_output=True)
     agent = next((tmp_path / ".agents" / "agents").glob("rcp-*.md"))
-    assert ("run_command" in agent.read_text()) == (capability == "scratch_patch")
+    assert "run_command" not in agent.read_text()
     assert "command_status" not in agent.read_text()
 
 
@@ -415,5 +415,5 @@ def test_staged_tools_are_names_the_custom_agent_registry_accepts():
     from rcp.providers.agy.profile import _tools
 
     accepted = set(json.loads((FIXTURES / "agent_registry_tools.json").read_text()))
-    for capability in ("work_auto", "orchestrate", "scratch_patch", "discuss"):
-        assert set(_tools(capability, None)) <= accepted
+    for capability in ("work_auto", "orchestrate", "discuss"):
+        assert set(_tools(capability)) <= accepted

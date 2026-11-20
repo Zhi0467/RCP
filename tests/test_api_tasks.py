@@ -110,8 +110,6 @@ def test_task_list_and_detail_cover_every_agent_kind(manifest, tmp_path) -> None
     app.state.background_tasks.stream = stream
     client = signed_in_client(app)
     requests = {
-        "seed": {},
-        "refresh": {},
         "node_chat": {
             "node_id": "hyp/replanning-restores-plasticity",
             "chat_id": str(uuid.uuid4()),

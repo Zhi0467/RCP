@@ -18,7 +18,7 @@ from rcp.history import HistoryManager
 from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.providers import PROVIDER_IDS, ProviderUsage
 from rcp.skill_registry import SkillDefaults, official_registry
-from rcp.storage import AgentTaskRecord, WatcherContinuation, WatcherRecord
+from rcp.storage import AgentTaskRecord, WatcherCheckRecord, WatcherRecord
 from rcp.transport import StateUnavailable
 from tests.helpers import resource_watermark_tokens, sign_in_async_client, signed_in_client
 
@@ -259,23 +259,27 @@ def test_watermarks_notice_tasks_and_watchers_without_rebuilding_snapshot(
             status_message="running",
         )
     )
-    store.create_watchers(
-        [
-            WatcherRecord(
-                watcher_id="teammate-watcher",
-                project_id=project_id,
-                origin_operation_id="teammate-task",
-                origin_task_kind="node_chat",
-                chat_id="teammate-chat",
-                check_command="true",
-                log_path=str(tmp_path / "teammate.log"),
-                cwd=str(tmp_path),
-                continuation=WatcherContinuation(
-                    provider="claude", run_on=BACKEND_MACHINE_ID, run_truth_scope=["repo-a"]
-                ),
-                created_at=now,
-            )
-        ]
+    store.arm_watcher(
+        WatcherRecord(
+            watcher_id="teammate-watcher",
+            agent_id="teammate-chat",
+            project_id=project_id,
+            purpose="teammate job",
+            origin_turn_id="teammate-task",
+            created_at=now,
+            checks=[
+                WatcherCheckRecord(
+                    check_id="teammate-watcher",
+                    watcher_id="teammate-watcher",
+                    machine_id=BACKEND_MACHINE_ID,
+                    definition="external",
+                    check_command="true",
+                    log_path=str(tmp_path / "teammate.log"),
+                    cwd=str(tmp_path),
+                    created_at=now,
+                )
+            ],
+        )
     )
 
     after = resource_watermark_tokens(client, project_id, *keys)
@@ -923,7 +927,7 @@ def test_project_readiness_does_not_open_or_materialize_project(
     )
     assert response.json()["providers"] == response.json()["provider_readiness"][BACKEND_MACHINE_ID]
     assert response.json()["run_on"] == BACKEND_MACHINE_ID
-    assert set(response.json()["agent_profiles"]) >= {"seed", "refresh", "node_chat"}
+    assert set(response.json()["agent_profiles"]) >= {"node_chat", "orchestrator"}
     assert all(
         "effective_model" in profile for profile in response.json()["agent_profiles"].values()
     )
@@ -957,16 +961,14 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
         for surface, profile in before["agent_profiles"].items()
     }
     assert set(profiles) == {
-        "seed",
-        "refresh",
         "node_chat",
         "project_chat",
         "paper_coach",
         "orchestrator",
     }
-    profiles["seed"]["provider"] = "claude"
-    profiles["seed"]["runtime"] = "stream-json"
-    profiles["seed"]["model"] = "claude-seed"
+    profiles["paper_coach"]["provider"] = "claude"
+    profiles["paper_coach"]["runtime"] = "stream-json"
+    profiles["paper_coach"]["model"] = "claude-coach"
     profiles["node_chat"]["runtime"] = "app-server"
     profiles["orchestrator"]["model"] = "campaign-orchestrator"
 
@@ -987,7 +989,11 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
         json={
             "agent_profiles": {
                 **profiles,
-                "refresh": {**profiles["refresh"], "provider": "claude", "runtime": "app-server"},
+                "project_chat": {
+                    **profiles["project_chat"],
+                    "provider": "claude",
+                    "runtime": "app-server",
+                },
             },
         },
     )
@@ -1024,19 +1030,19 @@ def test_project_settings_persist_agent_defaults_and_repository_reads(manifest, 
     assert response.status_code == 200
     assert response.json()["default_auto_research_invocation_ceiling"] == 14
     assert "default_campaign_invocation_ceiling" not in response.json()
-    assert response.json()["agent_profiles"]["seed"]["model"] == "claude-seed"
+    assert response.json()["agent_profiles"]["paper_coach"]["model"] == "claude-coach"
     assert response.json()["agent_profiles"]["node_chat"]["runtime"] == "app-server"
     assert response.json()["agent_profiles"]["orchestrator"]["model"] == "campaign-orchestrator"
-    assert "write_path" not in response.json()["agent_profiles"]["refresh"]
+    assert "write_path" not in response.json()["agent_profiles"]["project_chat"]
     assert (
-        client.get(f"/api/projects/{project_id}").json()["agent_profiles"]["seed"]["model"]
-        == "claude-seed"
+        client.get(f"/api/projects/{project_id}").json()["agent_profiles"]["paper_coach"]["model"]
+        == "claude-coach"
     )
     content = manifest.path.read_text(encoding="utf-8")
     assert "[execution]" not in content
     assert "[paper.coach]" not in content
     updated = load_manifest(manifest.path)
-    assert updated.agent_profile("seed").provider == "claude"
+    assert updated.agent_profile("paper_coach").provider == "claude"
     assert updated.agent_profile("node_chat").runtime == "app-server"
     assert updated.agent_profile("orchestrator").model == "campaign-orchestrator"
     assert updated.agent_profile("orchestrator").permissions == permissions_for("orchestrate")

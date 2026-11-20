@@ -1,3 +1,4 @@
+import { projectAgentPath, threadPath } from "../agents/agentRoutes.ts";
 import type { MachineSettingsRecord } from "../projects/spaceMachines";
 import type {
   AddProjectMachineRequest,
@@ -404,6 +405,23 @@ export const TURN_REFUSAL_REASONS: Readonly<Record<string, string>> = {
     "This chat still has a running or paused turn, Experiment, or watcher. Stop it before archiving.",
 };
 
+/** Stable request refusal codes outside turn admission, each read as one sentence. */
+export const REQUEST_REFUSAL_REASONS: Readonly<Record<string, string>> = {
+  host_invalid:
+    "RCP did not accept the address this page was opened from. Open RCP at its usual address.",
+};
+
+function knownReason(code: unknown): string | undefined {
+  if (typeof code !== "string") return undefined;
+  if (Object.hasOwn(TURN_REFUSAL_REASONS, code)) return TURN_REFUSAL_REASONS[code];
+  return Object.hasOwn(REQUEST_REFUSAL_REASONS, code) ? REQUEST_REFUSAL_REASONS[code] : undefined;
+}
+
+/** What a refusal without a readable reason says, rather than its raw body. */
+function unexplained(status: number): string {
+  return `The server refused this request (${status}).`;
+}
+
 function apiError(status: number, body: unknown): ApiError {
   const detail =
     body && typeof body === "object" && "detail" in body
@@ -411,17 +429,15 @@ function apiError(status: number, body: unknown): ApiError {
       : undefined;
   if (detail && typeof detail === "object" && !Array.isArray(detail)) {
     const { message, code } = detail as { message?: unknown; code?: unknown };
-    const reason = typeof code === "string" ? TURN_REFUSAL_REASONS[code] : undefined;
     return new ApiError(
-      reason ?? (typeof message === "string" ? message : JSON.stringify(detail)),
+      knownReason(code) ?? (typeof message === "string" ? message : unexplained(status)),
       status,
       detail as Record<string, unknown>,
     );
   }
   // Task admission currently returns its stable refusal code as string detail.
-  if (typeof detail === "string" && Object.hasOwn(TURN_REFUSAL_REASONS, detail)) {
-    return new ApiError(TURN_REFUSAL_REASONS[detail], status, { code: detail });
-  }
+  const codeReason = knownReason(detail);
+  if (codeReason !== undefined) return new ApiError(codeReason, status, { code: detail as string });
   if (Array.isArray(detail) && typeof detail[0]?.msg === "string") {
     return new ApiError(detail[0].msg, status);
   }
@@ -429,7 +445,7 @@ function apiError(status: number, body: unknown): ApiError {
   if (detail === undefined && typeof reason === "string") {
     return new ApiError(reason, status, { reason });
   }
-  return new ApiError(typeof detail === "string" ? detail : JSON.stringify(detail), status);
+  return new ApiError(typeof detail === "string" ? detail : unexplained(status), status);
 }
 
 export function clearProjectCaches(apiBase: string): Promise<ProjectCacheClearResult> {
@@ -572,7 +588,7 @@ export function uploadChatAttachment(
   attachmentSetId?: string | null,
 ): Promise<ChatAttachmentUpload> {
   return uploadComposerAttachment(
-    `${apiBase}/chats/${encodeURIComponent(chatId)}/attachments`,
+    projectAgentPath(apiBase, chatId, "attachments"),
     file,
     clientId,
     attachmentSetId,
@@ -604,7 +620,7 @@ export function removeChatAttachment(
   clientId: string,
 ): Promise<{ removed: boolean }> {
   return removeComposerAttachment(
-    `${apiBase}/chats/${encodeURIComponent(chatId)}/attachments`,
+    projectAgentPath(apiBase, chatId, "attachments"),
     attachmentSetId,
     attachmentId,
     clientId,
@@ -617,36 +633,30 @@ export function removeComposerAttachment(
   attachmentId: string,
   clientId: string,
 ): Promise<{ removed: boolean }> {
-  const query = new URLSearchParams({
-    attachment_set_id: attachmentSetId,
-    client_id: clientId,
+  const [path, search] = attachmentsUrl.split("?");
+  const query = new URLSearchParams(search);
+  query.set("attachment_set_id", attachmentSetId);
+  query.set("client_id", clientId);
+  return api<{ removed: boolean }>(`${path}/${encodeURIComponent(attachmentId)}?${query}`, {
+    method: "DELETE",
   });
-  return api<{ removed: boolean }>(
-    `${attachmentsUrl}/${encodeURIComponent(attachmentId)}?${query}`,
-    { method: "DELETE" },
-  );
 }
 
 /** Refuses a chat that cannot branch, before a new graph branch is created for it. */
-export function requireChatBranchable(projectId: string, chatId: string): Promise<void> {
-  return api<void>(
-    `/api/projects/${encodeURIComponent(projectId)}/chats/${encodeURIComponent(chatId)}/branch`,
-  );
+export function requireChatBranchable(_projectId: string, chatId: string): Promise<void> {
+  return api<void>(`${threadPath(chatId)}/branch`);
 }
 
 export function branchChat(
-  projectId: string,
+  _projectId: string,
   chatId: string,
   graphTarget: GraphTargetRef,
   requestId: string,
 ): Promise<ChatTranscript> {
-  return api<ChatTranscript>(
-    `/api/projects/${encodeURIComponent(projectId)}/chats/${encodeURIComponent(chatId)}/branch`,
-    {
-      method: "POST",
-      body: JSON.stringify({ graph_target: graphTarget, request_id: requestId }),
-    },
-  );
+  return api<ChatTranscript>(`${threadPath(chatId)}/branch`, {
+    method: "POST",
+    body: JSON.stringify({ graph_target: graphTarget, request_id: requestId }),
+  });
 }
 
 export function loadGraphRefs(projectId: string): Promise<GraphRef[]> {
@@ -848,12 +858,12 @@ export function sendEpisodeMessage(
 }
 
 export function steerChatTurn(
-  projectId: string,
+  agentId: string,
   operationId: string,
   request: SteerRequest,
 ): Promise<ChatMessage> {
   return api<ChatMessage>(
-    `/api/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(operationId)}/steer`,
+    `${threadPath(agentId)}/tasks/${encodeURIComponent(operationId)}/steer`,
     { method: "POST", body: JSON.stringify(request) },
     { retryIdentity: false },
   );
@@ -877,7 +887,7 @@ export function setChatArchived(
   chatId: string,
   archived: boolean,
 ): Promise<ChatDisplay> {
-  return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/archive`, {
+  return api(projectAgentPath(apiBase, chatId, "archive"), {
     method: "POST",
     body: JSON.stringify({ archived }),
   });
@@ -928,7 +938,7 @@ export function setChatPinned(
 
 /** Renames the agent; the server refuses a blank title. */
 export function setChatTitle(apiBase: string, chatId: string, title: string): Promise<ChatDisplay> {
-  return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/title`, {
+  return api(projectAgentPath(apiBase, chatId, "title"), {
     method: "POST",
     body: JSON.stringify({ title }),
   });
@@ -1169,7 +1179,7 @@ export function dismissQuestion(apiBase: string, questionId: string) {
 }
 
 export function loadChatBrowser(apiBase: string, chatId: string): Promise<ChatBrowserPreference> {
-  return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/browser`);
+  return api(projectAgentPath(apiBase, chatId, "browser"));
 }
 
 export function loadProjectMachineBrowser(
@@ -1184,7 +1194,7 @@ export function setChatBrowser(
   chatId: string,
   browserRequested: boolean,
 ): Promise<ChatBrowserPreference> {
-  return api(`${apiBase}/chats/${encodeURIComponent(chatId)}/browser`, {
+  return api(projectAgentPath(apiBase, chatId, "browser"), {
     method: "PUT",
     body: JSON.stringify({ browser_requested: browserRequested }),
   });

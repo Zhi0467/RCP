@@ -3,51 +3,6 @@ export interface TextSpan {
   end: number;
 }
 
-import type { ArtifactContextRequest, ArtifactSelection } from "../core/types";
-
-/** One staged comment: what the human picked, and what they said about it. */
-export interface StagedChatAnnotation {
-  id: string;
-  /** What the comment is about as the human sees it: copied answer text, or an
-   * artifact selection's description. */
-  selectedText: string;
-  comment: string;
-  /** Set for an artifact comment, with a selection or the whole artifact. */
-  artifact?: StagedArtifactTarget;
-  /** Where the selection came from, such as a Paper file and line; sent with the quote. */
-  where?: string;
-}
-
-export interface StagedArtifactTarget {
-  context: Omit<ArtifactContextRequest, "selections">;
-  name: string;
-  selection: ArtifactSelection | null;
-}
-
-export const MAX_CHAT_ANNOTATIONS = 50;
-// Mirrors ARTIFACT_CONTEXT_MAX_SELECTIONS in src/rcp/limits.py.
-export const MAX_ARTIFACT_SELECTIONS = 50;
-export const MAX_CHAT_ANNOTATION_TEXT_LENGTH = 4096;
-export const MAX_CHAT_ANNOTATION_COMMENT_LENGTH = 2048;
-export const MAX_CHAT_ANNOTATION_WHERE_LENGTH = 200;
-
-/** A location within the limit: whole trailing `, ` parts go first, so no number is cut. */
-export function boundChatAnnotationWhere(where: string): string {
-  const parts = where.split(", ");
-  while (parts.length > 1 && parts.join(", ").length > MAX_CHAT_ANNOTATION_WHERE_LENGTH)
-    parts.pop();
-  const kept = parts.join(", ");
-  return kept.length > MAX_CHAT_ANNOTATION_WHERE_LENGTH
-    ? `${kept.slice(0, MAX_CHAT_ANNOTATION_WHERE_LENGTH - 1)}…`
-    : kept;
-}
-
-export interface ChatAnnotationAnchor {
-  left: number;
-  right: number;
-  top: number;
-}
-
 export interface ChatAnnotationComposerPosition {
   left: number;
   top: number;
@@ -62,13 +17,6 @@ export interface ChatAnnotationViewportMetrics {
   bottom: number;
 }
 
-export interface ChatAnnotationTextControlSelection {
-  value: string;
-  selectionStart: number | null;
-  selectionEnd: number | null;
-}
-
-const CHAT_ANNOTATION_COMPOSER_GAP = 10;
 const CHAT_ANNOTATION_VIEWPORT_MARGIN = 12;
 // Close enough to read as part of the selection.
 const CHAT_SELECTION_COMMENT_GAP = 6;
@@ -78,127 +26,6 @@ export function replaceTextSpan(current: string, span: TextSpan, replacement: st
     value: `${current.slice(0, span.start)}${replacement}${current.slice(span.end)}`,
     end: span.start + replacement.length,
   };
-}
-
-export function assembleChatTurn(
-  message: string,
-  annotations: ReadonlyArray<
-    Pick<StagedChatAnnotation, "selectedText" | "comment" | "artifact" | "where">
-  >,
-): string {
-  const parts = [message.trim()];
-  // Selected regions travel as artifact selections; whole-artifact comments
-  // join the message, as they do in the viewer.
-  for (const annotation of annotations) {
-    const selectedText = annotation.selectedText.trim();
-    const comment = annotation.comment.trim();
-    if (!comment) continue;
-    if (annotation.artifact) {
-      if (!annotation.artifact.selection) parts.push(comment);
-      continue;
-    }
-    if (!selectedText) continue;
-    const where = annotation.where?.trim();
-    parts.push(`${where ? `${where}:\n` : ""}${selectedText}\ncomment: ${comment}`);
-  }
-  return parts.filter(Boolean).join("\n\n");
-}
-
-/** The artifact selections a turn carries, in the order their comments are numbered. */
-export function stagedArtifactContext(
-  annotations: ReadonlyArray<StagedChatAnnotation>,
-): ArtifactContextRequest | null {
-  const targeted = annotations.filter((annotation) => annotation.artifact);
-  const first = targeted[0]?.artifact;
-  if (!first) return null;
-  return {
-    ...first.context,
-    selections: targeted
-      .filter((annotation) => annotation.artifact!.selection !== null)
-      .map((annotation) => ({
-        ...annotation.artifact!.selection!,
-        comment: annotation.comment.trim(),
-      })),
-  };
-}
-
-/** The staged comments left once `sent` went with a turn: any staged meanwhile stay. */
-export function unsentChatAnnotations(
-  current: StagedChatAnnotation[],
-  sent: ReadonlyArray<Pick<StagedChatAnnotation, "id">>,
-): StagedChatAnnotation[] {
-  const ids = new Set(sent.map((annotation) => annotation.id));
-  const next = current.filter((annotation) => !ids.has(annotation.id));
-  return next.length === current.length ? current : next;
-}
-
-export function stagedChatAnnotationsAreComplete(
-  annotations: ReadonlyArray<Pick<StagedChatAnnotation, "selectedText" | "comment">>,
-): boolean {
-  return annotations.every(
-    (annotation) => Boolean(annotation.selectedText.trim()) && Boolean(annotation.comment.trim()),
-  );
-}
-
-export function parseStagedChatAnnotations(raw: string | null): StagedChatAnnotation[] {
-  if (!raw) return [];
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed) || parsed.length > MAX_CHAT_ANNOTATIONS) return [];
-    return parsed.flatMap((item) => {
-      if (!item || typeof item !== "object" || Array.isArray(item)) return [];
-      const candidate = item as Record<string, unknown>;
-      if (
-        typeof candidate.id !== "string" ||
-        candidate.id.length < 1 ||
-        candidate.id.length > 128 ||
-        typeof candidate.selectedText !== "string" ||
-        candidate.selectedText.trim().length < 1 ||
-        candidate.selectedText.length > MAX_CHAT_ANNOTATION_TEXT_LENGTH ||
-        typeof candidate.comment !== "string" ||
-        candidate.comment.length > MAX_CHAT_ANNOTATION_COMMENT_LENGTH ||
-        (candidate.artifact !== undefined && !isStagedArtifactTarget(candidate.artifact)) ||
-        (candidate.where !== undefined && typeof candidate.where !== "string")
-      )
-        return [];
-      return [
-        {
-          id: candidate.id,
-          selectedText: candidate.selectedText,
-          comment: candidate.comment,
-          ...(candidate.artifact ? { artifact: candidate.artifact as StagedArtifactTarget } : {}),
-          ...(candidate.where
-            ? { where: boundChatAnnotationWhere(candidate.where as string) }
-            : {}),
-        },
-      ];
-    });
-  } catch {
-    return [];
-  }
-}
-
-// This tab wrote the draft itself; the server validates the selection it receives.
-function isStagedArtifactTarget(value: unknown): boolean {
-  if (!value || typeof value !== "object") return false;
-  const target = value as Partial<StagedArtifactTarget>;
-  return (
-    typeof target.name === "string" &&
-    typeof target.context?.operation_id === "string" &&
-    typeof target.context.artifact_id === "string" &&
-    (target.selection === null ||
-      target.selection?.kind === "text" ||
-      target.selection?.kind === "box")
-  );
-}
-
-export function chatAnnotationTextControlSelection(
-  control: ChatAnnotationTextControlSelection,
-): string {
-  const start = control.selectionStart;
-  const end = control.selectionEnd;
-  if (start === null || end === null || start === end) return "";
-  return control.value.slice(start, end).trim();
 }
 
 /**
@@ -284,29 +111,4 @@ export function chatSelectionCommentPosition(
       Math.min(top, viewportBottom - button.height - CHAT_ANNOTATION_VIEWPORT_MARGIN),
     ),
   };
-}
-
-export function chatAnnotationComposerPosition(
-  anchor: ChatAnnotationAnchor,
-  viewport: Pick<ChatAnnotationViewportMetrics, "left" | "top" | "width" | "height">,
-  composer: { width: number; height: number },
-): ChatAnnotationComposerPosition {
-  const viewportRight = viewport.left + viewport.width;
-  const viewportBottom = viewport.top + viewport.height;
-  const rightPlacement = anchor.right + CHAT_ANNOTATION_COMPOSER_GAP;
-  const leftPlacement = anchor.left - composer.width - CHAT_ANNOTATION_COMPOSER_GAP;
-  const left =
-    rightPlacement + composer.width <= viewportRight - CHAT_ANNOTATION_VIEWPORT_MARGIN
-      ? rightPlacement
-      : leftPlacement >= viewport.left + CHAT_ANNOTATION_VIEWPORT_MARGIN
-        ? leftPlacement
-        : Math.max(
-            viewport.left + CHAT_ANNOTATION_VIEWPORT_MARGIN,
-            Math.min(anchor.left, viewportRight - composer.width - CHAT_ANNOTATION_VIEWPORT_MARGIN),
-          );
-  const top = Math.max(
-    viewport.top + CHAT_ANNOTATION_VIEWPORT_MARGIN,
-    Math.min(anchor.top, viewportBottom - composer.height - CHAT_ANNOTATION_VIEWPORT_MARGIN),
-  );
-  return { left, top };
 }

@@ -4,15 +4,13 @@ from __future__ import annotations
 
 from typing import Literal
 
+from rcp.agents.agent_profile import SHARED_PROJECT, AgentProfile, UsageContext
 from rcp.agents.command_protocol import CommandVerb
-from rcp.agents.graph_read_scope import GRAPH_HISTORY_VERBS, GraphReadScope
+from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.graph_rules import REPEATED_RULES_NOTE, graph_rules
 from rcp.agents.group_context import GroupContext, group_prompt_value
 from rcp.agents.loop_overlap import render_loop_interference_rule
 from rcp.agents.prompts import (
-    AGENT_NAME_INSTRUCTION,
-    BULLETIN_RULES,
-    BULLETIN_SYNTAX,
     EPISODE_MAILBOX_RULES,
     PAPER_POINTER_LABEL,
     PROVIDER_NATIVE_SUBAGENT_LIFETIME,
@@ -25,16 +23,8 @@ from rcp.agents.prompts import (
     protected_belief_names,
     selected_skill_section,
     skill_prompt_values,
+    watcher_section,
     write_scope_section,
-)
-from rcp.agents.staged_command_client import (
-    branch_usage,
-    bulletin_usages,
-    child_target_usage,
-    experiment_kickoff_usage,
-    merge_usage,
-    name_usage,
-    spawn_seat_usage,
 )
 from rcp.agents.write_scope import ProjectWriteScope
 from rcp.core.authority import render_agent_graph_authority_contract
@@ -48,7 +38,7 @@ from rcp.limits import (
 )
 
 # Bumped when the stable policy prose of either Auto-research actor contract changes.
-AUTO_RESEARCH_POLICY_VERSION = "auto-research-v19"
+AUTO_RESEARCH_POLICY_VERSION = "auto-research-v22"
 
 
 def _repositories(repositories: list[dict[str, str]]) -> str:
@@ -121,53 +111,17 @@ def _command_invocations(
     allowed_verbs: tuple[CommandVerb, ...],
     role: Literal["orchestrator", "worker"] = "orchestrator",
 ) -> str:
-    """Refresh the complete callable surface and its turn-bound command prefix."""
+    """Refresh the complete callable surface from the profile its dispatcher enforces."""
 
-    invocations: dict[CommandVerb, tuple[str, ...]] = {
-        "validate": ("validate patch.json",),
-        "apply": ("apply --key <key> patch.json",),
-        "status": ("status [--worker-id <worker-id> | --episode-id <episode-id>]",),
-        "spawn": (
-            f"spawn --key <key> {spawn_seat_usage()} --instruction-file <filename> "
-            f"{child_target_usage()} "
-            "[--provider <provider>] [--model <model>] [--effort <effort>]",
-        ),
-        "merge": (merge_usage(),),
-        "branch": (branch_usage(),),
-        "pause": ("pause --key <key> <worker-id>",),
-        "resume": ("resume --key <key> <worker-id>",),
-        "stop": ("stop --key <key> <worker-id>",),
-        "message": (
-            "message --key <key> --recipient <worker-id> <body>"
-            if role == "orchestrator"
-            else "message --key <reply-key> <body>",
-        ),
-        "watch_graph": ("watch-graph --key <key> --condition-json <json> --reason <text>",),
-        "episode": (
-            "episode --key <key> "
-            + experiment_kickoff_usage(goal_required=False, child_targets=True),
-            "episode --key <key> --stop <episode-id>",
-            "episode --key <key> --resume <episode-id>",
-        ),
-        "inbox": ("inbox --key <key> --harvest", "inbox --key <key> --clear"),
-        "finish": ("finish --key <key>",),
-        "ask": ("ask --key <key> --question <text> [--choice <text> ...] [--multiple]",),
-        "bulletin": bulletin_usages(turn_artifacts=False),
-        "name": (name_usage(),),
-    }
-    commands = "\n".join(
-        f"  - `{invocation}`"
-        for verb in allowed_verbs
-        if verb not in GRAPH_HISTORY_VERBS
-        for invocation in invocations[verb]
+    profile = AgentProfile(
+        SHARED_PROJECT,
+        "orchestrator" if role == "orchestrator" else "auto_research_worker",
+        frozenset(allowed_verbs),
     )
-    if "name" in allowed_verbs:
-        commands += f"\n  {AGENT_NAME_INSTRUCTION}"
-    if "bulletin" in allowed_verbs:
-        commands += "".join(f"\n  {rule}" for rule in (*BULLETIN_RULES, *BULLETIN_SYNTAX))
+    commands = profile.instructions(UsageContext(client=command_client))
     return f"""Staged command client:
 - Command prefix: `{command_client}`
-- Exact invocations, all prefixed by that command:
+- Exact invocations:
 {commands}
   Each response is one JSON object. Treat its `status` and structured `result` as the authoritative
   disposition; `message` is the concise explanation. Use returned stable worker and episode ids in
@@ -322,14 +276,6 @@ def _auto_research_commands(
   key. Harvest once more immediately before your final `apply` or before finishing the turn to
   prevent a paid wake for mail that arrived during this turn. Mail arriving after the last harvest
   stays pending for a later paid wake.
-- A graph condition is one JSON object in one of exactly two shapes:
-  - `{{"node_id": "<id>", "status_in": ["<status>", ...]}}` wakes you when that node reaches any
-    listed status. Listing several is normal and their order does not matter. Use statuses that
-    exist for that node's type.
-  - `{{"node_id": "<id>", "proposal_resolved": true}}` wakes you when a Proposal on that node is
-    resolved.
-  The node must already exist in the current graph. A wake spends one invocation from the episode
-  budget and resumes this same session, so register only a condition you intend to act on.
 - Every mutating command requires a caller-chosen `--key`. Choose a stable key from the intended
   effect and reuse that exact key on retry. A completed `ok` or `invalid` key returns its recorded
   disposition. A completed `unavailable` attempt is not an effect verdict: the same key safely
@@ -532,6 +478,7 @@ def auto_research_orchestrator_task_contract(
     compute_profiles: list[dict[str, str]] | None = None,
     paper_path: str | None = None,
     parent_chat: bool = False,
+    watchers_path: str | None = None,
 ) -> str:
     """Build the immutable contract for the sole elevated Auto-research profile."""
     child_profiles = child_profiles or {}
@@ -591,8 +538,10 @@ Worker coordination:
 - Give every worker a clear, executable assignment. Instruct it to report in prose when the work
   cannot be resolved without changing an existing {protected_belief_names()}, rather than
   treating a Proposal as completed work or a route around human judgment.
-- There is no blocking primitive. Continue useful independent work, send a message, or register a
-  graph condition and let RCP wake the saved session. Do not poll or keep a turn open to wait.
+- There is no blocking primitive. Continue useful independent work or send a message, and let RCP
+  wake the saved session. Do not poll or keep a turn open to wait.
+
+{watcher_section(watchers_path) if watchers_path else ""}
 
 {_packages(skill_pointers)}{_auto_research_commands(command_client, child_profiles, allowed_verbs)}
 {_orchestrator_ask_contract(allowed_verbs)}
@@ -766,7 +715,7 @@ effects retain their original idempotency keys: retry an unknown
 or `unavailable` result with the exact same call and key, never a new submission. For example,
 after an Apply timeout, repeat the same keyed Apply before editing its snapshotted Patch.
 Prefer in-turn Apply and reread its returned graph paths before building on the result. The original
-file, graph-condition, worker-seating, and no-polling rules still apply.
+file, worker-seating, and no-polling rules still apply.
 
 {_orchestration_progress()}
 

@@ -20,9 +20,9 @@ from rcp.storage import (
     AppStore,
     EpisodeRecord,
     ProjectRecord,
-    WatcherContinuation,
     WatcherRecord,
 )
+from rcp.storage.models import WatcherCheckRecord
 from rcp.transport import RemoteRunStage
 from tests.helpers import signed_in_client
 
@@ -475,29 +475,27 @@ def test_delete_stops_in_flight_work_and_names_what_it_could_not_stop(
     )
     monkeypatch.setattr(COMPUTE_BACKENDS["systemd_user"], "alive", lambda handle, context: True)
     monkeypatch.setattr(project_deletion, "PROJECT_DELETION_CANCEL_CONFIRM_SECONDS", 0.0)
-    cancelled = tmp_path / "external-job-cancelled"
-    store.create_watchers(
-        [
-            WatcherRecord(
-                watcher_id=watcher_id,
-                project_id=project_id,
-                origin_operation_id="queued-turn",
-                origin_task_kind="project_chat",
-                chat_id="chat",
-                check_command=check_command,
-                cancel_command=cancel_command,
-                log_path=str(tmp_path / "external.log"),
-                cwd=str(tmp_path),
-                machine_id=BACKEND_MACHINE_ID,
-                continuation=WatcherContinuation(provider="codex", run_on="local"),
-                created_at=now,
-            )
-            for watcher_id, check_command, cancel_command in [
-                ("external-job", f"test -e {cancelled}", f"touch {cancelled}"),
-                ("ignores-cancel", "false", "true"),
-                ("no-cancel", "false", None),
-            ]
-        ]
+    store.arm_watcher(
+        WatcherRecord(
+            watcher_id="external-job",
+            agent_id="chat",
+            project_id=project_id,
+            purpose="External job",
+            origin_turn_id="queued-turn",
+            created_at=now,
+            checks=[
+                WatcherCheckRecord(
+                    check_id="external-job",
+                    watcher_id="external-job",
+                    machine_id=BACKEND_MACHINE_ID,
+                    definition="external",
+                    check_command="false",
+                    log_path=str(tmp_path / "external.log"),
+                    cwd=str(tmp_path),
+                    created_at=now,
+                )
+            ],
+        )
     )
     client = signed_in_client(app)
 
@@ -511,8 +509,9 @@ def test_delete_stops_in_flight_work_and_names_what_it_could_not_stop(
 
     assert response.status_code == 200, response.text
     assert store.project(project_id) is None
-    assert cancelled.exists()
-    assert len(response.json()["unstopped"]) == 3
+    assert len(response.json()["unstopped"]) == 1
+    assert response.json()["database_records"]["watchers"] == 1
+    assert response.json()["database_records"]["watcher_checks"] == 1
 
 
 def test_delete_stops_a_task_already_pausing(manifest, tmp_path) -> None:
@@ -573,25 +572,6 @@ def test_delete_keeps_the_project_while_a_stopped_worker_still_runs(
     worker.start()
     background._workers["lingering-turn"] = worker
     monkeypatch.setattr(background, "_signal_agent_task_pause", store.pause_agent_task)
-    cancelled = tmp_path / "watched-job-cancelled"
-    store.create_watchers(
-        [
-            WatcherRecord(
-                watcher_id="watched-job",
-                project_id=project_id,
-                origin_operation_id="lingering-turn",
-                origin_task_kind="project_chat",
-                chat_id="chat",
-                check_command=f"test -e {cancelled}",
-                cancel_command=f"touch {cancelled}",
-                log_path=str(tmp_path / "watched.log"),
-                cwd=str(tmp_path),
-                machine_id=BACKEND_MACHINE_ID,
-                continuation=WatcherContinuation(provider="codex", run_on="local"),
-                created_at=now,
-            )
-        ]
-    )
     wait = background.wait_for_stopped_workers
     monkeypatch.setattr(
         background, "wait_for_stopped_workers", lambda ids, timeout=0.0: wait(ids, timeout=0.0)
@@ -605,7 +585,6 @@ def test_delete_keeps_the_project_while_a_stopped_worker_still_runs(
 
     assert response.status_code == 409, response.text
     assert store.project(project_id) is not None
-    assert cancelled.exists()
     release.set()
     worker.join()
     retried = client.delete(f"/api/projects/{project_id}")

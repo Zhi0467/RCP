@@ -53,9 +53,6 @@ class _CompletingExperimentProvider:
             ),
             encoding="utf-8",
         )
-        (Path(kwargs["cwd"]) / "watch.json").write_text(
-            '{"external": [], "graph": []}', encoding="utf-8"
-        )
         (validator,) = set(re.findall(r"`([^`]*\svalidate\s[^`]*)`", contract))
         client = re.search(r"^- Command client: `([^`]+)`$", contract, re.MULTILINE)[1]  # type: ignore[index]
         validator = validator.replace(COMMAND_CLIENT, client, 1)

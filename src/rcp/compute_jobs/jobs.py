@@ -6,12 +6,9 @@ import logging
 import shlex
 import subprocess
 import uuid
-from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime
-from functools import partial
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING
 
 from rcp.compute_jobs.backend_context import (
     ComputeLaunchUncertainError,
@@ -33,9 +30,6 @@ from rcp.compute_jobs.text import safe_compute_diagnostic
 from rcp.limits import COMPUTE_JOB_STARTUP_LOG_TAIL_BYTES, COMPUTE_JOB_STATUS_TIMEOUT_SECONDS
 from rcp.machine_cards import card
 from rcp.storage import AppStore
-
-if TYPE_CHECKING:
-    from rcp.storage.models import WatcherRecord
 
 logger = logging.getLogger(__name__)
 
@@ -173,7 +167,11 @@ def refresh_compute_job(
                 )
             else:
                 status, exit_status, diagnostic = "exited", parsed_status, None
-        cancelled = read_job_file(context, str(PurePosixPath(record.job_root) / "cancelled"))
+        cancelled = (
+            None
+            if status == "exited"
+            else read_job_file(context, str(PurePosixPath(record.job_root) / "cancelled"))
+        )
         if cancelled is not None:
             ended_at = epoch_timestamp(cancelled.strip())
             status, diagnostic = "cancelled", None
@@ -244,82 +242,6 @@ def helper_watch_spec(job: ComputeJobRecord) -> dict[str, str]:
         # The retained job root outlives an ephemeral task workspace used as the job cwd.
         "cwd": job.job_root,
     }
-
-
-def helper_cancel_action(store: AppStore, watcher: WatcherRecord) -> Callable[[], bool] | None:
-    """Resolve exact helper ownership before returning a deferred human action."""
-    matches = [
-        job
-        for job in store.compute_jobs_for_log_path(
-            watcher.project_id, watcher.machine_id, watcher.log_path
-        )
-        if job.origin_operation_id == watcher.origin_operation_id
-        and all(
-            getattr(watcher, name) == value
-            for name, value in helper_watch_spec(job).items()
-            if name != "purpose"
-        )
-    ]
-    if len(matches) != 1:
-        return None
-    job = matches[0]
-    if job.status not in {"running", "lost", "exited"} and not (
-        job.status == "cancelled" and watcher.cancel_requested_at and watcher.cancel_error
-    ):
-        return None
-    return partial(_cancel_helper_job, store, job)
-
-
-def _cancel_helper_job(store: AppStore, job: ComputeJobRecord) -> bool:
-    """Preserve natural completion, or stop and confirm absence outside containment.
-
-    Return whether the owner received a stop, so an already-ended job does not
-    acquire cancellation attribution merely from claiming the human request.
-    """
-    if _reconcile_helper_exit(store, job):
-        return False
-    context = recorded_job_context(store, job)
-    backend = COMPUTE_BACKENDS[job.backend_id]
-    backend.cancel(job.backend_handle, context)
-    if _reconcile_helper_exit(store, job):
-        return True
-    now = store.now()
-    write_job_file(
-        context,
-        str(PurePosixPath(job.job_root) / "cancelled"),
-        str(int(datetime.fromisoformat(now).timestamp())),
-    )
-    alive = backend.alive(job.backend_handle, context)
-    if alive is not False:
-        raise RuntimeError(
-            "The compute job is still active after Cancel."
-            if alive
-            else "The compute owner could not confirm job absence after Cancel."
-        )
-    store.record_compute_job_cancelled(job.job_id, ended_at=now)
-    return True
-
-
-def _reconcile_helper_exit(store: AppStore, job: ComputeJobRecord) -> bool:
-    observed = refresh_compute_job(store, job.job_id, data_dir=store.path.parent)
-    if observed.status != "lost":
-        return observed.status == "exited"
-    # Ordinary polling leaves terminal records alone. A human Cancel can recover
-    # a missing receipt that arrived after an earlier observation settled as lost.
-    context = recorded_job_context(store, job)
-    if COMPUTE_BACKENDS[job.backend_id].alive(job.backend_handle, context) is not False:
-        return False
-    receipt = read_job_file(context, job.exit_path)
-    if receipt is None:
-        return False
-    try:
-        exit_status, ended_at = _parse_exit_receipt(receipt)
-    except (ValueError, OverflowError, OSError):
-        return False
-    settled = store.record_compute_job_exited(
-        job.job_id, exit_status=exit_status, ended_at=ended_at
-    )
-    return settled.status == "exited"
 
 
 def helper_startup_state(store: AppStore, job: ComputeJobRecord) -> dict[str, object]:

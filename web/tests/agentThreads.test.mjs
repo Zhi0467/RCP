@@ -24,8 +24,6 @@ import {
   turnSteps,
   turnStepsSummary,
   upcomingSchedules,
-  watcherFacts,
-  watcherWake,
 } from "../src/agents/agentThreadModel.ts";
 import {
   decideProposalCard,
@@ -244,10 +242,10 @@ test("pause and resume post to the schedule's own route", async () => {
   ]);
 });
 
-test("a project thread lists only the watchers that will wake it and stops them by project route", async () => {
-  const watcher = (id, chat_id, status, wakes_chat = status === "active") => ({
+test("a thread lists its agent's waking watchers by agent route and stops them by project route", async () => {
+  const watcher = (id, status, wakes_chat = status === "active") => ({
     watcher_id: id,
-    chat_id,
+    chat_id: "scout",
     status,
     wakes_chat,
     graph_target: { kind: "main" },
@@ -258,12 +256,7 @@ test("a project thread lists only the watchers that will wake it and stops them 
   const request = async (path, init) => {
     calls.push(`${init?.method ?? "GET"} ${path}`);
     return path.endsWith("/watchers")
-      ? [
-          watcher("w1", "scout", "active"),
-          watcher("w2", "other", "active"),
-          watcher("w3", "scout", "completed"),
-          watcher("w4", "scout", "active", false),
-        ]
+      ? [watcher("w1", "active"), watcher("w3", "completed"), watcher("w4", "active", false)]
       : {};
   };
   const thread = { kind: "project", project_id: "p 1", thread_id: "scout" };
@@ -272,63 +265,20 @@ test("a project thread lists only the watchers that will wake it and stops them 
     listed.map((item) => item.watcher_id),
     ["w1"],
   );
+  const space = await loadThreadWatchers(
+    { kind: "space", project_id: null, thread_id: "pip" },
+    request,
+  );
   assert.deepEqual(
-    await loadThreadWatchers({ kind: "space", project_id: null, thread_id: "pip" }, request),
-    [],
+    space.map((item) => item.watcher_id),
+    ["w1"],
   );
   await stopThreadWatcher(thread, "w/1", request);
   assert.deepEqual(calls, [
-    "GET /api/projects/p%201/watchers",
+    "GET /api/agent-threads/scout/watchers",
+    "GET /api/agent-threads/pip/watchers",
     "POST /api/projects/p%201/watchers/w%2F1/stop",
   ]);
-});
-
-test("a wake row names what the watcher waits for and when it fires", () => {
-  const graph = {
-    watcher_id: "w1",
-    condition: { node_id: "exp-1", status_in: ["completed", "abandoned", "superseded"] },
-  };
-  assert.deepEqual(watcherWake(graph, { "exp-1": { title: "Fine-tune π0.5" } }), {
-    what: "Fine-tune π0.5",
-    when: "When it's completed, abandoned or superseded",
-  });
-  assert.equal(watcherWake(graph, undefined).what, "exp-1");
-  assert.equal(
-    watcherWake({ watcher_id: "w2", condition: { node_id: "h2", proposal_resolved: true } }, {})
-      .when,
-    "When its Proposal is resolved",
-  );
-  assert.equal(
-    watcherWake({ watcher_id: "w3", check_command: "squeue -j 1", log_path: "/runs/s43/log" }, {})
-      .what,
-    "s43/log",
-  );
-});
-
-test("job wakes on one log read apart by purpose, else by check script, and open to what they run", () => {
-  const job = {
-    watcher_id: "w4",
-    check_command: "bash /repro/check_gcp2.sh",
-    log_path: "/repro/astra.25645.log",
-    cwd: "/repro",
-    machine_id: "m1",
-    created_at: "2026-11-09T03:32:00Z",
-    last_checked_at: "2026-11-09T08:42:00Z",
-    next_check_at: null,
-    last_error: null,
-  };
-  assert.equal(
-    watcherWake({ ...job, purpose: "GCP2 astra run finishes" }, {}).what,
-    "GCP2 astra run finishes",
-  );
-  assert.equal(watcherWake({ ...job, purpose: null }, {}).what, "check_gcp2.sh");
-  const failing = watcherWake({ ...job, purpose: null, last_error: "check timed out" }, {});
-  assert.equal(failing.when, "check timed out");
-  const facts = watcherFacts({ ...job, purpose: null }, (id) => (id === "m1" ? "GCP2" : id));
-  const values = facts.map((fact) => fact.value);
-  for (const value of [job.check_command, job.log_path, job.cwd, "GCP2"])
-    assert.ok(values.includes(value));
-  assert.equal(facts.filter((fact) => fact.code).length, 3);
 });
 
 test("a card is expired by its state or its time", () => {
@@ -349,7 +299,7 @@ test("the latest turn is the newest message that names an operation", () => {
   assert.equal(latestTurnId([]), null);
 });
 
-test("project threads use the chat routes and the Space thread uses its own", async () => {
+test("project and Space threads use the same agent route family", async () => {
   const calls = [];
   const request = async (path, init) => {
     calls.push({ path, method: init?.method ?? "GET", body: init?.body && JSON.parse(init.body) });
@@ -365,9 +315,9 @@ test("project threads use the chat routes and the Space thread uses its own", as
   assert.deepEqual(
     calls.map(({ method, path }) => `${method} ${path}`),
     [
-      "GET /api/projects/p%201/chats/chat%201",
+      "GET /api/agent-threads/chat%201/transcript",
       "GET /api/agent-threads/space/transcript",
-      "POST /api/projects/p%201/tasks/project_chat",
+      "POST /api/agent-threads/chat%201/turns",
       "POST /api/agent-threads/space/turns",
       "GET /api/projects/p%201/chats/chat%201/questions",
     ],
@@ -419,6 +369,7 @@ test("a project thread queues the send body under its key, reads and removes its
       "GET /api/agent-threads/chat%201/queue",
       "POST /api/agent-threads/chat%201/queue",
       "DELETE /api/agent-threads/chat%201/queue/q%201",
+      "GET /api/agent-threads/space/queue",
     ],
   );
   assert.equal(calls[1].key, "key");
@@ -432,6 +383,20 @@ test("a project thread queues the send body under its key, reads and removes its
   assert.deepEqual(calls.at(-1).body, { message: "Plain" });
 });
 
+test("queue routes use identity without a placement", async () => {
+  const paths = [];
+  const request = async (path) => {
+    paths.push(path);
+    return { items: [] };
+  };
+  await loadThreadQueue({ thread_id: "shared/agent" }, request);
+  await loadThreadQueue(space, request);
+  assert.deepEqual(paths, [
+    "/api/agent-threads/shared%2Fagent/queue",
+    "/api/agent-threads/space/queue",
+  ]);
+});
+
 const renderServer = await createServer({
   root: new URL("..", import.meta.url).pathname,
   configFile: false,
@@ -439,7 +404,7 @@ const renderServer = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { FreshSessionMarker } = await renderServer.ssrLoadModule("/src/agents/AgentThreadView.tsx");
+const { FreshSessionMarker } = await renderServer.ssrLoadModule("/src/chat/agentViewPieces.tsx");
 const { stackIndex, stackLater, stackOrder } = await renderServer.ssrLoadModule(
   "/src/agents/ApprovalCardStack.tsx",
 );

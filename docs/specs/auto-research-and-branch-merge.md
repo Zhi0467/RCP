@@ -89,7 +89,7 @@ becomes `fork-<mon>-<day>` the same way; a lineage fork is named
 Migration backfills legacy names and their reservations. Renames preserve other names.
 Transfer carries current and retired reservations.
 
-Chat, Seed, Refresh, Experiment, Auto-research, and merge launches carry
+Chat, Experiment, Auto-research, and merge launches carry
 the same inventory of retained readable branches in their resolved read scope
 and history usage. Archived readable targets remain listed. Names or ids resolve
 through [History reads](graph-history-and-transitions.md#history-reads).
@@ -238,7 +238,7 @@ This neither cancels jobs nor widens human retire controls.
 ## Staged command client
 
 The RCP-authored prefix exposes the resolved closed vocabulary from
-[Auto-research commands](../../src/rcp/agents/auto_research_commands.py). It includes validation,
+[the agent profile](../../src/rcp/agents/agent_profile.py). It includes validation,
 keyed Apply, status, worker and Experiment lifecycle, star mail, conditions, fork
 merge and archive, inbox harvest and clear, Bulletin while enabled, root ask,
 guarded finish, a one-time self-name, and the graph history reads. Workers get

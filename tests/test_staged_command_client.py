@@ -53,7 +53,7 @@ def test_mailbox_setup_failure_expires_credential_and_preserves_original_error(
 ) -> None:
     workspace = tmp_path / "stage"
     workspace.mkdir()
-    for name in ("patch.json", "watch.json", "messages.json"):
+    for name in ("patch.json", "messages.json"):
         (workspace / name).write_text(f"retained {name}", encoding="utf-8")
     issued = []
     original_issue = command_mailbox_module.CommandTurnCredential.issue
@@ -108,8 +108,8 @@ def test_mailbox_setup_failure_expires_credential_and_preserves_original_error(
         )
     assert {
         name: (workspace / name).read_text(encoding="utf-8")
-        for name in ("patch.json", "watch.json", "messages.json")
-    } == {name: f"retained {name}" for name in ("patch.json", "watch.json", "messages.json")}
+        for name in ("patch.json", "messages.json")
+    } == {name: f"retained {name}" for name in ("patch.json", "messages.json")}
 
 
 def test_staged_broker_is_stdlib_only_and_packaged_for_the_desktop() -> None:
@@ -876,17 +876,15 @@ def test_turn_handoff_cleanup_includes_messages_and_fails_closed(tmp_path) -> No
     workspace = tmp_path / "stage"
     workspace.mkdir()
     mailbox = RunStageMailbox.for_stage(local_stage=workspace, remote_stage=None)
-    for name in ("patch.json", "watch.json", "messages.json", "outcome.json"):
+    for name in ("patch.json", "messages.json", "outcome.json"):
         (workspace / name).write_text("stale", encoding="utf-8")
 
     clear_turn_handoff_files(mailbox)
     assert not any(
-        (workspace / name).exists()
-        for name in ("patch.json", "watch.json", "messages.json", "outcome.json")
+        (workspace / name).exists() for name in ("patch.json", "messages.json", "outcome.json")
     )
 
     (workspace / "patch.json").write_text("stale", encoding="utf-8")
-    (workspace / "watch.json").write_text("stale", encoding="utf-8")
     (workspace / "messages.json").mkdir()
     with pytest.raises(ValueError, match="unsafe directory"):
         clear_turn_handoff_files(mailbox)
@@ -972,10 +970,8 @@ def test_remote_mailbox_conditionally_consumes_or_restores_snapshot(tmp_path, mo
 async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path) -> None:
     """Sign the bytes the client wrote, not the model they validate into.
 
-    ``watch-graph`` sorts ``status_in`` during validation, so a signature taken
-    over the validated model stopped matching whenever the agent wrote its
-    statuses in any order but alphabetical. Every other mutating verb shares the
-    signing path, so they are exercised here together rather than one at a time.
+    Every mutating verb shares the signing path, so they are exercised here
+    together rather than one at a time.
 
     Regression: the verbs are deliberately not alphabetical, since that ordering used to
     be refused.
@@ -1004,7 +1000,6 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
         seen.append((request.verb, request.arguments.model_dump(mode="json")))
         return CommandResponse(request_id=request.request_id, status="ok")
 
-    condition = json.dumps({"node_id": "hyp-3", "status_in": ["supported", "refuted"]})
     calls = [
         ("apply", "--key", "k-apply", str(patch)),
         (
@@ -1026,7 +1021,6 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
         ("resume", "worker-1", "--key", "k-resume"),
         ("stop", "worker-1", "--key", "k-stop"),
         ("message", "keep going", "--recipient", "worker-1", "--key", "k-message"),
-        ("watch-graph", "--condition-json", condition, "--reason", "settle it", "--key", "k-watch"),
         (
             "episode",
             "--kick-off-experiment",
@@ -1093,8 +1087,6 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
             "--source",
             "repo-a/result.txt:4",
         ),
-        ("watcher", "--list"),
-        ("watcher", "--cancel", "watcher-1"),
     ]
 
     stop = asyncio.Event()
@@ -1123,7 +1115,6 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
         "resume",
         "stop",
         "message",
-        "watch_graph",
         "episode",
         "episode",
         "episode",
@@ -1136,12 +1127,6 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
         "finish",
         "name",
         "flag",
-        "watcher",
-        "watcher",
-    ]
-    assert [arguments for verb, arguments in seen if verb == "watcher"] == [
-        {"action": "list", "watcher_id": None},
-        {"action": "cancel", "watcher_id": "watcher-1"},
     ]
     applied = next(arguments for verb, arguments in seen if verb == "apply")
     assert applied == {"patch_file": "patch.json"}
@@ -1153,8 +1138,6 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
         "model": "gpt-5",
         "reasoning": "high",
     }
-    watched = next(arguments for verb, arguments in seen if verb == "watch_graph")
-    assert watched["condition"]["status_in"] == ["refuted", "supported"]
     episode_started = next(
         arguments
         for verb, arguments in seen

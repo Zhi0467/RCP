@@ -614,10 +614,10 @@ test("project entry does not promote a paused attempt that already has a child",
     parent_operation_id: "paused-ancestor",
     error: "Provider exited",
   });
-  const laterRefresh = task({ operation_id: "later-refresh", kind: "refresh" });
+  const laterTurn = task({ operation_id: "later-turn" });
 
   assert.equal(
-    projectActivityTask([laterRefresh, failedChild, pausedAncestor, oldestPaused], null),
+    projectActivityTask([laterTurn, failedChild, pausedAncestor, oldestPaused], null),
     null,
   );
 });
@@ -632,56 +632,19 @@ test("project activity follows ongoing work and keeps its observed terminal resu
   assert.equal(projectActivityTask([failed], "running")?.status, "failed");
 });
 
-test("a later graph success clears an older failed graph notification", () => {
-  const failedSeed = task({
-    operation_id: "failed-seed",
-    kind: "seed",
-    status: "failed",
-    created_at: "2026-07-28T00:00:00Z",
-  });
-  const completedRefresh = task({
-    operation_id: "completed-refresh",
-    kind: "refresh",
-    status: "succeeded",
-    created_at: "2026-07-28T01:00:00Z",
-  });
-  assert.equal(projectActivityTask([completedRefresh, failedSeed], "failed-seed"), null);
-});
-
-test("a later graph success does not clear a paused graph task", () => {
-  const pausedSeed = task({
-    operation_id: "paused-seed",
-    kind: "seed",
-    status: "paused",
-    created_at: "2026-07-28T00:00:00Z",
-  });
-  const completedRefresh = task({
-    operation_id: "completed-refresh",
-    kind: "refresh",
-    status: "succeeded",
-    created_at: "2026-07-28T01:00:00Z",
-  });
-  assert.equal(
-    projectActivityTask([completedRefresh, pausedSeed], null)?.operation_id,
-    "paused-seed",
-  );
-});
-
 test("a completed retry clears its failed parent, while a failed retry stays actionable", () => {
-  const failedSeed = task({
-    operation_id: "failed-seed",
-    kind: "seed",
+  const failedTurn = task({
+    operation_id: "failed-turn",
     status: "failed",
     created_at: "2026-07-28T00:00:00Z",
   });
   const completedRetry = task({
     operation_id: "completed-retry",
-    kind: "seed",
     status: "succeeded",
-    parent_operation_id: "failed-seed",
+    parent_operation_id: "failed-turn",
     created_at: "2026-07-28T01:00:00Z",
   });
-  assert.equal(projectActivityTask([completedRetry, failedSeed], "failed-seed"), null);
+  assert.equal(projectActivityTask([completedRetry, failedTurn], "failed-turn"), null);
 
   const failedRetry = withTaskAnswers({
     ...completedRetry,
@@ -689,7 +652,7 @@ test("a completed retry clears its failed parent, while a failed retry stays act
     status: "failed",
   });
   assert.equal(
-    projectActivityTask([failedRetry, failedSeed], "failed-seed")?.operation_id,
+    projectActivityTask([failedRetry, failedTurn], "failed-turn")?.operation_id,
     "failed-retry",
   );
 });

@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from typing import BinaryIO, Literal, Protocol
 
 from rcp.agents.launcher import AgentLauncher, ProviderReadiness, work_like_launch_problem
-from rcp.config import AGENT_EXECUTION_PROFILES, AgentExecutionProfile, load_manifest
+from rcp.config import AGENT_EXECUTION_PROFILES, RecordedAgentProfile, load_manifest
 from rcp.machine_cards import LoginKey, card
 from rcp.providers import AgentCapability, ProviderId, profile_for
 from rcp.server_ops._local_primitives import canonical_json_bytes
@@ -45,9 +45,9 @@ from rcp.storage import (
 from rcp.storage.models import MACHINE_LOGIN_ID
 
 ProviderSelectorKind = Literal["request", "project"]
-_PROFILE_CAPABILITY: dict[AgentExecutionProfile, AgentCapability] = {
-    "seed": "scratch_patch",
-    "refresh": "scratch_patch",
+_PROFILE_CAPABILITY: dict[RecordedAgentProfile, AgentCapability] = {
+    "seed": "discuss",
+    "refresh": "discuss",
     "node_chat": "work_auto",
     "project_chat": "work_auto",
     "paper_coach": "work_auto",
@@ -165,7 +165,7 @@ def _installed_control(layout: ServerLayout) -> ProviderReadinessControl:
 class _ProviderTarget:
     target_id: str
     number: int
-    profile: AgentExecutionProfile
+    profile: RecordedAgentProfile
     provider: ProviderId
     runtime_id: str
     model: str
@@ -845,7 +845,7 @@ class ProviderReadinessCoordinator:
 def _target(
     *,
     number: int,
-    profile: AgentExecutionProfile,
+    profile: RecordedAgentProfile,
     provider: ProviderId,
     runtime_id: str,
     model: str,

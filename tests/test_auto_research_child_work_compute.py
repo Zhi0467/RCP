@@ -11,15 +11,14 @@ import pytest
 from rcp.agents import AgentEvent
 from rcp.agents.graph_rules import graph_rules
 from rcp.agents.prompts import COMMAND_CLIENT
-from rcp.api.app import _generic_watcher_delivery_request
 from rcp.background import BackgroundAgentTasks
 from rcp.core.transition_models import GraphHeadRef
 from rcp.providers import ProviderSkillReference
 from rcp.runs.auto_research import AutoResearchStartRequest
 from rcp.runs.auto_research_admission import start_auto_research, start_auto_research_child_work
+from rcp.runs.auto_research_delivery import deliver_auto_research_watchers
 from rcp.runs.tasks import auto_research_child_work as child_work
 from rcp.runs.tasks import work
-from rcp.runs.watcher_admission import start_watcher_notification
 from rcp.service import RunRequest
 from rcp.watchers import WatcherPoller
 
@@ -35,7 +34,7 @@ from .helpers import (
     write_turn_outcome,
 )
 from .test_compute_jobs_commands import commands as commands
-from .test_compute_jobs_settlement import _command, _job_for_watcher
+from .test_compute_jobs_settlement import _command, _job_for_watcher, _write_helper_watcher
 
 
 @pytest.mark.parametrize("state", ["running", "exited", "nothing", "malformed"])
@@ -58,7 +57,9 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
 
     monkeypatch.setattr(child_work, "_stage_auto_research_child_work_turn", capture_turn)
     monkeypatch.setattr(
-        work, "arm_watchers", partial(work.arm_watchers, check_runner=commands.check_runner)
+        work,
+        "reconcile_watcher_files",
+        partial(work.reconcile_watcher_files, check_runner=commands.check_runner),
     )
     for owner, name in (
         (child_work, "_start_auto_research_child_validator_mailbox"),
@@ -115,15 +116,13 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
                     Path(job.exit_path).write_text("0 101")
                     commands.backend.alive_handles.remove(self.job_id)
                 elif state == "malformed":
-                    (workspace / "watch.json").write_text('{"external": [{"bad": true}]}')
+                    (workspace / "watchers" / "invalid.json").write_text('{"bad": true}')
             elif self.job_id and len(self.calls) == 2:
                 correction = prompt
                 assert '"job_id"' not in correction
                 if state == "running":
                     assert self.job_id in correction
-                (workspace / "watch.json").write_text(
-                    json.dumps({"external": [self.watcher], "graph": []})
-                )
+                _write_helper_watcher(workspace, self.job_id, self.watcher)
             if len(self.calls) == 3:
                 self.wake_contract = prompt
                 turn, inputs = child_turns[-1]
@@ -136,7 +135,7 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
                 for extensions in (False, True):
                     rules = graph_rules(edits=True, ontology_extensions=extensions)
                     assert rules not in self.wake_contract
-                assert not (workspace / "watch.json").exists()
+                assert not list((workspace / "watchers").iterdir())
             yield AgentEvent(event="session", session_id="child-compute-session")
             yield AgentEvent(event="answer", text="Computation handed off.")
             yield AgentEvent(event="done")
@@ -210,15 +209,14 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
     needs_correction = state in {"running", "malformed"}
     assert len(launcher.calls) == (2 if needs_correction else 1)
     assert len(commands.backend.starts) == (0 if state == "nothing" else 1)
-    watchers = store.watchers(app.state.default_project_id)
+    watchers = store.project_watchers(app.state.default_project_id)
     if needs_correction:
         assert len(watchers) == 1
-        assert watchers[0].check_command == launcher.watcher["check_command"]
-        assert watchers[0].cancel_command == launcher.watcher["cancel_command"]
-        assert watchers[0].episode_id == episode.episode_id
-        assert watchers[0].worker_id == child.request["chat_id"]
-        assert watchers[0].status == "active"
-        assert Path(launcher.calls[-1]["cwd"], "watch.json").exists()
+        assert watchers[0].checks[0].check_command == launcher.watcher["check_command"]
+        assert watchers[0].agent_id == child.request["chat_id"]
+        assert watchers[0].origin_turn_id == child.operation_id
+        assert watchers[0].state == "watching"
+        assert Path(launcher.calls[-1]["cwd"], "watchers", f"{launcher.job_id}.json").exists()
         assert launcher.calls[-1]["session_id"] == "child-compute-session"
         assert staged_turns[0][1] is staged_turns[1][1]
     else:
@@ -234,23 +232,17 @@ def test_child_compute_mailbox_and_work_watcher_settlement(
         job = store.compute_job(launcher.job_id)
         Path(job.exit_path).write_text("0 105")
         commands.backend.alive_handles.remove(job.backend_handle)
-        groups = WatcherPoller(
+        WatcherPoller(
             store,
             check_runner=commands.check_runner,
-            clock=lambda: watchers[0].next_check_at or store.now(),
+            clock=lambda: watchers[0].checks[0].next_check_at or store.now(),
         ).poll_once()
-        assert len(groups) == 1
-        request = _generic_watcher_delivery_request(groups[0])
-        wake = start_watcher_notification(
-            background,
-            child.project_id,
-            "node_chat",
-            request,
-            [item.watcher_id for item in groups[0]],
-            authorized_by=episode.authorized_by,
-        )
-        assert wake is not None
-        wake = wait_for_task(store, wake.operation_id, expect="succeeded")
+        ready = store.ready_watchers()
+        assert [item.watcher_id for item in ready] == [watchers[0].watcher_id]
+        deliver_auto_research_watchers(background, ready[0].agent_id, episode, ready, None)
+        wake_id = store.watcher(watchers[0].watcher_id).wake_turn_id
+        assert wake_id is not None
+        wake = wait_for_task(store, wake_id, expect="succeeded")
         assert len(launcher.calls) == 3
         assert launcher.calls[-1]["session_id"] == "child-compute-session"
         assert launcher.calls[-1]["cwd"] == launcher.calls[0]["cwd"]

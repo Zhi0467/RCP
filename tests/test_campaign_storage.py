@@ -22,9 +22,10 @@ from rcp.storage import (
     EpisodeNotRunning,
     EpisodeRecord,
     EpisodeWrapupRecord,
-    GraphWatcherRecord,
+    NodeStatusGraphCondition,
     ProjectRecord,
-    WatcherContinuation,
+    WatcherCheckRecord,
+    WatcherRecord,
 )
 from rcp.storage.episodes import compact_episode_receipt
 
@@ -577,28 +578,41 @@ def test_message_and_command_ledgers_use_episode_identity(tmp_path) -> None:
     assert "campaign_id" not in (event.payload or {})
 
 
-def test_stop_fence_closes_admission_and_retires_current_and_new_watchers(tmp_path) -> None:
+def _graph_watcher(
+    store: AppStore, episode: EpisodeRecord, root: AgentTaskRecord, watcher_id: str
+) -> WatcherRecord:
+    now = store.now()
+    return store.arm_watcher(
+        WatcherRecord(
+            watcher_id=watcher_id,
+            agent_id=episode.episode_id,
+            project_id=episode.project_id,
+            purpose=watcher_id,
+            origin_turn_id=root.operation_id,
+            created_at=now,
+            checks=[
+                WatcherCheckRecord(
+                    check_id=watcher_id,
+                    watcher_id=watcher_id,
+                    definition="graph",
+                    condition=NodeStatusGraphCondition(node_id="claim", status_in=["active"]),
+                    graph_target=episode.graph_target,
+                    armed_head=1,
+                    created_at=now,
+                )
+            ],
+        )
+    )
+
+
+def test_stop_fence_closes_admission_and_retires_current_watchers(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     _project(store)
     episode, root = _episode(store)
-    first = GraphWatcherRecord(
-        watcher_id="watch-before-stop",
-        project_id=episode.project_id,
-        origin_operation_id=root.operation_id,
-        origin_task_kind="auto_research",
-        chat_id=root.operation_id,
-        episode_id=episode.episode_id,
-        graph_target=episode.graph_target,
-        continuation=WatcherContinuation(provider="codex", run_on="local", patch_kind="work"),
-        condition={"node_id": "claim", "status_in": ["active"]},
-        armed_revision=1,
-        status="active",
-        created_at=store.now(),
-    )
-    store.create_watchers([first])
+    first = _graph_watcher(store, episode, root, "watch-before-stop")
     store.request_episode_stop(episode.episode_id)
     assert store.settle_auto_research_watchers(episode.episode_id) == 1
-    assert store.watcher(first.watcher_id).status == "stopped"  # type: ignore[union-attr]
+    assert store.watcher(first.watcher_id).state == "cancelled"  # type: ignore[union-attr]
     with pytest.raises(EpisodeNotRunning):
         store.create_auto_research_agent_task(
             _task(
@@ -611,8 +625,6 @@ def test_stop_fence_closes_admission_and_retires_current_and_new_watchers(tmp_pa
             ),
             role="worker",
         )
-    second = first.model_copy(update={"watcher_id": "watch-after-stop"})
-    assert store.create_watchers([second])[0].status == "stopped"
     settled = store.mark_episode_stop_skipped(episode.episode_id)
     assert settled.status == "stopped"
     assert settled.wrapup_state == "skipped"
@@ -622,21 +634,7 @@ def test_auto_research_stop_and_watcher_settlement_is_atomic(tmp_path, monkeypat
     store = AppStore(tmp_path / "rcp.sqlite3")
     _project(store)
     episode, root = _episode(store)
-    watcher = GraphWatcherRecord(
-        watcher_id="watch-atomic-stop",
-        project_id=episode.project_id,
-        origin_operation_id=root.operation_id,
-        origin_task_kind="auto_research",
-        chat_id=root.operation_id,
-        episode_id=episode.episode_id,
-        graph_target=episode.graph_target,
-        continuation=WatcherContinuation(provider="codex", run_on="local", patch_kind="work"),
-        condition={"node_id": "claim", "status_in": ["active"]},
-        armed_revision=1,
-        status="active",
-        created_at=store.now(),
-    )
-    store.create_watchers([watcher])
+    watcher = _graph_watcher(store, episode, root, "watch-atomic-stop")
     before_episode = store.episode(episode.episode_id)
     before_watcher = store.watcher(watcher.watcher_id)
     assert before_episode is not None and before_watcher is not None
@@ -668,29 +666,15 @@ def test_auto_research_stop_and_watcher_settlement_is_atomic(tmp_path, monkeypat
     assert settled.stop_requested_at is not None
     stopped_watcher = store.watcher(watcher.watcher_id)
     assert stopped_watcher is not None
-    assert stopped_watcher.status == "stopped"
-    assert stopped_watcher.notified is True
+    assert stopped_watcher.state == "cancelled"
+    assert stopped_watcher.cancelled_by == "rcp"
 
 
 def test_auto_research_ending_fence_and_watcher_settlement_is_atomic(tmp_path, monkeypatch) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     _project(store)
     episode, root = _episode(store, episode_id="ending-atomic", root_status="failed")
-    watcher = GraphWatcherRecord(
-        watcher_id="watch-atomic-ending",
-        project_id=episode.project_id,
-        origin_operation_id=root.operation_id,
-        origin_task_kind="auto_research",
-        chat_id=root.operation_id,
-        episode_id=episode.episode_id,
-        graph_target=episode.graph_target,
-        continuation=WatcherContinuation(provider="codex", run_on="local", patch_kind="work"),
-        condition={"node_id": "claim", "status_in": ["active"]},
-        armed_revision=1,
-        status="active",
-        created_at=store.now(),
-    )
-    store.create_watchers([watcher])
+    watcher = _graph_watcher(store, episode, root, "watch-atomic-ending")
     before_episode = store.episode(episode.episode_id)
     before_watcher = store.watcher(watcher.watcher_id)
     assert before_episode is not None and before_watcher is not None
@@ -732,8 +716,8 @@ def test_auto_research_ending_fence_and_watcher_settlement_is_atomic(tmp_path, m
     assert fenced.ending_diagnostic == "terminal"
     stopped_watcher = store.watcher(watcher.watcher_id)
     assert stopped_watcher is not None
-    assert stopped_watcher.status == "stopped"
-    assert stopped_watcher.notified is True
+    assert stopped_watcher.state == "cancelled"
+    assert stopped_watcher.cancelled_by == "rcp"
 
 
 def test_non_stop_ending_fence_closes_auto_research_recovery_admission(tmp_path) -> None:

@@ -73,8 +73,6 @@ CHILD_OVER_LIMIT = "00000000-0000-4000-8000-000000000403"
 CHILD_REPLAY = "00000000-0000-4000-8000-000000000404"
 HUMAN_PREDECESSOR = "00000000-0000-4000-8000-000000000405"
 EXECUTION_PROFILES = (
-    "seed",
-    "refresh",
     "node_chat",
     "project_chat",
     "paper_coach",
@@ -1240,7 +1238,6 @@ def _command_effects(service, store, background, coordinator, parent_id, root_id
         validate=lambda *_args: AutoResearchCommandEffectResult(),
         worker_request_factory=lambda *_args: RunRequest(),
         graph_state=service.history.state,
-        machine_id="backend",
         experiment_coordinator=coordinator,
     )
     return context, effects

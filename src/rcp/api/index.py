@@ -288,7 +288,6 @@ def _experiment_episode_entries(
         read_models = store.project_experiment_control_projection_snapshots(record.project_id)
         if not read_models:
             continue
-        active_graph_watchers = store.active_graph_watchers(record.project_id)
         settle_ids = [
             experiment_id
             for experiment_id, read_model in read_models.items()
@@ -468,13 +467,15 @@ def _experiment_episode_entries(
                 route = store.auto_research_child_experiment(episode.episode_id)
                 parent_episode_id = route.auto_research_episode_id if route is not None else None
                 parent_watching = parent_episode_id is not None and any(
-                    watcher.origin_task_kind == "auto_research"
-                    and watcher.episode_id == parent_episode_id
-                    and watcher.graph_target == target
-                    and watcher.condition.node_id == node.id
-                    and isinstance(watcher.condition, NodeStatusGraphCondition)
-                    and set(watcher.condition.status_in).issubset(CLOSED_EXPERIMENT_STATUSES)
-                    for watcher in active_graph_watchers
+                    watcher.open
+                    and check.removed_at is None
+                    and check.completed_at is None
+                    and check.graph_target == target
+                    and isinstance(check.condition, NodeStatusGraphCondition)
+                    and check.condition.node_id == node.id
+                    and set(check.condition.status_in).issubset(CLOSED_EXPERIMENT_STATUSES)
+                    for watcher in store.episode_watchers(parent_episode_id)
+                    for check in watcher.checks
                 )
                 if target.kind == "main":
                     controls = (

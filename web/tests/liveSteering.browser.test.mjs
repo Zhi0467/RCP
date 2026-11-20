@@ -27,7 +27,7 @@ for (const [actionLabel, receiptLabel] of [
       let outcome = "delivered";
       let receipt;
       let gate = null;
-      await page.route("**/api/projects/project/tasks/task/steer", async (route) => {
+      await page.route("**/api/agent-threads/steering-chat/tasks/task/steer*", async (route) => {
         const request = route.request().postDataJSON();
         requests.push(request);
         if (outcome === "disconnect") return route.abort("connectionfailed");
@@ -174,7 +174,7 @@ for (const [kind, width] of [
             : [],
         }),
       );
-      await page.route("**/api/projects/project/tasks/task/pause", (route) =>
+      await page.route("**/api/agent-threads/steering-chat/tasks/task/pause*", (route) =>
         route.fulfill(
           rejectPause
             ? { status: 409, json: { detail: "Could not stop" } }

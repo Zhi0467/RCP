@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from rcp.agents.auto_research_commands import auto_research_allowed_verbs
+from rcp.agents.agent_profile import SHARED_PROJECT, AgentTurn, resolve_agent_profile
 from rcp.agents.command_protocol import (
     MUTATING_COMMAND_VERBS,
     ApplyArguments,
@@ -44,8 +44,6 @@ from rcp.agents.command_protocol import (
     StatusArguments,
     StopCommandRequest,
     ValidateArguments,
-    WatchGraphArguments,
-    WatchGraphCommandRequest,
     WorkEpisodeControlArguments,
     command_requires_idempotency_key,
 )
@@ -819,10 +817,6 @@ AutoResearchMessageCommand = Callable[
     [AutoResearchCommandContext, MessageArguments, str],
     AutoResearchCommandEffectResult,
 ]
-AutoResearchWatchGraphCommand = Callable[
-    [AutoResearchCommandContext, WatchGraphArguments, str],
-    AutoResearchCommandEffectResult,
-]
 AutoResearchFinishCommand = Callable[
     [AutoResearchCommandContext, str], AutoResearchCommandEffectResult
 ]
@@ -865,7 +859,6 @@ class AutoResearchCommandEffects:
     resume: AutoResearchWorkerResumeCommand
     stop: AutoResearchWorkerCommand
     message: AutoResearchMessageCommand
-    watch_graph: AutoResearchWatchGraphCommand
     finish: AutoResearchFinishCommand
     seat_node_type: AutoResearchSeatNodeType
     reconcile_unknown: AutoResearchUnknownCommandReconciler
@@ -1070,15 +1063,6 @@ class AutoResearchCommandDispatcher:
             if isinstance(request, MessageCommandRequest) and request.idempotency_key is not None
             else None
         )
-        planned_watcher_id = (
-            auto_research_planned_effect_id(
-                context.episode.episode_id,
-                "watch_graph",
-                request.idempotency_key,
-            )
-            if isinstance(request, WatchGraphCommandRequest) and request.idempotency_key is not None
-            else None
-        )
         planned_apply_id = (
             auto_research_planned_effect_id(
                 context.episode.episode_id,
@@ -1140,8 +1124,6 @@ class AutoResearchCommandDispatcher:
             start_payload["planned_worker_id"] = planned_worker_id
         if planned_message_id is not None:
             start_payload["planned_message_id"] = planned_message_id
-        if planned_watcher_id is not None:
-            start_payload["planned_watcher_id"] = planned_watcher_id
         if planned_apply_id is not None:
             start_payload["planned_apply_id"] = planned_apply_id
         if planned_resume_operation_id is not None:
@@ -1478,7 +1460,6 @@ class AutoResearchCommandDispatcher:
                 request,
                 planned_worker_id=planned_worker_id,
                 planned_message_id=planned_message_id,
-                planned_watcher_id=planned_watcher_id,
                 planned_apply_id=planned_apply_id,
                 planned_resume_operation_id=planned_resume_operation_id,
                 planned_episode_effect_id=planned_episode_effect_id,
@@ -1788,15 +1769,6 @@ class AutoResearchCommandDispatcher:
                         if isinstance(recorded_request, MessageCommandRequest)
                         else None
                     ),
-                    planned_watcher_id=(
-                        self._recorded_planned_effect_id(
-                            original_context,
-                            recorded_request,
-                            prior.start_payload,
-                        )
-                        if isinstance(recorded_request, WatchGraphCommandRequest)
-                        else None
-                    ),
                     planned_apply_id=(
                         self._recorded_planned_effect_id(
                             original_context,
@@ -1891,7 +1863,6 @@ class AutoResearchCommandDispatcher:
                 StopCommandRequest,
                 FinishCommandRequest,
                 MessageCommandRequest,
-                WatchGraphCommandRequest,
                 InboxCommandRequest,
             ),
         ) or (
@@ -2130,15 +2101,11 @@ class AutoResearchCommandDispatcher:
             verb: Literal[
                 "apply",
                 "message",
-                "watch_graph",
                 "episode",
                 "inbox",
                 "resume",
                 "finish",
             ] = "message"
-        elif isinstance(request, WatchGraphCommandRequest):
-            field = "planned_watcher_id"
-            verb = "watch_graph"
         elif isinstance(request, ApplyCommandRequest):
             field = "planned_apply_id"
             verb = "apply"
@@ -2178,19 +2145,26 @@ class AutoResearchCommandDispatcher:
         allowed = (
             self.allowed_verbs
             if self.allowed_verbs is not None
-            else auto_research_allowed_verbs(
-                context.request.role,
-                can_self_name=(
-                    context.request.role == "orchestrator"
-                    and bool(
-                        task_agent_name_state(self.store, context.task.operation_id).get(
-                            "can_self_name"
+            else resolve_agent_profile(
+                SHARED_PROJECT,
+                "orchestrator"
+                if context.request.role == "orchestrator"
+                else "auto_research_worker",
+                AgentTurn(
+                    read_verbs=self.graph_read_scope.verbs
+                    if self.graph_read_scope
+                    else frozenset(),
+                    can_self_name=(
+                        context.request.role == "orchestrator"
+                        and bool(
+                            task_agent_name_state(self.store, context.task.operation_id).get(
+                                "can_self_name"
+                            )
                         )
-                    )
+                    ),
+                    bulletin=self.store.bulletin_enabled_for_task(context.task.operation_id),
                 ),
-                graph_read_scope=self.graph_read_scope,
-                bulletin=self.store.bulletin_enabled_for_task(context.task.operation_id),
-            )
+            ).ordered_verbs
         )
         if request.verb not in allowed:
             raise AutoResearchCommandInvalid(
@@ -2274,7 +2248,6 @@ class AutoResearchCommandDispatcher:
         *,
         planned_worker_id: str | None,
         planned_message_id: str | None,
-        planned_watcher_id: str | None,
         planned_apply_id: str | None,
         planned_resume_operation_id: str | None,
         planned_episode_effect_id: str | None,
@@ -2392,9 +2365,6 @@ class AutoResearchCommandDispatcher:
             assert isinstance(request, StopCommandRequest)
             self._require_worker(context, request.arguments.worker_id)
             return self.effects.stop(context, request.arguments.worker_id)
-        if request.verb == "watch_graph":
-            assert planned_watcher_id is not None
-            return self.effects.watch_graph(context, request.arguments, planned_watcher_id)
         if request.verb == "episode":
             assert isinstance(request, EpisodeCommandRequest)
             assert isinstance(
@@ -2548,7 +2518,6 @@ def auto_research_planned_effect_id(
         "spawn",
         "apply",
         "message",
-        "watch_graph",
         "episode",
         "inbox",
         "resume",

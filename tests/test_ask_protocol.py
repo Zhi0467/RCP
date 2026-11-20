@@ -92,7 +92,6 @@ def test_ask_result_requires_resolution_only_for_answered():
 
 def test_work_and_experiment_compute_handler_refuses_ask(commands):  # noqa: F811
     assert commands.handler(ask_request(), commands.identity).status == "invalid"
-    assert "ask" not in commands.handler.allowed_verbs
 
 
 @pytest.mark.parametrize("role", ["worker", "correction"])
@@ -130,7 +129,7 @@ async def test_validate_only_and_child_work_handlers_refuse_ask(monkeypatch, chi
         kwargs.update(
             execution=SimpleNamespace(operation_id="task"),
             route=SimpleNamespace(episode_id="episode"),
-            compute_commands=SimpleNamespace(allowed_verbs=frozenset({"launch"})),
+            compute_commands=SimpleNamespace(launch_available=True),
             allowed_verbs=frozenset({"validate", "message", "lesson", "launch"}),
         )
         await module._serve_auto_research_child_work_mailbox(**kwargs)
@@ -157,7 +156,7 @@ async def test_child_work_mailbox_enforces_its_launch_surface(monkeypatch):
         validate=lambda _: pytest.fail("a Bulletin read must not validate a patch"),
         stop=asyncio.Event(),
         budget=patch_validator.PatchValidationBudget(),
-        compute_commands=SimpleNamespace(allowed_verbs=frozenset()),
+        compute_commands=SimpleNamespace(launch_available=False),
         allowed_verbs=frozenset({"validate", "message", "lesson"}),
     )
     assert [response.status for response in captured] == ["invalid"]

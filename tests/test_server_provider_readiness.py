@@ -104,7 +104,7 @@ def _request(
     authorizer: AuthorizedHuman,
     *,
     remote: bool = False,
-    profile: str = "seed",
+    profile: str = "paper_coach",
     profiles: tuple[str, ...] | None = None,
 ):
     card = (
@@ -475,7 +475,7 @@ def test_success_for_one_profile_preserves_another_profiles_operator_action(
     tmp_path: Path,
 ) -> None:
     store, authorizer = _team_store(tmp_path)
-    request = _request(store, authorizer, profiles=("seed", "refresh"))
+    request = _request(store, authorizer, profiles=("paper_coach", "orchestrator"))
     launcher = _FakeLauncher(
         account=ProviderExecutionAccount(host="", reachable=True, os_account="rcp"),
         readiness=ProviderReadiness(
@@ -513,7 +513,7 @@ def test_success_for_one_profile_preserves_another_profiles_operator_action(
     assert stored.provider_checks[1].status == "operator_action_needed"
 
 
-def test_project_selector_resolves_only_the_six_stored_profiles(
+def test_project_selector_resolves_only_the_four_stored_profiles(
     tmp_path: Path,
     manifest,
 ) -> None:
@@ -538,7 +538,7 @@ def test_project_selector_resolves_only_the_six_stored_profiles(
 
     plan = coordinator.plan("project", project_id)
 
-    assert [target.step.number for target in plan.targets] == list(range(1, 7))
+    assert [target.step.number for target in plan.targets] == list(range(1, 5))
     assert {target.step.fields for target in plan.targets} == {()}
     assert launcher.account_calls == []
     assert launcher.readiness_calls == []

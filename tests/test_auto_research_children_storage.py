@@ -1648,22 +1648,20 @@ def test_lifecycle_wake_invalid_inputs_roll_back_paid_task(tmp_path, invalid_inp
     assert store.auto_research_messages(parent.episode_id) == messages_before
 
 
-@pytest.mark.parametrize("kind, role", [("node_chat", None), ("auto_research", "worker")])
 @pytest.mark.parametrize("claim_argument", ["lifecycle_notice_ids", "message_ids"])
-def test_non_root_watcher_wake_refuses_even_empty_root_claims(
-    tmp_path, kind, role, claim_argument
-) -> None:
+def test_non_root_watcher_wake_refuses_even_empty_root_claims(tmp_path, claim_argument) -> None:
     store, parent, root = _setup_parent(tmp_path)
-    record = root.model_copy(
-        update={
-            "kind": kind,
-            "request": {**root.request, "role": role},
-        }
-    )
+    record = root.model_copy(update={"request": {**root.request, "role": "worker"}})
     before = store.episode_budget_meter(parent.episode_id)
 
-    with pytest.raises(ValueError, match="only a root Auto-research watcher wake"):
-        store.create_watcher_notification_task(record, [], **{claim_argument: []})
+    with pytest.raises(ValueError):
+        store.create_auto_research_watcher_wake_task(
+            record,
+            root.operation_id,
+            [],
+            continuation_cause="watcher_wake",
+            **{claim_argument: []},
+        )
 
     assert store.episode_budget_meter(parent.episode_id) == before
 

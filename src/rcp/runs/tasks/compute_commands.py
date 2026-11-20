@@ -51,7 +51,7 @@ class WorkComputeCommands:
         return self.execution.store.path.parent
 
     def __call__(self, request: CommandRequest, identity: CommandTurnIdentity) -> CommandResponse:
-        if not isinstance(request, LaunchCommandRequest) or request.verb not in self.allowed_verbs:
+        if not isinstance(request, LaunchCommandRequest) or not self.launch_available:
             return self._refused(request, "This Work turn does not authorize that command.")
         if identity.authority != "broker" or identity.task_id != self.execution.operation_id:
             return self._refused(request, "Compute requires this Work turn's broker authority.")
@@ -154,22 +154,21 @@ class WorkComputeCommands:
         return backend
 
     @property
-    def allowed_verbs(self) -> frozenset[str]:
-        return frozenset({"launch"}) if self.helper_backend is not None else frozenset()
+    def launch_available(self) -> bool:
+        return self.helper_backend is not None
 
     def execution_instructions(self, launch_command: str) -> str:
         waiting = (
             "Short compute jobs can run normally without a watcher. For long-running work "
-            "(roughly over 10 minutes), hand off waiting with watch.json instead of repeatedly polling. "
+            "(roughly over 10 minutes), hand off waiting with a watcher instead of repeatedly polling. "
             "This is planning guidance, not an enforced time limit. "
         )
         helper = (
-            "A long-lived process such as a dashboard uses the ordinary launch and its watcher; "
-            "Cancel stops it. "
+            "A long-lived process such as a dashboard uses the ordinary launch and its watcher. "
             "For work that must outlive this agent turn, use the process launch helper: "
-            f"`{launch_command}`. Copy its returned watcher object into watch.json's external list "
-            "before ending the turn while that work is running. The helper provides check_command, "
-            "log_path, cwd and cancel_command; check_command is for RCP's watcher and may not run "
+            f"`{launch_command}`. For running work, use the returned purpose to title the watcher "
+            "and copy check_command, log_path, cwd and cancel_command into its external check. The helper's "
+            "check_command is for RCP's watcher and may not run "
             "inside your sandbox. The launch response's startup object reports the job a moment "
             "after start: running means RCP saw it alive, unknown means RCP could not check it "
             "(see diagnostic), and any other status means it already ended and log_tail says why. "
@@ -185,7 +184,7 @@ class WorkComputeCommands:
 
         availability = (
             f"Helper owner: {self.helper_backend.id}."
-            if "launch" in self.allowed_verbs
+            if self.launch_available
             else "No helper owner resolves on this machine; launch is unavailable."
         )
         return waiting + helper + "\n\n" + availability
@@ -301,8 +300,7 @@ class WorkComputeCommands:
                 unobserved.append(watcher)
         if unobserved:
             raise ValueError(
-                "Running helper jobs require shell watchers in watch.json: "
-                + json.dumps(unobserved)
+                "Running helper jobs require shell watchers: " + json.dumps(unobserved)
             )
 
 

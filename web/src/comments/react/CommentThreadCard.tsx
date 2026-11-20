@@ -20,7 +20,7 @@ function PostRow({ post, members }: { post: CommentPost; members: readonly Comme
     ].filter(
       (member, index, list) => list.findIndex((item) => item.user_id === member.user_id) === index,
     );
-    return decodeCommentMentions(post.text, commentMentionCandidates(known, false));
+    return decodeCommentMentions(post.text, commentMentionCandidates(known));
   }, [post, members]);
   return (
     <section className="rcp-comment-post">
@@ -38,33 +38,26 @@ function PostRow({ post, members }: { post: CommentPost; members: readonly Comme
   );
 }
 
-/** One thread: its quote, its posts in one flat column, a reply box, Resolve, and Send. */
+/** One thread: its quote, its posts in one flat column, and a reply box with Resolve. */
 export function CommentThreadCard({
   thread,
   comments,
-  agentLabel,
   wholeLabel,
   selected,
-  ticked,
-  onTick,
   onLocate,
   note,
 }: {
   thread: CommentThread;
   comments: CommentsController;
-  agentLabel: string;
   /** What a whole-target thread's quote line reads. */
   wholeLabel: string;
   selected: boolean;
-  ticked?: boolean;
-  onTick?: (ticked: boolean) => void;
   onLocate: () => void;
   /** Why the thread has no pin, shown on hover. */
   note?: string;
 }) {
   const open = thread.state === "open";
   const share = useShareLinks();
-  const sendable = open && comments.canSend && thread.can_send;
   const quote =
     anchorQuote(thread.anchor) ||
     (thread.anchor.kind === "whole" ? wholeLabel : thread.anchor.where || "Selected area");
@@ -78,14 +71,6 @@ export function CommentThreadCard({
       }}
     >
       <div className="rcp-comment-thread-top">
-        {sendable && onTick && (
-          <input
-            type="checkbox"
-            aria-label="Select thread"
-            checked={Boolean(ticked)}
-            onChange={(event) => onTick(event.target.checked)}
-          />
-        )}
         <button type="button" className="rcp-comment-quote" onClick={onLocate}>
           {quote}
         </button>
@@ -116,24 +101,19 @@ export function CommentThreadCard({
           <CommentEditor
             label="Reply"
             members={comments.members}
-            canSend={sendable}
-            agentLabel={agentLabel}
             busy={comments.busy}
-            onSubmit={(text, send) =>
-              text
-                ? comments.reply(thread.thread_id, text, send)
-                : comments.send([thread.thread_id])
+            secondary={
+              <button
+                type="button"
+                className="rcp-comment-resolve"
+                disabled={comments.busy}
+                onClick={() => void comments.setResolved(thread.thread_id, open)}
+              >
+                {open ? "Resolve" : "Reopen"}
+              </button>
             }
+            onSubmit={(text) => comments.reply(thread.thread_id, text)}
           />
-          <div className="rcp-comment-actions">
-            <button
-              type="button"
-              disabled={comments.busy}
-              onClick={() => void comments.setResolved(thread.thread_id, open)}
-            >
-              {open ? "Resolve" : "Reopen"}
-            </button>
-          </div>
         </>
       )}
     </article>

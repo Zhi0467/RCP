@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { MessageSquare } from "lucide-react";
 import { findText } from "../comments/anchors.ts";
 import type { Point } from "../comments/box.ts";
+import type { CommentScope } from "../comments/api.ts";
 import type { CommentThread } from "../comments/types.ts";
 import {
   CommentComposer,
@@ -15,14 +16,14 @@ import {
   textAnchor,
   flashRect,
   insideElement,
-  rangeEnd,
+  marginPoint,
   textRange,
   toRect,
 } from "../comments/react/domText.ts";
 import {
   useComments,
   type CommentsController,
-  type SendThreads,
+  type DockThreads,
 } from "../comments/react/useComments";
 import {
   SelectionCommentButton,
@@ -66,21 +67,21 @@ function threadRange(root: HTMLElement, thread: CommentThread): Range | null {
  *  pin at each open thread's quote that opens it, and the header count that lists
  *  the chat's threads. Threads go to the chat through its composer's sender. */
 export function useReplyComments({
-  projectId,
+  scope,
   chatId,
   replyIds,
   linesRef,
   canPost,
-  send,
+  dock,
   artifacts,
 }: {
-  projectId: string;
+  scope: CommentScope;
   chatId: string;
   /** The operation ids of this chat's replies, which name their threads. */
   replyIds: readonly string[];
   linesRef: RefObject<HTMLElement | null>;
   canPost: boolean;
-  send: SendThreads | null;
+  dock: DockThreads | null;
   /** The threads on artifacts shown in this chat, listed after the replies'. */
   artifacts: { comments: CommentsController; locate: (thread: CommentThread) => void };
 }) {
@@ -88,12 +89,12 @@ export function useReplyComments({
   const [shown, setShown] = useState<{ threadId: string; point: Point | null } | null>(null);
   const [listPoint, setListPoint] = useState<Point | null>(null);
   const comments = useComments({
-    projectId,
+    scope,
     kind: "reply",
     ids: replyIds,
     chatId,
     canPost,
-    send,
+    dock,
     picker: Boolean(offer || shown || listPoint),
   });
   const [selected, setSelected] = useState<string | null>(null);
@@ -104,7 +105,7 @@ export function useReplyComments({
     setShown(null);
     setListPoint(null);
     setSelected(null);
-  }, [projectId, chatId]);
+  }, [chatId]);
 
   const resolve = (selection: Selection): SelectionCommentOffer | null => {
     const root = linesRef.current;
@@ -123,22 +124,27 @@ export function useReplyComments({
     return {
       rect,
       firstLine: firstLine(range),
-      open: () =>
+      open: (point) =>
         setOffer({
           target: { kind: "reply", id: operationId },
           anchor,
           drawnVersion: null,
-          point: { x: rect.left, y: rect.bottom },
+          point,
+          range: range.cloneRange(),
         }),
     };
   };
   const selection = useSelectionComment(canPost && !offer, resolve);
 
-  const position = (thread: CommentThread): Point | null => {
+  const quoteRange = (thread: CommentThread) => {
     const root = linesRef.current;
-    const range = root && threadRange(root, thread);
-    const point = range && rangeEnd(range);
-    return point && insideElement(point, root) ? point : null;
+    return root && threadRange(root, thread);
+  };
+  const position = (thread: CommentThread): Point | null => {
+    const range = quoteRange(thread);
+    const answer = range?.startContainer.parentElement?.closest(".chat-annotatable-answer");
+    const point = range && answer && marginPoint(range, answer);
+    return point && insideElement(point, linesRef.current) ? point : null;
   };
   const locate = (thread: CommentThread) => {
     setSelected(thread.thread_id);
@@ -158,15 +164,15 @@ export function useReplyComments({
 
   const request = useCommentThreadRequest();
   useEffect(() => {
-    if (!comments.loaded || request?.targetKind !== "reply") return;
+    if (!comments.loaded || request?.targetKind !== "reply" || scope.kind !== "project") return;
     if (!replyIds.includes(request.targetId)) return;
-    const threadId = takeCommentThreadRequest(projectId, "reply", request.targetId);
+    const threadId = takeCommentThreadRequest(scope.projectId, "reply", request.targetId);
     const thread = comments.threads.find((item) => item.thread_id === threadId);
     if (!thread) return;
     locateRef.current(thread);
     window.setTimeout(() => setShown({ threadId: thread.thread_id, point: position(thread) }), 400);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- the reply set is named by its key
-  }, [request, projectId, replyKey, comments.loaded, comments.threads]);
+  }, [request, scope, replyKey, comments.loaded, comments.threads]);
 
   const shownThread =
     shown && comments.threads.find((thread) => thread.thread_id === shown.threadId);
@@ -209,6 +215,7 @@ export function useReplyComments({
       <CommentPins
         threads={comments.threads}
         position={position}
+        range={quoteRange}
         selected={selected}
         revision={replyKey}
         onPick={(thread) => {
@@ -221,8 +228,6 @@ export function useReplyComments({
         <CommentComposer
           offer={offer}
           comments={comments}
-          agentLabel="This chat"
-          canSend={Boolean(send)}
           onClose={() => setOffer(null)}
           onCreated={(thread) => setSelected(thread.thread_id)}
         />
@@ -232,7 +237,6 @@ export function useReplyComments({
           <CommentThreadCard
             thread={shownThread}
             comments={comments}
-            agentLabel="This chat"
             wholeLabel="Whole reply"
             selected={false}
             onLocate={() => locate(shownThread)}
@@ -251,7 +255,6 @@ export function useReplyComments({
         >
           <CommentList
             comments={comments}
-            agentLabel="This chat"
             wholeLabel="Whole reply"
             selected={selected}
             onLocate={locate}
@@ -260,7 +263,6 @@ export function useReplyComments({
           {artifacts.comments.threads.length > 0 && (
             <CommentList
               comments={artifacts.comments}
-              agentLabel="This chat"
               wholeLabel="Whole artifact"
               selected={selected}
               onLocate={artifacts.locate}

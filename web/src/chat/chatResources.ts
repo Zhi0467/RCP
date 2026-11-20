@@ -1,3 +1,4 @@
+import { projectAgentPath } from "../agents/agentRoutes.ts";
 import { api } from "../core/api";
 import { MAIN_GRAPH } from "../core/graphTarget";
 import { resourceKeyId, type ResourceKey, type ResourceProfile } from "../core/resourceStore";
@@ -73,6 +74,6 @@ export function chatBrowserProfile(
 ): ResourceProfile<ChatBrowserPreference> {
   return {
     key: { ...chatsResourceKey(projectId), query: `browser:${chatId}` },
-    fetch: (signal) => api(`${apiBase}/chats/${encodeURIComponent(chatId)}/browser`, { signal }),
+    fetch: (signal) => api(projectAgentPath(apiBase, chatId, "browser"), { signal }),
   };
 }

@@ -477,7 +477,7 @@ def test_merge_job_gate_uses_binding_owner(manifest, tmp_path, status, pauses):
         ("completed", True, None, False),
         ("stopped", True, None, True),
         ("active", False, None, False),
-        ("active", True, "{}", False),
+        ("active", True, "graph", False),
     ],
 )
 def test_merge_job_gate_sees_scheduler_watchers(
@@ -493,13 +493,32 @@ def test_merge_job_gate_sees_scheduler_watchers(
                 "UPDATE episode_isolations SET binding_json = "
                 "json_set(binding_json, '$.worktree', json('{}')) WHERE owner_episode_id = 'owner'"
             )
+        now = store.now()
         connection.execute(
-            "INSERT INTO watchers (watcher_id, project_id, origin_operation_id, "
-            "origin_task_kind, chat_id, episode_id, machine_id, check_command, log_path, "
-            "cwd, continuation_json, status, created_at, graph_condition_json) "
-            "VALUES ('w', 'project', 'origin', 'node_chat', 'chat', 'owner', 'backend', 'squeue', "
-            "'/tmp/log', '/tmp', '{}', ?, ?, ?)",
-            (status, store.now(), condition),
+            "INSERT INTO graph_runs (operation_id, project_id, episode_id, kind, status, "
+            "request_json, created_at, updated_at, status_message) "
+            "VALUES ('watch-origin', 'project', 'owner', 'node_chat', 'succeeded', '{}', ?, ?, '')",
+            (now, now),
+        )
+        connection.execute(
+            "INSERT INTO watchers (watcher_id, agent_id, project_id, purpose, origin_turn_id, "
+            "created_at, cancelled_at, cancelled_by) "
+            "VALUES ('w', 'chat', 'project', 'Job', 'watch-origin', ?, ?, ?)",
+            (now, *((now, "rcp") if status == "stopped" else (None, None))),
+        )
+        graph = condition is not None
+        connection.execute(
+            "INSERT INTO watcher_checks (check_id, watcher_id, machine_id, definition, "
+            "check_command, log_path, cwd, graph_condition_json, graph_target_json, "
+            "created_at, completed_at) VALUES ('w', 'w', 'backend', ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "graph" if graph else "external",
+                *((None, None, None) if graph else ("squeue", "/tmp/log", "/tmp")),
+                '{"node_id": "n", "status_in": ["done"]}' if graph else None,
+                '{"kind":"main","branch_id":null}' if graph else None,
+                now,
+                now if status == "completed" else None,
+            ),
         )
     _assert_job_gate(store, attempt, ("watcher", "w") if pauses else None)
 

@@ -187,10 +187,10 @@ def _project_scoped_routes(app: FastAPI) -> list[APIRoute]:
 def _routes_missing_membership(app: FastAPI) -> list[str]:
     """Every project-scoped route must carry the membership dependency."""
 
-    gate = app.state.project_membership_dependency
+    gates = (app.state.project_membership_dependency, app.state.agent_membership_dependency)
     missing = []
     for route in _project_scoped_routes(app):
-        attached = any(dependency.call is gate for dependency in route.dependant.dependencies)
+        attached = any(dependency.call in gates for dependency in route.dependant.dependencies)
         if not attached:
             missing.append(f"{sorted(route.methods)} {route.path}")
     return missing

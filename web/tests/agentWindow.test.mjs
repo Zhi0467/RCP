@@ -102,7 +102,10 @@ test("project and Space endpoints keep capabilities and encoded owner routes sep
     project.artifactUrl("op/a", "id/a", "viewer"),
     "/api/projects/project%2Fa/tasks/op%2Fa/artifacts/id%2Fa/viewer",
   );
-  assert.equal(project.attachmentsUrl, "/api/projects/project%2Fa/chats/chat%2Fb/attachments");
+  assert.equal(
+    project.attachmentsUrl,
+    "/api/agent-threads/chat%2Fb/attachments?project_id=project%2Fa",
+  );
   assert.equal(
     space.artifactUrl("op/a", "id/a", "viewer"),
     "/api/agent-threads/thread%2Fa/tasks/op%2Fa/artifacts/id%2Fa/viewer",
@@ -243,10 +246,10 @@ test("project task adapters preserve encoded routes and control idempotency", as
     assert.deepEqual(
       calls.map(({ url }) => url),
       [
-        "/api/projects/project%2Fa/tasks/op%2Fa",
-        "/api/projects/project%2Fa/tasks/op%2Fa/pause",
-        "/api/projects/project%2Fa/tasks/op%2Fa/resume",
-        "/api/projects/project%2Fa/tasks/op%2Fa/retry",
+        "/api/agent-threads/chat%2Fb/tasks/op%2Fa",
+        "/api/agent-threads/chat%2Fb/tasks/op%2Fa/pause",
+        "/api/agent-threads/chat%2Fb/tasks/op%2Fa/resume",
+        "/api/agent-threads/chat%2Fb/tasks/op%2Fa/retry",
       ],
     );
     assert.equal(calls[1].init.method, "POST");

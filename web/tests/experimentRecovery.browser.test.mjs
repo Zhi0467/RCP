@@ -219,9 +219,7 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
         default_run_truth_scope: [],
         providers,
         agent_profiles: Object.fromEntries(
-          ["seed", "refresh", "node_chat", "project_chat", "paper_coach", "orchestrator"].map(
-            (k) => [k, profile],
-          ),
+          ["node_chat", "project_chat", "paper_coach", "orchestrator"].map((k) => [k, profile]),
         ),
         provider_readiness: { local: providers },
         provider_skill_inventories: {},
@@ -273,7 +271,12 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
           };
         else if (path === "/api/projects")
           json = [{ id: "demo", name: "Recovery project", revision: 1 }];
-        else if (path === `/api/projects/demo/tasks/failed-task/${action}`) {
+        else if (
+          path ===
+          (scenario === "switch provider"
+            ? `/api/agent-threads/chat/tasks/failed-task/${action}`
+            : `/api/projects/demo/tasks/failed-task/${action}`)
+        ) {
           submissions.push({
             method: route.request().method(),
             body: route.request().postDataJSON(),
@@ -429,10 +432,16 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
         await page.route("**/api/agent-threads/own-thread/schedules", (route) =>
           route.fulfill({ json: { schedules: [] } }),
         );
+        await page.route("**/api/agent-threads/own-thread/watchers", (route) =>
+          route.fulfill({ json: [] }),
+        );
         await page.route("**/api/agent-threads/own-thread/queue", (route) =>
           route.fulfill({ json: { items: [] } }),
         );
-        await page.route("**/api/projects/demo/chats/own-thread", (route) =>
+        await page.route("**/api/service-connections", (route) =>
+          route.fulfill({ json: { dictation: "", connections: [] } }),
+        );
+        await page.route("**/api/agent-threads/own-thread/transcript", (route) =>
           route.fulfill({
             json: {
               chat_id: thread.thread_id,
@@ -441,6 +450,17 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
               title: thread.agent_name,
               graph_target: target,
               messages: [],
+            },
+          }),
+        );
+        await page.route("**/api/projects/demo/chats/own-thread/worktree?*", (route) =>
+          route.fulfill({
+            json: {
+              show_chooser: false,
+              can_choose: false,
+              binding: null,
+              integration_options: [],
+              can_remove: false,
             },
           }),
         );

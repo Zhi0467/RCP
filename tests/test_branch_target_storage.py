@@ -13,7 +13,7 @@ from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.episodes.wrapup import EpisodeWrapupSpec, begin_episode_report_wrapup
-from rcp.runs.watcher_admission import start_watcher_notification
+from rcp.runs.watcher_admission import start_plain_watcher_wake
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import (
     AgentTaskRecord,
@@ -21,12 +21,12 @@ from rcp.storage import (
     AutoResearchStateRecord,
     EpisodeRecord,
     ProjectRecord,
-    WatcherContinuation,
+    WatcherCheckRecord,
     WatcherRecord,
 )
 
 from .helpers import fabricated_authorizer, wait_for_task, write_local_test_manifest
-from .test_background import _done_stream
+from .lifecycles.agent_task import done_stream as _done_stream
 
 
 def _store(tmp_path: Path) -> AppStore:
@@ -129,38 +129,6 @@ def _create_auto_episode(
     )
 
 
-def _watcher(
-    store: AppStore,
-    episode: EpisodeRecord,
-    root: AgentTaskRecord,
-    *,
-    watcher_id: str,
-    status: str = "active",
-) -> WatcherRecord:
-    return WatcherRecord(
-        watcher_id=watcher_id,
-        project_id=episode.project_id,
-        origin_operation_id=root.operation_id,
-        origin_task_kind="auto_research",
-        chat_id="shared-actor",
-        episode_id=episode.episode_id,
-        graph_target=episode.graph_target,
-        machine_id=BACKEND_MACHINE_ID,
-        check_command="true",
-        log_path=f"/tmp/{watcher_id}.log",
-        cwd="/tmp",
-        continuation=WatcherContinuation(
-            provider="codex",
-            run_on=BACKEND_MACHINE_ID,
-            run_truth_scope=["repo-a"],
-            patch_kind="work",
-        ),
-        status=status,
-        created_at=store.now(),
-        completed_at=store.now() if status == "completed" else None,
-    )
-
-
 def _merge_task(
     store: AppStore,
     episode: EpisodeRecord,
@@ -186,30 +154,20 @@ def _merge_task(
     )
 
 
-def test_branch_target_round_trips_through_episode_task_watcher_and_report(
+def test_branch_target_round_trips_through_episode_task_and_report(
     tmp_path: Path,
 ) -> None:
     store = _store(tmp_path)
     stage = tmp_path / "branch-stage"
     stage.mkdir()
     episode, root = _create_auto_episode(store, stage_root=str(stage))
-    watcher = _watcher(store, episode, root, watcher_id="branch-watcher")
-    store.create_watchers([watcher])
 
     stored_episode = store.episode(episode.episode_id)
     stored_root = store.agent_task(root.operation_id)
-    stored_watcher = store.watcher(watcher.watcher_id)
     assert stored_episode is not None
     assert stored_root is not None
-    assert stored_watcher is not None
-    assert stored_episode.graph_target == stored_root.graph_target == stored_watcher.graph_target
+    assert stored_episode.graph_target == stored_root.graph_target
     assert stored_episode.graph_base_head == GraphHeadRef(revision=0)
-
-    with pytest.raises(ValueError, match="watcher identity conflicts"):
-        store._validate_idempotent_watcher(
-            stored_watcher,
-            watcher.model_copy(update={"graph_target": GraphTargetRef()}),
-        )
 
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
     admission = begin_episode_report_wrapup(
@@ -324,41 +282,6 @@ def test_main_chat_cannot_reuse_a_branch_bound_conversation_or_session(tmp_path:
 
     assert store.agent_task("main-same-chat") is None
     assert store.agent_task("main-same-session") is None
-
-
-def test_completed_watcher_delivery_groups_do_not_cross_graph_targets(tmp_path: Path) -> None:
-    store = _store(tmp_path)
-    first, first_root = _create_auto_episode(store)
-    first_watcher = _watcher(
-        store,
-        first,
-        first_root,
-        watcher_id="first-branch-watcher",
-        status="completed",
-    )
-    store.create_watchers([first_watcher])
-    store.complete_agent_task(first_root.operation_id, applied_revision=None, result={})
-    store.mark_episode_stop_skipped(first.episode_id)
-
-    second, second_root = _create_auto_episode(store)
-    second_watcher = _watcher(
-        store,
-        second,
-        second_root,
-        watcher_id="second-branch-watcher",
-        status="completed",
-    )
-    store.create_watchers([second_watcher])
-
-    groups = store.completed_watcher_groups()
-    assert {tuple(item.watcher_id for item in group) for group in groups} == {
-        (first_watcher.watcher_id,),
-        (second_watcher.watcher_id,),
-    }
-    assert {group[0].graph_target.key for group in groups} == {
-        first.graph_target.key,
-        second.graph_target.key,
-    }
 
 
 def test_branch_merge_task_requires_a_quiet_branch_and_exact_authority(
@@ -511,43 +434,41 @@ def test_ordinary_branch_watcher_wakes_after_episode_ends_without_episode_budget
     origin = store.create_agent_task(_ordinary_branch_chat(store, episode))
     store.complete_agent_task(root.operation_id, applied_revision=None, result={})
     store.mark_episode_stop_skipped(episode.episode_id)
-    watcher = WatcherRecord(
-        watcher_id="ordinary-branch-watcher",
-        project_id=episode.project_id,
-        origin_operation_id=origin.operation_id,
-        origin_task_kind=origin.kind,
-        chat_id=origin.request["chat_id"],
-        graph_target=episode.graph_target,
-        machine_id=BACKEND_MACHINE_ID,
-        check_command="true",
-        log_path="/tmp/branch-review.log",
-        cwd="/tmp",
-        continuation=WatcherContinuation(
-            provider="codex", run_on=BACKEND_MACHINE_ID, run_truth_scope=["repo-a"]
-        ),
-        status="completed",
-        created_at=store.now(),
-        completed_at=store.now(),
+    now = store.now()
+    watcher = store.arm_watcher(
+        WatcherRecord(
+            watcher_id="ordinary-branch-watcher",
+            agent_id=origin.request["chat_id"],
+            project_id=episode.project_id,
+            purpose="Branch review job",
+            origin_turn_id=origin.operation_id,
+            created_at=now,
+            checks=[
+                WatcherCheckRecord(
+                    check_id="ordinary-branch-watcher",
+                    watcher_id="ordinary-branch-watcher",
+                    machine_id=BACKEND_MACHINE_ID,
+                    definition="external",
+                    check_command="true",
+                    log_path="/tmp/branch-review.log",
+                    cwd="/tmp",
+                    created_at=now,
+                    completed_at=now,
+                )
+            ],
+        )
     )
-    store.create_watchers([watcher])
     tasks = BackgroundAgentTasks(store, _done_stream)
-    request = RunRequest.model_validate(
-        {**origin.request, "trigger": "watcher", "watcher_ids": [watcher.watcher_id]}
-    )
-    wake = start_watcher_notification(
-        tasks,
-        episode.project_id,
-        origin.kind,
-        request,
-        [watcher.watcher_id],
-        authorized_by=episode.authorized_by,
+    wake = start_plain_watcher_wake(
+        tasks, watcher.agent_id, [watcher], authorized_by=episode.authorized_by
     )
     assert wake is not None
     finished = wait_for_task(store, wake.operation_id)
     assert finished.status == "succeeded", finished.error
     assert finished.graph_target == episode.graph_target
     assert finished.episode_id is None
-    assert store.watcher(watcher.watcher_id).notified
+    claimed = store.watcher(watcher.watcher_id)
+    assert claimed is not None and claimed.wake_turn_id == wake.operation_id
 
 
 @pytest.mark.parametrize("winner", ["chat", "merge"])

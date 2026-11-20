@@ -22,25 +22,22 @@ from rcp.core.models import (
     Patch,
     Proposal,
 )
-from rcp.core.transition_models import GraphTargetRef
+from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.machine_cards import BACKEND_MACHINE_ID
-from rcp.runs.experiment_loop import persist_experiment_watchers_idempotently
 from rcp.runs.shared import _record_patch_applied_receipt
-from rcp.runs.watcher_admission import start_watcher_notification
+from rcp.runs.watcher_admission import start_plain_watcher_wake
 from rcp.service import RunRequest
 from rcp.storage import (
     ACTIVE_AGENT_TASK_STATUSES,
     AgentTaskRecord,
     AppStore,
-    GraphWatcherRecord,
     NodeStatusGraphCondition,
     ProposalResolvedGraphCondition,
-    StoredWatcherRecord,
-    WatcherContinuation,
+    WatcherCheckRecord,
     WatcherRecord,
-    WatcherStopRequest,
 )
 from rcp.transport import StateUnavailable
+from rcp.watcher_folder import FileCheck, WatcherFile, reconcile_watcher_files
 from rcp.watchers import (
     AgentWatchSpec,
     WatcherBinding,
@@ -50,18 +47,21 @@ from rcp.watchers import (
     WatcherRetryGeneration,
     WatcherRetryWorker,
     WatchSpec,
-    arm_watchers,
-    evaluate_graph_watchers,
+    graph_check_boundary_result,
     graph_condition_result,
-    ready_graph_watcher_groups,
 )
-from tests.helpers import signed_in_client
+from tests.helpers import fake_launch_admitted, signed_in_client
 
 from .helpers import append_fixture_patch, async_wait_until, wait_until
 from .helpers import create_named_app as create_app
-from .test_background import _store as _admission_store
+from .test_branch_target_storage import _store as _project_store
 
 _CREATED_AT = "2026-08-12T00:00:00+00:00"
+_RESOLVED = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
+_PROPOSAL = ProposalResolvedGraphCondition(node_id="hyp/foo", proposal_resolved=True)
+_SPEC = AgentWatchSpec(
+    purpose="job finishes", check_command="still-running", log_path="/tmp/run.log", cwd="/tmp"
+)
 
 
 def _blocker(status: str = "open") -> Blocker:
@@ -103,15 +103,13 @@ def _state(
     revision: int = 1,
     replay_status: str = "complete",
     include_blocker: bool = True,
-    include_hypothesis: bool = True,
 ) -> GraphState:
     nodes = {}
     if include_blocker:
         blocker = _blocker(blocker_status)
         nodes[blocker.id] = blocker
-    if include_hypothesis:
-        hypothesis = _hypothesis()
-        nodes[hypothesis.id] = hypothesis
+    hypothesis = _hypothesis()
+    nodes[hypothesis.id] = hypothesis
     return GraphState(
         revision=revision,
         nodes=nodes,
@@ -131,14 +129,6 @@ def _canonical_fixture_patch(*, blocker_status: str) -> Patch:
             {
                 "op": "create_nodes",
                 "nodes": [
-                    {
-                        "id": "exp/one",
-                        "type": "experiment",
-                        "title": "Bounded graph wake",
-                        "objective": "Wait for the canonical blocker resolution.",
-                        "completion_criteria": ["The blocker is resolved."],
-                        "invocation_ceiling": 2,
-                    },
                     {
                         "id": "blk/foo",
                         "type": "blocker",
@@ -194,104 +184,85 @@ def store(tmp_path) -> AppStore:
     return AppStore(tmp_path / "rcp.sqlite3")
 
 
-def _continuation() -> WatcherContinuation:
-    return WatcherContinuation(
-        provider="codex",
-        model="gpt-5",
-        reasoning="medium",
-        run_on=BACKEND_MACHINE_ID,
-        run_truth_scope=["repo-a"],
-        patch_kind="work",
-    )
-
-
-def _loop_continuation(episode_id: str) -> WatcherContinuation:
-    return _continuation().model_copy(
-        update={
-            "patch_kind": "experiment_loop",
-            "control_node_id": "exp/one",
-            "control_revision": 1,
-            "control_episode_id": episode_id,
-            "control_invocation": 1,
-            "control_invocation_ceiling": 2,
-            "control_decision_bundle": [],
-            "control_completion_criteria": [],
-        }
-    )
-
-
-def _binding(*, continuation: WatcherContinuation | None = None) -> WatcherBinding:
+def _binding(origin: str = "origin", agent_id: str = "chat") -> WatcherBinding:
     return WatcherBinding(
         project_id="project",
-        origin_operation_id="origin",
-        origin_task_kind="node_chat",
-        chat_id="chat",
-        node_id="exp/one",
+        agent_id=agent_id,
+        origin_turn_id=origin,
         machine_id=BACKEND_MACHINE_ID,
-        continuation=continuation or _continuation(),
     )
 
 
-def _graph_record(
-    watcher_id: str,
-    condition: NodeStatusGraphCondition | ProposalResolvedGraphCondition,
+def _active_check(_spec: WatchSpec, _host: str, _timeout: float) -> WatcherCheckResult:
+    return WatcherCheckResult(state="active", checked_at=_CREATED_AT, exit_code=1)
+
+
+def _graph_check(
+    check_id: str,
+    condition: NodeStatusGraphCondition | ProposalResolvedGraphCondition = _RESOLVED,
     *,
-    continuation: WatcherContinuation | None = None,
-    status: str = "active",
+    armed_head: int = 1,
+    completed: bool = False,
+    graph_target: GraphTargetRef | None = None,
+) -> WatcherCheckRecord:
+    return WatcherCheckRecord(
+        check_id=check_id,
+        watcher_id=check_id,
+        machine_id=BACKEND_MACHINE_ID,
+        definition="graph",
+        condition=condition,
+        graph_target=graph_target or GraphTargetRef(),
+        armed_head=armed_head,
+        created_at=_CREATED_AT,
+        completed_at=_CREATED_AT if completed else None,
+    )
+
+
+def _external_check(check_id: str, *, completed: bool = False) -> WatcherCheckRecord:
+    return WatcherCheckRecord(
+        check_id=check_id,
+        watcher_id=check_id,
+        machine_id=BACKEND_MACHINE_ID,
+        definition="external",
+        check_command=f"test -f /tmp/{check_id}.done",
+        log_path=f"/tmp/{check_id}.log",
+        cwd="/tmp",
+        created_at=_CREATED_AT,
+        completed_at=_CREATED_AT if completed else None,
+    )
+
+
+def _arm(
+    store: AppStore,
+    watcher_id: str,
+    *checks: WatcherCheckRecord,
     project_id: str = "project",
     origin: str = "origin",
-    armed_revision: int = 1,
-) -> GraphWatcherRecord:
-    return GraphWatcherRecord(
-        watcher_id=watcher_id,
-        project_id=project_id,
-        origin_operation_id=origin,
-        origin_task_kind="node_chat",
-        chat_id="chat",
-        node_id="exp/one",
-        machine_id=BACKEND_MACHINE_ID,
-        condition=condition,
-        armed_revision=armed_revision,
-        continuation=continuation or _continuation(),
-        status=status,
-        created_at=_CREATED_AT,
-        completed_at=_CREATED_AT if status == "completed" else None,
-    )
-
-
-def _external_record(
-    watcher_id: str,
-    *,
-    continuation: WatcherContinuation | None = None,
-    status: str = "active",
 ) -> WatcherRecord:
-    return WatcherRecord(
-        watcher_id=watcher_id,
-        project_id="project",
-        origin_operation_id="origin",
-        origin_task_kind="node_chat",
-        chat_id="chat",
-        node_id="exp/one",
-        machine_id=BACKEND_MACHINE_ID,
-        check_command="test -f /tmp/result.done",
-        log_path="/tmp/result.log",
-        cwd="/tmp",
-        continuation=continuation or _continuation(),
-        status=status,
-        created_at=_CREATED_AT,
-        completed_at=_CREATED_AT if status == "completed" else None,
+    return store.arm_watcher(
+        WatcherRecord(
+            watcher_id=watcher_id,
+            agent_id="chat",
+            project_id=project_id,
+            purpose="Wait for the result",
+            origin_turn_id=origin,
+            created_at=_CREATED_AT,
+            checks=list(checks) or [_graph_check(watcher_id)],
+        )
     )
 
 
-def _notification_task(
-    store: AppStore,
-    operation_id: str,
-    watcher_ids: list[str],
-) -> AgentTaskRecord:
+def _check(store: AppStore, watcher_id: str) -> WatcherCheckRecord:
+    watcher = store.watcher(watcher_id)
+    assert watcher is not None
+    return watcher.checks[0]
+
+
+def _chat_turn(store: AppStore, operation_id: str, *, project_id: str = "project"):
     now = store.now()
     return AgentTaskRecord(
         operation_id=operation_id,
-        project_id="project",
+        project_id=project_id,
         kind="node_chat",
         status="queued",
         request={
@@ -303,57 +274,26 @@ def _notification_task(
             "run_on": BACKEND_MACHINE_ID,
             "run_truth_scope": ["repo-a"],
             "mode": "work",
-            "trigger": "watcher",
+            "trigger": "human",
             "patch_kind": "work",
             "workflow_ids": [],
             "skill_ids": [],
             "invoked_workflow_ids": [],
             "invoked_skill_ids": [],
             "resolved_skill_packages": [],
-            "watcher_ids": watcher_ids,
+            "watcher_ids": [],
         },
         created_at=now,
         updated_at=now,
-        status_message="Queued graph-condition wake.",
+        status_message="Queued chat turn.",
+        authorized_by=_test_authorizer(store),
     )
 
 
-def _completed_origin(store, project_id, operation_id):
-    origin = _notification_task(store, operation_id, []).model_copy(
-        update={"project_id": project_id, "authorized_by": _test_authorizer(store)}
-    )
-    origin.request["trigger"] = "human"
-    store.create_agent_task(origin)
+def _completed_origin(store: AppStore, project_id: str, operation_id: str) -> AgentTaskRecord:
+    origin = store.create_agent_task(_chat_turn(store, operation_id, project_id=project_id))
     store.complete_agent_task(operation_id, applied_revision=None, result={})
     return origin
-
-
-def _completed_episode(store, operation_id, episode_id):
-    root = _experiment_task(
-        store, operation_id, episode_id=episode_id, invocation=1, ceiling=2, watcher_ids=[]
-    )
-    store.create_experiment_episode_with_invocation(root)
-    store.complete_agent_task(operation_id, applied_revision=None, result={})
-    return root
-
-
-def _bind_episode_session(store, root, session_id, stage_root):
-    store.commit_experiment_episode_turn(
-        episode_id=root.episode_id,
-        project_id=root.project_id,
-        control_node_id="exp/one",
-        provider="codex",
-        machine_id=BACKEND_MACHINE_ID,
-        native_session_id=session_id,
-        stage_machine_id=BACKEND_MACHINE_ID,
-        stage_root=stage_root,
-        chat_id="chat",
-        operation_id=root.operation_id,
-        invocation=1,
-        graph_result="no graph change",
-        watcher_ids=[],
-        context_baseline={},
-    )
 
 
 def _watcher_app(manifest, tmp_path):
@@ -363,414 +303,208 @@ def _watcher_app(manifest, tmp_path):
     return app, app.state.service, app.state.background_tasks.store, project_id
 
 
-def _watcher_ids(groups: list[list[StoredWatcherRecord]]) -> list[list[str]]:
-    return [[record.watcher_id for record in group] for group in groups]
+def _record_deliveries(monkeypatch, app) -> list[list[str]]:
+    """Record each delivery batch without waking anyone."""
 
-
-def test_watch_json_validation_is_all_or_none_across_external_and_graph(store) -> None:
-    spec = AgentWatchSpec(
-        purpose="job finishes", check_command="still-running", log_path="/tmp/run.log", cwd="/tmp"
+    delivered: list[list[str]] = []
+    monkeypatch.setattr(
+        app.state.services.watcher_delivery,
+        "deliver_ready",
+        lambda _agent_id, ready, **_kwargs: delivered.append([w.watcher_id for w in ready]),
     )
-    valid = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
-    invalid = NodeStatusGraphCondition(node_id="blk/foo", status_in=["completed"])
-    checked: list[str] = []
+    return delivered
 
-    def active_check(
-        candidate: WatchSpec,
-        _host: str,
-        _timeout: float,
-    ) -> WatcherCheckResult:
-        checked.append(candidate.check_command)
-        return WatcherCheckResult(state="active", checked_at=_CREATED_AT, exit_code=1)
+
+def _claiming_wakes(monkeypatch, store: AppStore) -> list[list[str]]:
+    """Replace the plain wake with a bare durable claim through its fence."""
+
+    claimed: list[list[str]] = []
+
+    def claim_wake(_tasks, agent_id, ready, _authorized_by, fence=None):
+        ids = [watcher.watcher_id for watcher in ready]
+
+        def claim() -> None:
+            with store.connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                assert store.claim_watcher_wake(connection, agent_id, ids, str(uuid.uuid4()))
+            claimed.append(ids)
+
+        if fence is None:
+            claim()
+        else:
+            fence(claim)
+
+    monkeypatch.setattr("rcp.api.app.start_plain_watcher_wake", claim_wake)
+    return claimed
+
+
+def _settle(app, project_id: str, operation_id: str, **execution) -> None:
+    callback = app.state.background_tasks.on_task_settled
+    assert callback is not None
+    callback(
+        project_id,
+        "node_chat",
+        RunRequest(chat_scope="node", chat_id="chat", node_id="exp/one", mode="work"),
+        AgentTaskExecution(
+            operation_id=operation_id,
+            store=app.state.background_tasks.store,
+            control=AgentProcessControl(),
+            **execution,
+        ),
+    )
+
+
+async def _done_wake(_project_id, _kind, _request, _execution):
+    yield f"data: {AgentEvent(event='answer', text='Observed.').model_dump_json()}\n\n"
+    yield f"data: {AgentEvent(event='done').model_dump_json()}\n\n"
+
+
+def _current() -> WatcherRetryGeneration:
+    return WatcherRetryGeneration(lambda: True, lambda callback: (callback(), True)[1])
+
+
+def _files(**conditions: NodeStatusGraphCondition | None) -> dict[str, str]:
+    return {
+        f"{name}.json": WatcherFile(
+            purpose="Wait for the result",
+            checks=[]
+            if condition
+            else [FileCheck.model_validate(_SPEC.model_dump(exclude={"purpose"}))],
+            graph=condition,
+        ).model_dump_json(exclude_none=True)
+        for name, condition in conditions.items()
+    }
+
+
+def test_watch_validation_is_all_or_none_across_external_and_graph(store) -> None:
+    _completed_origin(store, "project", "origin")
+    invalid = NodeStatusGraphCondition(node_id="blk/foo", status_in=["completed"])
 
     with pytest.raises(ValueError, match="invalid statuses"):
-        arm_watchers(
+        reconcile_watcher_files(
             store,
-            [spec],
             _binding(),
-            graph_conditions=[invalid],
+            {},
+            _files(a_graph=invalid, b_external=None),
             state=_state(),
-            check_runner=active_check,
+            check_runner=_active_check,
         )
-    assert checked == []
-    assert store.watchers("project") == []
+    assert store.project_watchers("project") == []
 
-    def failed_check(
-        _candidate: WatchSpec,
-        _host: str,
-        _timeout: float,
-    ) -> WatcherCheckResult:
+    def failed_check(_candidate: WatchSpec, _host: str, _timeout: float) -> WatcherCheckResult:
         return WatcherCheckResult(
-            state="error",
-            checked_at=_CREATED_AT,
-            exit_code=2,
-            error="scheduler unavailable",
+            state="error", checked_at=_CREATED_AT, exit_code=2, error="scheduler unavailable"
         )
 
+    files = _files(a_graph=_RESOLVED, b_external=None)
     with pytest.raises(WatcherInitialCheckError):
-        arm_watchers(
-            store,
-            [spec],
-            _binding(),
-            graph_conditions=[valid],
-            state=_state(),
-            check_runner=failed_check,
+        reconcile_watcher_files(
+            store, _binding(), {}, files, state=_state(), check_runner=failed_check
         )
-    assert store.watchers("project") == []
+    assert store.project_watchers("project") == []
 
-    armed = arm_watchers(
-        store,
-        [spec],
-        _binding(),
-        graph_conditions=[valid],
-        state=_state(),
-        check_runner=active_check,
+    armed = reconcile_watcher_files(
+        store, _binding(), {}, files, state=_state(revision=4), check_runner=_active_check
     )
-    assert {type(record) for record in armed} == {WatcherRecord, GraphWatcherRecord}
-    assert len(store.watchers("project")) == 2
-
-
-def test_a_later_turn_rearming_the_same_conditions_reuses_the_chats_active_watchers(
-    store,
-) -> None:
-    spec = AgentWatchSpec(
-        purpose="job finishes", check_command="still-running", log_path="/tmp/run.log", cwd="/tmp"
-    )
-    condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
-
-    def active_check(_candidate: WatchSpec, _host: str, _timeout: float) -> WatcherCheckResult:
-        return WatcherCheckResult(state="active", checked_at=_CREATED_AT, exit_code=1)
-
-    def arm(origin: str, chat_id: str = "chat", *, reuse_live: bool = True) -> list[str]:
-        binding = _binding().model_copy(update={"origin_operation_id": origin, "chat_id": chat_id})
-        armed = arm_watchers(
-            store,
-            [spec],
-            binding,
-            graph_conditions=[condition],
-            state=_state(),
-            watcher_ids=[f"{origin}-{chat_id}-0", f"{origin}-{chat_id}-1"],
-            reuse_live=reuse_live,
-            check_runner=active_check,
-        )
-        return [record.watcher_id for record in armed]
-
-    first = arm("turn-1")
-    assert arm("turn-2") == first
-    assert arm("turn-2") == first
-    assert len(store.watchers("project")) == 2
-
-    keyed = arm("command-1", reuse_live=False)
-    assert keyed == ["command-1-chat-0", "command-1-chat-1"]
-    store.stop_watchers("project", keyed)
-
-    other_chat = arm("turn-3", chat_id="other")
-    assert set(other_chat).isdisjoint(first)
-    assert len(store.watchers("project")) == 6
-
-    store.stop_watchers("project", first)
-    rearmed = arm("turn-4")
-    assert set(rearmed).isdisjoint(first)
-    assert len(store.watchers("project", chat_id="chat")) == 6
-
-
-def test_supplied_watcher_ids_follow_external_then_graph_order(store) -> None:
-    spec = AgentWatchSpec(
-        purpose="job finishes", check_command="still-running", log_path="/tmp/run.log", cwd="/tmp"
-    )
-    condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
-
-    def active_check(
-        _candidate: WatchSpec,
-        _host: str,
-        _timeout: float,
-    ) -> WatcherCheckResult:
-        return WatcherCheckResult(state="active", checked_at=_CREATED_AT, exit_code=1)
-
-    records = arm_watchers(
-        store,
-        [spec],
-        _binding(),
-        graph_conditions=[condition],
-        state=_state(),
-        watcher_ids=["external-id", "graph-id"],
-        check_runner=active_check,
-    )
-
-    assert [record.watcher_id for record in records] == ["external-id", "graph-id"]
-    assert isinstance(records[0], WatcherRecord)
-    assert isinstance(records[1], GraphWatcherRecord)
+    by_id = {watcher.watcher_id: watcher for watcher in armed}
+    assert {key: value.checks[0].definition for key, value in by_id.items()} == {
+        "a_graph": "graph",
+        "b_external": "external",
+    }
+    assert by_id["a_graph"].checks[0].armed_head == 4
 
     def unexpected_check(*_args):
         raise AssertionError("an already-persisted handoff must not run its check again")
 
-    replayed = arm_watchers(
-        store,
-        [spec],
-        _binding(),
-        graph_conditions=[condition],
-        state=_state(),
-        watcher_ids=["external-id", "graph-id"],
-        check_runner=unexpected_check,
+    replayed = reconcile_watcher_files(
+        store, _binding(), {}, files, state=_state(revision=4), check_runner=unexpected_check
     )
-
-    assert replayed == records
-    assert len(store.watchers("project")) == 2
-
-
-@pytest.mark.parametrize(
-    "watcher_ids",
-    [[], ["only-one"], ["same", "same"], ["external", "  "]],
-)
-def test_invalid_supplied_watcher_ids_fail_before_checks_or_insertion(
-    store,
-    watcher_ids: list[str],
-) -> None:
-    spec = AgentWatchSpec(
-        purpose="job finishes", check_command="still-running", log_path="/tmp/run.log", cwd="/tmp"
-    )
-    condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
-    checked: list[str] = []
-
-    def active_check(
-        candidate: WatchSpec,
-        _host: str,
-        _timeout: float,
-    ) -> WatcherCheckResult:
-        checked.append(candidate.check_command)
-        return WatcherCheckResult(state="active", checked_at=_CREATED_AT, exit_code=1)
-
-    with pytest.raises(ValueError, match="watcher_ids"):
-        arm_watchers(
-            store,
-            [spec],
-            _binding(),
-            graph_conditions=[condition],
-            state=_state(),
-            watcher_ids=watcher_ids,
-            check_runner=active_check,
-        )
-
-    assert checked == []
-    assert store.watchers("project") == []
+    assert sorted(replayed, key=lambda w: w.watcher_id) == sorted(armed, key=lambda w: w.watcher_id)
+    assert len(store.project_watchers("project")) == 2
 
 
 def test_initially_satisfied_graph_condition_is_immediately_ready(store) -> None:
-    condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
-
-    armed = arm_watchers(
-        store,
-        [],
-        _binding(),
-        graph_conditions=[condition],
-        state=_state(blocker_status="resolved"),
+    _completed_origin(store, "project", "origin")
+    (armed,) = reconcile_watcher_files(
+        store, _binding(), {}, _files(done=_RESOLVED), state=_state(blocker_status="resolved")
     )
 
-    assert len(armed) == 1
-    assert isinstance(armed[0], GraphWatcherRecord)
-    assert armed[0].status == "completed"
-    assert armed[0].last_evaluated_at is not None
-    assert _watcher_ids(ready_graph_watcher_groups(store, "project")) == [[armed[0].watcher_id]]
-
-
-def test_experiment_graph_handoff_persists_deterministically_and_idempotently(store) -> None:
-    episode_id = str(uuid.uuid4())
-    root = _completed_episode(store, "loop-root", episode_id)
-    continuation = _loop_continuation(episode_id)
-    binding = _binding(continuation=continuation).model_copy(
-        update={"origin_operation_id": root.operation_id}
-    )
-    execution = AgentTaskExecution(
-        operation_id=root.operation_id,
-        store=store,
-        control=AgentProcessControl(),
-    )
-    condition = ProposalResolvedGraphCondition(node_id="hyp/foo", proposal_resolved=True)
-
-    first = persist_experiment_watchers_idempotently(
-        execution,
-        [],
-        [],
-        binding,
-        graph_conditions=[condition],
-        graph_state=_state(),
-        armed_revision=1,
-    )
-    repeated = persist_experiment_watchers_idempotently(
-        execution,
-        [],
-        [],
-        binding,
-        graph_conditions=[condition],
-        graph_state=_state(),
-        armed_revision=1,
-    )
-
-    assert len(first) == 1
-    assert isinstance(first[0], GraphWatcherRecord)
-    assert first[0].watcher_id == repeated[0].watcher_id
-    assert first[0].condition == condition
-    assert first[0].episode_id == episode_id
-    assert len(store.watchers("project")) == 1
-
-
-def test_experiment_same_patch_resolution_uses_pre_patch_arming_baseline(tmp_path) -> None:
-    store = AppStore(tmp_path / "same-patch.sqlite3")
-    episode_id = str(uuid.uuid4())
-    root = _completed_episode(store, "same-patch-root", episode_id)
-    continuation = _loop_continuation(episode_id)
-    execution = AgentTaskExecution(
-        operation_id=root.operation_id,
-        store=store,
-        control=AgentProcessControl(),
-    )
-    condition = ProposalResolvedGraphCondition(node_id="hyp/foo", proposal_resolved=True)
-
-    armed = persist_experiment_watchers_idempotently(
-        execution,
-        [],
-        [],
-        _binding(continuation=continuation).model_copy(
-            update={"origin_operation_id": root.operation_id}
-        ),
-        graph_conditions=[condition],
-        graph_state=_state(proposal_status="approved", revision=2),
-        armed_revision=1,
-    )
-
-    assert len(armed) == 1
-    stored = armed[0]
-    assert isinstance(stored, GraphWatcherRecord)
-    assert stored.armed_revision == 1
-    assert stored.status == "completed"
+    assert armed.checks[0].completed_at is not None
+    assert [watcher.watcher_id for watcher in store.ready_watchers()] == [armed.watcher_id]
 
 
 def test_status_and_proposal_conditions_use_the_closed_vocabulary() -> None:
-    status = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
-    proposal = ProposalResolvedGraphCondition(node_id="hyp/foo", proposal_resolved=True)
+    assert graph_condition_result(_RESOLVED, _state(), armed_revision=1) == "active"
+    assert (
+        graph_condition_result(_RESOLVED, _state(blocker_status="resolved"), armed_revision=1)
+        == "completed"
+    )
+    assert graph_condition_result(_PROPOSAL, _state(), armed_revision=1) == "active"
+    assert (
+        graph_condition_result(
+            _PROPOSAL, _state(proposal_status="approved", revision=2), armed_revision=1
+        )
+        == "completed"
+    )
 
-    assert graph_condition_result(status, _state(), armed_revision=1) == "active"
-    assert (
-        graph_condition_result(
-            status,
-            _state(blocker_status="resolved"),
-            armed_revision=1,
-        )
-        == "completed"
+
+def test_degraded_replay_never_fires_or_removes_a_graph_check() -> None:
+    degraded = _state(
+        blocker_status="resolved", proposal_status="approved", replay_status="degraded"
     )
-    assert graph_condition_result(proposal, _state(), armed_revision=1) == "active"
-    assert (
-        graph_condition_result(
-            proposal,
-            _state(proposal_status="approved", revision=2),
-            armed_revision=1,
-        )
-        == "completed"
-    )
+    missing = NodeStatusGraphCondition(node_id="blk/missing", status_in=["resolved"])
+
+    for condition in (_RESOLVED, _PROPOSAL, missing):
+        check = _graph_check("check", condition, armed_head=0)
+        assert graph_check_boundary_result(check, degraded, ()) == "active"
 
 
 def test_proposal_resolution_must_happen_after_the_watcher_was_armed(store) -> None:
-    condition = ProposalResolvedGraphCondition(node_id="hyp/foo", proposal_resolved=True)
-    store.create_watchers([_graph_record("proposal-after-arm", condition, armed_revision=2)])
+    _arm(store, "proposal-after-arm", _graph_check("proposal-after-arm", _PROPOSAL, armed_head=2))
     old_resolved = _proposal("approved").model_copy(
         update={"id": "prop/old", "base_rev": 0, "resolved_rev": 1}
     )
     new_pending = _proposal().model_copy(update={"id": "prop/new", "base_rev": 2})
-    armed_state = _state(revision=3).model_copy(
+    unrelated = _state(revision=3).model_copy(
         update={"proposals": {old_resolved.id: old_resolved, new_pending.id: new_pending}}
     )
-
-    assert evaluate_graph_watchers(store, "project", armed_state) == []
-    active = store.watcher("proposal-after-arm")
-    assert isinstance(active, GraphWatcherRecord)
-    assert active.status == "active"
-
     newly_resolved = new_pending.model_copy(update={"status": "approved", "resolved_rev": 4})
-    resolved_state = armed_state.model_copy(
+    resolved = unrelated.model_copy(
         update={
             "revision": 4,
             "proposals": {old_resolved.id: old_resolved, newly_resolved.id: newly_resolved},
         }
     )
 
-    assert _watcher_ids(evaluate_graph_watchers(store, "project", resolved_state)) == [
-        ["proposal-after-arm"]
-    ]
-    completed = store.watcher("proposal-after-arm")
-    assert isinstance(completed, GraphWatcherRecord)
-    assert completed.status == "completed"
+    def consume(state: GraphState) -> None:
+        store.consume_graph_watcher_boundary(
+            "project",
+            GraphHeadRef(revision=state.revision),
+            evaluate=lambda check: graph_check_boundary_result(check, state, ()),
+        )
+
+    consume(unrelated)
+    check = _check(store, "proposal-after-arm")
+    assert check.completed_at is None and check.last_checked_at is not None
+    assert store.ready_watchers() == []
+
+    consume(resolved)
+    assert _check(store, "proposal-after-arm").completed_at is not None
+    assert [watcher.watcher_id for watcher in store.ready_watchers()] == ["proposal-after-arm"]
 
 
-def test_unrelated_canonical_movement_does_not_fire_a_condition(store) -> None:
-    condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
-    store.create_watchers([_graph_record("graph", condition)])
-
-    groups = evaluate_graph_watchers(store, "project", _state(revision=9))
-
-    assert groups == []
-    stored = store.watcher("graph")
-    assert isinstance(stored, GraphWatcherRecord)
-    assert stored.status == "active"
-    assert stored.notified is False
-    assert stored.last_evaluated_at is not None
-
-
-def test_human_sync_boundary_claims_a_graph_wake_and_spends_experiment_budget(
-    manifest,
-    tmp_path,
-) -> None:
-    """`status` reads "stopped" once the origin episode has an ending, and this wake spends the last
-    invocation, so the claimed notification id is the race-free proof.
-    """
+def test_human_sync_boundary_wakes_the_arming_agent(manifest, tmp_path) -> None:
     app, service, store, project_id = _watcher_app(manifest, tmp_path)
     append_fixture_patch(service, _canonical_fixture_patch(blocker_status="open"))
-    episode_id = str(uuid.uuid4())
-    root = _experiment_task(
+    origin = _completed_origin(store, project_id, "sync-origin")
+    _arm(
         store,
-        "sync-loop-root",
-        episode_id=episode_id,
-        invocation=1,
-        ceiling=2,
-        watcher_ids=[],
-    ).model_copy(
-        update={
-            "project_id": project_id,
-            "authorized_by": _test_authorizer(store),
-        }
-    )
-    root.request["control_revision"] = service.history.state().revision
-    store.create_experiment_episode_with_invocation(root)
-    store.complete_agent_task(root.operation_id, applied_revision=None, result={})
-    stage = tmp_path / "loop-stage"
-    stage.mkdir()
-    _bind_episode_session(store, root, "native-sync-loop", str(stage))
-    continuation = _continuation().model_copy(
-        update={
-            "patch_kind": "experiment_loop",
-            "control_node_id": "exp/one",
-            "control_revision": service.history.state().revision,
-            "control_episode_id": episode_id,
-            "control_invocation": 1,
-            "control_invocation_ceiling": 2,
-            "control_decision_bundle": [],
-            "control_completion_criteria": ["The blocker is resolved."],
-        }
-    )
-    condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
-    graph_record = _graph_record(
         "sync-graph",
-        condition,
-        continuation=continuation,
+        _graph_check("sync-graph", armed_head=service.history.state().revision),
         project_id=project_id,
-        origin=root.operation_id,
+        origin=origin.operation_id,
     )
-    store.create_watchers([graph_record])
-
-    async def settle_wake(_project_id, _kind, _request, _execution):
-        yield f"data: {AgentEvent(event='answer', text='Observed the Sync.').model_dump_json()}\n\n"
-        yield f"data: {AgentEvent(event='done').model_dump_json()}\n\n"
-
-    app.state.background_tasks.stream = settle_wake
+    app.state.background_tasks.stream = _done_wake
     blocker = service.history.state().nodes["blk/foo"]
     client = signed_in_client(app)
     try:
@@ -787,119 +521,47 @@ def test_human_sync_boundary_claims_a_graph_wake_and_spends_experiment_budget(
                 ],
             },
         )
-
         assert response.status_code == 200, response.text
-        stored = store.watcher("sync-graph")
-        assert isinstance(stored, GraphWatcherRecord)
-        assert stored.notified is True
-        assert stored.notification_operation_id is not None
-        wake = _wait_for_terminal_task(store, stored.notification_operation_id)
+        stored = wait_until(
+            lambda: (watcher := store.watcher("sync-graph")) and watcher.wake_turn_id and watcher,
+            detail="sync boundary did not claim a wake",
+        )
+        wake = _wait_for_terminal_task(store, stored.wake_turn_id)
         assert wake.status == "succeeded"
         assert wake.request["trigger"] == "watcher"
-        assert wake.request["control_invocation"] == 2
         assert wake.request["watcher_ids"] == ["sync-graph"]
-        runtime = store.experiment_loop_runtime(
-            project_id, "exp/one", graph_target=GraphTargetRef()
-        )
-        assert runtime.invocations_used == 2
-        assert runtime.invocation_ceiling - runtime.invocations_used == 0
     finally:
         client.close()
         app.state.background_tasks.shutdown()
 
 
 def test_agent_settlement_evaluates_the_exact_applied_revision_boundary(
-    manifest,
-    tmp_path,
-    monkeypatch,
+    manifest, tmp_path, monkeypatch
 ) -> None:
     app, service, store, project_id = _watcher_app(manifest, tmp_path)
     append_fixture_patch(service, _canonical_fixture_patch(blocker_status="open"))
     origin = _completed_origin(store, project_id, "agent-boundary-origin")
-    condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
-    store.create_watchers(
-        [
-            _graph_record(
-                "agent-boundary", condition, project_id=project_id, origin=origin.operation_id
-            )
-        ]
+    _arm(
+        store,
+        "agent-boundary",
+        _graph_check("agent-boundary", armed_head=service.history.state().revision),
+        project_id=project_id,
+        origin=origin.operation_id,
     )
-    applied, applied_result = append_fixture_patch(
-        service,
-        _blocker_status_patch("resolved"),
-    )
-    assert applied.revision is not None
+    applied, applied_result = append_fixture_patch(service, _blocker_status_patch("resolved"))
     append_fixture_patch(service, _blocker_status_patch("open"))
-    assert service.history.state().nodes["blk/foo"].status == "open"
-    deliveries: list[list[str]] = []
+    claimed = _claiming_wakes(monkeypatch, store)
 
-    def capture_delivery(
-        _tasks,
-        _project_id,
-        _kind,
-        _request,
-        watcher_ids,
-        **_kwargs,
-    ):
-        deliveries.append(watcher_ids)
-        return None
-
-    monkeypatch.setattr("rcp.api.app.start_watcher_notification", capture_delivery)
-    callback = app.state.background_tasks.on_task_settled
-    assert callback is not None
-    request = RunRequest(
-        chat_scope="node",
-        chat_id="chat",
-        node_id="exp/one",
-        message="Resolve the blocker.",
-        mode="work",
-    )
-    callback(
+    _settle(
+        app,
         project_id,
-        "node_chat",
-        request,
-        AgentTaskExecution(
-            operation_id=origin.operation_id,
-            store=store,
-            control=AgentProcessControl(),
-            applied_revision=applied.revision,
-            applied_graph_state=applied_result.state,
-        ),
+        origin.operation_id,
+        applied_revision=applied.revision,
+        applied_graph_state=applied_result.state,
     )
 
-    assert deliveries == [["agent-boundary"]]
-    stored = store.watcher("agent-boundary")
-    assert isinstance(stored, GraphWatcherRecord)
-    assert stored.status == "completed"
-    app.state.background_tasks.shutdown()
-
-
-def test_chat_wake_reads_browser_choice_at_delivery(manifest, tmp_path, monkeypatch) -> None:
-    app, _service, store, project_id = _watcher_app(manifest, tmp_path)
-    origin = _completed_origin(store, project_id, "browser-origin")
-    condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
-    store.create_watchers(
-        [
-            _graph_record(
-                "browser-wake",
-                condition,
-                continuation=_continuation().model_copy(update={"browser_requested": True}),
-                status="completed",
-                project_id=project_id,
-                origin=origin.operation_id,
-            )
-        ]
-    )
-    store.set_chat_browser_requested(project_id, "chat", browser_requested=False)
-    delivered: list[RunRequest] = []
-    monkeypatch.setattr(
-        "rcp.api.app.start_watcher_notification",
-        lambda _tasks, _project_id, _kind, request, *_args, **_kwargs: delivered.append(request),
-    )
-
-    app.state.services.watcher_delivery.deliver_watcher_group([store.watcher("browser-wake")])
-
-    assert [request.browser_requested for request in delivered] == [False]
+    assert claimed == [["agent-boundary"]]
+    assert _check(store, "agent-boundary").completed_at is not None
     app.state.background_tasks.shutdown()
 
 
@@ -912,205 +574,214 @@ def test_chat_wake_reads_browser_choice_at_delivery(manifest, tmp_path, monkeypa
     ids=["past-satisfaction", "before-target-creation"],
 )
 def test_historical_callback_cannot_change_a_newer_watcher(
-    manifest,
-    tmp_path,
-    monkeypatch,
-    historical,
-    armed,
+    manifest, tmp_path, monkeypatch, historical, armed
 ) -> None:
     app, service, store, project_id = _watcher_app(manifest, tmp_path)
-    store.create_watchers(
-        [
-            _graph_record(
-                "newer-watcher",
-                NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
-                project_id=project_id,
-                armed_revision=armed.revision,
-            )
-        ]
+    _arm(
+        store,
+        "newer-watcher",
+        _graph_check("newer-watcher", armed_head=armed.revision),
+        project_id=project_id,
     )
     monkeypatch.setattr(
         service.history,
         "accepted_boundary_states",
-        lambda: (
-            MaterializationResult(state=armed),
-            [historical, armed],
-        ),
+        lambda: (MaterializationResult(state=armed), [historical, armed]),
     )
-    monkeypatch.setattr(
-        "rcp.api.app.ready_graph_watcher_groups",
-        lambda *_args, **_kwargs: [],
-    )
-    callback = app.state.background_tasks.on_task_settled
-    assert callback is not None
 
-    callback(
+    _settle(
+        app,
         project_id,
-        "node_chat",
-        RunRequest(chat_scope="node", chat_id="chat", node_id="exp/one", mode="work"),
-        AgentTaskExecution(
-            operation_id="historical-callback",
-            store=store,
-            control=AgentProcessControl(),
-            applied_revision=historical.revision,
-            applied_graph_state=historical,
-        ),
+        "historical-callback",
+        applied_revision=historical.revision,
+        applied_graph_state=historical,
     )
 
     stored = store.watcher("newer-watcher")
-    assert isinstance(stored, GraphWatcherRecord)
-    assert stored.status == "active"
+    assert stored is not None and stored.open
+    assert stored.checks[0].completed_at is None
     app.state.background_tasks.shutdown()
 
 
 def test_no_patch_arming_settlement_catches_revision_between_validation_and_insert(
-    manifest,
-    tmp_path,
-    monkeypatch,
+    manifest, tmp_path, monkeypatch
 ) -> None:
-    """Validation saw R1, and R2 committed before the durable insert, so its boundary handling could
-    not see this row.
-    """
+    """Validation saw R1 and R2 committed before the durable insert."""
+
     app, service, store, project_id = _watcher_app(manifest, tmp_path)
     _initial, initial_result = append_fixture_patch(
-        service,
-        _canonical_fixture_patch(blocker_status="open"),
+        service, _canonical_fixture_patch(blocker_status="open")
     )
-
     append_fixture_patch(service, _blocker_status_patch("resolved"))
-    store.create_watchers(
-        [
-            _graph_record(
-                "insert-race",
-                NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
-                project_id=project_id,
-                armed_revision=initial_result.state.revision,
-            )
-        ]
+    _arm(
+        store,
+        "insert-race",
+        _graph_check("insert-race", armed_head=initial_result.state.revision),
+        project_id=project_id,
+    )
+    delivered = _record_deliveries(monkeypatch, app)
+
+    _settle(app, project_id, "arming-without-patch", armed_graph_watchers=True)
+
+    assert _check(store, "insert-race").completed_at is not None
+    assert delivered == [["insert-race"]]
+    app.state.background_tasks.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("boundaries", "completes"),
+    [
+        (
+            [
+                _state(blocker_status="resolved", revision=1),
+                _state(include_blocker=False, revision=2),
+            ],
+            True,
+        ),
+        (
+            [
+                _state(include_blocker=False, revision=1),
+                _state(blocker_status="resolved", revision=2),
+            ],
+            False,
+        ),
+    ],
+    ids=["target-then-removal", "removal-then-recreation"],
+)
+def test_reversed_task_settlement_uses_canonical_boundary_order(
+    manifest, tmp_path, monkeypatch, boundaries, completes
+) -> None:
+    """The later task settles first; reconciliation still visits R1 before R2."""
+
+    app, service, store, project_id = _watcher_app(manifest, tmp_path)
+    _arm(
+        store,
+        "canonical-order",
+        _graph_check("canonical-order", armed_head=0),
+        project_id=project_id,
     )
     monkeypatch.setattr(
-        "rcp.api.app.ready_graph_watcher_groups",
-        lambda *_args, **_kwargs: [],
+        service.history,
+        "accepted_boundary_states",
+        lambda: (MaterializationResult(state=boundaries[-1]), boundaries),
     )
-    callback = app.state.background_tasks.on_task_settled
-    assert callback is not None
+    _record_deliveries(monkeypatch, app)
 
-    callback(
+    _settle(
+        app,
         project_id,
-        "node_chat",
-        RunRequest(chat_scope="node", chat_id="chat", node_id="exp/one", mode="work"),
-        AgentTaskExecution(
-            operation_id="arming-without-patch",
-            store=store,
-            control=AgentProcessControl(),
-            armed_graph_watchers=True,
-        ),
+        "settled-r2-first",
+        applied_revision=2,
+        applied_graph_state=boundaries[-1],
     )
 
-    stored = store.watcher("insert-race")
-    assert isinstance(stored, GraphWatcherRecord)
-    assert stored.status == "completed"
+    stored = store.watcher("canonical-order")
+    assert stored is not None
+    assert (stored.checks[0].completed_at is not None) is completes
+    assert stored.cancelled_by == (None if completes else "rcp")
+    app.state.background_tasks.shutdown()
+
+
+def test_repeated_task_settlement_skips_transition_traces_before_durable_cursor(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app, service, store, project_id = _watcher_app(manifest, tmp_path)
+    _arm(
+        store, "durable-cursor", _graph_check("durable-cursor", armed_head=0), project_id=project_id
+    )
+    boundaries = [_state(revision=revision) for revision in (1, 2, 3)]
+    monkeypatch.setattr(
+        service.history,
+        "accepted_boundary_states",
+        lambda: (MaterializationResult(state=boundaries[-1]), boundaries),
+    )
+    traced_revisions: list[int] = []
+
+    def observe_trace(revision: int):
+        traced_revisions.append(revision)
+        return None
+
+    monkeypatch.setattr(service.history, "transition_trace_at_revision", observe_trace)
+
+    for _ in range(2):
+        _settle(
+            app,
+            project_id,
+            "durable-cursor-signal",
+            applied_revision=3,
+            applied_graph_state=boundaries[-1],
+        )
+
+    assert traced_revisions == [1, 2, 3, 3]
+    consumed = store.graph_watcher_reconciliation_head(project_id, GraphTargetRef())
+    assert consumed is not None and consumed.revision == 3
+    assert consumed.transition_id is None
+    app.state.background_tasks.shutdown()
+
+
+def test_ready_only_graph_project_skips_canonical_boundary_replay(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app, service, store, project_id = _watcher_app(manifest, tmp_path)
+    _arm(
+        store,
+        "ready-fast-path",
+        _graph_check("ready-fast-path", completed=True),
+        project_id=project_id,
+    )
+
+    def unexpected_replay():
+        raise AssertionError("ready-only delivery must not replay canonical history")
+
+    monkeypatch.setattr(service.history, "accepted_boundary_states", unexpected_replay)
+    delivered = _record_deliveries(monkeypatch, app)
+
+    _settle(app, project_id, "ready-fast-path", applied_revision=1)
+
+    assert delivered == [["ready-fast-path"]]
     app.state.background_tasks.shutdown()
 
 
 def test_degraded_final_replay_applies_no_satisfying_prefix_transition(
-    manifest,
-    tmp_path,
-    monkeypatch,
+    manifest, tmp_path, monkeypatch
 ) -> None:
-    """A degraded replay is fail-closed until a real boundary or startup trigger; the periodic
-    worker retries ready delivery only for this project.
-    """
     app, service, store, project_id = _watcher_app(manifest, tmp_path)
     satisfying_prefix = _state(blocker_status="resolved", revision=2)
-    degraded_head = _state(
-        blocker_status="resolved",
-        revision=3,
-        replay_status="degraded",
-    )
-    store.create_watchers(
-        [
-            _graph_record(
-                "degraded-prefix",
-                NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
-                project_id=project_id,
-            )
-        ]
-    )
-    replay_calls = 0
-    retry_passed = threading.Event()
-
-    def degraded_replay():
-        nonlocal replay_calls
-        replay_calls += 1
-        return (
-            MaterializationResult(state=degraded_head),
-            [satisfying_prefix],
-        )
-
-    def observe_ready_pass(candidate_store, candidate_project_id):
-        retry_passed.set()
-        return ready_graph_watcher_groups(candidate_store, candidate_project_id)
-
+    degraded_head = _state(blocker_status="resolved", revision=3, replay_status="degraded")
+    _arm(store, "degraded-prefix", project_id=project_id)
     monkeypatch.setattr(
         service.history,
         "accepted_boundary_states",
-        degraded_replay,
+        lambda: (MaterializationResult(state=degraded_head), [satisfying_prefix]),
     )
-    monkeypatch.setattr("rcp.api.app.ready_graph_watcher_groups", observe_ready_pass)
-    callback = app.state.background_tasks.on_task_settled
-    assert callback is not None
 
-    callback(
+    _settle(
+        app,
         project_id,
-        "node_chat",
-        RunRequest(chat_scope="node", chat_id="chat", node_id="exp/one", mode="work"),
-        AgentTaskExecution(
-            operation_id="degraded-r3",
-            store=store,
-            control=AgentProcessControl(),
-            applied_revision=degraded_head.revision,
-            applied_graph_state=degraded_head,
-        ),
+        "degraded-r3",
+        applied_revision=degraded_head.revision,
+        applied_graph_state=degraded_head,
     )
 
-    stored = store.watcher("degraded-prefix")
-    assert isinstance(stored, GraphWatcherRecord)
-    assert stored.status == "active"
-    assert stored.last_evaluated_at is None
-    assert replay_calls == 1
-
-    retry_passed.clear()
-    app.state.graph_watcher_retry_worker.start()
-    try:
-        app.state.graph_watcher_retry_worker.signal()
-        assert retry_passed.wait(1), "periodic graph retry pass did not run"
-        assert replay_calls == 1
-    finally:
-        app.state.graph_watcher_retry_worker.stop()
-        app.state.background_tasks.shutdown()
+    check = _check(store, "degraded-prefix")
+    assert check.completed_at is None and check.last_checked_at is None
+    assert store.graph_watcher_reconciliation_head(project_id, GraphTargetRef()) is None
+    app.state.background_tasks.shutdown()
 
 
 @pytest.mark.parametrize("refresh_failure", ["exception", "false-return"])
 def test_remote_refresh_failure_never_evaluates_the_stale_graph_mirror(
-    manifest,
-    tmp_path,
-    monkeypatch,
-    refresh_failure,
+    manifest, tmp_path, monkeypatch, refresh_failure
 ) -> None:
     app, service, store, project_id = _watcher_app(manifest, tmp_path)
     append_fixture_patch(service, _canonical_fixture_patch(blocker_status="open"))
     armed_revision = service.history.state().revision
     append_fixture_patch(service, _blocker_status_patch("resolved"))
-    store.create_watchers(
-        [
-            _graph_record(
-                "stale-remote",
-                NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
-                project_id=project_id,
-                armed_revision=armed_revision,
-            )
-        ]
+    _arm(
+        store,
+        "stale-remote",
+        _graph_check("stale-remote", armed_head=armed_revision),
+        project_id=project_id,
     )
 
     def unavailable() -> bool:
@@ -1119,69 +790,31 @@ def test_remote_refresh_failure_never_evaluates_the_stale_graph_mirror(
         return False
 
     monkeypatch.setattr(service.history.workspace, "refresh_if_stale", unavailable)
-    monkeypatch.setattr(
-        "rcp.api.app.ready_graph_watcher_groups",
-        lambda *_args, **_kwargs: [],
-    )
-    callback = app.state.background_tasks.on_task_settled
-    assert callback is not None
 
-    callback(
-        project_id,
-        "node_chat",
-        RunRequest(chat_scope="node", chat_id="chat", node_id="exp/one", mode="work"),
-        AgentTaskExecution(
-            operation_id="stale-remote-trigger",
-            store=store,
-            control=AgentProcessControl(),
-            applied_revision=service.history.state().revision,
-        ),
-    )
+    _settle(app, project_id, "stale-remote-trigger", applied_revision=armed_revision + 1)
 
-    stored = store.watcher("stale-remote")
-    assert isinstance(stored, GraphWatcherRecord)
-    assert stored.status == "active"
-    assert stored.last_evaluated_at is None
+    check = _check(store, "stale-remote")
+    assert check.completed_at is None and check.last_checked_at is None
     app.state.background_tasks.shutdown()
 
 
 @pytest.mark.parametrize("failure", ["degraded", "unavailable", "invalid"])
 def test_startup_reconciles_healthy_target_after_another_target_fails(
     manifest, tmp_path, monkeypatch, failure
-):
-    """Kept independent of Auto-research admission. A successful main-only callback must not erase
-    the branch retry.
-    """
+) -> None:
+    """A successful main-only callback must not erase the branch retry."""
+
     app, service, store, project_id = _watcher_app(manifest, tmp_path)
     delivery = app.state.services.watcher_delivery
     _, initial = append_fixture_patch(service, _canonical_fixture_patch(blocker_status="open"))
     append_fixture_patch(service, _blocker_status_patch("resolved"))
     branch = GraphTargetRef(kind="branch", branch_id="branch-owner")
-    origin = _notification_task(store, "branch-origin", []).model_copy(
-        update={"project_id": project_id}
-    )
-    store.create_agent_task(origin)
-    with store.connection() as connection:
-        connection.execute(
-            "UPDATE graph_runs SET graph_target_json = ? WHERE operation_id = ?",
-            (branch.model_dump_json(), origin.operation_id),
-        )
-    condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
-    for watcher_id, target, origin_id in (
-        ("a-branch", branch, origin.operation_id),
-        ("z-main", GraphTargetRef(), "origin"),
-    ):
-        store.create_watchers(
-            [
-                _graph_record(watcher_id, condition).model_copy(
-                    update={
-                        "project_id": project_id,
-                        "graph_target": target,
-                        "origin_operation_id": origin_id,
-                        "armed_revision": initial.state.revision,
-                    }
-                )
-            ]
+    for watcher_id, target in (("a-branch", branch), ("z-main", GraphTargetRef())):
+        _arm(
+            store,
+            watcher_id,
+            _graph_check(watcher_id, armed_head=initial.state.revision, graph_target=target),
+            project_id=project_id,
         )
     failed = True
 
@@ -1203,25 +836,22 @@ def test_startup_reconciles_healthy_target_after_another_target_fails(
         return SimpleNamespace(state=resolved), [resolved]
 
     branch_service = SimpleNamespace(
-        history=SimpleNamespace(accepted_boundary_states=branch_boundaries)
+        history=SimpleNamespace(
+            accepted_boundary_states=branch_boundaries,
+            transition_trace_at_revision=lambda _revision: None,
+        )
     )
     monkeypatch.setattr(
         delivery,
         "_graph_project_service",
         lambda _pid, target: branch_service if target == branch else service,
     )
-    delivered = []
-    monkeypatch.setattr(
-        delivery,
-        "deliver_watcher_group",
-        lambda group, **_kwargs: delivered.append([item.watcher_id for item in group]),
-    )
-    current = WatcherRetryGeneration(lambda: True, lambda callback: (callback(), True)[1])
+    delivered = _record_deliveries(monkeypatch, app)
     try:
         delivery.request_startup_sweep()
-        delivery.retry_graph_wakes_after_poll(current)
-        assert store.watcher("z-main").status == "completed"
-        assert store.watcher("a-branch").status == "active"
+        delivery.retry_graph_wakes_after_poll(_current())
+        assert _check(store, "z-main").completed_at is not None
+        assert _check(store, "a-branch").completed_at is None
         assert delivered == [["z-main"]]
         assert store.graph_watcher_reconciliation_head(project_id, branch) is None
         if failure == "unavailable":
@@ -1229,11 +859,8 @@ def test_startup_reconciles_healthy_target_after_another_target_fails(
                 project_id, None, graph_target=GraphTargetRef(), source="main callback"
             )
             failed = False
-            generation = WatcherRetryGeneration(
-                lambda: True, lambda callback: (callback(), True)[1]
-            )
-            delivery.retry_graph_wakes_after_poll(generation)
-            assert store.watcher("a-branch").status == "completed"
+            delivery.retry_graph_wakes_after_poll(_current())
+            assert _check(store, "a-branch").completed_at is not None
     finally:
         app.state.background_tasks.shutdown()
 
@@ -1246,27 +873,19 @@ def test_startup_reconciles_healthy_target_after_another_target_fails(
     ],
 )
 def test_transient_reconciliation_failure_retries_without_a_new_revision(
-    manifest,
-    tmp_path,
-    monkeypatch,
-    transient_failure,
+    manifest, tmp_path, monkeypatch, transient_failure
 ) -> None:
     app, service, store, project_id = _watcher_app(manifest, tmp_path)
     append_fixture_patch(service, _canonical_fixture_patch(blocker_status="open"))
     armed_revision = service.history.state().revision
     append_fixture_patch(service, _blocker_status_patch("resolved"))
-    authorizer = _test_authorizer(store)
     origin = _completed_origin(store, project_id, "retry-origin")
-    store.create_watchers(
-        [
-            _graph_record(
-                "reconcile-retry",
-                NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
-                project_id=project_id,
-                origin=origin.operation_id,
-                armed_revision=armed_revision,
-            )
-        ]
+    _arm(
+        store,
+        "reconcile-retry",
+        _graph_check("reconcile-retry", armed_head=armed_revision),
+        project_id=project_id,
+        origin=origin.operation_id,
     )
     original_replay = service.history.accepted_boundary_states
     replay_calls = 0
@@ -1278,47 +897,24 @@ def test_transient_reconciliation_failure_retries_without_a_new_revision(
             raise transient_failure
         return original_replay()
 
-    deliveries: list[list[str]] = []
-
-    def claim_delivery(_tasks, _project_id, _kind, _request, watcher_ids, **_kwargs):
-        deliveries.append(watcher_ids)
-        task = _notification_task(store, "reconciliation-retry-wake", watcher_ids).model_copy(
-            update={"project_id": project_id, "authorized_by": authorizer}
-        )
-        return store.create_watcher_notification_task(task, watcher_ids)
-
     monkeypatch.setattr(service.history, "accepted_boundary_states", unavailable_once)
-    monkeypatch.setattr("rcp.api.app.start_watcher_notification", claim_delivery)
-    callback = app.state.background_tasks.on_task_settled
-    assert callback is not None
+    claimed = _claiming_wakes(monkeypatch, store)
     revision = service.history.state().revision
 
-    callback(
-        project_id,
-        "node_chat",
-        RunRequest(chat_scope="node", chat_id="chat", node_id="exp/one", mode="work"),
-        AgentTaskExecution(
-            operation_id="failed-reconciliation",
-            store=store,
-            control=AgentProcessControl(),
-            applied_revision=revision,
-        ),
-    )
-    first = store.watcher("reconcile-retry")
-    assert isinstance(first, GraphWatcherRecord)
-    assert first.status == "active"
+    _settle(app, project_id, "failed-reconciliation", applied_revision=revision)
+    assert _check(store, "reconcile-retry").completed_at is None
 
     app.state.graph_watcher_retry_worker.start()
     try:
         app.state.graph_watcher_retry_worker.signal()
-        wait_until(lambda: bool(deliveries), detail="reconciliation retry did not wake")
+        wait_until(lambda: bool(claimed), detail="reconciliation retry did not wake")
         assert replay_calls == 2
-        assert deliveries == [["reconcile-retry"]]
+        assert claimed == [["reconcile-retry"]]
         assert service.history.state().revision == revision
 
         app.state.graph_watcher_retry_worker.signal()
         time.sleep(0.05)
-        assert deliveries == [["reconcile-retry"]]
+        assert claimed == [["reconcile-retry"]]
     finally:
         app.state.graph_watcher_retry_worker.stop()
         app.state.background_tasks.shutdown()
@@ -1330,22 +926,13 @@ def test_completed_reconciliation_cannot_clear_a_later_transient_failure(
     app, service, store, project_id = _watcher_app(manifest, tmp_path)
     _, initial = append_fixture_patch(service, _canonical_fixture_patch(blocker_status="open"))
     delivery = app.state.services.watcher_delivery
-    store.create_watchers(
-        [
-            _graph_record(
-                "overlapping-reconciliation",
-                NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
-                project_id=project_id,
-                armed_revision=initial.state.revision,
-            )
-        ]
+    _arm(
+        store,
+        "overlapping-reconciliation",
+        _graph_check("overlapping-reconciliation", armed_head=initial.state.revision),
+        project_id=project_id,
     )
-    delivered = []
-    monkeypatch.setattr(
-        delivery,
-        "deliver_watcher_group",
-        lambda group, **_kwargs: delivered.append([item.watcher_id for item in group]),
-    )
+    delivered = _record_deliveries(monkeypatch, app)
     project_lock = delivery._retry.lock_for(project_id)
     first_released_lock = threading.Event()
     release_first_pass = threading.Event()
@@ -1386,12 +973,11 @@ def test_completed_reconciliation_cannot_clear_a_later_transient_failure(
         release_first_pass.set()
         first_pass.join(timeout=5)
         assert not first_pass.is_alive()
-        assert store.watcher("overlapping-reconciliation").status == "active"
+        assert _check(store, "overlapping-reconciliation").completed_at is None
 
-        generation = WatcherRetryGeneration(lambda: True, lambda callback: (callback(), True)[1])
-        delivery.retry_graph_wakes_after_poll(generation)
+        delivery.retry_graph_wakes_after_poll(_current())
 
-        assert store.watcher("overlapping-reconciliation").status == "completed"
+        assert _check(store, "overlapping-reconciliation").completed_at is not None
         assert delivered == [["overlapping-reconciliation"]]
     finally:
         release_first_pass.set()
@@ -1400,29 +986,21 @@ def test_completed_reconciliation_cannot_clear_a_later_transient_failure(
 
 
 def test_due_reconciliation_survives_retry_worker_stop_then_start(
-    manifest,
-    tmp_path,
-    monkeypatch,
+    manifest, tmp_path, monkeypatch
 ) -> None:
-    """The stale generation selects the due project and observes its invalid lease; the replacement
-    must still process that work.
-    """
+    """The stale generation selects the due project; the replacement must still process it."""
+
     app, service, store, project_id = _watcher_app(manifest, tmp_path)
     append_fixture_patch(service, _canonical_fixture_patch(blocker_status="open"))
     armed_revision = service.history.state().revision
     append_fixture_patch(service, _blocker_status_patch("resolved"))
-    authorizer = _test_authorizer(store)
     origin = _completed_origin(store, project_id, "generation-retry-origin")
-    store.create_watchers(
-        [
-            _graph_record(
-                "generation-reconcile-retry",
-                NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
-                project_id=project_id,
-                origin=origin.operation_id,
-                armed_revision=armed_revision,
-            )
-        ]
+    _arm(
+        store,
+        "generation-reconcile-retry",
+        _graph_check("generation-reconcile-retry", armed_head=armed_revision),
+        project_id=project_id,
+        origin=origin.operation_id,
     )
     original_replay = service.history.accepted_boundary_states
     replay_calls = 0
@@ -1434,29 +1012,13 @@ def test_due_reconciliation_survives_retry_worker_stop_then_start(
             raise StateUnavailable("canonical remote is temporarily unavailable")
         return original_replay()
 
-    deliveries: list[list[str]] = []
-
-    def claim_delivery(_tasks, _project_id, _kind, _request, watcher_ids, **_kwargs):
-        deliveries.append(watcher_ids)
-        task = _notification_task(store, "generation-retry-wake", watcher_ids).model_copy(
-            update={"project_id": project_id, "authorized_by": authorizer}
-        )
-        return store.create_watcher_notification_task(task, watcher_ids)
-
     monkeypatch.setattr(service.history, "accepted_boundary_states", unavailable_once)
-    monkeypatch.setattr("rcp.api.app.start_watcher_notification", claim_delivery)
-    callback = app.state.background_tasks.on_task_settled
-    assert callback is not None
-    callback(
+    claimed = _claiming_wakes(monkeypatch, store)
+    _settle(
+        app,
         project_id,
-        "node_chat",
-        RunRequest(chat_scope="node", chat_id="chat", node_id="exp/one", mode="work"),
-        AgentTaskExecution(
-            operation_id="schedule-generation-retry",
-            store=store,
-            control=AgentProcessControl(),
-            applied_revision=service.history.state().revision,
-        ),
+        "schedule-generation-retry",
+        applied_revision=service.history.state().revision,
     )
     assert replay_calls == 1
 
@@ -1495,358 +1057,71 @@ def test_due_reconciliation_survives_retry_worker_stop_then_start(
         assert replacement_started.wait(1), "replacement retry generation did not start"
 
         release_first.set()
-        wait_until(lambda: bool(deliveries), detail="replacement generation lost due retry")
+        wait_until(lambda: bool(claimed), detail="replacement generation lost due retry")
         assert replay_calls == 2
-        assert deliveries == [["generation-reconcile-retry"]]
+        assert claimed == [["generation-reconcile-retry"]]
     finally:
         release_first.set()
         worker.stop()
         app.state.background_tasks.shutdown()
 
 
-def test_ready_only_graph_project_skips_canonical_boundary_replay(
-    manifest,
-    tmp_path,
-    monkeypatch,
-) -> None:
-    app, service, store, project_id = _watcher_app(manifest, tmp_path)
-    store.create_watchers(
-        [
-            _graph_record(
-                "ready-fast-path",
-                NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
-                status="completed",
-                project_id=project_id,
-            )
-        ]
+def _restarted_app_with_condition_met_while_down(manifest, tmp_path, monkeypatch):
+    data_dir = tmp_path / "startup-data"
+    first = create_app(str(manifest.path), data_dir=data_dir)
+    service = first.state.service
+    append_fixture_patch(service, _canonical_fixture_patch(blocker_status="open"))
+    project_id = first.state.default_project_id
+    assert project_id is not None
+    first_store = first.state.background_tasks.store
+    origin = _completed_origin(first_store, project_id, "startup-origin")
+    _arm(
+        first_store,
+        "startup-hook",
+        _graph_check("startup-hook", armed_head=service.history.state().revision),
+        project_id=project_id,
+        origin=origin.operation_id,
     )
-    replay_calls = 0
-    ready_calls = 0
+    first.state.background_tasks.shutdown()
+    append_fixture_patch(service, _blocker_status_patch("resolved"))
 
-    def unexpected_replay():
-        nonlocal replay_calls
-        replay_calls += 1
-        raise AssertionError("ready-only retry must not replay canonical history")
-
-    def observe_ready(_store, candidate_project_id):
-        nonlocal ready_calls
-        assert candidate_project_id == project_id
-        ready_calls += 1
-        return []
-
-    monkeypatch.setattr(service.history, "accepted_boundary_states", unexpected_replay)
-    monkeypatch.setattr("rcp.api.app.ready_graph_watcher_groups", observe_ready)
-    callback = app.state.background_tasks.on_task_settled
-    assert callback is not None
-
-    callback(
-        project_id,
-        "node_chat",
-        RunRequest(chat_scope="node", chat_id="chat", node_id="exp/one", mode="work"),
-        AgentTaskExecution(
-            operation_id="ready-fast-path",
-            store=store,
-            control=AgentProcessControl(),
-            applied_revision=1,
-        ),
-    )
-
-    assert replay_calls == 0
-    assert ready_calls == 1
-    app.state.background_tasks.shutdown()
-
-
-@pytest.mark.parametrize(
-    ("boundaries", "expected_status"),
-    [
-        (
-            [
-                _state(blocker_status="resolved", revision=1),
-                _state(include_blocker=False, revision=2),
-            ],
-            "completed",
-        ),
-        (
-            [
-                _state(include_blocker=False, revision=1),
-                _state(blocker_status="resolved", revision=2),
-            ],
-            "stopped",
-        ),
-    ],
-    ids=["target-then-removal", "removal-then-recreation"],
-)
-def test_reversed_task_settlement_uses_canonical_boundary_order(
-    manifest,
-    tmp_path,
-    monkeypatch,
-    boundaries,
-    expected_status,
-) -> None:
-    """The later task settles first, but its captured state is only an arrival signal;
-    reconciliation still visits R1 before R2.
-    """
-    app, service, store, project_id = _watcher_app(manifest, tmp_path)
-    store.create_watchers(
-        [
-            _graph_record(
-                "canonical-order",
-                NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
-                project_id=project_id,
-                armed_revision=0,
-            )
-        ]
-    )
-    monkeypatch.setattr(
-        service.history,
-        "accepted_boundary_states",
-        lambda: (MaterializationResult(state=boundaries[-1]), boundaries),
-    )
-    monkeypatch.setattr(
-        "rcp.api.app.ready_graph_watcher_groups",
-        lambda *_args, **_kwargs: [],
-    )
-    callback = app.state.background_tasks.on_task_settled
-    assert callback is not None
-
-    callback(
-        project_id,
-        "node_chat",
-        RunRequest(chat_scope="node", chat_id="chat", node_id="exp/one", mode="work"),
-        AgentTaskExecution(
-            operation_id="settled-r2-first",
-            store=store,
-            control=AgentProcessControl(),
-            applied_revision=2,
-            applied_graph_state=boundaries[-1],
-        ),
-    )
-
-    stored = store.watcher("canonical-order")
-    assert isinstance(stored, GraphWatcherRecord)
-    assert stored.status == expected_status
-    app.state.background_tasks.shutdown()
-
-
-def test_repeated_task_settlement_skips_transition_traces_before_durable_cursor(
-    manifest,
-    tmp_path,
-    monkeypatch,
-) -> None:
-    app, service, store, project_id = _watcher_app(manifest, tmp_path)
-    store.create_watchers(
-        [
-            _graph_record(
-                "durable-cursor",
-                NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
-                project_id=project_id,
-                armed_revision=0,
-            )
-        ]
-    )
-    boundaries = [_state(revision=revision) for revision in (1, 2, 3)]
-    monkeypatch.setattr(
-        service.history,
-        "accepted_boundary_states",
-        lambda: (MaterializationResult(state=boundaries[-1]), boundaries),
-    )
-    traced_revisions: list[int] = []
-
-    def observe_trace(revision: int):
-        traced_revisions.append(revision)
-        return None
-
-    monkeypatch.setattr(
-        service.history,
-        "transition_trace_at_revision",
-        observe_trace,
-    )
-    callback = app.state.background_tasks.on_task_settled
-    assert callback is not None
-    execution = AgentTaskExecution(
-        operation_id="durable-cursor-signal",
-        store=store,
-        control=AgentProcessControl(),
-        applied_revision=3,
-        applied_graph_state=boundaries[-1],
-    )
-    request = RunRequest(
-        chat_scope="node",
-        chat_id="chat",
-        node_id="exp/one",
-        mode="work",
-    )
-
-    callback(project_id, "node_chat", request, execution)
-    callback(project_id, "node_chat", request, execution)
-
-    assert traced_revisions == [1, 2, 3, 3]
-    consumed = store.graph_watcher_reconciliation_head(project_id, GraphTargetRef())
-    assert consumed is not None and consumed.revision == 3
-    assert consumed.transition_id is None
-    app.state.background_tasks.shutdown()
-
-
-def test_task_settlement_retries_durable_ready_deliveries_without_active_conditions(
-    manifest,
-    tmp_path,
-    monkeypatch,
-) -> None:
-    app, _service, store, project_id = _watcher_app(manifest, tmp_path)
-    retries: list[str] = []
-
-    def capture_ready_retry(_store, candidate_project_id):
-        retries.append(candidate_project_id)
-        return []
-
-    monkeypatch.setattr("rcp.api.app.ready_graph_watcher_groups", capture_ready_retry)
-    callback = app.state.background_tasks.on_task_settled
-    assert callback is not None
-
-    callback(
-        project_id,
-        "node_chat",
-        RunRequest(chat_scope="node", chat_id="chat", node_id="exp/one", mode="work"),
-        AgentTaskExecution(
-            operation_id="evaluation-failure",
-            store=app.state.background_tasks.store,
-            control=AgentProcessControl(),
-            applied_revision=2,
-            applied_graph_state=_state(revision=2),
-        ),
-    )
-
-    assert retries == [project_id]
-    app.state.background_tasks.shutdown()
-
-
-def test_condition_satisfied_while_rcp_was_down_fires_at_startup(tmp_path) -> None:
-    path = tmp_path / "rcp.sqlite3"
-    store = AppStore(path)
-    condition = ProposalResolvedGraphCondition(node_id="hyp/foo", proposal_resolved=True)
-    store.create_watchers([_graph_record("startup-graph", condition)])
-
-    reopened = AppStore(path)
-    startup_groups = [
-        group
-        for project_id in reopened.graph_watcher_project_ids()
-        for group in evaluate_graph_watchers(
-            reopened,
-            project_id,
-            _state(proposal_status="approved", revision=2),
-        )
-    ]
-
-    assert _watcher_ids(startup_groups) == [["startup-graph"]]
-    stored = reopened.watcher("startup-graph")
-    assert isinstance(stored, GraphWatcherRecord)
-    assert stored.status == "completed"
+    reopened = create_app(str(manifest.path), data_dir=data_dir)
+    claimed = _claiming_wakes(monkeypatch, reopened.state.background_tasks.store)
+    return reopened, project_id, origin, claimed
 
 
 def test_app_lifespan_evaluates_conditions_satisfied_before_restart(
-    manifest,
-    tmp_path,
-    monkeypatch,
+    manifest, tmp_path, monkeypatch
 ) -> None:
-    data_dir = tmp_path / "startup-data"
-    first = create_app(str(manifest.path), data_dir=data_dir)
-    append_fixture_patch(
-        first.state.service,
-        _canonical_fixture_patch(blocker_status="resolved"),
+    reopened, project_id, origin, claimed = _restarted_app_with_condition_met_while_down(
+        manifest, tmp_path, monkeypatch
     )
-    project_id = first.state.default_project_id
-    assert project_id is not None
-    first_store = first.state.background_tasks.store
-    origin = _completed_origin(first_store, project_id, "startup-origin")
-    condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
-    first_store.create_watchers(
-        [
-            _graph_record(
-                "startup-hook", condition, project_id=project_id, origin=origin.operation_id
-            ),
-            _graph_record(
-                "startup-retry",
-                condition,
-                status="completed",
-                project_id=project_id,
-                origin=origin.operation_id,
-            ),
-        ]
+    store = reopened.state.background_tasks.store
+    _arm(
+        store,
+        "startup-retry",
+        _graph_check("startup-retry", completed=True),
+        project_id=project_id,
+        origin=origin.operation_id,
     )
-    first.state.background_tasks.shutdown()
 
-    reopened = create_app(str(manifest.path), data_dir=data_dir)
-    deliveries: list[list[str]] = []
-
-    def capture_delivery(
-        _tasks,
-        _project_id,
-        _kind,
-        _request,
-        watcher_ids,
-        **_kwargs,
-    ):
-        deliveries.append(watcher_ids)
-        task = _notification_task(
-            reopened.state.background_tasks.store,
-            "startup-graph-wake",
-            watcher_ids,
-        ).model_copy(
-            update={
-                "project_id": project_id,
-                "authorized_by": _test_authorizer(reopened.state.background_tasks.store),
-            }
-        )
-        return reopened.state.background_tasks.store.create_watcher_notification_task(
-            task,
-            watcher_ids,
-        )
-
-    monkeypatch.setattr("rcp.api.app.start_watcher_notification", capture_delivery)
     with signed_in_client(reopened) as client:
         assert client.get("/api/health").status_code == 200
         wait_until(
-            lambda: deliveries if deliveries else None,
+            lambda: len({item for batch in claimed for item in batch}) == 2 or None,
             detail="startup graph watcher delivery did not run",
         )
 
-    assert len(deliveries) == 1
-    assert set(deliveries[0]) == {"startup-hook", "startup-retry"}
-    for watcher_id in deliveries[0]:
-        stored = reopened.state.background_tasks.store.watcher(watcher_id)
-        assert isinstance(stored, GraphWatcherRecord)
-        assert stored.status == "completed"
+    assert sorted(item for batch in claimed for item in batch) == ["startup-hook", "startup-retry"]
+    assert _check(store, "startup-hook").completed_at is not None
 
 
 def test_app_startup_serves_while_the_graph_sweep_read_is_blocked(
-    manifest,
-    tmp_path,
-    monkeypatch,
+    manifest, tmp_path, monkeypatch
 ) -> None:
-    """The condition was satisfied while RCP was down and its canonical read is slow, so the API
-    must serve before the read completes.
-    """
-    data_dir = tmp_path / "startup-data"
-    first = create_app(str(manifest.path), data_dir=data_dir)
-    append_fixture_patch(
-        first.state.service,
-        _canonical_fixture_patch(blocker_status="resolved"),
+    reopened, _project_id, _origin, claimed = _restarted_app_with_condition_met_while_down(
+        manifest, tmp_path, monkeypatch
     )
-    project_id = first.state.default_project_id
-    assert project_id is not None
-    first_store = first.state.background_tasks.store
-    origin = _completed_origin(first_store, project_id, "startup-origin")
-    condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
-    first_store.create_watchers(
-        [
-            _graph_record(
-                "startup-hook", condition, project_id=project_id, origin=origin.operation_id
-            )
-        ]
-    )
-    first.state.background_tasks.shutdown()
-
-    reopened = create_app(str(manifest.path), data_dir=data_dir)
     delivery = reopened.state.services.watcher_delivery
     open_service = delivery._graph_project_service
     entered = threading.Event()
@@ -1859,33 +1134,13 @@ def test_app_startup_serves_while_the_graph_sweep_read_is_blocked(
         return open_service(identifier, target)
 
     monkeypatch.setattr(delivery, "_graph_project_service", slow_service)
-    deliveries: list[list[str]] = []
-
-    def capture_delivery(_tasks, _project_id, _kind, _request, watcher_ids, **_kwargs):
-        deliveries.append(watcher_ids)
-        task = _notification_task(
-            reopened.state.background_tasks.store, "startup-graph-wake", watcher_ids
-        ).model_copy(
-            update={
-                "project_id": project_id,
-                "authorized_by": _test_authorizer(reopened.state.background_tasks.store),
-            }
-        )
-        return reopened.state.background_tasks.store.create_watcher_notification_task(
-            task, watcher_ids
-        )
-
-    monkeypatch.setattr("rcp.api.app.start_watcher_notification", capture_delivery)
 
     def serve():
         with signed_in_client(reopened) as client:
             health = client.get("/api/health")
             serving.set()
             assert release.wait(10), "test did not finish checking startup"
-            wait_until(
-                lambda: deliveries if deliveries else None,
-                detail="startup graph watcher delivery did not run",
-            )
+            wait_until(lambda: claimed or None, detail="startup graph watcher delivery did not run")
             return health
 
     with ThreadPoolExecutor(max_workers=1) as executor:
@@ -1898,67 +1153,40 @@ def test_app_startup_serves_while_the_graph_sweep_read_is_blocked(
         health = request.result(timeout=15)
 
     assert health.status_code == 200
-    assert deliveries == [["startup-hook"]]
-    stored = reopened.state.background_tasks.store.watcher("startup-hook")
-    assert isinstance(stored, GraphWatcherRecord)
-    assert stored.status == "completed"
+    assert claimed == [["startup-hook"]]
 
 
-def test_discuss_settlement_retries_graph_wake_blocked_by_same_chat_overlap(
-    manifest,
-    tmp_path,
-) -> None:
+def test_discuss_settlement_retries_a_wake_blocked_by_same_chat_overlap(manifest, tmp_path) -> None:
     app, _service, store, project_id = _watcher_app(manifest, tmp_path)
-    authorizer = _test_authorizer(store)
-    origin = _completed_origin(store, project_id, "overlap-origin")
-    condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
-    store.create_watchers(
-        [
-            _graph_record(
-                "overlap-graph",
-                condition,
-                status="completed",
-                project_id=project_id,
-                origin=origin.operation_id,
-            )
-        ]
+    origin = _chat_turn(store, "overlap-origin", project_id=project_id)
+    origin.request["browser_requested"] = True
+    store.create_agent_task(origin)
+    store.complete_agent_task(origin.operation_id, applied_revision=None, result={})
+    store.set_chat_browser_requested(project_id, "chat", browser_requested=False)
+    _arm(
+        store,
+        "overlap-graph",
+        _graph_check("overlap-graph", completed=True),
+        project_id=project_id,
+        origin=origin.operation_id,
     )
-    overlap = _notification_task(store, "active-discuss", []).model_copy(
-        update={
-            "project_id": project_id,
-            "authorized_by": authorizer,
-            "request": {
-                **_notification_task(store, "unused", []).request,
-                "mode": "discuss",
-                "trigger": "human",
-                "watcher_ids": [],
-            },
-        }
-    )
+    overlap = _chat_turn(store, "active-discuss", project_id=project_id)
+    overlap.request["mode"] = "discuss"
     store.create_agent_task(overlap)
     store.mark_agent_task_running(overlap.operation_id)
     callback = app.state.background_tasks.on_task_settled
     assert callback is not None
-
-    async def settle_wake(_project_id, _kind, _request, _execution):
-        yield f"data: {AgentEvent(event='answer', text='Retried after Discuss.').model_dump_json()}\n\n"
-        yield f"data: {AgentEvent(event='done').model_dump_json()}\n\n"
-
-    app.state.background_tasks.stream = settle_wake
+    app.state.background_tasks.stream = _done_wake
     try:
         callback(
             project_id,
             "project_chat",
             RunRequest(chat_scope="project", chat_id="other-chat", mode="discuss"),
             AgentTaskExecution(
-                operation_id="other-discuss",
-                store=store,
-                control=AgentProcessControl(),
+                operation_id="other-discuss", store=store, control=AgentProcessControl()
             ),
         )
-        blocked = store.watcher("overlap-graph")
-        assert isinstance(blocked, GraphWatcherRecord)
-        assert blocked.notified is False
+        assert store.watcher("overlap-graph").wake_turn_id is None
 
         store.complete_agent_task(overlap.operation_id, applied_revision=None, result={})
         callback(
@@ -1966,126 +1194,114 @@ def test_discuss_settlement_retries_graph_wake_blocked_by_same_chat_overlap(
             "node_chat",
             RunRequest.model_validate(overlap.request),
             AgentTaskExecution(
-                operation_id=overlap.operation_id,
-                store=store,
-                control=AgentProcessControl(),
+                operation_id=overlap.operation_id, store=store, control=AgentProcessControl()
             ),
         )
 
         delivered = store.watcher("overlap-graph")
-        assert isinstance(delivered, GraphWatcherRecord)
-        assert delivered.notified is True
-        assert delivered.notification_operation_id is not None
-        wake = _wait_for_terminal_task(store, delivered.notification_operation_id)
+        assert delivered is not None and delivered.wake_turn_id is not None
+        wake = _wait_for_terminal_task(store, delivered.wake_turn_id)
         assert wake.status == "succeeded"
         assert wake.request["mode"] == "work"
         assert wake.request["trigger"] == "watcher"
         assert wake.request["watcher_ids"] == ["overlap-graph"]
+        assert wake.request["browser_requested"] is False
     finally:
         app.state.background_tasks.shutdown()
 
 
-def test_degraded_or_halted_replay_never_fires_a_graph_condition(store) -> None:
-    store.create_watchers(
-        [
-            _graph_record(
-                "resolved-status",
-                NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
-            ),
-            _graph_record(
-                "resolved-proposal",
-                ProposalResolvedGraphCondition(node_id="hyp/foo", proposal_resolved=True),
-            ),
-            _graph_record(
-                "apparently-removed",
-                NodeStatusGraphCondition(node_id="blk/missing", status_in=["resolved"]),
-            ),
-        ]
-    )
-
-    groups = evaluate_graph_watchers(
+def test_graph_checks_never_enter_the_watcher_poller(store) -> None:
+    _arm(store, "external-solo", _external_check("external-solo"))
+    _arm(
         store,
-        "project",
-        _state(
-            blocker_status="resolved",
-            proposal_status="approved",
-            replay_status="degraded",
-        ),
-    )
-
-    assert groups == []
-    stored = store.watchers("project")
-    assert {record.status for record in stored} == {"active"}
-    assert all(not record.notified for record in stored)
-
-
-def test_condition_on_a_removed_node_is_terminally_retired(store) -> None:
-    condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
-    store.create_watchers([_graph_record("removed-target", condition)])
-
-    assert (
-        evaluate_graph_watchers(
-            store,
-            "project",
-            _state(include_blocker=False, revision=2),
-        )
-        == []
-    )
-    stored = store.watcher("removed-target")
-    assert isinstance(stored, GraphWatcherRecord)
-    assert stored.status == "stopped"
-    assert stored.notified is True
-    assert "target was removed" in stored.stop_reason
-    assert store.graph_watcher_project_ids() == []
-
-
-def test_graph_rows_never_enter_watcher_poller(store) -> None:
-    solo = _external_record("external-solo").model_copy(
-        update={
-            "chat_id": "other-chat",
-            "log_path": "/tmp/solo.log",
-            "check_command": "test -f /tmp/solo.done",
-        }
-    )
-    store.create_watchers([solo])
-    store.create_watchers(
-        [
-            _external_record("mixed-external"),
-            _graph_record(
-                "active-graph",
-                NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
-            ),
-            _graph_record(
-                "completed-graph",
-                ProposalResolvedGraphCondition(node_id="hyp/foo", proposal_resolved=True),
-                status="completed",
-            ),
-        ]
+        "mixed",
+        _external_check("mixed-external"),
+        _graph_check("mixed-graph"),
     )
     checked: list[str] = []
 
-    def complete_external(
-        spec: WatchSpec,
-        _host: str,
-        _timeout: float,
-    ) -> WatcherCheckResult:
+    def complete_external(spec: WatchSpec, _host: str, _timeout: float) -> WatcherCheckResult:
         checked.append(spec.log_path)
         return WatcherCheckResult(state="complete", checked_at=_CREATED_AT, exit_code=0)
 
-    groups = WatcherPoller(
-        store,
-        check_runner=complete_external,
-        clock=lambda: "2100-01-01T00:00:00+00:00",
+    WatcherPoller(
+        store, check_runner=complete_external, clock=lambda: "2100-01-01T00:00:00+00:00"
     ).poll_once()
 
-    assert sorted(checked) == ["/tmp/result.log", "/tmp/solo.log"]
-    assert _watcher_ids(groups) == [["external-solo"]]
-    graph = store.watcher("active-graph")
-    assert isinstance(graph, GraphWatcherRecord)
-    assert graph.status == "active"
-    assert graph.last_evaluated_at is None
-    assert store.watcher("mixed-external").notified is False
-    assert store.watcher("completed-graph").notified is False
+    assert sorted(checked) == ["/tmp/external-solo.log", "/tmp/mixed-external.log"]
+    mixed = store.watcher("mixed")
+    assert mixed is not None
+    assert [check.completed_at is not None for check in mixed.checks] == [True, False]
+    assert mixed.checks[1].last_checked_at is None
+    assert [watcher.watcher_id for watcher in store.ready_watchers()] == ["external-solo"]
+
+
+def test_periodic_poll_delivers_a_mixed_watcher_after_its_external_check_completes(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app, _service, store, project_id = _watcher_app(manifest, tmp_path)
+    origin = _completed_origin(store, project_id, "periodic-mixed-origin")
+    _arm(
+        store,
+        "periodic-mixed",
+        _external_check("periodic-external"),
+        _graph_check("periodic-graph", completed=True),
+        project_id=project_id,
+        origin=origin.operation_id,
+    )
+    claimed = _claiming_wakes(monkeypatch, store)
+
+    def complete_external(_spec, _host, _timeout):
+        return WatcherCheckResult(state="complete", checked_at=_CREATED_AT, exit_code=0)
+
+    app.state.watcher_poller.check_runner = complete_external
+    app.state.watcher_poller.clock = lambda: "2100-01-01T00:00:00+00:00"
+    try:
+        app.state.watcher_poller.poll_once()
+        assert claimed == [["periodic-mixed"]]
+        app.state.watcher_poller.poll_once()
+        assert claimed == [["periodic-mixed"]]
+    finally:
+        app.state.background_tasks.shutdown()
+
+
+def test_periodic_poll_retries_a_graph_delivery_after_transient_failure(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    app, _service, store, project_id = _watcher_app(manifest, tmp_path)
+    origin = _completed_origin(store, project_id, "periodic-retry-origin")
+    _arm(
+        store,
+        "periodic-retry-graph",
+        _graph_check("periodic-retry-graph", completed=True),
+        project_id=project_id,
+        origin=origin.operation_id,
+    )
+    claimed = _claiming_wakes(monkeypatch, store)
+    from rcp.api import app as app_module
+
+    claiming = app_module.start_plain_watcher_wake
+    attempts = 0
+
+    def transient_then_claim(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("transient delivery failure")
+        return claiming(*args, **kwargs)
+
+    monkeypatch.setattr(app_module, "start_plain_watcher_wake", transient_then_claim)
+    try:
+        app.state.watcher_poller.poll_once()
+        assert attempts == 1 and claimed == []
+        assert store.watcher("periodic-retry-graph").open
+
+        app.state.watcher_poller.poll_once()
+        app.state.watcher_poller.poll_once()
+        assert attempts == 2
+        assert claimed == [["periodic-retry-graph"]]
+    finally:
+        app.state.background_tasks.shutdown()
 
 
 def test_retry_worker_keeps_the_watcher_poller_nonblocking(store) -> None:
@@ -2105,7 +1321,7 @@ def test_retry_worker_keeps_the_watcher_poller_nonblocking(store) -> None:
         name="second-watcher-poll",
     )
     try:
-        assert poller.poll_once() == []
+        poller.poll_once()
         assert retry_started.wait(1), "retry worker did not start"
         second_poll.start()
         assert second_poll_finished.wait(1), "retry callback blocked the poller thread"
@@ -2116,21 +1332,15 @@ def test_retry_worker_keeps_the_watcher_poller_nonblocking(store) -> None:
 
 
 def test_retry_worker_lifecycle_stays_bounded_during_reconciliation(
-    manifest,
-    tmp_path,
-    monkeypatch,
+    manifest, tmp_path, monkeypatch
 ) -> None:
     app, _service, store, project_id = _watcher_app(manifest, tmp_path)
     delivery = app.state.services.watcher_delivery
-    store.create_watchers(
-        [
-            _graph_record(
-                "slow-reconciliation",
-                NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
-                project_id=project_id,
-                armed_revision=0,
-            )
-        ]
+    _arm(
+        store,
+        "slow-reconciliation",
+        _graph_check("slow-reconciliation", armed_head=0),
+        project_id=project_id,
     )
     delivery._retry.schedule(project_id)
     original_reconcile = delivery._reconcile_graph_boundaries
@@ -2168,15 +1378,13 @@ def test_retry_worker_lifecycle_stays_bounded_during_reconciliation(
         signal_thread.join(timeout=1)
         stop_thread.join(timeout=1)
         worker.stop()
+        app.state.background_tasks.shutdown()
 
     assert signal_was_bounded, "signal waited for graph reconciliation"
     assert stop_was_bounded, "stop(timeout=) waited for graph reconciliation"
 
 
 def test_retry_worker_stop_then_start_invalidates_the_slow_prior_generation() -> None:
-    """Shutdown is bounded even while the callback is slow, and a new lifespan gets a fresh
-    generation instead of reusing the stopping thread.
-    """
     first_started = threading.Event()
     release_first = threading.Event()
     first_finished = threading.Event()
@@ -2214,35 +1422,38 @@ def test_retry_worker_stop_then_start_invalidates_the_slow_prior_generation() ->
     worker.stop()
 
 
-def test_watcher_notification_admission_fence_owns_claim_and_spawn(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    store = _admission_store(tmp_path)
+def _plain_wake_store(tmp_path, *watcher_ids: str) -> AppStore:
+    store = _project_store(tmp_path)
     owner = store.local_owner
     assert owner is not None
     store.rename_space_user(owner.user_id, "Test researcher")
-    store.create_watchers([_external_record("fenced-claim", status="completed")])
+    _completed_origin(store, "project", "origin")
+    for watcher_id in watcher_ids:
+        _arm(store, watcher_id, _external_check(watcher_id, completed=True))
+    return store
 
-    async def unused_stream(_project_id, _kind, _request, _execution):
-        yield f"data: {AgentEvent(event='done').model_dump_json()}\n\n"
 
-    tasks = BackgroundAgentTasks(store, unused_stream)
-    request = RunRequest.model_validate(
-        _notification_task(store, "unused", ["fenced-claim"]).request
-    )
+def _ready(store: AppStore, watcher_id: str) -> list[WatcherRecord]:
+    watcher = store.watcher(watcher_id)
+    assert watcher is not None and watcher.ready
+    return [watcher]
+
+
+def test_plain_wake_fence_owns_claim_and_launch(tmp_path, monkeypatch) -> None:
+    store = _plain_wake_store(tmp_path, "fenced-claim")
+    tasks = BackgroundAgentTasks(store, _done_wake)
     fence_active = False
-    original_claim = store.create_watcher_notification_task
+    original_claim = store.create_watcher_wake_task
 
-    def observed_claim(record, watcher_ids, **kwargs):
+    def observed_claim(record, agent_id, watcher_ids):
         assert fence_active, "durable watcher claim escaped the generation fence"
-        return original_claim(record, watcher_ids, **kwargs)
+        return original_claim(record, agent_id, watcher_ids)
 
-    def observed_spawn(record, _request, *, continuation, parent=None):
-        assert fence_active, "watcher task spawn escaped the generation fence"
-        assert continuation == "watcher_wake"
-        assert parent is None
-        return record
+    def observed_launch(operation_id):
+        assert fence_active, "watcher task launch escaped the generation fence"
+        stored = store.agent_task(operation_id)
+        assert stored is not None
+        return stored
 
     def fence(callback) -> bool:
         nonlocal fence_active
@@ -2253,38 +1464,21 @@ def test_watcher_notification_admission_fence_owns_claim_and_spawn(
             fence_active = False
         return True
 
-    monkeypatch.setattr(store, "create_watcher_notification_task", observed_claim)
-    monkeypatch.setattr(tasks, "_spawn_record", observed_spawn)
+    monkeypatch.setattr(store, "create_watcher_wake_task", observed_claim)
+    fake_launch_admitted(monkeypatch, tasks, observed_launch)
 
-    started = start_watcher_notification(
-        tasks,
-        "project",
-        "node_chat",
-        request,
-        ["fenced-claim"],
-        authorized_by=_test_authorizer(store),
-        admission_fence=fence,
+    started = start_plain_watcher_wake(
+        tasks, "chat", _ready(store, "fenced-claim"), _test_authorizer(store), fence
     )
 
     assert started is not None
-    assert store.watcher("fenced-claim").notified is True
+    assert store.watcher("fenced-claim").wake_turn_id == started.operation_id
     tasks.shutdown()
 
 
 def test_stale_retry_generation_cannot_make_the_final_watcher_claim(tmp_path) -> None:
-    store = AppStore(tmp_path / "stale-generation-claim.sqlite3")
-    owner = store.local_owner
-    assert owner is not None
-    store.rename_space_user(owner.user_id, "Test researcher")
-    store.create_watchers([_external_record("stale-final-claim", status="completed")])
-
-    async def unused_stream(_project_id, _kind, _request, _execution):
-        yield f"data: {AgentEvent(event='done').model_dump_json()}\n\n"
-
-    tasks = BackgroundAgentTasks(store, unused_stream)
-    request = RunRequest.model_validate(
-        _notification_task(store, "unused", ["stale-final-claim"]).request
-    )
+    store = _plain_wake_store(tmp_path, "stale-final-claim")
+    tasks = BackgroundAgentTasks(store, _done_wake)
     retry_started = threading.Event()
     release_retry = threading.Event()
     retry_finished = threading.Event()
@@ -2294,14 +1488,12 @@ def test_stale_retry_generation_cannot_make_the_final_watcher_claim(tmp_path) ->
         retry_started.set()
         release_retry.wait()
         results.append(
-            start_watcher_notification(
+            start_plain_watcher_wake(
                 tasks,
-                "project",
-                "node_chat",
-                request,
-                ["stale-final-claim"],
-                authorized_by=_test_authorizer(store),
-                admission_fence=generation.run_if_current,
+                "chat",
+                _ready(store, "stale-final-claim"),
+                _test_authorizer(store),
+                generation.run_if_current,
             )
         )
         retry_finished.set()
@@ -2317,269 +1509,88 @@ def test_stale_retry_generation_cannot_make_the_final_watcher_claim(tmp_path) ->
         assert retry_finished.wait(1), "stale retry generation did not finish"
 
         assert results == [None]
-        stored = store.watcher("stale-final-claim")
-        assert isinstance(stored, WatcherRecord)
-        assert stored.status == "completed"
-        assert stored.notified is False
+        assert _ready(store, "stale-final-claim")
     finally:
         release_retry.set()
         worker.stop()
         tasks.shutdown()
 
 
-def test_periodic_poll_delivers_mixed_group_after_external_completes(
-    manifest,
-    tmp_path,
-    monkeypatch,
+def test_shutdown_serializes_plain_wake_admission_with_worker_snapshot(
+    tmp_path, monkeypatch
 ) -> None:
-    """`notified` is written after the delivery callback returns, so waiting on the callback alone
-    races the flag.
-    """
-    app, _service, store, project_id = _watcher_app(manifest, tmp_path)
-    authorizer = _test_authorizer(store)
-    origin = _completed_origin(store, project_id, "periodic-mixed-origin")
-    condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
-    store.create_watchers(
-        [
-            _graph_record(
-                "periodic-graph",
-                condition,
-                status="completed",
-                project_id=project_id,
-                origin=origin.operation_id,
-            ),
-            _external_record("periodic-external").model_copy(
-                update={"project_id": project_id, "origin_operation_id": origin.operation_id}
-            ),
-        ]
-    )
-    deliveries: list[list[str]] = []
+    store = _plain_wake_store(tmp_path, "pre-close", "post-close")
+    authorized_by = _test_authorizer(store)
+    launch_entered = threading.Event()
+    release_launch = threading.Event()
+    shutdown_finished = threading.Event()
+    delivered: list[AgentTaskRecord | None] = []
+    errors: list[BaseException] = []
 
-    def claim_delivery(_tasks, _project_id, _kind, _request, watcher_ids, **_kwargs):
-        deliveries.append(watcher_ids)
-        task = _notification_task(store, "periodic-mixed-wake", watcher_ids).model_copy(
-            update={"project_id": project_id, "authorized_by": authorizer}
-        )
-        return store.create_watcher_notification_task(task, watcher_ids)
+    async def wait_for_shutdown(_project_id, _kind, _request, execution):
+        await async_wait_until(execution.control.pause_requested.is_set)
+        yield f"data: {AgentEvent(event='paused', text='Server shutdown.').model_dump_json()}\n\n"
 
-    def complete_external(_spec, _host, _timeout):
-        return WatcherCheckResult(state="complete", checked_at=_CREATED_AT, exit_code=0)
+    tasks = BackgroundAgentTasks(store, wait_for_shutdown)
+    original_launch = tasks.launch_admitted
 
-    monkeypatch.setattr("rcp.api.app.start_watcher_notification", claim_delivery)
-    app.state.watcher_poller.check_runner = complete_external
-    app.state.watcher_poller.clock = lambda: "2100-01-01T00:00:00+00:00"
-    app.state.graph_watcher_retry_worker.start()
-    try:
-        groups = app.state.watcher_poller.poll_once()
-        wait_until(
-            lambda: all(
-                store.watcher(watcher_id).notified
-                for watcher_id in ("periodic-external", "periodic-graph")
-            ),
-            detail="mixed graph delivery did not mark both watchers notified",
-        )
+    def blocked_launch(operation_id):
+        launch_entered.set()
+        if not release_launch.wait(2):
+            raise RuntimeError("test did not release watcher launch")
+        return original_launch(operation_id)
 
-        assert groups == []
-        assert deliveries == [["periodic-external", "periodic-graph"]]
-        assert all(
-            store.watcher(watcher_id).notified
-            for watcher_id in ("periodic-external", "periodic-graph")
-        )
-    finally:
-        app.state.graph_watcher_retry_worker.stop()
-        app.state.background_tasks.shutdown()
+    fake_launch_admitted(monkeypatch, tasks, blocked_launch)
 
-
-def test_periodic_poll_retries_pure_graph_delivery_after_transient_failure(
-    manifest,
-    tmp_path,
-    monkeypatch,
-) -> None:
-    """The retry attempt is recorded before `notified` is written, so waiting on the retry alone
-    races the flag.
-    """
-    app, _service, store, project_id = _watcher_app(manifest, tmp_path)
-    authorizer = _test_authorizer(store)
-    origin = _completed_origin(store, project_id, "periodic-retry-origin")
-    condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
-    store.create_watchers(
-        [
-            _graph_record(
-                "periodic-retry-graph",
-                condition,
-                status="completed",
-                project_id=project_id,
-                origin=origin.operation_id,
+    def deliver_before_close() -> None:
+        try:
+            delivered.append(
+                start_plain_watcher_wake(tasks, "chat", _ready(store, "pre-close"), authorized_by)
             )
-        ]
-    )
-    attempts: list[list[str]] = []
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
 
-    def transient_then_claim(_tasks, _project_id, _kind, _request, watcher_ids, **_kwargs):
-        attempts.append(watcher_ids)
-        if len(attempts) == 1:
-            raise RuntimeError("transient delivery failure")
-        task = _notification_task(store, "periodic-retry-wake", watcher_ids).model_copy(
-            update={"project_id": project_id, "authorized_by": authorizer}
-        )
-        return store.create_watcher_notification_task(task, watcher_ids)
+    def shut_down() -> None:
+        try:
+            tasks.shutdown(timeout=2)
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+        finally:
+            shutdown_finished.set()
 
-    monkeypatch.setattr("rcp.api.app.start_watcher_notification", transient_then_claim)
-    app.state.graph_watcher_retry_worker.start()
+    delivery_thread = threading.Thread(target=deliver_before_close, name="pre-close-delivery")
+    shutdown_thread = threading.Thread(target=shut_down, name="watcher-shutdown")
     try:
-        assert app.state.watcher_poller.poll_once() == []
-        wait_until(lambda: len(attempts) == 1, detail="first graph delivery was not attempted")
-        first = store.watcher("periodic-retry-graph")
-        assert isinstance(first, GraphWatcherRecord)
-        assert first.notified is False
+        delivery_thread.start()
+        assert launch_entered.wait(1), "delivery did not enter its serialized launch"
+        shutdown_thread.start()
+        assert not shutdown_finished.wait(0.05), "shutdown bypassed watcher admission"
+        release_launch.set()
+        delivery_thread.join(timeout=3)
+        shutdown_thread.join(timeout=3)
 
-        assert app.state.watcher_poller.poll_once() == []
-        wait_until(
-            lambda: len(attempts) == 2 and store.watcher("periodic-retry-graph").notified,
-            detail="graph delivery retry did not mark the watcher notified",
+        assert not delivery_thread.is_alive()
+        assert not shutdown_thread.is_alive()
+        assert errors == []
+        assert len(delivered) == 1 and delivered[0] is not None
+        settled = store.agent_task(delivered[0].operation_id)
+        assert settled is not None and settled.status == "paused"
+
+        assert (
+            start_plain_watcher_wake(tasks, "chat", _ready(store, "post-close"), authorized_by)
+            is None
         )
-        assert app.state.watcher_poller.poll_once() == []
-        assert attempts == [["periodic-retry-graph"], ["periodic-retry-graph"]]
+        assert _ready(store, "post-close")
     finally:
-        app.state.graph_watcher_retry_worker.stop()
-        app.state.background_tasks.shutdown()
-
-
-def test_external_and_graph_completions_coalesce_into_one_wake(store) -> None:
-    condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
-    store.create_watchers(
-        [
-            _external_record("external", status="completed"),
-            _graph_record("graph", condition),
-        ]
-    )
-
-    groups = evaluate_graph_watchers(
-        store,
-        "project",
-        _state(blocker_status="resolved", revision=2),
-    )
-
-    assert [set(group) for group in _watcher_ids(groups)] == [{"external", "graph"}]
-    watcher_ids = _watcher_ids(groups)[0]
-    queued = store.create_watcher_notification_task(
-        _notification_task(store, "one-wake", watcher_ids),
-        watcher_ids,
-    )
-    assert queued is not None
-    assert all(record.notified for record in store.watchers("project"))
-    assert (
-        evaluate_graph_watchers(
-            store,
-            "project",
-            _state(blocker_status="resolved", revision=2),
-        )
-        == []
-    )
-
-
-def test_every_graph_wake_spends_one_experiment_budget_unit(store) -> None:
-    episode_id = str(uuid.uuid4())
-    continuation = _loop_continuation(episode_id)
-    root = _completed_episode(store, "loop-root", episode_id)
-    _bind_episode_session(store, root, "native-loop-session", "/tmp/loop-stage")
-    condition = NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"])
-    store.create_watchers([_graph_record("budgeted-graph", condition, continuation=continuation)])
-    groups = evaluate_graph_watchers(
-        store,
-        "project",
-        _state(blocker_status="resolved", revision=2),
-    )
-    assert _watcher_ids(groups) == [["budgeted-graph"]]
-
-    wake = _experiment_task(
-        store,
-        "graph-wake",
-        episode_id=episode_id,
-        invocation=2,
-        ceiling=2,
-        watcher_ids=["budgeted-graph"],
-    ).model_copy(
-        update={
-            "native_session_id": "native-loop-session",
-            "stage_machine_id": BACKEND_MACHINE_ID,
-            "stage_root": "/tmp/loop-stage",
-        }
-    )
-    wake.request["session_id"] = "native-loop-session"
-    queued = store.create_experiment_watcher_invocation(wake, ["budgeted-graph"])
-
-    assert queued is not None
-    runtime = store.experiment_loop_runtime("project", "exp/one", graph_target=GraphTargetRef())
-    assert runtime.invocations_used == 2
-    assert runtime.invocation_ceiling - runtime.invocations_used == 0
-
-
-def test_experiment_agent_retires_a_graph_condition_and_stop_list_is_atomic(
-    store,
-) -> None:
-    """One unknown id retires none of the list. A condition the agent stopped waiting for would hold
-    the loop open and spend an invocation, so it retires like an observer and leaves the evaluation
-    index.
-    """
-    episode_id = str(uuid.uuid4())
-    root = _completed_episode(store, "stop-list-root", episode_id)
-    _bind_episode_session(store, root, "native-stop-list", "/tmp/stop-list-stage")
-    continuation = _loop_continuation(episode_id)
-    binding = _binding(continuation=continuation).model_copy(
-        update={"origin_operation_id": root.operation_id}
-    )
-    store.create_watchers(
-        [
-            _external_record("stoppable-external", continuation=continuation).model_copy(
-                update={"origin_operation_id": root.operation_id}
-            ),
-            _graph_record(
-                "protected-graph",
-                NodeStatusGraphCondition(node_id="blk/foo", status_in=["resolved"]),
-                continuation=continuation,
-                origin=root.operation_id,
-            ),
-        ]
-    )
-
-    stops = [
-        WatcherStopRequest(
-            stop_watcher_id="stoppable-external",
-            reason="External work is no longer needed.",
-        ),
-        WatcherStopRequest(
-            stop_watcher_id="protected-graph",
-            reason="The canonical condition is no longer needed.",
-        ),
-    ]
-
-    with pytest.raises(ValueError, match="unknown staged watcher: absent"):
-        store.persist_experiment_watchers_idempotently(
-            [],
-            stops=[*stops, WatcherStopRequest(stop_watcher_id="absent", reason="Gone.")],
-            binding=binding,
-        )
-    assert [store.watcher(item.stop_watcher_id).status for item in stops] == ["active", "active"]
-
-    store.persist_experiment_watchers_idempotently([], stops=stops, binding=binding)
-
-    external = store.watcher("stoppable-external")
-    graph = store.watcher("protected-graph")
-    assert isinstance(external, WatcherRecord)
-    assert isinstance(graph, GraphWatcherRecord)
-    assert external.status == "stopped"
-    assert graph.status == "stopped"
-    assert graph.stopped_by == "agent"
-    assert graph.stop_reason == "The canonical condition is no longer needed."
-    assert "protected-graph" not in {
-        item.watcher_id for item in store.active_graph_watchers("project")
-    }
+        release_launch.set()
+        delivery_thread.join(timeout=1)
+        shutdown_thread.join(timeout=1)
+        tasks.shutdown(timeout=1)
 
 
 def test_pre_start_pause_still_runs_settlement_hook_without_stream_close(tmp_path) -> None:
     store = AppStore(tmp_path / "pre-start-pause.sqlite3")
-    record = _notification_task(store, "pre-start-pause", [])
+    record = _chat_turn(store, "pre-start-pause")
     streamed: list[str] = []
     stream_closed: list[str] = []
     settled: list[tuple[str, str]] = []
@@ -2597,21 +1608,13 @@ def test_pre_start_pause_still_runs_settlement_hook_without_stream_close(tmp_pat
         settled.append((execution.operation_id, task.status))
 
     tasks = BackgroundAgentTasks(
-        store,
-        stream,
-        on_stream_closed=closed,
-        on_task_settled=after_settlement,
+        store, stream, on_stream_closed=closed, on_task_settled=after_settlement
     )
     store.create_agent_task(record)
     control = AgentProcessControl()
     control.pause_requested.set()
 
-    tasks._run(
-        record,
-        RunRequest.model_validate(record.request),
-        control,
-        "fresh",
-    )
+    tasks._run(record, RunRequest.model_validate(record.request), control, "fresh")
 
     paused = store.agent_task(record.operation_id)
     assert paused is not None and paused.status == "paused"
@@ -2620,122 +1623,12 @@ def test_pre_start_pause_still_runs_settlement_hook_without_stream_close(tmp_pat
     assert stream_closed == []
 
 
-def test_shutdown_serializes_watcher_delivery_admission_with_worker_snapshot(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    store = _admission_store(tmp_path)
-    owner = store.local_owner
-    assert owner is not None
-    store.rename_space_user(owner.user_id, "Test researcher")
-    authorized_by = _test_authorizer(store)
-    store.create_watchers([_external_record("pre-close", status="completed")])
-    spawn_entered = threading.Event()
-    release_spawn = threading.Event()
-    shutdown_finished = threading.Event()
-    delivered: list[AgentTaskRecord | None] = []
-    errors: list[BaseException] = []
-
-    async def wait_for_shutdown(_project_id, _kind, _request, execution):
-        await async_wait_until(execution.control.pause_requested.is_set)
-        yield f"data: {AgentEvent(event='paused', text='Server shutdown.').model_dump_json()}\n\n"
-
-    tasks = BackgroundAgentTasks(store, wait_for_shutdown)
-    original_spawn = tasks._spawn_record
-
-    def blocked_spawn(record, request, *, continuation, parent=None):
-        spawn_entered.set()
-        if not release_spawn.wait(2):
-            raise RuntimeError("test did not release watcher spawn")
-        return original_spawn(
-            record,
-            request,
-            continuation=continuation,
-            parent=parent,
-        )
-
-    monkeypatch.setattr(tasks, "_spawn_record", blocked_spawn)
-    first_request = RunRequest.model_validate(
-        _notification_task(store, "unused", ["pre-close"]).request
-    )
-
-    def deliver_before_close() -> None:
-        try:
-            delivered.append(
-                start_watcher_notification(
-                    tasks,
-                    "project",
-                    "node_chat",
-                    first_request,
-                    ["pre-close"],
-                    authorized_by=authorized_by,
-                )
-            )
-        except BaseException as exc:  # pragma: no cover - asserted below
-            errors.append(exc)
-
-    def shut_down() -> None:
-        try:
-            tasks.shutdown(timeout=2)
-        except BaseException as exc:  # pragma: no cover - asserted below
-            errors.append(exc)
-        finally:
-            shutdown_finished.set()
-
-    delivery_thread = threading.Thread(target=deliver_before_close, name="pre-close-delivery")
-    shutdown_thread = threading.Thread(target=shut_down, name="watcher-shutdown")
-    try:
-        delivery_thread.start()
-        assert spawn_entered.wait(1), "delivery did not enter its serialized spawn"
-        shutdown_thread.start()
-        assert not shutdown_finished.wait(0.05), "shutdown bypassed watcher admission"
-        release_spawn.set()
-        delivery_thread.join(timeout=3)
-        shutdown_thread.join(timeout=3)
-
-        assert not delivery_thread.is_alive()
-        assert not shutdown_thread.is_alive()
-        assert errors == []
-        assert len(delivered) == 1 and delivered[0] is not None
-        started = delivered[0]
-        settled = store.agent_task(started.operation_id)
-        assert settled is not None
-        assert settled.status == "paused"
-
-        store.create_watchers([_external_record("post-close", status="completed")])
-        second_request = RunRequest.model_validate(
-            _notification_task(store, "unused", ["post-close"]).request
-        )
-        assert (
-            start_watcher_notification(
-                tasks,
-                "project",
-                "node_chat",
-                second_request,
-                ["post-close"],
-                authorized_by=authorized_by,
-            )
-            is None
-        )
-        post_close = store.watcher("post-close")
-        assert isinstance(post_close, WatcherRecord)
-        assert post_close.status == "completed"
-        assert post_close.notified is False
-    finally:
-        release_spawn.set()
-        delivery_thread.join(timeout=1)
-        shutdown_thread.join(timeout=1)
-        tasks.shutdown(timeout=1)
-
-
 @pytest.mark.parametrize(
     ("terminal_event", "expected_status"),
     [("error", "failed"), ("paused", "paused")],
 )
 def test_post_settlement_hook_observes_verdict_and_revision_without_replacing_it(
-    tmp_path,
-    terminal_event,
-    expected_status,
+    tmp_path, terminal_event, expected_status
 ) -> None:
     from .test_auto_research_recovery import _store
 
@@ -2751,11 +1644,7 @@ def test_post_settlement_hook_observes_verdict_and_revision_without_replacing_it
         task = store.agent_task(execution.operation_id)
         assert task is not None
         observed.append(
-            (
-                task.status,
-                execution.applied_revision,
-                execution.applied_graph_state is boundary,
-            )
+            (task.status, execution.applied_revision, execution.applied_graph_state is boundary)
         )
         raise RuntimeError("observer failure")
 
@@ -2776,9 +1665,7 @@ def test_post_settlement_hook_observes_verdict_and_revision_without_replacing_it
         "project_chat",
         request,
         authorized_by=AuthorizedHuman(
-            space_id=store.space_id,
-            user_id=owner.user_id,
-            display_name=owner.display_name,
+            space_id=store.space_id, user_id=owner.user_id, display_name=owner.display_name
         ),
     )
     try:
@@ -2794,49 +1681,63 @@ def test_post_settlement_hook_observes_verdict_and_revision_without_replacing_it
     assert {"patch_applied", "task_settled_callback_failed"} <= receipt_categories
 
 
-def _experiment_task(
-    store: AppStore,
-    operation_id: str,
-    *,
-    episode_id: str,
-    invocation: int,
-    ceiling: int,
-    watcher_ids: list[str],
-) -> AgentTaskRecord:
-    now = store.now()
-    return AgentTaskRecord(
-        operation_id=operation_id,
-        project_id="project",
-        episode_id=episode_id,
-        kind="node_chat",
-        status="queued",
-        request={
-            "chat_id": "chat",
-            "node_id": "exp/one",
-            "provider": "codex",
-            "model": "gpt-5",
-            "reasoning": "medium",
-            "run_on": BACKEND_MACHINE_ID,
-            "run_truth_scope": ["repo-a"],
-            "mode": "work",
-            "trigger": "watcher" if watcher_ids else "experiment_run",
-            "patch_kind": "experiment_loop",
-            "control_node_id": "exp/one",
-            "control_revision": 1,
-            "control_episode_id": episode_id,
-            "control_invocation": invocation,
-            "control_invocation_ceiling": ceiling,
-            "control_decision_bundle": [],
-            "control_completion_criteria": [],
-            "workflow_ids": [],
-            "skill_ids": [],
-            "invoked_workflow_ids": [],
-            "invoked_skill_ids": [],
-            "resolved_skill_packages": [],
-            "watcher_ids": watcher_ids,
-        },
-        created_at=now,
-        updated_at=now,
-        status_message="Queued bounded graph wake.",
-        authorized_by=_test_authorizer(store),
+def test_a_settled_space_turn_reconciles_main_conditions_of_each_bound_project(
+    manifest, tmp_path, monkeypatch
+):
+    from rcp.watchers import WatcherDelivery
+
+    app, _service, store, project_id = _watcher_app(manifest, tmp_path)
+    operation_id = str(uuid.uuid4())
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO space_turn_project_bindings VALUES (?, ?, '{}', '', ?)",
+            (operation_id, project_id, GraphTargetRef().model_dump_json()),
+        )
+    reconciled: list[tuple[str, GraphTargetRef | None]] = []
+    monkeypatch.setattr(
+        WatcherDelivery,
+        "evaluate_graph_wake_boundary",
+        lambda _self, bound, _state, *, graph_target=None, **_: reconciled.append(
+            (bound, graph_target)
+        ),
     )
+
+    app.state.background_tasks.on_task_settled(
+        store.space_id, "space_chat", None, SimpleNamespace(operation_id=operation_id)
+    )
+
+    assert reconciled == [(project_id, GraphTargetRef())]
+
+
+@pytest.mark.parametrize("changed", ["main", "branch"])
+def test_a_graph_change_reconciles_only_conditions_on_its_own_target(store, changed) -> None:
+    import logging
+
+    from rcp.watchers import GraphWatcherRetryRegistry, WatcherDelivery
+
+    branch = GraphTargetRef(kind="branch", branch_id=str(uuid.uuid4()))
+    _arm(store, "on-main", _graph_check("on-main"))
+    _arm(store, "on-branch", _graph_check("on-branch", graph_target=branch))
+    delivery = WatcherDelivery(
+        store,
+        retry=GraphWatcherRetryRegistry(),
+        graph_project_service=lambda *_: None,
+        episode_owners={},
+        plain_wake=lambda *_: None,
+        state_unavailable=lambda _exc: False,
+        task_graph_capable=lambda *_: False,
+        task_experiment_episode_id=lambda _request: None,
+        reconcile_experiment_episode=lambda *_, **__: None,
+        reconcile_graph_boundaries=lambda *_, **__: None,
+        logger=logging.getLogger("test"),
+        launch_wait=lambda: 0,
+    )
+    reconciled: list[GraphTargetRef] = []
+    delivery._reconcile_graph_wake_target = lambda _project, target, _generation: reconciled.append(
+        target
+    )
+    target = GraphTargetRef() if changed == "main" else branch
+
+    delivery.evaluate_graph_wake_boundary("project", None, graph_target=target, source="test")
+
+    assert reconciled == [target]

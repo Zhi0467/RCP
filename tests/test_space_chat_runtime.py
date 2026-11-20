@@ -28,7 +28,13 @@ from rcp.runs.space_chat import (
 )
 from rcp.service import read_space_chat_transcript
 from rcp.skill_registry import SkillDefaults, official_registry
-from tests.helpers import agent_patch_json, create_named_app, seed_patch, store_test_claude_token
+from tests.helpers import (
+    agent_patch_json,
+    create_named_app,
+    fake_launch_admitted,
+    seed_patch,
+    store_test_claude_token,
+)
 from tests.test_dispatch_authority import _authorizer, _work_authority, _work_request
 from tests.test_storage import _task_record
 
@@ -212,6 +218,23 @@ def test_served_space_refreshes_machine_grants_in_the_same_session(
     assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
 
 
+def _key() -> dict[str, str]:
+    return {"Idempotency-Key": str(uuid.uuid4())}
+
+
+def _artifact_comment(client, base: str, artifact_id: str) -> str:
+    response = client.post(
+        base + "/comment-threads",
+        json={
+            "target": {"kind": "artifact", "id": artifact_id},
+            "anchor": {"kind": "text", "text": "observation", "comment": ""},
+            "text": "Maintain α",
+        },
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["thread"]["thread_id"]
+
+
 @pytest.mark.parametrize("comment", [False, True])
 @pytest.mark.parametrize("name", ["blog_notes.md", "page.html"])
 def test_served_space_artifact_edits_keep_identity_and_follow_undo(
@@ -235,8 +258,7 @@ def test_served_space_artifact_edits_keep_identity_and_follow_undo(
         stage = kwargs["cwd"]
         if paths and comment:
             assert str(paths[0]) in prompt
-            if name.endswith("html"):
-                assert '"number": 1' in prompt and '"comment": "Maintain α"' in prompt
+            assert "Maintain α" in prompt
         if not paths:
             path = stage / "turns" / kwargs["operation_id"] / "artifacts" / name
             path.write_text(first)
@@ -259,13 +281,16 @@ def test_served_space_artifact_edits_keep_identity_and_follow_undo(
         base = f"/api/agent-threads/{thread['thread_id']}"
         assert client.put(base + "/browser", json={"browser_requested": False}).status_code == 200
 
-        def send_turn(context=None):
+        def send_turn(artifact_id=None):
             sent = client.post(
                 base + "/turns",
+                headers=_key(),
                 json={
                     "provider": "claude",
                     "message": "Maintain the note.",
-                    "artifact_context": context,
+                    "comment_thread_ids": [_artifact_comment(client, base, artifact_id)]
+                    if artifact_id
+                    else [],
                 },
             )
             assert sent.status_code == 202, sent.text
@@ -280,19 +305,10 @@ def test_served_space_artifact_edits_keep_identity_and_follow_undo(
             assert result["status"] == "succeeded", result
             return operation_id, result
 
-        first_operation, result = send_turn()
+        _, result = send_turn()
         (artifact,) = result["result"]["artifacts"]
         artifact_id = artifact["artifact_id"]
-        initial = store.artifact(artifact_id)
-        context = {
-            "operation_id": first_operation,
-            "artifact_id": artifact_id,
-            "base_version": initial.current_version,
-            "selections": [{"kind": "text", "text": "First observation.", "comment": "Maintain α"}]
-            if name.endswith("html")
-            else [],
-        }
-        second_operation, result = send_turn(context if comment else None)
+        second_operation, result = send_turn(artifact_id if comment else None)
         assert [item["artifact_id"] for item in result["result"].get("artifacts", [])] == [
             artifact_id
         ]
@@ -304,8 +320,7 @@ def test_served_space_artifact_edits_keep_identity_and_follow_undo(
         assert downloaded.status_code == 200 and downloaded.content == second.encode()
         assert result["result"]["artifact_edit_outcomes"][0]["status"] == "published"
         store.undo_artifact(artifact_id)
-        context["operation_id"] = second_operation
-        _, result = send_turn(context if comment else None)
+        _, result = send_turn(artifact_id if comment else None)
         assert not result["result"].get("artifacts")
         assert store.read_artifact_bytes(artifact_id) == first.encode()
     assert len(paths) == 3
@@ -372,23 +387,28 @@ def test_served_space_fresh_comment_restores_published_bytes_but_retry_keeps_dir
             assert result["status"] == status, result
             return operation_id, result
 
-        origin, result = finish(
+        _, result = finish(
             client.post(base + "/turns", json={"provider": "claude", "message": "Keep notes."}),
             "succeeded",
         )
         (descriptor,) = result["result"]["artifacts"]
         artifact_id = descriptor["artifact_id"]
         initial = store.artifact(artifact_id)
-        comment = {
-            "provider": "claude",
-            "message": "Revise the note.",
-            "artifact_context": {"operation_id": origin, "artifact_id": artifact_id},
-        }
-        failed, _ = finish(client.post(base + "/turns", json=comment), "failed")
+
+        def comment():
+            return {
+                "provider": "claude",
+                "message": "Revise the note.",
+                "comment_thread_ids": [_artifact_comment(client, base, artifact_id)],
+            }
+
+        failed, _ = finish(client.post(base + "/turns", headers=_key(), json=comment()), "failed")
         retry, _ = finish(client.post(base + f"/tasks/{failed}/retry", json={}), "failed")
         assert store.agent_task(retry).parent_operation_id == failed
         assert store.read_artifact_bytes(artifact_id) == published.encode()
-        fresh, result = finish(client.post(base + "/turns", json=comment), "succeeded")
+        fresh, result = finish(
+            client.post(base + "/turns", headers=_key(), json=comment()), "succeeded"
+        )
         assert (
             store.agent_task(fresh).request["artifact_context"]["base_version"]
             == initial.current_version
@@ -1038,3 +1058,76 @@ def test_a_crash_cut_last_line_never_locks_the_space_thread(manifest, tmp_path):
     transcript = read_space_chat_transcript(tmp_path / "data", thread.user_id, thread.thread_id)
     assert transcript is not None
     assert [item.text for item in transcript.messages] == ["Hello", "Hi"]
+
+
+def test_a_space_agent_arms_watchers_from_its_folder_and_a_wake_continues_its_thread(
+    manifest, tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from rcp.runs.space_chat import _reconcile_space_watchers, _stage_space_watchers
+    from rcp.runs.watcher_admission import start_plain_watcher_wake
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    owner, _request, task = _space_owner_and_turn(app, store)
+    stage = tmp_path / "space-stage"
+    stage.mkdir()
+    turn = SimpleNamespace(
+        owner=owner,
+        execution=SimpleNamespace(operation_id=task.operation_id, continuation="fresh"),
+        stage=stage,
+    )
+    binding, baseline = _stage_space_watchers(turn)
+    assert baseline == {} and (stage / "watchers").is_dir()
+    (tmp_path / "job.log").write_text("done\n")
+    (stage / "watchers" / "job.json").write_text(
+        json.dumps(
+            {
+                "purpose": "Job finishes",
+                "checks": [
+                    {
+                        "check_command": "true",
+                        "log_path": str(tmp_path / "job.log"),
+                        "cwd": str(tmp_path),
+                    }
+                ],
+            }
+        )
+    )
+
+    assert _reconcile_space_watchers(turn, binding, baseline) is None
+
+    (watcher,) = store.agent_watchers(owner.thread_id)
+    assert (watcher.project_id, watcher.state) == (store.space_id, "finished")
+    store.complete_agent_task(task.operation_id, applied_revision=None, result={})
+    tasks = app.state.background_tasks
+    tasks.admit_provider_task = lambda *_args, **_kwargs: None
+    fake_launch_admitted(monkeypatch, tasks)
+    wake = start_plain_watcher_wake(tasks, owner.thread_id, [watcher], task.authorized_by)
+    assert wake is not None
+    assert (wake.kind, wake.project_id) == ("space_chat", store.space_id)
+    assert store.watcher(watcher.watcher_id).wake_turn_id == wake.operation_id
+
+
+def test_a_space_graph_watcher_is_reported_not_armed(manifest, tmp_path):
+    from types import SimpleNamespace
+
+    from rcp.runs.space_chat import _reconcile_space_watchers, _stage_space_watchers
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    owner, _request, task = _space_owner_and_turn(app, store)
+    turn = SimpleNamespace(
+        owner=owner,
+        execution=SimpleNamespace(operation_id=task.operation_id, continuation="fresh"),
+        stage=tmp_path / "space-stage",
+    )
+    turn.stage.mkdir()
+    binding, baseline = _stage_space_watchers(turn)
+    (turn.stage / "watchers" / "node.json").write_text(
+        json.dumps({"purpose": "Node resolves", "graph": {"node_id": "exp/a", "status_in": ["x"]}})
+    )
+
+    assert _reconcile_space_watchers(turn, binding, baseline)
+    assert store.agent_watchers(owner.thread_id) == []

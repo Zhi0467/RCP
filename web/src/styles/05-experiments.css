@@ -1104,12 +1104,6 @@ button.research-chip:focus-visible {
   border-top: 1px solid var(--rule);
   padding-top: 8px;
 }
-.experiment-run-watcher-actions {
-  border-top: 1px solid var(--rule);
-  display: flex;
-  justify-content: flex-end;
-  padding-top: 8px;
-}
 .experiment-run-watcher-paths {
   display: grid;
   gap: 12px;

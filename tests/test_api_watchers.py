@@ -1,401 +1,268 @@
 from __future__ import annotations
 
-import uuid
 from pathlib import Path
 
-import pytest
-
-from rcp.compute_jobs import jobs
 from rcp.machine_cards import BACKEND_MACHINE_ID
-from rcp.storage import (
-    GraphWatcherRecord,
-    NodeStatusGraphCondition,
-    WatcherContinuation,
-    WatcherRecord,
-)
-from rcp.watchers import WatcherCheckResult, WatchSpec
+from rcp.storage import AgentTaskRecord, AppStore
+from rcp.storage.models import WatcherCheckRecord, WatcherRecord
 from tests.helpers import signed_in_client
 
 from .helpers import create_named_app
 from .test_branch_chats import _app_branch
-from .test_compute_jobs_storage import job_record
-from .test_watchers import _record
 
 
-def test_degraded_watcher_can_be_checked_now_through_the_api(manifest, tmp_path: Path) -> None:
+def _turn(store: AppStore, project_id: str, operation_id: str, **request: object) -> None:
+    now = store.now()
+    with store.connection() as connection:
+        store._insert_agent_task(
+            connection,
+            AgentTaskRecord(
+                operation_id=operation_id,
+                project_id=project_id,
+                kind="node_chat",
+                status="succeeded",
+                request=request,
+                created_at=now,
+                updated_at=now,
+                status_message="Done",
+            ),
+            continuation_cause="fresh",
+        )
+
+
+def _external(store: AppStore, project_id: str, watcher_id: str, origin: str, *checks: str):
+    now = store.now()
+    return store.arm_watcher(
+        WatcherRecord(
+            watcher_id=watcher_id,
+            agent_id="chat",
+            project_id=project_id,
+            purpose="Training job",
+            origin_turn_id=origin,
+            created_at=now,
+            checks=[
+                WatcherCheckRecord(
+                    check_id=check_id,
+                    watcher_id=watcher_id,
+                    machine_id=BACKEND_MACHINE_ID,
+                    definition="external",
+                    check_command="true",
+                    log_path=f"/tmp/{check_id}.log",
+                    cwd="/tmp",
+                    created_at=now,
+                )
+                for check_id in checks or (watcher_id,)
+            ],
+        )
+    )
+
+
+def test_project_watchers_lists_one_object_per_check(manifest, tmp_path: Path) -> None:
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
-    now = "2026-08-12T01:00:00+00:00"
-    gpu = store.create_space_machine(name="gpu", host="gpu.example", os_account="")
-    watcher = WatcherRecord(
-        watcher_id="manual-api-check",
-        project_id=project_id,
-        origin_operation_id="manual-api-origin",
-        origin_task_kind="node_chat",
-        chat_id="manual-api-chat",
-        node_id="exp-one",
-        machine_id=gpu.machine_id,
-        check_command="squeue -h -j 4471 >/dev/null",
-        log_path="/tmp/4471.log",
-        cwd="/tmp",
-        continuation=WatcherContinuation(
-            provider="codex",
-            run_on=BACKEND_MACHINE_ID,
-            patch_kind="work",
-        ),
-        created_at=now,
-    )
-    store.create_watchers([watcher])
-    degraded = store.record_watcher_check(
-        watcher.watcher_id,
-        status="degraded",
-        exit_code=255,
-        error="transport unavailable",
-        checked_at=now,
-    )
-    assert degraded.next_check_at is not None and degraded.next_check_at > now
-    calls: list[tuple[str, str, float]] = []
-
-    def recovered(spec: WatchSpec, host: str, timeout: float) -> WatcherCheckResult:
-        calls.append((spec.check_command, host, timeout))
-        return WatcherCheckResult(
-            state="active",
-            checked_at="2026-08-12T01:00:01+00:00",
-            exit_code=1,
-        )
-
-    app.state.watcher_poller.check_runner = recovered
-    client = signed_in_client(app)
-    listed = client.get(f"/api/projects/{project_id}/watchers")
-    assert listed.status_code == 200
-    assert listed.json()[0]["can_check_now"] is True
-    response = client.post(
-        f"/api/projects/{project_id}/watchers/{watcher.watcher_id}/check", json={}
-    )
-
-    assert response.status_code == 200
-    assert calls == [
-        (
-            "squeue -h -j 4471 >/dev/null",
-            "gpu.example",
-            app.state.watcher_poller.timeout,
-        )
-    ]
-    assert response.json()["status"] == "active"
-    assert response.json()["consecutive_error_count"] == 0
-    assert response.json()["last_error"] is None
-    assert response.json()["can_check_now"] is False
-
-
-def test_check_watcher_now_rejects_missing_graph_and_ineligible_records(
-    manifest, tmp_path: Path
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    project_id = app.state.default_project_id
-    store = app.state.background_tasks.store
-    continuation = WatcherContinuation(
-        provider="codex", run_on=BACKEND_MACHINE_ID, patch_kind="work"
-    )
-    active = WatcherRecord(
-        watcher_id="active-api-watcher",
-        project_id=project_id,
-        origin_operation_id="active-api-origin",
-        origin_task_kind="node_chat",
-        chat_id="active-api-chat",
-        check_command="true",
-        log_path="/tmp/active-api.log",
-        cwd="/tmp",
-        continuation=continuation,
-        created_at="2026-08-12T01:00:00+00:00",
-    )
-    graph = GraphWatcherRecord(
-        watcher_id="graph-api-watcher",
-        project_id=project_id,
-        origin_operation_id="graph-api-origin",
-        origin_task_kind="node_chat",
-        chat_id="graph-api-chat",
-        continuation=continuation,
-        condition=NodeStatusGraphCondition(node_id="exp-one", status_in=["resolved"]),
-        armed_revision=0,
-        created_at="2026-08-12T01:00:00+00:00",
-    )
-    store.create_watchers([active])
-    store.create_watchers([graph])
-    client = signed_in_client(app)
-
-    missing_project = client.post(
-        f"/api/projects/{uuid.uuid4()}/watchers/{active.watcher_id}/check", json={}
-    )
-    missing_watcher = client.post(
-        f"/api/projects/{project_id}/watchers/missing-api-watcher/check", json={}
-    )
-    active_response = client.post(
-        f"/api/projects/{project_id}/watchers/{active.watcher_id}/check", json={}
-    )
-    graph_response = client.post(
-        f"/api/projects/{project_id}/watchers/{graph.watcher_id}/check", json={}
-    )
-
-    assert missing_project.status_code == 404
-    assert missing_watcher.status_code == 404
-    assert active_response.status_code == 409
-    assert "degraded watcher awaiting delivery" in active_response.json()["detail"]
-    assert graph_response.status_code == 409
-    assert "external watcher" in graph_response.json()["detail"]
-    for watcher in (active, graph):
-        no_action = client.post(
-            f"/api/projects/{project_id}/watchers/{watcher.watcher_id}/cancel", json={}
-        )
-        assert no_action.status_code == 409
-        assert "no cancel command" in no_action.json()["detail"]
-
-
-def test_project_watchers_lists_and_stops_an_ordinary_watcher(manifest, tmp_path: Path) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    project_id = app.state.default_project_id
-    store = app.state.background_tasks.store
-    watcher = WatcherRecord(
-        watcher_id="ordinary-api-watcher",
-        project_id=project_id,
-        origin_operation_id="ordinary-api-origin",
-        origin_task_kind="node_chat",
-        chat_id="ordinary-api-chat",
-        node_id="exp-one",
-        check_command="true",
-        log_path=str(tmp_path / "ordinary.log"),
-        cwd=str(tmp_path),
-        continuation=WatcherContinuation(
-            provider="codex",
-            run_on=BACKEND_MACHINE_ID,
-            patch_kind="work",
-        ),
-        created_at="2026-08-12T01:00:00+00:00",
-    )
-    store.create_watchers([watcher])
+    _turn(store, project_id, "origin", node_id="exp-one", chat_id="chat")
+    _external(store, project_id, "single", "origin")
+    _external(store, project_id, "group", "origin", "first", "second")
+    store.cancel_watchers(["group"], by="rcp", reason="Episode stopped.")
     client = signed_in_client(app)
 
     listed = client.get(f"/api/projects/{project_id}/watchers")
-    assert listed.status_code == 200
-    listed_payload = listed.json()
-    assert isinstance(listed_payload, list)
-    assert len(listed_payload) == 1
-    assert listed_payload[0]["watcher_id"] == watcher.watcher_id
-    assert listed_payload[0]["wakes_chat"] is True
-    assert listed_payload[0]["status"] == "active"
-    assert listed_payload[0]["can_check_now"] is False
-
-    stopped = client.post(f"/api/projects/{project_id}/watchers/{watcher.watcher_id}/stop", json={})
-    assert stopped.status_code == 200
-    stopped_payload = stopped.json()
-    assert isinstance(stopped_payload, dict)
-    assert stopped_payload["watcher_id"] == watcher.watcher_id
-    assert stopped_payload["status"] == "stopped"
-    assert stopped_payload["wakes_chat"] is False
-    stored = store.watcher(watcher.watcher_id)
-    assert stored is not None
-    assert stored.status == "stopped"
-
-
-def test_human_cancel_is_attributed_project_scoped_and_write_fenced(
-    manifest, tmp_path, monkeypatch
-):
-    from fastapi import HTTPException
-
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    client = signed_in_client(app)
-    store = app.state.services.store
-    project_id = app.state.default_project_id
-    cluster = store.create_space_machine(name="cluster", host="cluster", os_account="rcp")
-    watcher = WatcherRecord(
-        watcher_id="human-cancel",
-        project_id=project_id,
-        origin_operation_id="origin",
-        origin_task_kind="project_chat",
-        chat_id="chat",
-        check_command="false",
-        cancel_command="scancel 331",
-        log_path="/tmp/log",
-        cwd="/tmp",
-        machine_id=cluster.machine_id,
-        continuation=WatcherContinuation(
-            provider="codex", run_on=BACKEND_MACHINE_ID, patch_kind="work"
-        ),
-        created_at=store.now(),
+    assert listed.status_code == 200, listed.text
+    rows = {row["watcher_id"]: row for row in listed.json()}
+    assert set(rows) == {"single", "first", "second"}
+    single = rows["single"]
+    assert (single["status"], single["chat_id"], single["node_id"]) == ("active", "chat", "exp-one")
+    assert single["wakes_chat"] is True and single["group_id"] is None
+    assert single["continuation"]["patch_kind"] == "work"
+    assert "condition" not in single
+    stopped = rows["first"]
+    assert (stopped["status"], stopped["stopped_by"], stopped["stop_reason"]) == (
+        "stopped",
+        "loop",
+        "Episode stopped.",
     )
-    store.create_watchers([watcher])
-    store.create_watchers(
-        [watcher.model_copy(update={"watcher_id": "other", "project_id": "other"})]
-    )
-    calls = []
-    app.state.watcher_poller.check_runner = lambda *_: WatcherCheckResult(
-        state="active", checked_at=store.now(), exit_code=1
-    )
-    app.state.watcher_poller.cancel_runner = lambda spec, host, timeout: calls.append(
-        (spec.cancel_command, host, spec.cwd)
-    )
-    url = f"/api/projects/{project_id}/watchers"
-    for watcher_id in ("missing", "other"):
-        assert client.post(f"{url}/{watcher_id}/cancel", json={}).status_code == 404
-    assert calls == []
-    assert client.get(url).json()[0]["can_cancel"] is True
-    response = client.post(f"{url}/{watcher.watcher_id}/cancel", json={})
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload["cancel_requested_by"] == store.local_owner.user_id
-    assert payload["cancel_requested_by_name"] == store.local_owner.display_name
-    assert payload["cancel_requested_by_name"]
-    assert payload["cancel_requested_at"] and payload["cancel_error"] is None
-    assert payload["status"] == "active" and payload["can_cancel"] is False
-    assert client.post(f"{url}/{watcher.watcher_id}/cancel", json={}).json() == payload
-    assert calls == [("scancel 331", "cluster", "/tmp")]
-
-    def refuse_identity(_request):
-        raise HTTPException(status_code=403, detail="Human identity required")
-
-    with monkeypatch.context() as scoped:
-        scoped.setattr(
-            app.state.services.identity_access, "require_patch_capable_identity", refuse_identity
-        )
-        assert client.post(f"{url}/{watcher.watcher_id}/cancel", json={}).status_code == 403
-
-    def refuse_project(_project_id):
-        raise ValueError("Project is being removed.")
-
-    monkeypatch.setattr(store, "require_project_accepts_new_work", refuse_project)
-    assert client.post(f"{url}/{watcher.watcher_id}/cancel", json={}).status_code == 409
-    assert calls == [("scancel 331", "cluster", "/tmp")]
+    assert (stopped["group_id"], stopped["group_label"]) == ("group", "Training job")
+    assert stopped["wakes_chat"] is False and stopped["notified"] is True
 
 
-@pytest.mark.parametrize(
-    ("initial_status", "exit_status"),
-    [("lost", None), ("running", 0), ("running", 7), ("lost", 0), ("lost", 7), ("exited", 7)],
-)
-def test_api_composes_registered_helper_cancel_for_an_already_delivered_warning(
-    manifest, tmp_path, monkeypatch, initial_status, exit_status
-):
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    store = app.state.services.store
-    project_id = app.state.default_project_id
-    root = tmp_path / "jobs" / "lost"
-    root.mkdir(parents=True)
-    job = job_record(
-        project_id=project_id,
-        origin_operation_id="origin",
-        job_root=str(root),
-        log_path=str(root / "log"),
-        exit_path=str(root / "exit"),
-        status=initial_status,
-        exit_status=exit_status if initial_status == "exited" else None,
-        diagnostic="Missing exit receipt",
-        ended_at="2026-09-06T01:00:00Z",
-    )
-    store.create_compute_job(job)
-    if exit_status is not None:
-        Path(job.exit_path).write_text(f"{exit_status} 1757000000")
-    watcher = _record("registered-helper").model_copy(
-        update={
-            **jobs.helper_watch_spec(job),
-            "project_id": project_id,
-            "status": "degraded",
-            "notified": True,
-            "notification_operation_id": "warning-delivery",
-            "last_error": "Missing exit receipt",
-        }
-    )
-    store.create_watchers([watcher])
-    calls = []
-    monkeypatch.setattr(
-        jobs.COMPUTE_BACKENDS[job.backend_id],
-        "cancel",
-        lambda handle, context: calls.append((handle, context.execution_host)),
-    )
-    monkeypatch.setattr(jobs.COMPUTE_BACKENDS[job.backend_id], "alive", lambda *_: False)
-    client = signed_in_client(app)
-    url = f"/api/projects/{project_id}/watchers/{watcher.watcher_id}/cancel"
-    response = client.post(url, json={})
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload["status"] == "completed" and payload["notified"]
-    assert payload["cancel_requested_by"] == (
-        store.local_owner.user_id if exit_status is None else None
-    )
-    assert payload["cancel_error"] is None and payload["can_cancel"] is False
-    assert store.watcher(watcher.watcher_id).notification_operation_id == "warning-delivery"
-    completed = store.compute_job(job.job_id)
-    assert completed.status == ("cancelled" if exit_status is None else "exited")
-    assert completed.exit_status == exit_status
-    assert completed.diagnostic == (None if initial_status == "running" else "Missing exit receipt")
-    assert Path(job.job_root, "cancelled").exists() is (exit_status is None)
-    assert client.post(url, json={}).json() == payload
-    assert calls == ([(job.backend_handle, "")] if exit_status is None else [])
-
-
-def test_all_target_watcher_listing_scopes_stop_offer_to_displayed_branch(manifest, tmp_path):
+def test_branch_watcher_listing_scopes_to_the_arming_turn_target_unless_all(manifest, tmp_path):
     app, _main, episode, root = _app_branch(manifest, tmp_path)
     store = app.state.catalog.store
-    watcher = WatcherRecord(
-        watcher_id="main-observer",
-        project_id=episode.project_id,
-        origin_operation_id="observer-origin",
-        origin_task_kind="node_chat",
-        chat_id="observer-chat",
-        check_command="true",
-        log_path=str(tmp_path / "observer.log"),
-        cwd=str(tmp_path),
-        continuation=WatcherContinuation(
-            provider="codex", run_on=BACKEND_MACHINE_ID, patch_kind="work"
-        ),
-        created_at=store.now(),
-    )
-    branch_watcher = watcher.model_copy(
-        update={
-            "watcher_id": "branch-observer",
-            "origin_operation_id": root.operation_id,
-            "origin_task_kind": root.kind,
-            "episode_id": episode.episode_id,
-            "chat_id": "branch-observer-chat",
-            "graph_target": episode.graph_target,
-        }
-    )
-    store.create_watchers([watcher])
-    store.create_watchers([branch_watcher])
+    _turn(store, episode.project_id, "main-origin")
+    _external(store, episode.project_id, "main-observer", "main-origin")
+    _external(store, episode.project_id, "branch-observer", root.operation_id)
     client = signed_in_client(app)
     url = f"/api/projects/{episode.project_id}/watchers"
     params = {"branch_id": episode.graph_target.branch_id}
 
     listing = client.get(url, params={**params, "all_targets": "true"})
     assert listing.status_code == 200, listing.text
-    assert {row["watcher_id"]: row["can_stop_watching"] for row in listing.json()} == {
-        "main-observer": False,
-        "branch-observer": True,
-    }
+    assert {row["watcher_id"] for row in listing.json()} == {"main-observer", "branch-observer"}
     scoped = client.get(url, params=params)
     assert scoped.status_code == 200, scoped.text
     assert [row["watcher_id"] for row in scoped.json()] == ["branch-observer"]
 
 
-def test_only_a_chats_own_unwoken_work_watcher_wakes_it(tmp_path: Path) -> None:
-    from rcp.runs.work_watcher_commands import wakes_chat
+def test_only_an_open_work_watcher_of_a_chat_turn_wakes_the_chat(manifest, tmp_path) -> None:
+    from rcp.api.watchers import watcher_check_views
 
-    watcher = WatcherRecord(
-        watcher_id="chat-wake",
-        project_id="project",
-        origin_operation_id="origin",
-        origin_task_kind="project_chat",
-        chat_id="chat",
-        node_id=None,
-        check_command="true",
-        log_path=str(tmp_path / "job.log"),
-        cwd=str(tmp_path),
-        continuation=WatcherContinuation(
-            provider="codex", run_on=BACKEND_MACHINE_ID, patch_kind="work"
-        ),
-        created_at="2026-08-12T01:00:00+00:00",
+    app, _, episode, loop_turn = _app_branch(manifest, tmp_path, owner_mode="experiment_loop")
+    project_id = episode.project_id
+    store = app.state.background_tasks.store
+    _turn(store, project_id, "work-turn")
+    work = _external(store, project_id, "work", "work-turn")
+    loop = _external(store, project_id, "loop", loop_turn.operation_id)
+
+    def wakes(watcher: WatcherRecord) -> bool:
+        (view,) = watcher_check_views(store, [watcher])
+        return bool(view["wakes_chat"])
+
+    assert wakes(work)
+    assert not wakes(loop)
+    assert not wakes(work.model_copy(update={"delivery_closed_at": store.now()}))
+    assert not wakes(work.model_copy(update={"cancelled_at": store.now(), "cancelled_by": "human"}))
+
+
+def test_a_member_cancels_the_job_and_that_ends_its_watcher(manifest, tmp_path) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    _turn(store, project_id, "origin", chat_id="chat")
+    marker = tmp_path / "cancelled"
+    now = store.now()
+    store.arm_watcher(
+        WatcherRecord(
+            watcher_id="job",
+            agent_id="chat",
+            project_id=project_id,
+            purpose="Training job",
+            origin_turn_id="origin",
+            created_at=now,
+            checks=[
+                WatcherCheckRecord(
+                    check_id="job",
+                    watcher_id="job",
+                    machine_id=BACKEND_MACHINE_ID,
+                    definition="external",
+                    check_command="false",
+                    log_path=str(tmp_path / "job.log"),
+                    cwd=str(tmp_path),
+                    cancel_command=f"touch {marker}",
+                    created_at=now,
+                )
+            ],
+        )
     )
-    loop = watcher.continuation.model_copy(update={"patch_kind": "experiment_loop"})
+    client = signed_in_client(app)
+    (row,) = client.get(f"/api/projects/{project_id}/watchers").json()
+    assert row["can_cancel"] is True
 
-    assert wakes_chat(watcher)
-    assert not wakes_chat(watcher.model_copy(update={"continuation": loop}))
-    assert not wakes_chat(watcher.model_copy(update={"notified": True}))
-    assert not wakes_chat(watcher.model_copy(update={"status": "stopped"}))
+    response = client.post(f"/api/projects/{project_id}/watchers/job/cancel", json={})
+
+    assert response.status_code == 200, response.text
+    assert marker.exists()
+    watcher = store.watcher("job")
+    assert watcher.state == "cancelled" and watcher.cancelled_by == "human"
+    assert response.json()["can_cancel"] is False
+    again = client.post(f"/api/projects/{project_id}/watchers/job/cancel", json={})
+    assert again.status_code == 409
+
+
+def test_stop_watching_releases_a_live_observer_only_after_its_experiment_ended(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    from types import SimpleNamespace
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    _turn(store, project_id, "origin", chat_id="run-chat")
+    run_turn = store.agent_task("origin").model_copy(
+        update={
+            "request": {
+                "chat_id": "run-chat",
+                "patch_kind": "experiment_loop",
+                "control_episode_id": "episode",
+            }
+        }
+    )
+    monkeypatch.setattr(store, "agent_task", lambda _operation_id: run_turn)
+    monkeypatch.setattr(store, "agent_tasks_by_ids", lambda ids: {i: run_turn for i in ids})
+    _external(store, project_id, "observer", "origin")
+    endings: dict[str, str | None] = {"episode": None}
+    monkeypatch.setattr(
+        store, "episode", lambda episode_id: SimpleNamespace(ending=endings.get(episode_id))
+    )
+    client = signed_in_client(app)
+    (running,) = client.get(f"/api/projects/{project_id}/watchers").json()
+    assert running["can_stop_watching"] is False
+    stop = f"/api/projects/{project_id}/watchers/observer/stop"
+    assert client.post(stop, json={}).status_code == 409
+
+    endings["episode"] = "exhausted"
+    (ended,) = client.get(f"/api/projects/{project_id}/watchers").json()
+    assert ended["can_stop_watching"] is True
+    response = client.post(stop, json={})
+
+    assert response.status_code == 200, response.text
+    watcher = store.watcher("observer")
+    assert watcher.state == "cancelled" and watcher.cancelled_by == "human"
+
+
+def test_a_member_sees_and_cancels_a_space_agents_job_by_agent_route(manifest, tmp_path) -> None:
+    from tests.helpers import authorized_human
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store = app.state.background_tasks.store
+    actor = authorized_human(store)
+    space = next(
+        item
+        for item in store.ensure_agent_threads(actor.user_id, [], default_names=("Pip",))
+        if item.kind == "space"
+    )
+    _turn(store, store.space_id, "space-origin", chat_id=space.thread_id)
+    marker = tmp_path / "cancelled"
+    now = store.now()
+    store.arm_watcher(
+        WatcherRecord(
+            watcher_id="space-job",
+            agent_id=space.thread_id,
+            project_id=store.space_id,
+            purpose="Training job",
+            origin_turn_id="space-origin",
+            created_at=now,
+            checks=[
+                WatcherCheckRecord(
+                    check_id="space-job",
+                    watcher_id="space-job",
+                    machine_id=BACKEND_MACHINE_ID,
+                    definition="external",
+                    check_command="false",
+                    log_path=str(tmp_path / "job.log"),
+                    cwd=str(tmp_path),
+                    cancel_command=f"touch {marker}",
+                    created_at=now,
+                )
+            ],
+        )
+    )
+    project_id = app.state.default_project_id
+    _turn(store, project_id, "project-origin", chat_id="chat")
+    _external(store, project_id, "project-job", "project-origin")
+    client = signed_in_client(app)
+    base = f"/api/agent-threads/{space.thread_id}/watchers"
+
+    rows = client.get(base)
+    assert rows.status_code == 200, rows.text
+    assert [(row["watcher_id"], row["can_cancel"]) for row in rows.json()] == [("space-job", True)]
+    foreign = client.post(f"{base}/project-job/cancel", json={})
+    assert foreign.status_code == 404
+
+    response = client.post(f"{base}/space-job/cancel", json={})
+
+    assert response.status_code == 200, response.text
+    assert marker.exists()
+    watcher = store.watcher("space-job")
+    assert watcher is not None
+    assert watcher.state == "cancelled" and watcher.cancelled_by == "human"

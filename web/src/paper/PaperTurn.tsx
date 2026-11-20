@@ -7,7 +7,7 @@ import {
   type CommentOffer,
 } from "../comments/react/CommentComposer";
 import { CommentThreadCard } from "../comments/react/CommentThreadCard";
-import { useComments, type SendThreads } from "../comments/react/useComments";
+import { useComments, type DockThreads } from "../comments/react/useComments";
 import type { CommentThread } from "../comments/types.ts";
 import {
   diffLineLabel,
@@ -142,7 +142,7 @@ export function PaperTurnDiff({
   chatId,
   operationId,
   path,
-  send,
+  dock,
   canPost,
   onClose,
 }: {
@@ -151,7 +151,7 @@ export function PaperTurnDiff({
   chatId: string;
   operationId: string;
   path: string;
-  send: SendThreads | null;
+  dock: DockThreads | null;
   canPost: boolean;
   onClose: () => void;
 }) {
@@ -177,12 +177,12 @@ export function PaperTurnDiff({
     return () => controller.abort();
   }, [apiBase, operationId, path]);
   const comments = useComments({
-    projectId,
+    scope: { kind: "project", projectId },
     kind: "reply",
     ids: [operationId],
     chatId,
     canPost,
-    send,
+    dock,
     picker: Boolean(offer || shown),
   });
   const threads = useMemo(() => {
@@ -299,20 +299,13 @@ export function PaperTurnDiff({
           })}
       </div>
       {offer && (
-        <CommentComposer
-          offer={offer}
-          comments={comments}
-          agentLabel="This chat"
-          canSend={Boolean(send)}
-          onClose={() => setOffer(null)}
-        />
+        <CommentComposer offer={offer} comments={comments} onClose={() => setOffer(null)} />
       )}
       {shownThread && shown && (
         <CommentPopover point={shown.point} label="Comment" onClose={() => setShown(null)}>
           <CommentThreadCard
             thread={shownThread}
             comments={comments}
-            agentLabel="This chat"
             wholeLabel={path}
             selected={false}
             onLocate={() => undefined}

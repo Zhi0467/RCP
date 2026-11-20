@@ -156,11 +156,14 @@
   font: inherit;
 }
 .rcp-comment-actions {
+  align-items: center;
   display: flex;
   justify-content: flex-end;
-  flex-wrap: wrap;
   gap: 6px;
   margin-top: 7px;
+}
+.rcp-comment-actions > :first-child:not(:last-child) {
+  margin-right: auto;
 }
 .rcp-comments .rcp-comment-primary,
 .rcp-comment-composer .rcp-comment-primary {
@@ -260,6 +263,16 @@
 .rcp-comment-pin.selected {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--red, #bc5545) 35%, transparent);
 }
+/* A quote's pin sits in the text's right margin, level with its last line. */
+.rcp-comment-pin.margin {
+  transform: translateY(-50%);
+}
+::highlight(rcp-comment) {
+  background-color: color-mix(in srgb, var(--red, #bc5545) 14%, transparent);
+}
+::highlight(rcp-comment-selected) {
+  background-color: color-mix(in srgb, var(--red, #bc5545) 30%, transparent);
+}
 .rcp-comment-box {
   position: fixed;
   pointer-events: none;
@@ -299,13 +312,6 @@
     width: 32px;
     height: 32px;
     margin: -6px -6px 0 0;
-  }
-  .rcp-comment-composer {
-    left: 8px !important;
-    top: auto !important;
-    bottom: calc(12px + env(safe-area-inset-bottom));
-    width: calc(100vw - 16px);
-    z-index: 31;
   }
   .rcp-comment-actions button {
     min-height: 36px;

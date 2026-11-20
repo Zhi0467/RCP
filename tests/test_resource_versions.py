@@ -215,6 +215,8 @@ def test_watermark_migration_backfills_existing_owner_deadlines(tmp_path: Path) 
 
 _EXEMPT_TABLES = {
     "agent_threads": "private thread index; thread views poll directly",
+    "agents": "identity registry; no view reads it yet",
+    "agent_sessions": "session pointer read at admission; task rows invalidate views",
     "agent_schedules": "private schedule state; thread views poll directly",
     "agent_schedule_command_receipts": "private schedule replay; schedule deletion owns cleanup",
     "approval_cards": "question-owned action; questions invalidate resolution",
@@ -324,6 +326,7 @@ def test_current_schema_classifies_every_table_and_installs_all_owner_triggers(t
             "artifact_operations",
             "paper_publication",
             "paper_state",
+            "watcher_checks",
         }
     )
     store = AppStore(tmp_path / "store.db")

@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import UUID4, BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
+from rcp.agents.agent_owner import resolve_agent_task, task_retry_overrides, task_write_admission
 from rcp.api.dependencies import (
     get_artifact_mutation_locks,
     get_attachment_store,
@@ -24,7 +25,7 @@ from rcp.api.dependencies import (
     get_identity_access,
     get_store,
     get_watcher_delivery,
-    project_write_admission,
+    require_agent_project_membership,
     require_project_membership,
     require_project_write_admission,
     require_registered_project,
@@ -70,6 +71,7 @@ from rcp.runs.chat import (
 )
 from rcp.runs.chat_admission import admit_fresh_chat_turn
 from rcp.runs.session_artifacts import artifact_edit_outcomes
+from rcp.runs.space_chat import SpaceThreadOwner
 from rcp.runs.steering import (
     begin_chat_steer,
     chat_steer_action_label,
@@ -94,6 +96,7 @@ from rcp.transport import StateUnavailable
 from rcp.watchers import WatcherDelivery
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
+agent_router = APIRouter(dependencies=[Depends(require_agent_project_membership)])
 
 CatalogDependency = Annotated[ProjectCatalog, Depends(get_catalog)]
 IdentityDependency = Annotated[IdentityAccess, Depends(get_identity_access)]
@@ -378,7 +381,7 @@ def _can_apply_again(store: AppStore, record: AgentTaskRecord) -> bool:
 
 
 def _reject_history_only_control(record: AgentTaskRecord) -> None:
-    if record.history_only:
+    if record.history_only or record.kind in {"seed", "refresh"}:
         raise HTTPException(
             status_code=409,
             detail="This task is retained as history and cannot be controlled or continued.",
@@ -427,10 +430,10 @@ def start_ordinary_task(
     if thread is not None:
         if thread.user_id != authorized_by.user_id or thread.project_id != project_id:
             raise HTTPException(status_code=404, detail="Thread not found")
-        if kind != "project_chat" or body.get("mode", "work") != "work" or branch_id:
+        if kind != "project_chat" or body.get("mode", "work") != "work":
             raise HTTPException(
                 status_code=422,
-                detail="Agent threads require Work on the project main graph.",
+                detail="Agent threads require project Work.",
             )
         body = {**body, "mode": "work", "chat_scope": "project"}
         from rcp.runs.agent_thread_commands import sent_thread_agent
@@ -593,6 +596,8 @@ def start_agent_task(
 ) -> dict[str, object]:
     if kind == "paper_coach":
         raise HTTPException(status_code=405, detail="Paper coaching is a Paper chat.")
+    if kind in {"seed", "refresh"}:
+        raise HTTPException(status_code=405, detail="Seed and Refresh runs are retired.")
     body = dict(body)
     try:
         thread_ids = TypeAdapter(list[str]).validate_python(
@@ -775,18 +780,24 @@ def _without_turn_messages(response: dict[str, object]) -> dict[str, object]:
 
 
 @router.get("/api/projects/{project_id}/tasks/{operation_id}")
+@agent_router.get("/api/agent-threads/{thread_id}/tasks/{operation_id}")
 def agent_task(
-    project_id: str,
     operation_id: str,
+    request: Request,
     *,
-    catalog: CatalogDependency,
+    project_id: str | None = None,
+    thread_id: str | None = None,
     store: StoreDependency,
+    identity_access: IdentityDependency,
     background_tasks: BackgroundTasksDependency,
 ) -> dict[str, object]:
-    require_registered_project(catalog, project_id)
-    record = store.agent_task(operation_id)
-    if record is None or record.project_id != project_id or not record.visible:
-        raise HTTPException(status_code=404, detail="Agent task not found")
+    record = resolve_agent_task(
+        store,
+        operation_id,
+        identity_access.acting_user(request).user_id,
+        project_id=project_id,
+        thread_id=thread_id,
+    )
     detail = _agent_task_response(
         store,
         record,
@@ -807,21 +818,28 @@ def agent_task(
 
 
 @router.post("/api/projects/{project_id}/tasks/{operation_id}/steer")
+@agent_router.post("/api/agent-threads/{thread_id}/tasks/{operation_id}/steer")
 def steer_agent_task(
-    project_id: str,
     operation_id: str,
     body: SteerAgentTaskRequest,
     http_request: Request,
     *,
+    project_id: str | None = None,
+    thread_id: str | None = None,
     catalog: CatalogDependency,
     store: StoreDependency,
     identity_access: IdentityDependency,
     background_tasks: BackgroundTasksDependency,
 ) -> ChatMessage:
     author = identity_access.require_patch_capable_identity(http_request)
-    record = store.agent_task(operation_id)
-    if record is None or record.project_id != project_id or not record.visible:
-        raise HTTPException(status_code=404, detail="Agent task not found")
+    record = resolve_agent_task(
+        store,
+        operation_id,
+        identity_access.acting_user(http_request).user_id,
+        project_id=project_id,
+        thread_id=thread_id,
+    )
+    project_id = record.project_id
     sent = (
         thread_send_text(
             store,
@@ -836,9 +854,9 @@ def steer_agent_task(
         if body.comment_thread_ids
         else None
     )
-    service = cast(ProjectService, task_owner(store, record, catalog=catalog))
+    service = task_owner(store, record, catalog=catalog)
     try:
-        with project_write_admission(project_id, http_request):
+        with task_write_admission(record, http_request):
             delivery = begin_chat_steer(
                 service,
                 background_tasks,
@@ -1142,18 +1160,24 @@ def keep_agent_artifact(
 
 
 @router.post("/api/projects/{project_id}/tasks/{operation_id}/pause", status_code=202)
+@agent_router.post("/api/agent-threads/{thread_id}/tasks/{operation_id}/pause", status_code=202)
 def pause_agent_task(
-    project_id: str,
     operation_id: str,
+    request: Request,
     *,
-    catalog: CatalogDependency,
+    project_id: str | None = None,
+    thread_id: str | None = None,
     store: StoreDependency,
+    identity_access: IdentityDependency,
     background_tasks: BackgroundTasksDependency,
 ) -> dict[str, object]:
-    require_registered_project(catalog, project_id)
-    record = store.agent_task(operation_id)
-    if record is None or record.project_id != project_id or not record.visible:
-        raise HTTPException(status_code=404, detail="Agent task not found")
+    record = resolve_agent_task(
+        store,
+        operation_id,
+        identity_access.acting_user(request).user_id,
+        project_id=project_id,
+        thread_id=thread_id,
+    )
     return pause_task_as(record, background_tasks).model_dump(mode="json")
 
 
@@ -1169,16 +1193,14 @@ def pause_task_as(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@router.post(
-    "/api/projects/{project_id}/tasks/{operation_id}/resume",
-    status_code=202,
-    dependencies=[Depends(require_project_write_admission)],
-)
+@router.post("/api/projects/{project_id}/tasks/{operation_id}/resume", status_code=202)
+@agent_router.post("/api/agent-threads/{thread_id}/tasks/{operation_id}/resume", status_code=202)
 def resume_agent_task(
-    project_id: str,
     operation_id: str,
     request: Request,
     *,
+    project_id: str | None = None,
+    thread_id: str | None = None,
     catalog: CatalogDependency,
     store: StoreDependency,
     identity_access: IdentityDependency,
@@ -1186,9 +1208,14 @@ def resume_agent_task(
     experiment_admission: ExperimentAdmissionDependency,
     idempotency_key: Annotated[UUID4 | None, Header()] = None,
 ) -> dict[str, object]:
-    previous = store.agent_task(operation_id)
-    if previous is None or previous.project_id != project_id or not previous.visible:
-        raise HTTPException(status_code=404, detail="Agent task not found")
+    previous = resolve_agent_task(
+        store,
+        operation_id,
+        identity_access.acting_user(request).user_id,
+        project_id=project_id,
+        thread_id=thread_id,
+    )
+    project_id = previous.project_id
     _reject_history_only_control(previous)
     if previous.kind == "branch_merge":
         raise HTTPException(
@@ -1196,14 +1223,16 @@ def resume_agent_task(
             detail="Dispatch a new Merge to main task from the episode detail.",
         )
     authorized_by = identity_access.require_patch_capable_identity(request)
-    project_id = catalog.resolve_project_id(project_id)
     try:
-        with store.client_request_admission(
-            project_id,
-            authorized_by.user_id,
-            str(idempotency_key) if idempotency_key is not None else None,
-            f"tasks/{operation_id}/resume",
-        ) as existing:
+        with (
+            task_write_admission(previous, request),
+            store.client_request_admission(
+                project_id,
+                authorized_by.user_id,
+                str(idempotency_key) if idempotency_key is not None else None,
+                f"tasks/{operation_id}/resume",
+            ) as existing,
+        ):
             if existing is not None:
                 record = store.agent_task(existing.operation_id or "")
                 assert record is not None
@@ -1229,21 +1258,16 @@ def resume_task_as(
 ) -> AgentTaskRecord:
     """Resume one paused turn in its saved session, as Resume does; raises the HTTP refusal.
 
-    The caller holds the project's write admission.
+    The caller holds the owner's write admission.
     """
 
     store = background_tasks.store
-    operation_id = previous.operation_id
-    service = cast(ProjectService, task_owner(store, previous, catalog=catalog))
+    owner = task_owner(store, previous, catalog=catalog)
     try:
-        with _task_preparation_service(service) as reader:
-            experiment_admission.require_current(reader, previous.request)
-            validated, skills = _validate_stored_task_request(
-                reader, previous.kind, previous.request
-            )
-        with _chat_recovery_admission(service, store, previous):
+        skills = _admit_stored_request(owner, previous.kind, previous.request, experiment_admission)
+        with _chat_recovery_admission(owner, store, previous):
             return background_tasks.resume(
-                operation_id,
+                previous.operation_id,
                 skills=skills,
                 authorized_by=authorized_by,
             )
@@ -1251,6 +1275,74 @@ def resume_task_as(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def retry_task_as(
+    previous: AgentTaskRecord,
+    authorized_by: AuthorizedHuman,
+    overrides: dict[str, str],
+    *,
+    catalog: ProjectCatalog,
+    background_tasks: BackgroundAgentTasks,
+    experiment_admission: ExperimentAdmission,
+) -> AgentTaskRecord:
+    """Retry one stopped turn under its stored request, as Retry does; raises the HTTP refusal.
+
+    The caller holds the owner's write admission.
+    """
+
+    store = background_tasks.store
+    operation_id = previous.operation_id
+    owner = task_owner(store, previous, catalog=catalog)
+    try:
+        if previous.kind == "auto_research":
+            candidate = load_stored_request(
+                AutoResearchRunRequest,
+                {**previous.request, **overrides},
+                operation_id=operation_id,
+            )
+        else:
+            candidate = load_stored_request(
+                RunRequest,
+                {**previous.request, **overrides, "session_id": None},
+                operation_id=operation_id,
+            )
+        skills = _admit_stored_request(
+            owner, previous.kind, candidate.model_dump(mode="json"), experiment_admission
+        )
+        if previous.kind == "auto_research":
+            return background_tasks.retry_auto_research(
+                operation_id,
+                service=cast(ProjectService, owner),
+                skills=skills,
+                **overrides,
+            )
+        assert isinstance(candidate, RunRequest)
+        with _chat_recovery_admission(owner, store, previous, candidate):
+            return background_tasks.retry(
+                operation_id,
+                skills=skills,
+                authorized_by=authorized_by,
+                **overrides,
+            )
+    except (OSError, StateUnavailable) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _admit_stored_request(
+    owner: ProjectService | SpaceThreadOwner,
+    kind: AgentTaskKind,
+    body: dict[str, object],
+    experiment_admission: ExperimentAdmission,
+) -> SkillSelection | None:
+    """Run the stored-request checks every Retry and Resume shares, through the task's owner."""
+    if isinstance(owner, SpaceThreadOwner):
+        return owner.validate_stored_request(body)[1]
+    with _task_preparation_service(owner) as reader:
+        experiment_admission.require_current(reader, body)
+        return _validate_stored_task_request(reader, kind, body)[1]
 
 
 @router.post(
@@ -1346,17 +1438,15 @@ def apply_agent_task_graph_update_again(
     return _agent_task_response(store, record, background_tasks)
 
 
-@router.post(
-    "/api/projects/{project_id}/tasks/{operation_id}/retry",
-    status_code=202,
-    dependencies=[Depends(require_project_write_admission)],
-)
+@router.post("/api/projects/{project_id}/tasks/{operation_id}/retry", status_code=202)
+@agent_router.post("/api/agent-threads/{thread_id}/tasks/{operation_id}/retry", status_code=202)
 def retry_agent_task(
-    project_id: str,
     operation_id: str,
     request: Request,
     body: RetryAgentTaskRequest | None = None,
     *,
+    project_id: str | None = None,
+    thread_id: str | None = None,
     catalog: CatalogDependency,
     store: StoreDependency,
     identity_access: IdentityDependency,
@@ -1364,9 +1454,14 @@ def retry_agent_task(
     experiment_admission: ExperimentAdmissionDependency,
     idempotency_key: Annotated[UUID4 | None, Header()] = None,
 ) -> dict[str, object]:
-    previous = store.agent_task(operation_id)
-    if previous is None or previous.project_id != project_id or not previous.visible:
-        raise HTTPException(status_code=404, detail="Agent task not found")
+    previous = resolve_agent_task(
+        store,
+        operation_id,
+        identity_access.acting_user(request).user_id,
+        project_id=project_id,
+        thread_id=thread_id,
+    )
+    project_id = previous.project_id
     _reject_history_only_control(previous)
     if previous.kind == "branch_merge":
         raise HTTPException(
@@ -1376,61 +1471,30 @@ def retry_agent_task(
     if _discuss_chat_turn(previous):
         raise HTTPException(status_code=409, detail="Send it again as an ordinary turn.")
     authorized_by = identity_access.require_patch_capable_identity(request)
-    project_id = catalog.resolve_project_id(project_id)
     try:
-        with store.client_request_admission(
-            project_id,
-            authorized_by.user_id,
-            str(idempotency_key) if idempotency_key is not None else None,
-            f"tasks/{operation_id}/retry",
-        ) as existing:
+        with (
+            task_write_admission(previous, request),
+            store.client_request_admission(
+                project_id,
+                authorized_by.user_id,
+                str(idempotency_key) if idempotency_key is not None else None,
+                f"tasks/{operation_id}/retry",
+            ) as existing,
+        ):
             if existing is not None:
                 record = store.agent_task(existing.operation_id or "")
                 assert record is not None
                 return record.model_dump(mode="json")
-            service = cast(ProjectService, task_owner(store, previous, catalog=catalog))
-            try:
-                overrides = body.model_dump(exclude_none=True) if body is not None else {}
-                if previous.kind == "auto_research":
-                    candidate = load_stored_request(
-                        AutoResearchRunRequest,
-                        {**previous.request, **overrides},
-                        operation_id=previous.operation_id,
-                    )
-                else:
-                    candidate = load_stored_request(
-                        RunRequest,
-                        {**previous.request, **overrides, "session_id": None},
-                        operation_id=previous.operation_id,
-                    )
-                # A comment's retry is its chat turn's retry: it edits the current version.
-                with _task_preparation_service(service) as reader:
-                    candidate_payload = candidate.model_dump(mode="json")
-                    experiment_admission.require_current(reader, candidate_payload)
-                    validated, skills = _validate_stored_task_request(
-                        reader,
-                        previous.kind,
-                        candidate_payload,
-                    )
-                if previous.kind == "auto_research":
-                    return background_tasks.retry_auto_research(
-                        operation_id,
-                        service=service,
-                        skills=skills,
-                        **overrides,
-                    ).model_dump(mode="json")
-                assert isinstance(candidate, RunRequest)
-                with _chat_recovery_admission(service, store, previous, candidate):
-                    return background_tasks.retry(
-                        operation_id,
-                        skills=skills,
-                        authorized_by=authorized_by,
-                        **overrides,
-                    ).model_dump(mode="json")
-            except (OSError, StateUnavailable) as exc:
-                raise HTTPException(status_code=503, detail=str(exc)) from exc
-            except ValueError as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            return retry_task_as(
+                previous,
+                authorized_by,
+                task_retry_overrides(
+                    previous, body.model_dump(exclude_none=True) if body is not None else {}, store
+                ),
+                catalog=catalog,
+                background_tasks=background_tasks,
+                experiment_admission=experiment_admission,
+            ).model_dump(mode="json")
     except ClientRequestConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -1448,7 +1512,7 @@ def _task_preparation_service(service: ProjectService) -> Iterator[ProjectServic
 
 
 def _chat_recovery_admission(
-    service: ProjectService,
+    service: ProjectService | SpaceThreadOwner,
     store: AppStore,
     previous: AgentTaskRecord,
     candidate: RunRequest | None = None,
@@ -1461,7 +1525,9 @@ def _chat_recovery_admission(
     assert isinstance(request, RunRequest)
     if request.artifact_edit is not None and request.artifact_edit.origin_bound:
         return nullcontext()
-    return conversation_worktree_recovery_admission(service, store, previous.project_id, request)
+    return conversation_worktree_recovery_admission(
+        cast(ProjectService, service), store, previous.project_id, request
+    )
 
 
 def _artifact_mutation_key(project_id: str, operation_id: str, artifact_id: str) -> str:
@@ -1646,17 +1712,6 @@ def _validated_task_request(
             "watcher_ids": [],
         }
     )
-    if kind in {"seed", "refresh"}:
-        if request.worktree or request.worktree_integration:
-            raise ValueError("Only ordinary conversations can use worktrees.")
-        service.history.require_writable()
-        if request.session_id:
-            raise ValueError(
-                "Seed and refresh sessions can only be resumed from an RCP background "
-                "task checkpoint."
-            )
-        return _resolved_graph_request(service, kind, request)
-
     chat_scope: Literal["node", "project"] = "node" if kind == "node_chat" else "project"
     request = request.model_copy(
         update={
@@ -1703,6 +1758,8 @@ def _validate_stored_task_request(
         )
     if kind == "paper_coach":
         raise ValueError("A retired Paper coach turn cannot run again.")
+    if kind in {"seed", "refresh"}:
+        raise ValueError("A retired Seed or Refresh run cannot run again.")
     request = RunRequest.model_validate(body)
     if request.artifact_edit is not None and request.artifact_edit.origin_bound:
         selection = service.resolve_skill_selection(request)
@@ -1712,8 +1769,6 @@ def _validate_stored_task_request(
             skill_ids=request.invoked_skill_ids,
         )
         return request, selection
-    if kind in {"seed", "refresh"}:
-        service.history.require_writable()
     resolved_run = _resolved_graph_request(
         service,
         kind,

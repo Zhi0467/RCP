@@ -10,6 +10,7 @@ import {
   toggleViewerFullscreen,
   collapseViewer,
   acceptsArtifactEditMessage,
+  artifactDockMessage,
   artifactVersionChanged,
 } from "../src/artifacts/artifactViewerLayout.ts";
 
@@ -79,6 +80,31 @@ test("only a versioned edit message from this iframe and RCP origin is accepted"
   ])
     assert.equal(acceptsArtifactEditMessage(invalid, frame, origin, "a"), false);
   assert.equal(acceptsArtifactEditMessage({ ...event, source: null }, null, origin, "a"), false);
+});
+test("only well-formed docked threads from this iframe and RCP origin reach a composer", () => {
+  const frame = {};
+  const origin = "https://rcp.example";
+  const thread = { thread_id: "t", quote: "q", text: "x" };
+  const data = {
+    type: "rcp-artifact-comments-docked",
+    version: 1,
+    artifact_id: "a",
+    threads: [thread],
+  };
+  const event = { source: frame, origin, data };
+  assert.deepEqual(artifactDockMessage(event, frame, origin, "a"), [thread]);
+  for (const invalid of [
+    { ...event, source: {} },
+    { ...event, origin: "https://other.example" },
+    ...[
+      { ...data, version: 2 },
+      { ...data, artifact_id: "b" },
+      { ...data, threads: [] },
+      { ...data, threads: [thread, { thread_id: "", quote: "", text: "" }] },
+      { ...data, threads: "t" },
+    ].map((data) => ({ ...event, data })),
+  ])
+    assert.equal(artifactDockMessage(invalid, frame, origin, "a"), null);
 });
 test("only a different current version requests a reload, including Undo", () => {
   assert.equal(artifactVersionChanged(null, "one"), false);

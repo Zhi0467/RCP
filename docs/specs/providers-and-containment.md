@@ -1,7 +1,7 @@
 # Providers and containment
 
 This specification owns provider capabilities, launch construction, exact
-project write scopes, remote execution, Seed/Refresh ingestion, provider
+project write scopes, remote execution, provider
 readiness, skills, and durable launch receipts. Semantic graph authority is
 separate and defined in [Authority and Proposals](authority-and-proposals.md).
 
@@ -12,13 +12,12 @@ policy. [Authority and Proposals](authority-and-proposals.md) owns graph authori
 
 | Run | Operational contract |
 | --- | --- |
-| Seed/Refresh | Read provider logs and repositories; write scratch Patch only. |
 | Discuss | Historical Discuss chat turns, their question follow-ups, and the scratch artifact edit only. Writable conversation scratch and shared project memory, read-only project context, public web; a historical chat turn may ask and query graph history. No active Patch contract. |
 | Work | Noninteractive tools, public web, exact repository roots, optional Patch. [Consolidation](graph-consolidation-and-lessons.md) may commit keyed Patches during its turn. |
 | Experiment-loop | Work-like access with focused Experiment and watcher authority. |
 | Auto-research orchestrate | Work-like access, staged command client, orchestrator graph profile. |
 | Episode merge | Scratch candidate; code landing additionally admits the episode worktree and shared checkout. |
-| Correction | Retained scratch; Work-like repair retains the session and exact Work scope. |
+| Correction | Work-like repair retains the session and exact Work scope. |
 | Artifact edit | Discuss scratch-only access on the admitted session, stage and version; no operational commands or master. Admitted only for a chat that refuses human turns; elsewhere a viewer or composer comment is an ordinary Work turn in that chat. |
 | Paper chat | Work, plus the project's Paper folder as one more write root ([Paper write root](#paper-write-root)). Every other run reads the Paper folder and never writes it. |
 
@@ -38,7 +37,7 @@ with a default of 2 minutes for Claude, OpenCode and Codex. Antigravity has no
 shell-timeout lever, so its card omits the field. A Discuss, Work, or
 Experiment turn resolves its configured shell timeout once at staging and carries
 that value through every launch, including Patch corrections. Unset remains
-unset even if the card changes later. Every other launch, Seed/Refresh, branch
+unset even if the card changes later. Every other launch, branch
 merge, orchestrator, and child Work included, resolves it at
 that launch.
 
@@ -246,7 +245,7 @@ or resource supervision; see [design boundaries](../design.md#cross-cutting-inva
 Selected-secret hiding is a separate read policy. After launch-host key
 confirmation, RCP resolves one immutable `HiddenReadScope` before provider or
 browser preparation. Prompts render its exact paths and effective status for
-Discuss, Work, Experiment, orchestration, ingestion, correction, consolidation
+Discuss, Work, Experiment, orchestration, correction, consolidation
 and Paper.
 
 Code defaults cover RCP databases/backups/checkpoints, provider credentials,
@@ -330,10 +329,10 @@ storage, not general project write roots.
 
 ### Watcher commands
 
-`watch.json` check and cancel commands run as written in a fresh `bash -lic`
+Watcher check commands run as written in a fresh `bash -lic`
 as the execution account, locally or over SSH. They are outside provider sandbox
 and turn write scope, bounded only by timeout and process-group termination.
-Human Cancel executes saved agent-authored text with the same account reach.
+A member's Cancel and project deletion run a saved agent-authored `cancel_command` with the same account reach.
 
 **Why:** Watchers outlive provider turns and need the observed job's login
 environment, scheduler, network and sockets. A provider sandbox cannot supply
@@ -348,7 +347,7 @@ and consolidation. It is distinct from repository and machine-grant roots.
 Both local and remote memory bases are inside `rcp_owned_paths`, so a machine
 grant cannot admit them. The provider receives the same resolved root that the
 prompt names. Discuss gains no repository-write or graph authority.
-Seed, Refresh, branch merge and artifact edit have no memory root.
+Branch merge and artifact edit have no memory root.
 A member's Space thread and backend-run private project threads also get that
 member's private memory folder as a memory root. The prompt labels it apart from
 project memory. Members are one lab, so hidden-read hides no member's folder.
@@ -477,7 +476,7 @@ containment that forbids that is not usable containment.
 Browser is a per-chat human grant, off by default for ordinary chats and on when
 a member's agent thread is created, resolved immutably at admission
 and passed through launch construction. Work, orchestration and Discuss
-may use it; ingestion, scratch correction and recorded replay may not. Prompts
+may use it; recorded replay may not. Prompts
 name the already-open session and invocation directory, starting with `goto`.
 `open`, `close`, `close-all` and `kill-all` end that session for the turn;
 `delete-data` also removes logins. Continuations send explicit off/unavailable.
@@ -511,7 +510,7 @@ repository roots. They never use `bypassPermissions`. They load only user
 settings (`--setting-sources user`), so the account's own skills and plugins
 load as in Discuss. A user allow rule cannot widen RCP's allow-list, a user deny
 rule can narrow it, and `disableAllHooks` keeps hooks off. Every Claude launch
-passes strict empty MCP configuration. Discuss, Seed and Refresh with a broker gate add
+passes strict empty MCP configuration. Discuss with a broker gate adds
 only `Bash(python3 -I -S <staged-client-path>:*)` for that gate's exact staged client.
 Its Edit denies protect the client directory itself and all descendants, including
 when an additional read directory or a legacy workspace contains it. The literal
@@ -519,14 +518,14 @@ client directory is escaped for gitignore matching; intentional hidden-read glob
 keep their glob semantics. These denies merge with the launch's hidden-read
 settings. A browser grant separately adds
 `Bash(playwright-cli:*)` and the artifact preview command. Public WebSearch and WebFetch remain available under
-the provider contract. Discuss, Seed and Refresh receive their read context as
+the provider contract. Discuss receives its read context as
 `Read`, `Glob`, and `Grep` allow rules per directory, never `--add-dir`: under
 `acceptEdits` an added directory is also editable, which would hand Discuss
 write access to project files. The code-defined shared memory folder is separately
 admitted through `--add-dir` for historical Discuss chat turns.
 
 Every Claude launch names its tools with `--tools`, from one code-defined set
-per capability. Work, orchestrate, Discuss, Seed and Refresh get the file tools,
+per capability. Work, orchestrate and Discuss get the file tools,
 `Bash`, `Task`, `Skill`, `ToolSearch`, `WebFetch` and `WebSearch`. Session
 summaries get
 none. `--tools` decides which tools exist; the permission rules above decide
@@ -593,9 +592,9 @@ matches them against paths relative to its project root, which is the enclosing
 Git work tree, or `/` outside one. RCP writes them for `/`. A launch that carries
 path rules therefore refuses to start inside a Git work tree, rather than let
 the rules name the wrong paths. Task stages are outside Git.
-Discuss and ingestion may edit only their workspace and their own
-write folders. Discuss and ingestion deny general shell commands, allowing only
-`python3 -I -S <staged-client-path> *` when their broker gate names that client.
+Discuss may edit only its workspace and its own
+write folders. Discuss denies general shell commands, allowing only
+`python3 -I -S <staged-client-path> *` when its broker gate names that client.
 Discuss also allows `playwright-cli *` and the artifact preview command when the
 human granted the browser. Final edit denies protect the
 client directory itself and all descendants in split and legacy stages.
@@ -637,9 +636,7 @@ never reach an RCP launch. Every capability but session summaries runs with
 The tool set is a staged agent, `<cwd>/.agents/agents/rcp-<digest>.md`, named by
 a digest of its tools and policy and selected with `--agent`. Work, orchestrate
 and the paper coach get file, web, shell and subagent tools with `command(*)`.
-Seed, Refresh and scratch Patches get file and web tools, plus the shell only
-with a broker client, which is then the one allowed command. The artifact edit
-gets no shell tools. agy ends a headless turn when it meets an action no rule
+Discuss and the artifact edit get file and web tools and no shell tools. agy ends a headless turn when it meets an action no rule
 allows; RCP shows that as an error naming the refused action. An explicit deny
 instead fails the tool and the turn goes on.
 
@@ -885,7 +882,7 @@ can ask RCP how the graph changed, through two read-only command verbs:
 `graph_log <id> [--at <head>]`. Heads use the target-qualified grammar in
 [Graph, history, and transitions](graph-history-and-transitions.md#history-reads).
 That covers Discuss, Work, Experiment loops, the Auto-research orchestrator and
-its children, branch merge, Seed and Refresh, and nightly
+its children, branch merge, and nightly
 consolidation. A run may read main and every branch of its
 project, except that a run on a fork reads only its
 [ancestry](auto-research-and-branch-merge.md#forks). The runs that
@@ -919,16 +916,14 @@ is written when the turn commits, never at prompt construction, on a failed
 attempt, or because the agent queried a later head. A continuation whose staged
 head differs lists `current.graph_changed_since: <seen head>`; an unknown seen
 head lists nothing and is not "unchanged". The master states once how to query
-that range. Seed and Refresh get their refresh range the same way, and a
-consolidation run gets its covered head, which stays separate from any seen
+that range. A consolidation run gets its covered head, which stays separate from any seen
 head.
 
 ### Group read scope
 
 When a run's project belongs to a [project group](projects-spaces-and-operations.md#project-groups),
 every project in the group shares one read scope. Discuss, Work, Experiment
-loops, and the Auto-research orchestrator and its children receive it. Seed and
-Refresh, branch merge, reports, consolidation, and artifact edits keep their
+loops, and the Auto-research orchestrator and its children receive it. Branch merge, reports, consolidation, and artifact edits keep their
 own project only. The scope names the run's own project, which
 unqualified heads still resolve to, and the readable group projects; `graph_diff`
 and `graph_log` take an optional project id and read any target of a project in
@@ -984,16 +979,16 @@ the one its session began with.
 
 The collection boundary is [invariant 4b](../../AGENTS.md#stable-invariants).
 Conversation graph changes collect only `patch.json` from their exact task stage.
-Ordinary Work also collects `watch.json` and the required `outcome.json` there;
+Ordinary Work also collects the `watchers/` folder and the required `outcome.json` there;
 the latter reports the turn outcome and grants no graph authority.
-Ingestion and branch merge prefer it, then accept exactly one patch-shaped JSON
+Branch merge prefers it, then accepts exactly one patch-shaped JSON
 file if it is missing or not Patch-shaped. They inspect at most eight JSON files,
 `patch.json` first then filename order; multiple candidates are refused.
 Local and remote collection read only regular files and never follow a link.
 The labelled final assistant message is the answer, separate from traces,
 reasoning, tool output and Patch verdict. Rejection preserves an existing answer.
 
-Seed, Refresh and Work stages include a Python command client. Bounded mailbox
+Work stages include a Python command client. Bounded mailbox
 requests let RCP prepare candidates against live state and record validation.
 Exit codes distinguish valid, semantically invalid and unavailable. Apply
 re-prepares bookkeeping and validates under the canonical append lock; a prior
@@ -1043,7 +1038,7 @@ scheduler route are owned by [machines and compute](machines-and-compute.md).
 The standalone broker bounds its stdin wait so Stop signals are handled even
 when a serving thread receives the signal and its parent keeps input open.
 
-Remote Discuss, Work, Experiment, child Work, Seed/Refresh and branch-merge
+Remote Discuss, Work, Experiment, child Work and branch-merge
 mailboxes retain one thread owner through settlement. Disconnected accepted turns transfer it to reconciliation.
 Settlement fences new requests and drains admitted work; shutdown suspends the
 owner with a private checkpoint. Startup restores the same id, token, budget
@@ -1161,13 +1156,7 @@ awaiting background import. One
 storage projection supplies the same ownership and required-stage decisions to
 cleanup and update checkpointing; terminal debris follows normal retention.
 
-Seed and Refresh repair through a generic correction ladder: rescan the retained
-stage for the Patch, then hand validation errors back to the same live session
-for at most two scratch-only rounds. A reused stage still holds the previous
-attempt's `patch.json`, so RCP fingerprints that file before each correction
-launch and refuses an unchanged one, handing the unchanged-file diagnostic
-forward rather than revalidating the same bytes. A graph-level rejection takes
-the same correction rounds. Work instead repairs through same-access `work_patch_correction`, which
+Work repairs through same-access `work_patch_correction`, which
 retains the original native session and write scope and changes only the
 instruction.
 
@@ -1217,7 +1206,7 @@ processes do not recover in-flight steering.
 ## Local and SSH execution
 
 Every agent runs on the project's **base**: the machine that holds the
-canonical state repository. Chat, Seed, Refresh, Experiments, Auto-research,
+canonical state repository. Chat, Experiments, Auto-research,
 and watchers alike; no profile, request or recovery picks
 another machine, and project Settings tags the base's machine card. A manifest
 whose coach names another machine loads with that choice dropped. Paper chats
@@ -1259,7 +1248,7 @@ widens repository or write scope.
 and agents that were not told a machine's route guessed a raw address and
 failed. Giving every agent every machine keeps one source of truth.
 
-Chat turns, Seed and Refresh, Experiment Runs and continuations,
+Chat turns, Experiment Runs and continuations,
 Auto-research orchestrators and their children (each from the base),
 watcher wakes, Retry and recovery all state the machines as they are at launch.
 The branch-merge agent receives no compute-machine context; it retains its
@@ -1656,8 +1645,7 @@ owns remote state locking.
 ### A remote turn outliving its connection
 
 Every remote launch is supervised; owners do not opt in. Ordinary Work,
-Discuss, Experiment-loop, Auto-research actors and child Work, graph Seed and
-Refresh, episode reports, artifact edits and branch merges
+Discuss, Experiment-loop, Auto-research actors and child Work, episode reports, artifact edits and branch merges
 register typed, durable finalizers. Routing uses the retained contract, never chat kind.
 Zero or multiple contracts leave the task visibly waiting. Local turns register
 no remote finalizer.
@@ -1665,7 +1653,7 @@ no remote finalizer.
 Each owner settles its own effects: Work's Patch/watchers/reply; Discuss's reply
 and session binding; the child's parent-authorized result; Experiment's joint
 Patch/watch admission and wake binding; an Auto-research actor's Patch and
-reply; graph Seed/Refresh's Patch; a report's stage file; and a merge's answers. Experiment records its baseline, control
+reply; a report's stage file; and a merge's answers. Experiment records its baseline, control
 snapshot and committed wake session before launch. Recovery creates no second
 child or invocation and retains the original authority, target and accounting.
 
@@ -1741,35 +1729,6 @@ There is no delayed kill intent. If the provider already completed, or completes
 before Stop reaches it, Pause refuses and preserves its journal for finalization.
 Unreadable journals remain unresolved. Active reconciliation participates in
 maintenance draining and bounded shutdown.
-
-## Seed and Refresh ingestion
-
-Seed/Refresh alone ingest provider-native history. Context supplies execution-host
-log roots, `last_refresh_at`, current graph/research rendering, repository pointers,
-selected packages and optional human input. The agent reads live logs in place.
-RCP only preflights existence/readability, reporting nonblocking failures; it does
-not normalize, cache, transfer or project ordinary live log content, nor maintain
-per-log cursors, coverage truth or reports. OpenCode has no supplied log roots
-because its sessions live in SQLite.
-
-Personal-to-team transfer uses the native conversation index to select complete
-sources by recorded project working paths, best-effort with nonblocking skipped
-source diagnostics. It copies original transcript bytes into read-only
-`<RCP_DATA_DIR>/project-sources/<project-id>/provider-history/<provider>/`.
-Seed/Refresh reads these beside the execution account's live roots. Local runs
-read project storage; remote runs stage the validated inventory as immutable
-input. Resume requires the same fingerprint; missing/changed staging requires
-clean Retry, and missing/corrupt durable imported bytes block ingestion.
-
-RCP chats transfer for human display only, excluded under the
-[native chat context rule](conversations-episodes-and-watchers.md#native-chat-context).
-Imported sources never enter canonical `.research`, provider homes or rebuildable
-caches and grant no session recovery, credential or execution authority.
-
-Only committed Seed/Refresh Patch advances the overlap-tolerant timestamp.
-Failure, pause, interruption or rejection leaves it unchanged. Correction is
-scratch-only and offline over retained inputs; provider-owned read-only fan-out
-leaves the root as the sole Patch writer.
 
 ## Provider readiness and native skills
 
@@ -1920,11 +1879,9 @@ not require another provider turn and cannot change acceptance or graph authorit
 
 ## Network behavior
 
-Every user-facing Seed/Refresh, Discuss, Work, Experiment, Auto-research, merge,
+Every user-facing Discuss, Work, Experiment, Auto-research, merge,
 and Paper surface retains its provider-native public-web behavior as defined by
 its contract. Exact project write roots do not add a new network restriction.
-Generic scratch-only Patch correction remains offline where its retained
-contract requires that.
 
 ## Host browser runtime
 
@@ -2178,9 +2135,10 @@ receives the union of the bound projects' read-hiding policies; the combined pol
 local write projects retains the local account's default secret protections.
 An account policy that cannot be resolved runs the turn unhidden.
 
-Collection reads `patch.json` and `watch.json` at the stage top level and in
-each `projects/<id>` folder, plus the top-level `outcome.json` for the turn
-outcome, which grants no graph authority. It applies each admitted project's Patch through
+Collection reads `patch.json` at the stage top level and in
+each `projects/<id>` folder, the top-level `outcome.json` for the turn
+outcome, which grants no graph authority, and the top-level `watchers/` folder,
+whose watchers belong to the Space thread. It applies each admitted project's Patch through
 Work Apply, in project-id order, under that project's lock and live membership
 check. Each project's Work graph-update status (`applied`, `none`, `rejected` or
 `unavailable`) goes to `project_results`, and its first reason to the

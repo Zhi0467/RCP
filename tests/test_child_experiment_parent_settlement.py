@@ -16,12 +16,11 @@ from rcp.runs.auto_research import (
 from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.episodes.report import restart_interrupted_episode_reports
 from rcp.runs.episodes.wrapup import begin_episode_report_wrapup
-from rcp.storage import WatcherContinuation
 
 from .helpers import fake_launch_admitted, record_launched_experiment_turn
+from .test_auto_research_child_work_watchers_storage import armed_watcher
 from .test_auto_research_children_storage import _experiment_route, _experiment_task
 from .test_auto_research_wrapup import _episode
-from .test_watchers import _record
 
 
 def _parent_with_child(tmp_path):
@@ -42,25 +41,21 @@ def _parent_with_child(tmp_path):
     return store, parent, root, child
 
 
-def _watcher(child, watcher_id, *, status="completed"):
-    return _record(watcher_id, origin=child.operation_id, status=status).model_copy(
-        update={
-            "episode_id": child.episode_id,
-            "graph_target": child.graph_target,
-            "node_id": child.request["node_id"],
-            "chat_id": child.request["chat_id"],
-            "continuation": WatcherContinuation.model_validate(
-                {k: v for k, v in child.request.items() if k in WatcherContinuation.model_fields}
-            ),
-        }
+def _watcher(store, child, watcher_id, *, completed=True):
+    return armed_watcher(
+        store,
+        watcher_id,
+        agent_id=child.request["chat_id"],
+        origin_turn_id=child.operation_id,
+        project_id=child.project_id,
+        completed=completed,
     )
 
 
-def test_parent_stop_fences_existing_and_late_child_watchers_without_canceling_turn(tmp_path):
+def test_parent_stop_cancels_child_watchers_without_canceling_turn(tmp_path):
     store, parent, _root, child = _parent_with_child(tmp_path)
-    store.create_watchers(
-        [_watcher(child, "completed"), _watcher(child, "active", status="active")]
-    )
+    _watcher(store, child, "completed")
+    _watcher(store, child, "active", completed=False)
 
     stopping = request_auto_research_stop(store, parent.episode_id)
     assert stopping.status == "stopping"
@@ -68,11 +63,9 @@ def test_parent_stop_fences_existing_and_late_child_watchers_without_canceling_t
     assert settle_auto_research_stop(store, parent.episode_id) is None
     assert store.agent_task(child.operation_id).status == "queued"
 
-    store.create_watchers([_watcher(child, "late", status="active")])
-    for watcher_id in ("completed", "active", "late"):
+    for watcher_id in ("completed", "active"):
         watcher = store.watcher(watcher_id)
-        assert watcher.status == "stopped" and watcher.notified
-        assert watcher.notification_operation_id is None
+        assert watcher.state == "cancelled" and watcher.cancelled_by == "rcp"
     assert request_auto_research_stop(store, parent.episode_id) == stopping
 
     store.complete_agent_task(child.operation_id, applied_revision=7, result={"retained": True})

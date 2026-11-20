@@ -37,6 +37,7 @@ from rcp.storage.models import (
     EpisodeReportConflict,
     _required_timestamp,
 )
+from rcp.storage.watchers import _OPEN
 
 if TYPE_CHECKING:
     from rcp.storage import AppStore
@@ -313,8 +314,9 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                 return False
             if (
                 connection.execute(
-                    "SELECT 1 FROM watchers WHERE project_id=? AND graph_target_json=? "
-                    "AND status IN ('active', 'degraded', 'completed') AND notified=0 LIMIT 1",
+                    "SELECT 1 FROM watchers AS w JOIN graph_runs AS origin "
+                    "ON origin.operation_id=w.origin_turn_id WHERE w.project_id=? "
+                    f"AND origin.graph_target_json=? AND {_OPEN} LIMIT 1",
                     (project_id, target_json),
                 ).fetchone()
                 is not None
@@ -847,34 +849,7 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                 self._validate_auto_research_parent_admission(episode)
                 if route.stop_requested_at is not None:
                     raise EpisodeNotRunning("the child Work route is stopping")
-                if watcher_ids:
-                    rows = connection.execute(
-                        f"""
-                        SELECT * FROM watchers WHERE watcher_id IN ({placeholders})
-                          AND status IN ('completed', 'degraded') AND notified = 0
-                          AND notification_operation_id IS NULL
-                        """,
-                        watcher_ids,
-                    ).fetchall()
-                    if {str(row["watcher_id"]) for row in rows} != set(watcher_ids):
-                        return None
-                    watchers = [self._watcher_record(row) for row in rows]
-                    self._validate_watcher_notification_members(connection, watchers)
-                    for watcher in watchers:
-                        self._validate_watcher_notification_scope(connection, record, [watcher])
-                    if any(
-                        item.worker_id != worker_id
-                        or item.episode_id != route.episode_id
-                        or item.project_id != route.project_id
-                        or item.graph_target != record.graph_target
-                        or item.chat_id != record.request.get("chat_id")
-                        or item.node_id != record.request.get("node_id")
-                        for item in watchers
-                    ):
-                        raise ValueError(
-                            "child Work watcher wake crosses its route or graph target"
-                        )
-                else:
+                if not watcher_ids:
                     messages = connection.execute(
                         f"""
                         SELECT message_id, episode_id, recipient_task_id,
@@ -930,14 +905,6 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                     "mode",
                     "patch_kind",
                 )
-                if watcher_ids:
-                    # The watcher pins resolved provider defaults, while the original
-                    # request may retain null model/reasoning; its policy was checked above.
-                    pinned_request_fields = tuple(
-                        field
-                        for field in pinned_request_fields
-                        if field not in {"model", "reasoning"}
-                    )
                 if (
                     record.status != "queued"
                     or not record.visible
@@ -1002,19 +969,11 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                 if route_changed != 1:
                     raise ValueError("child Work wake admission changed during its transaction")
                 if watcher_ids:
-                    claimed = connection.execute(
-                        f"""
-                        UPDATE watchers SET notified = 1, notification_operation_id = ?,
-                            last_error = CASE WHEN status = 'completed' THEN NULL
-                                              ELSE last_error END
-                        WHERE watcher_id IN ({placeholders}) AND notified = 0
-                          AND notification_operation_id IS NULL
-                          AND status IN ('completed', 'degraded')
-                        """,
-                        (record.operation_id, *watcher_ids),
-                    ).rowcount
-                    if claimed != len(watcher_ids):
-                        raise ValueError("child Work watchers changed during their delivery claim")
+                    if not cast("AppStore", self).claim_watcher_wake(
+                        connection, worker_id, watcher_ids, record.operation_id
+                    ):
+                        connection.rollback()
+                        return None
                 else:
                     claimed = connection.execute(
                         f"""
@@ -1088,18 +1047,14 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
         connection: sqlite3.Connection, episode_id: str
     ) -> set[str]:
         rows = connection.execute(
-            """
+            f"""
             SELECT route.worker_id FROM auto_research_child_work AS route
             JOIN graph_runs AS run ON run.operation_id = route.current_operation_id
             WHERE route.episode_id = ? AND run.status = 'succeeded'
               AND route.stop_requested_at IS NULL
               AND EXISTS (
-                  SELECT 1 FROM watchers AS watcher
-                  WHERE watcher.worker_id = route.worker_id
-                    AND watcher.episode_id = route.episode_id
-                    AND watcher.status IN ('active', 'degraded', 'completed')
-                    AND watcher.notified = 0
-                    AND watcher.notification_operation_id IS NULL
+                  SELECT 1 FROM watchers AS w
+                  WHERE w.agent_id = route.worker_id AND {_OPEN}
               )
             """,
             (episode_id,),
@@ -1127,17 +1082,11 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                 """,
                 (now, now, worker_id),
             )
-            connection.execute(
-                """
-                UPDATE watchers
-                SET status = 'stopped', notified = 1, next_check_at = NULL,
-                    stopped_by = COALESCE(stopped_by, 'loop'),
-                    stop_reason = COALESCE(stop_reason, 'Auto-research child Work stopped.'),
-                    stopped_at = COALESCE(stopped_at, ?)
-                WHERE worker_id = ? AND status IN ('active', 'degraded', 'completed')
-                  AND notified = 0
-                """,
-                (now, worker_id),
+            cast("AppStore", self).cancel_agent_watchers(
+                worker_id,
+                by="rcp",
+                reason="Auto-research child Work stopped.",
+                connection=connection,
             )
         stored = self.auto_research_child_work(worker_id)
         assert stored is not None

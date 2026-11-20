@@ -9,9 +9,16 @@ from contextlib import aclosing
 from dataclasses import replace
 from functools import partial
 from pathlib import Path
-from typing import Literal, get_args
+from typing import Literal
 
 from rcp.agents import AgentEvent, AgentLauncher, PromptFactory
+from rcp.agents.agent_profile import (
+    SHARED_PROJECT,
+    VERBS,
+    AgentProfile,
+    AgentTurn,
+    resolve_agent_profile,
+)
 from rcp.agents.command_mailbox import (
     CommandTurnIdentity,
     StagedCommandMailbox,
@@ -22,7 +29,6 @@ from rcp.agents.command_protocol import (
     BulletinCommandRequest,
     CommandRequest,
     CommandResponse,
-    CommandVerb,
     MessageCommandRequest,
     NameCommandRequest,
     ValidateCommandRequest,
@@ -68,12 +74,10 @@ from rcp.runs.shared import (
     _parent_task_contract_path,
     _sse,
     _stage_task_contract,
-    _task_token,
     note_link_lost_before_provider,
     retry_original_contract_path,
 )
 from rcp.runs.tasks.compute_commands import WorkComputeCommands
-from rcp.runs.tasks.experiment_watcher_maintenance import _process_experiment_watcher_maintenance
 from rcp.runs.tasks.work import (
     PATCH_CORRECTION_MAX_ROUNDS,
     WorkFinalizationContext,
@@ -84,7 +88,6 @@ from rcp.runs.tasks.work import (
     _finalize_work_artifacts,
     _finalize_work_turn,
     _launch_and_stream_work_turn,
-    _maintenance_continuation,
     _prepare_work_chat_prompt,
     _record_work_finalization_context,
     _recorded_retry_deliverable_baseline,
@@ -123,7 +126,8 @@ from rcp.storage import (
     AutoResearchChildWorkRecord,
     AutoResearchMessageRecord,
 )
-from rcp.transport import RemoteRunStage, RunStageMailbox, StateUnavailable
+from rcp.transport import TURN_HANDOFF_FILES, RemoteRunStage, RunStageMailbox, StateUnavailable
+from rcp.watcher_folder import stage_watcher_folder, watcher_binding
 
 _CHILD_WORK_HANDOFFS_CLEARED_RECEIPT = "auto_research_child_work_handoffs_cleared"
 
@@ -153,12 +157,7 @@ def _prepare_auto_research_child_work_handoffs(
         _CHILD_WORK_HANDOFFS_CLEARED_RECEIPT,
         {
             "version": 1,
-            "files": [
-                "patch.json",
-                "watch.json",
-                "inputs/messages.json" if local_stage is not None else "messages.json",
-                "lifecycle.json",
-            ],
+            "files": list(TURN_HANDOFF_FILES),
         },
     )
 
@@ -252,9 +251,9 @@ def _auto_research_child_work_contract(
     allowed_verbs = _child_turn_verbs(turn)
     name_usage = name_command_usage(COMMAND_CLIENT) if "name" in allowed_verbs else ""
     allowed_commands = ", ".join(
-        f"`{verb.replace('_', '-')}`" for verb in get_args(CommandVerb) if verb in allowed_verbs
+        f"`{verb.replace('_', '-')}`" for verb in VERBS if verb in allowed_verbs
     )
-    denied_verbs = [verb for verb in get_args(CommandVerb) if verb not in allowed_verbs]
+    denied_verbs = [verb for verb in VERBS if verb not in allowed_verbs]
     denied_commands = ", ".join(f"`{verb.replace('_', '-')}`" for verb in denied_verbs)
     return f"""
 
@@ -280,8 +279,7 @@ source of graph truth. A wake names the newly claimed mail to read before contin
   later paid delivery; it does not wake or interrupt the root immediately.
 - Do not invoke {denied_commands}, or any other staged command not allowed above. These commands
   are unavailable to this child turn.
-- When work or a graph condition remains to watch, write `watch.json` with `external` and `graph`
-  lists and finish this turn. If you are already waiting on submitted work, observe it without
+- When waiting on submitted work, observe it without
   launching a replacement. RCP wakes this same child route and native session under the episode's
   Stop fence; worker turns spend no episode budget.
 - If the assignment needs something outside your tools or authority, reply to the orchestrator
@@ -289,31 +287,25 @@ source of graph truth. A wake names the newly claimed mail to read before contin
 """.strip()
 
 
-def _child_commands(
+def _child_profile(
     execution: AgentTaskExecution | None,
     graph_read_scope: GraphReadScope | None,
     compute_commands: WorkComputeCommands | None,
-) -> frozenset[str]:
+) -> AgentProfile:
     """Resolve a child Work launch's command surface from its launch objects."""
     from rcp.runs.agent_names import resolve_agent_name_state
 
-    naming = resolve_agent_name_state(execution).get("can_self_name")
-    bulletin = execution is not None and execution.store.bulletin_enabled_for_task(
-        execution.operation_id
+    return resolve_agent_profile(
+        SHARED_PROJECT,
+        "child",
+        AgentTurn(
+            read_verbs=graph_read_scope.verbs if graph_read_scope is not None else frozenset(),
+            launch=compute_commands is not None and compute_commands.launch_available,
+            can_self_name=bool(resolve_agent_name_state(execution).get("can_self_name")),
+            bulletin=execution is not None
+            and execution.store.bulletin_enabled_for_task(execution.operation_id),
+        ),
     )
-    verbs = (
-        frozenset(
-            {
-                "validate",
-                "message",
-                *(("name",) if naming else ()),
-                *(("bulletin",) if bulletin else ()),
-            }
-        )
-        | (graph_read_scope.verbs if graph_read_scope is not None else frozenset())
-        | (compute_commands.allowed_verbs if compute_commands is not None else frozenset())
-    )
-    return verbs
 
 
 def _child_turn_verbs(turn: WorkTurn) -> frozenset[str]:
@@ -509,6 +501,17 @@ async def _stage_auto_research_child_work_turn(
                 workspace=layout.workspace,
                 remote_stage=layout.remote_stage,
             )
+        stage_watcher_folder(
+            execution.store,
+            watcher_binding(
+                execution.store,
+                execution.operation_id,
+                route.worker_id,
+                resolved.machine.machine_id,
+            ),
+            layout.workspace,
+            layout.remote_stage,
+        )
         return _stage_auto_research_child_work_mail(
             execution,
             route,
@@ -702,7 +705,7 @@ def _start_auto_research_child_validator_mailbox(
     graph_read_scope: GraphReadScope | None = None,
 ) -> _WorkValidatorMailboxLifecycle:
     # Resolved once: the mailbox enforces it and the prompt renders it from the lifecycle.
-    allowed_verbs = _child_commands(execution, graph_read_scope, compute_commands)
+    profile = _child_profile(execution, graph_read_scope, compute_commands)
     lifecycle = start_work_validator_mailbox(
         staged,
         execution=execution,
@@ -720,7 +723,7 @@ def _start_auto_research_child_validator_mailbox(
             service=lambda: service,
             graph_read_scope=graph_read_scope,
             compute_commands=compute_commands,
-            allowed_verbs=allowed_verbs,
+            allowed_verbs=profile.verbs,
         ),
         resume_context=_ChildMailboxContext(
             **_work_mailbox_context(
@@ -732,7 +735,7 @@ def _start_auto_research_child_validator_mailbox(
             route=route,
         ).model_dump(mode="json"),
     )
-    lifecycle.allowed_verbs = allowed_verbs
+    lifecycle.profile = profile
     return lifecycle
 
 
@@ -757,7 +760,7 @@ def resume_child_work_command_mailbox(
     compute_commands = _resume_work_compute_commands(execution, context)
     if compute_commands is None:
         raise ValueError("The retained child Work mailbox has no compute scope.")
-    allowed_verbs = _child_commands(execution, context.graph_read_scope, compute_commands)
+    profile = _child_profile(execution, context.graph_read_scope, compute_commands)
     lifecycle = restore_work_validator_mailbox(
         execution,
         validate=lambda text: _validate_work_patch_live(
@@ -773,11 +776,11 @@ def resume_child_work_command_mailbox(
             service=service,
             graph_read_scope=context.graph_read_scope,
             compute_commands=compute_commands,
-            allowed_verbs=allowed_verbs,
+            allowed_verbs=profile.verbs,
         ),
     )
     if lifecycle is not None:
-        lifecycle.allowed_verbs = allowed_verbs
+        lifecycle.profile = profile
     return lifecycle
 
 
@@ -862,35 +865,6 @@ async def settle_child_work_deliverables(
     if settled.stop:
         return
 
-    (
-        maintenance_frames,
-        native_session_id,
-        maintenance_paused,
-    ) = await _process_experiment_watcher_maintenance(
-        service=finalization.service,
-        launcher=launcher,
-        request=finalization.request,
-        execution=finalization.execution,
-        staged_resources=[],
-        workspace=finalization.workspace,
-        remote_stage=finalization.remote_stage,
-        local_stage=finalization.local_stage,
-        token=_task_token(finalization.execution),
-        native_session_id=settled.native_session_id,
-        read_dirs=launch_turn.read_dirs if launch_turn is not None else [],
-        write_dirs=launch_turn.write_dirs if launch_turn is not None else [],
-        write_scope=finalization.write_scope,
-        execution_host=finalization.execution_host,
-        provider_binary=launch_turn.provider_binary if launch_turn is not None else None,
-        retry_output_digests=retry_baseline.experiment_watch_digests,
-        maximum_corrections=maximum_corrections,
-        continuation=_maintenance_continuation(launch_turn, composed),
-    )
-    settled.native_session_id = native_session_id
-    for frame in maintenance_frames:
-        yield frame
-    if maintenance_paused:
-        return
     async with aclosing(
         _settle_watch_deliverable(
             finalization,
@@ -1418,7 +1392,7 @@ async def _serve_auto_research_child_work_mailbox(
             )
         if isinstance(request, MessageCommandRequest):
             return _dispatch_auto_research_child_reply(execution, route, request)
-        if request.verb in compute_commands.allowed_verbs:
+        if request.verb == "launch":
             return await asyncio.to_thread(compute_commands, request, identity)
         return CommandResponse(
             request_id=request.request_id,

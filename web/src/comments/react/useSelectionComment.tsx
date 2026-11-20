@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { MessageCirclePlus } from "lucide-react";
 import type { Point } from "../box.ts";
+import type { PopoverAnchor } from "./CommentComposer";
 import { chatAnnotationViewportMetrics, chatSelectionCommentPosition } from "../../chat/chatInput";
 
 /** A finished selection that can start a thread: where to offer Comment and what to open. */
@@ -9,7 +10,8 @@ export interface SelectionCommentOffer {
   rect: { left: number; right: number; top: number; bottom: number };
   /** The selection's first line, which the offer sits above; the whole rect without it. */
   firstLine?: { left: number; right: number; top: number };
-  open: () => void;
+  /** Opens the composer at `at`: below the selection's end, aligned to the clicked offer. */
+  open: (at: PopoverAnchor) => void;
 }
 
 const BUTTON = { width: 96, height: 26 };
@@ -116,9 +118,14 @@ export function SelectionCommentButton({
       style={{ left: point.x, top: point.y }}
       onPointerDown={(event) => event.preventDefault()}
       onMouseDown={(event) => event.preventDefault()}
-      onClick={() => {
+      onClick={(event) => {
+        const chip = event.currentTarget.getBoundingClientRect();
         onOpen();
-        offer.open();
+        offer.open({
+          x: chip.left,
+          y: Math.max(chip.bottom, offer.rect.bottom),
+          top: Math.min(chip.top, offer.rect.top),
+        });
       }}
     >
       <MessageCirclePlus size={13} /> Comment

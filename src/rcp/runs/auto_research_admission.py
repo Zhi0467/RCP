@@ -55,7 +55,6 @@ from rcp.storage import (
     EpisodeInvocationCeilingReached,
     EpisodeNotRunning,
     EpisodeRecord,
-    WatcherContinuation,
 )
 from rcp.transport import RemoteRunStage
 
@@ -1107,9 +1106,9 @@ def start_auto_research_child_work_watcher_wake(
     worker_id: str,
     watcher_ids: list[str],
     *,
-    request: RunRequest,
+    message: str,
 ) -> AgentTaskRecord | None:
-    """Spend B for a completed watcher group on the child's saved native session."""
+    """Continue the child's saved Work session with its ready watchers."""
 
     return _start_auto_research_child_work_wake(
         tasks,
@@ -1117,7 +1116,7 @@ def start_auto_research_child_work_watcher_wake(
         worker_id,
         watcher_ids,
         continuation="watcher_wake",
-        watcher_request=request,
+        message=message,
     )
 
 
@@ -1128,7 +1127,7 @@ def _start_auto_research_child_work_wake(
     input_ids: list[str],
     *,
     continuation: Literal["message_wake", "watcher_wake"],
-    watcher_request: RunRequest | None = None,
+    message: str | None = None,
     operation_id: str | None = None,
     created_at: str | None = None,
 ) -> AgentTaskRecord | None:
@@ -1141,23 +1140,10 @@ def _start_auto_research_child_work_wake(
     request = tasks._request_from_record(current)
     if not isinstance(request, RunRequest):
         raise ValueError("The routed worker task is not an ordinary Work request.")
-    if watcher_request is not None:
-        # The watcher pins the turn's resolved defaults and packages; the original
-        # request may still contain unset model/reasoning or implicit skill selection.
-        watcher = tasks.store.watcher(input_ids[0])
-        if watcher is None:
-            raise ValueError("The child watcher wake lost its durable delivery policy.")
-        request = request.model_copy(
-            update={
-                field: getattr(watcher.continuation, field)
-                for field in WatcherContinuation.model_fields
-                if field in RunRequest.model_fields
-            }
-        )
     request = request.model_copy(
         update={
             "session_id": current.native_session_id,
-            "message": watcher_request.message if watcher_request is not None else None,
+            "message": message,
             "watcher_ids": input_ids if continuation == "watcher_wake" else [],
             "invoked_workflow_ids": [],
             "invoked_skill_ids": [],
@@ -1529,7 +1515,6 @@ def start_auto_research_child_experiment(
     )
     stored = tasks.store.create_experiment_episode_with_invocation(
         task,
-        request.watcher_ids,
         auto_research_route=route,
         auto_research_admission_id=admission_id,
     )
@@ -2307,11 +2292,7 @@ def _validate_existing_auto_research_wake(
         if item.delivery_operation_id == operation_id
     ]
     lifecycle = tasks.store.auto_research_lifecycle_delivery(operation_id)
-    watchers = [
-        item
-        for item in tasks.store.watchers(existing.project_id)
-        if item.notification_operation_id == operation_id
-    ]
+    watchers = [tasks.store.watcher(item) for item in request.watcher_ids]
     actor_operation_id = request.actor_operation_id
     binding_is_exact = False
     if request.wake_cause == "message":
@@ -2328,13 +2309,10 @@ def _validate_existing_auto_research_wake(
             for item in messages
         )
     elif request.wake_cause in {"watcher", "graph_condition"}:
-        binding_is_exact = bool(watchers) and {item.watcher_id for item in watchers} == set(
-            request.watcher_ids
-        )
-        binding_is_exact = binding_is_exact and all(
-            item.episode_id == episode_id
-            and item.origin_task_kind == "auto_research"
-            and item.chat_id == actor_operation_id
+        binding_is_exact = bool(watchers) and all(
+            item is not None
+            and item.wake_turn_id == operation_id
+            and item.project_id == existing.project_id
             for item in watchers
         )
     if (
@@ -2519,11 +2497,11 @@ def _validate_existing_child_experiment_watcher_wake(
         item.operation_id: item.invocation_number
         for item in tasks.store.episode_invocations(child_episode_id)
     }
-    watchers = [
-        item
-        for item in tasks.store.watchers(existing.project_id)
-        if item.notification_operation_id == operation_id
-    ]
+    watchers = (
+        [tasks.store.watcher(item) for item in request.watcher_ids]
+        if isinstance(request, RunRequest)
+        else []
+    )
     if (
         route is None
         or route.auto_research_episode_id != parent_episode_id
@@ -2548,13 +2526,12 @@ def _validate_existing_child_experiment_watcher_wake(
         or not request.session_id
         or request.session_id != existing.native_session_id
         or not existing.stage_root
-        or set(request.watcher_ids) != {item.watcher_id for item in watchers}
         or not watchers
         or any(
-            item.project_id != route.project_id
-            or item.origin_task_kind != "node_chat"
-            or item.chat_id != request.chat_id
-            or item.continuation.control_episode_id != child_episode_id
+            item is None
+            or item.project_id != route.project_id
+            or item.agent_id != request.chat_id
+            or item.wake_turn_id != operation_id
             for item in watchers
         )
     ):
@@ -2718,15 +2695,10 @@ def _validate_existing_child_work_wake(
             existing.request.get(field, False if field == "browser_requested" else None)
             != parent.request.get(field, False if field == "browser_requested" else None)
             for field in pinned_request_fields
-            if not watcher_wake or field not in {"model", "reasoning"}
         )
         or (not watcher_wake and not messages)
         or any(
-            item is None
-            or item.worker_id != worker_id
-            or item.episode_id != episode_id
-            or item.notification_operation_id != operation_id
-            or not item.notified
+            item is None or item.agent_id != worker_id or item.wake_turn_id != operation_id
             for item in watchers
         )
         or any(
@@ -2737,10 +2709,6 @@ def _validate_existing_child_work_wake(
         )
     ):
         raise ValueError("The committed child Work wake lost its allocation or input binding.")
-
-    if watcher_wake:
-        with tasks.store.connection() as connection:
-            tasks.store._validate_watcher_notification_scope(connection, existing, watchers)
 
 
 def _exact_child_resume_problem(tasks: BackgroundAgentTasks, record: AgentTaskRecord) -> str | None:

@@ -111,7 +111,7 @@ test("composer binds a worktree and dispatches integration through ordinary Work
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/worktreeChat.html`,
     );
-    await page.getByRole("button", { name: "Options" }).click();
+    await page.getByRole("button", { name: "Add", exact: true }).click();
     await page.getByRole("checkbox", { name: "Work in a worktree" }).check();
     // The project's one writable repository on this machine needs no choice.
     assert.equal(await page.getByRole("combobox", { name: "Worktree repository" }).count(), 0);

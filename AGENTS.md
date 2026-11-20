@@ -114,8 +114,8 @@ spec, and executable test, not this registry.
    graph authority. Every team launch carries its repositories' Git transport
    ([why](docs/specs/providers-and-containment.md#login-state-and-failure)). Work names
    exact write roots to providers that enforce them without blocking runs; Codex runs
-   unsandboxed ([why](docs/specs/providers-and-containment.md#codex)). Ingestion writes only
-   scratch. A Paper-focused chat also writes the Paper folder. The per-chat
+   unsandboxed ([why](docs/specs/providers-and-containment.md#codex)). A Paper-focused
+   chat also writes the Paper folder. The per-chat
    browser grant is human consent to a code-defined tool; a member's agent threads start
    with it on. Each project's memory folder is a code-defined write root, never a grant.
 4b. **The task stage is the only graph-change channel.** RCP collects the agent's Patch
@@ -143,10 +143,9 @@ Retired numbers stay with their owners. Invariant 2 is folded into 1.
 Invariant 5 belongs to the module docstring of `agents/write_scope.py`.
 Invariant 7 belongs to the `_atomic_write` and `_atomic_text` helpers.
 Invariant 7b belongs to `materialize._fork_state`.
-Invariant 9 belongs to `AppStore.complete_agent_task` for Patch text and the
-`if applied` stage removal in `stream_graph_run` for scratch.
+Invariant 9 belongs to `AppStore.complete_agent_task` for Patch text.
 Invariant 10 belongs to `prepare_agent_patch`. An agent Patch carries no cursor
-or coverage operation, so chat never advances ingestion.
+or coverage operation, so no agent turn advances the ingestion watermark.
 Invariant 10f belongs to the watermark comment in `materialize._apply_patch`.
 Invariant 10c belongs to `clear_turn_handoff_files`.
 Invariant 10d belongs to the native chat context rule in the conversations spec.

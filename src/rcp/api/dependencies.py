@@ -147,10 +147,6 @@ def get_attachment_store(request: Request) -> ChatAttachmentStore:
     return _api_services(request).attachment_store
 
 
-def get_watcher_poller(request: Request) -> WatcherPoller:
-    return _api_services(request).watcher_poller
-
-
 def get_artifact_mutation_locks(request: Request) -> KeyedLocks:
     return _api_services(request).artifact_mutation_locks
 
@@ -234,6 +230,13 @@ def require_registered_project(catalog: ProjectCatalog, project_id: str) -> None
         raise HTTPException(status_code=404, detail="Project not found") from exc
 
 
+def require_agent_project_membership(request: Request, project_id: str | None = None) -> None:
+    """An agent route that names a project admits only that project's members."""
+
+    if project_id is not None:
+        require_project_membership(project_id, request)
+
+
 def require_project_membership(project_id: str, request: Request) -> str:
     canonical = get_catalog(request).resolve_project_id(project_id)
     member = get_identity_access(request).acting_user(request)
@@ -309,7 +312,6 @@ __all__ = [
     "get_setup",
     "get_store",
     "get_watcher_delivery",
-    "get_watcher_poller",
     "project_write_admission",
     "require_registered_project",
     "require_project_membership",

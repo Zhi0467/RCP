@@ -320,7 +320,7 @@ and chat messages alone are not lines.
 
 Links open ordinary in-app routes: a run's branch orchestrator, exact Experiment
 Runs entry, Inbox item, or consolidation report. Attribution precedence is merge,
-consolidation, identified human, ingestion, captured Work, other agent, system,
+consolidation, identified human, ingestion (old Seed and Refresh steps), captured Work, other agent, system,
 then unattributed human. Stable source keys do not depend on display titles or
 optional task enrichment.
 Conversation-source group labels follow the [canonical agent-name rule](conversations-episodes-and-watchers.md#agent-names).
@@ -466,6 +466,11 @@ these projections; UI inputs such as the trust lens stay client-side.
 `web/src/core/types.ts` restates shapes, using opaque lifecycle types to prevent
 raw-status branching.
 
+The Web client turns a refusal into one sentence where it reads the error
+body, in `apiError`: a known stable `code` reads as its shared reason, else the
+route's `message` or string `detail`, else a plain sentence naming the status.
+A notice never shows a raw JSON body.
+
 Attention publishes exact Proposal, Decision, and asserted-open-Blocker ids,
 plus `stale_proposal_ids`, the pending Proposals the Sync gate would withdraw,
 and its subset `refreshable_proposal_ids` that ordinary Work can re-file, and
@@ -485,7 +490,7 @@ offers, and human-closed node state. Runtime, parent, tasks, budget, and report
 come from one SQLite snapshot. Task polling cannot override it. Recovery binds
 the named operation and disappears if its row is unavailable. A candidate graph
 must be synced before Start; a rule-inert prose draft needs no such fence.
-Snapshots also publish canonical mutation availability; watchers publish Check now.
+Snapshots also publish canonical mutation availability.
 
 Reads are start-order fenced per project/target even at equal revision. New reads,
 settings saves, and Sync fence older graph/control responses. Every branch route
@@ -679,6 +684,13 @@ establish completion without attributing it to Cancel, or report why the action
 could not run. Otherwise the route claims and executes the saved command once.
 Its result is an action receipt, not a separate cancelled watcher state. Errors
 are returned on the watcher and allow an explicit retry.
+
+`GET /api/agent-threads/{thread_id}/watchers` lists the same rows for one agent,
+keyed by its agent id, so a Space agent's jobs show in its chat.
+`POST /api/agent-threads/{thread_id}/watchers/{watcher_id}/cancel` is the same
+Cancel for a member who can see that agent; a watcher of another agent returns
+404, and a project agent's Cancel keeps project write admission. The project
+Cancel route stays as an alias.
 
 The machine card's Compute fold holds **Slurm**, helper `jobs_root`, and the
 access hint; RCP exposes no resource-argument inputs. Each saves on its own.
@@ -1421,8 +1433,9 @@ turns retain them. Clients never supply paths or ownership.
 Runs lists durable Experiment-loop and Auto-research parents, using backend
 health, section, recommendation, and control offers. Experiment entries use
 `ExperimentControlState`, never generic episode status. Layout belongs to
-[Projections](interface-and-visual-design.md#projections). Seed/Refresh and other
-tasks remain in History; Blocker judgment stays in Inbox.
+[Projections](interface-and-visual-design.md#projections). Other tasks remain in
+History; Blocker judgment stays in Inbox. Old Seed and Refresh rows are history
+only: they offer no Retry or Resume, and no route starts a new one.
 
 The exhaustive episode projection gives endings precedence over active state,
 then wrap-up. Exhaustion/human pause needs reauthorization; revoked login needs
@@ -1713,10 +1726,11 @@ check in the Space Settings header. Project Settings owns
 repositories, which space machines the project uses (the same machine cards,
 read from the space), execution profiles, packages, caches, project
 membership, and prospective episode limits, not ontology authoring. Each
-preference has one home, so Project Settings has no Appearance pane. Seed and
-Refresh run on one profile. Project Settings and both project setup flows show
-one Seed and refresh row, and every save writes its choice to both stored
-profiles, so the two cannot drift apart.
+preference has one home, so Project Settings has no Appearance pane. Project
+Settings and both project setup flows list four execution profiles: node chat,
+project chat, paper coach, and orchestrator. A manifest's legacy `agent.seed`
+and `agent.refresh` tables are dropped on load. Without an orchestrator table,
+the legacy refresh table's provider and model seed the orchestrator profile.
 
 Both levels show a section rail beside one pane at a time. The rail lists only
 the sections that exist, each with an icon and a label. The open section lives
@@ -2152,7 +2166,7 @@ cannot select a different project, conversation, branch, authorizer, or graph
 target.
 
 Unsent drafts kept in browser storage (graph drafts, chat messages, chat
-references and staged comments, and project Settings edits) are keyed by the
+references, and project Settings edits) are keyed by the
 signed-in member's user id, so another member on the same browser never sees
 or submits them. Until a member is verified, no draft is restored or saved.
 Drafts stored before this scoping have no known owner; the web client deletes
@@ -2347,6 +2361,15 @@ their message, which may be empty when threads are present. `/tasks` refuses a
 client-built artifact context that carries selections. A new turn and the
 viewer route key repeats on `Idempotency-Key`, and a steer on its `message_id`.
 
+Per-agent comments use `/api/agent-threads/{thread_id}`
+([agent comment routes](../../src/rcp/api/space_comments.py)): list, read,
+create, posts, resolve, and reopen share the project comment handlers. The
+agent's placement resolves its storage scope, project membership, and private
+ownership once; every target must belong to that agent. Project comment routes
+remain compatible and also serve project-wide paper and artifact targets.
+A Space agent's comments are owner-only, with no members, mentions, or watermark.
+Its turns and steers take `comment_thread_ids` like a project agent's.
+
 Saving a post records one mention row per readable member it names. A
 `comment_mention` notification goes at most once per thread and mentioned
 member. Delivery keeps it only while the mention row exists, the thread is
@@ -2449,7 +2472,7 @@ current text. An unreadable turn, and a file the turn did not change, answer
 project threads: `thread_id`, `kind`, `project_id`, `project_name`,
 `agent_name`, `unread`, `last_finished_at`, `last_activity_at`, `live_state`,
 `live_label`, `watching`, `latest_operation_id`, `browser_requested`,
-`capabilities`, and `agent` (the thread's saved agent pick, or null). The Space
+`capabilities`, `archived`, and `agent` (the thread's saved agent pick, or null). The Space
 thread comes first, then project threads by latest activity. `live_state` is idle, queued, running,
 paused (also an interrupted turn), `failed` (the latest turn failed and no retry or resume of it started)
 or `needs_you` (one of the thread's own questions or cards is open, including a
@@ -2471,7 +2494,8 @@ member left are closed and omitted; listing reopens every other thread.
 `capabilities` lists one member-facing line per capability of the thread kind,
 from the record of each verb its turns can be granted: the Space handler's verb
 table, or `WORK_THREAD_VERB_CAPABILITIES` beside the Work handler for a project
-thread. A test holds every grantable verb to a line.
+thread. A test holds every grantable verb to a line. Every agent queues, schedules,
+forks and archives, so the view shows those controls without a flag.
 
 `GET /api/agent-threads/cards`, with optional `thread_id`, returns
 `{proposal_cards, asked_cards, questions, episodes, next_expiry_at}` for the member's open project threads in their
@@ -2531,11 +2555,22 @@ rows come from the thread projection: `title` is `agent_name`, `label` is
 the member come first, each group newest `at` first. `needs` and `total` are
 counted before the list is cut to `SPACE_RUNNING_MAX_ROWS`.
 
-Thread title, read and browser routes under `/api/agent-threads/{id}`
-require ownership; another member gets 404. The transcript route there serves
-only the Space thread. A project thread otherwise uses the ordinary project chat,
-task and question routes. Its Send must be
+Every per-agent action has one route under `/api/agent-threads/{thread_id}`:
+`turns`, `transcript`, `tasks/{operation_id}` with its `steer`, `pause`,
+`resume` and `retry`, `queue`, `attachments`, `title`, `read`, `browser`,
+`archive`, `branch`, and `comment-threads`. Each handler resolves the agent once
+([`resolve_agent`](../../src/rcp/agents/agent_owner.py)); its placement picks
+the storage scope and write admission, and another member's private agent
+returns 404. A project agent that has no row yet takes a `project_id` query
+parameter, checked against membership; once the row exists, a different
+`project_id` returns 404. A project agent's `turns` body is the project chat
+send, and a `chat_id` naming another agent returns 422. `archive` and `branch`
+serve project agents only. A private project thread's Send must be
 `project_chat` Work on main; anything else returns 422.
+
+The old project chat and task routes for these actions remain for one release
+as aliases that call the same handlers. `tests/test_route_inventory.py` lists
+them and refuses any new copy. The web calls only the agent routes.
 
 A project thread's waiting work lives at `/api/agent-threads/{thread_id}/queue`;
 a Space or unowned thread gets 404
@@ -2564,20 +2599,19 @@ Retry-parent hop.
 Space threads upload and remove attachments at
 `POST /api/agent-threads/{thread_id}/attachments` and
 `DELETE /api/agent-threads/{thread_id}/attachments/{attachment_id}`, using the
-ordinary chat attachment request and response shapes. Both require an open Space
-thread owned by the acting member; closed threads, project threads, and other
-members receive 404.
-The attachment owner binds each set to the Space id, the thread id from the path,
+ordinary chat attachment request and response shapes. Another member's
+private agent receives 404.
+The attachment owner binds each set to the agent's scope, the thread id from the path,
 and the client id. Turn admission claims that set under its idempotency lock and
 releases it if no task was recorded. Retry retains the claimed batch.
 
 A Space thread sends with `POST /api/agent-threads/{thread_id}/turns`, body
-`{message?, provider?, model?, reasoning?, timezone?, attachment_set_id?, attachment_client_id?, artifact_context?}`.
+`{message?, provider?, model?, reasoning?, timezone?, attachment_set_id?, attachment_client_id?, comment_thread_ids?}`.
 The attachment fields must be supplied together. A turn needs a nonempty message
-or an `artifact_context`: a comment on an artifact one of this thread's own turns
-produced. It returns 202 with
-`{operation_id}`, 404 for a project or unowned thread, 422 for an invalid or empty
-artifact comment or one on another thread's task, or 409 when admission refuses,
+or `comment_thread_ids`: saved threads on this thread's replies or on artifacts
+its own turns produced ([Space comments](#comment-api)). It returns 202 with
+`{operation_id}`, 404 for an unowned thread, 422 for an invalid
+artifact comment, or 409 when admission refuses,
 such as a busy thread. It needs a patch-capable identity. Admission
 honors a UUID4 `Idempotency-Key` through the same durable receipt as
 project chat: a replay by the same member and route returns the original operation.

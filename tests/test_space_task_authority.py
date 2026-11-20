@@ -74,16 +74,3 @@ def test_task_owner_resolves_space_without_opening_a_project(manifest, tmp_path)
         task_owner(
             store, task.model_copy(update={"project_id": "wrong"}), catalog=app.state.catalog
         )
-
-
-def test_space_task_cannot_be_a_watcher_origin(tmp_path):
-    from tests.test_watchers import _record as watcher_record
-
-    store = AppStore(tmp_path / "app.sqlite3")
-    task = _record(store, operation_id="space-origin", project_id="project")
-    with store.connection() as connection:
-        connection.execute(
-            "UPDATE graph_runs SET kind='space_chat' WHERE operation_id=?", (task.operation_id,)
-        )
-    with pytest.raises(ValueError, match="Space"):
-        store.create_watchers([watcher_record("watch", origin=task.operation_id)])

@@ -643,9 +643,7 @@ async def test_consolidation_bound_owner_pins_workflow_and_refuses_watchers(
         "flag",
         "bulletin",
     }
-    launcher = ScriptedLauncher(
-        [{"watch.json": "{}"}], message="Consolidation finished.", outcome=outcome
-    )
+    launcher = ScriptedLauncher([{}], message="Consolidation finished.", outcome=outcome)
     frames = []
     async for frame in stream_work_run(
         app.state.service, launcher, request, tmp_path / "data", execution=execution
@@ -676,7 +674,7 @@ async def test_consolidation_bound_owner_pins_workflow_and_refuses_watchers(
     assert execution.store.agent_task_has_receipt(
         execution.operation_id, "watcher_handoff_rejected"
     )
-    assert not execution.store.watchers(app.state.default_project_id)
+    assert not execution.store.project_watchers(app.state.default_project_id)
 
 
 def test_consolidation_empty_apply_replays_without_a_new_revision(manifest, tmp_path):

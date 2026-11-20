@@ -12,21 +12,18 @@ from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.api.task_requests import _resolved_graph_request
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.models import Patch
-from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
+from rcp.core.transition_models import GraphTargetRef
 from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.episodes.reconcile import EpisodeReconciler
 from rcp.runs.experiment_loop import commit_experiment_episode_binding
 from rcp.runs.shared import _sse
-from rcp.runs.watcher_admission import start_watcher_notification
 from rcp.service import RunRequest
-from rcp.skill_registry import SkillReference
 from rcp.storage import (
     AgentTaskRecord,
     AppStore,
-    EpisodeRecord,
-    GraphWatcherRecord,
+    WatcherRecord,
 )
-from rcp.storage.models import NodeStatusGraphCondition
+from rcp.watcher_folder import WatcherFolderChange
 from rcp.watchers import WatcherBinding
 
 from .helpers import (
@@ -91,10 +88,7 @@ def test_stop_while_a_turn_runs_leaves_the_task_alone_and_blocks_a_fresh_run(
     assert {field: projected[field] for field in expected} == expected
     task = loop.store.agent_task("loop-root")
     assert task is not None and task.status == "running"
-    assert loop.store.watcher(watcher.watcher_id).status == "active"
-    assert watcher.watcher_id not in {
-        record.watcher_id for record in loop.store.pollable_watchers()
-    }
+    assert loop.store.watcher(watcher.watcher_id).open
 
     refused = loop.client.post(
         f"/api/projects/{loop.project_id}/experiments/{NODE_PATH}/run",
@@ -105,7 +99,7 @@ def test_stop_while_a_turn_runs_leaves_the_task_alone_and_blocks_a_fresh_run(
 
     loop.store.complete_agent_task("loop-root", applied_revision=None, result={})
     assert loop.store.settle_ready_experiment_loop_stops() == 1
-    assert loop.store.watcher(watcher.watcher_id).status == "stopped"
+    assert loop.store.watcher(watcher.watcher_id).state == "cancelled"
 
 
 def test_stop_with_only_watchers_left_terminalizes_them_and_settles_at_once(loop, tmp_path) -> None:
@@ -121,9 +115,9 @@ def test_stop_with_only_watchers_left_terminalizes_them_and_settles_at_once(loop
     for watcher_id in ("still-running", "finished-unclaimed"):
         record = loop.store.watcher(watcher_id)
         assert record is not None
-        assert record.status == "stopped"
-        assert record.notified is True
-        assert record.notification_operation_id is None
+        assert record.state == "cancelled"
+        assert record.cancelled_by == "rcp"
+        assert record.wake_turn_id is None
     assert control["ready"] is True
     assert control["reasons"] == []
 
@@ -155,7 +149,7 @@ def test_stop_settlement_rolls_back_watcher_changes_when_episode_terminalization
 
     watcher = loop.store.watcher("atomic-stop-watcher")
     episode = loop.store.episode(loop.episode_id)
-    assert watcher is not None and watcher.status == "active" and watcher.notified is False
+    assert watcher is not None and watcher.open
     assert episode is not None and episode.status == "stopping"
     assert episode.stop_settled_at is None
 
@@ -164,7 +158,7 @@ def test_stop_settlement_rolls_back_watcher_changes_when_episode_terminalization
         loop.project_id, EXPERIMENT_ID, graph_target=GraphTargetRef()
     )
     assert settled is not None and settled.stop_settled_at is not None
-    assert loop.store.watcher("atomic-stop-watcher").status == "stopped"  # type: ignore[union-attr]
+    assert loop.store.watcher("atomic-stop-watcher").state == "cancelled"  # type: ignore[union-attr]
 
 
 def test_stop_is_idempotent(loop, tmp_path) -> None:
@@ -432,23 +426,27 @@ def test_run_after_a_settled_stop_starts_a_fresh_episode_with_no_delivery(loop, 
     assert request["control_invocation"] == 1
     assert request["control_episode_id"] != loop.episode_id
     assert request["watcher_ids"] == []
-    assert loop.store.watcher("finished-unclaimed").notification_operation_id is None
+    assert loop.store.watcher("finished-unclaimed").wake_turn_id is None
 
 
-def test_an_unclaimed_completion_cannot_win_a_wake_after_a_persisted_stop(loop, tmp_path) -> None:
+def test_stop_cancels_the_agents_watchers_and_a_ready_one_never_wakes(loop, tmp_path) -> None:
     """The session was usable; only the stop refused the wake, and no budget moved."""
-    loop.start_episode()
+    loop.start_episode(status="running")
     loop.bind_session(tmp_path / "stage")
     loop.arm_watcher("finished-unclaimed", status="completed")
+    loop.arm_watcher("still-running")
 
-    loop.store.request_experiment_loop_stop(
-        loop.project_id, EXPERIMENT_ID, graph_target=GraphTargetRef()
-    )
+    assert loop.stop()["operational"]["stop_settled"] is False
     before = loop.loop_task_ids()
     loop.deliver("finished-unclaimed")
 
     assert loop.loop_task_ids() == before
-    assert loop.store.watcher("finished-unclaimed").notification_operation_id is None
+    assert loop.store.watcher("finished-unclaimed").wake_turn_id is None
+    loop.store.complete_agent_task("loop-root", applied_revision=None, result={})
+    assert loop.store.settle_ready_experiment_loop_stops() == 1
+    for watcher in loop.store.agent_watchers(loop.chat_id):
+        assert watcher.state == "cancelled" and watcher.cancelled_by == "rcp"
+    assert loop.store.ready_watchers() == []
     runtime = loop.store.experiment_loop_runtime(
         loop.project_id, EXPERIMENT_ID, graph_target=GraphTargetRef()
     )
@@ -469,31 +467,15 @@ def test_a_stop_settles_only_under_the_operation_lock_after_its_turn_ends(loop, 
     control = loop.control()
     assert control["operational"]["stop_requested"] is True
     assert control["operational"]["stop_settled"] is False
-    assert loop.store.watcher("still-running").status == "active"
+    assert loop.store.watcher("still-running").open
 
     response = loop.client.get("/api/episodes?mode=experiment_loop")
     assert response.status_code == 200, response.text
 
     control = loop.control()
     assert control["operational"]["stop_settled"] is True
-    assert loop.store.watcher("still-running").status == "stopped"
+    assert loop.store.watcher("still-running").state == "cancelled"
     assert control["ready"] is True
-
-
-def test_a_wake_without_a_committed_binding_never_claims_or_spends_budget(loop, tmp_path) -> None:
-    loop.start_episode()
-    loop.arm_watcher("finished-unclaimed", status="completed")
-
-    before = loop.loop_task_ids()
-    loop.deliver("finished-unclaimed")
-
-    assert loop.loop_task_ids() == before
-    record = loop.store.watcher("finished-unclaimed")
-    assert record.status == "completed"
-    assert record.notified is False
-    control = loop.control()
-    assert control["invocations_used"] == 1
-    assert control["operational"]["session"]["native_session_bound"] is False
 
 
 def test_a_vanished_episode_stage_becomes_a_durable_diagnostic(loop, tmp_path) -> None:
@@ -508,8 +490,7 @@ def test_a_vanished_episode_stage_becomes_a_durable_diagnostic(loop, tmp_path) -
 
     assert loop.loop_task_ids() == before
     record = loop.store.watcher("finished-unclaimed")
-    assert record.status == "completed"
-    assert record.notified is False
+    assert record.ready
     diagnostic = loop.control()["operational"]["session"]["diagnostic"]
     assert diagnostic is not None
     assert "saved provider workspace is gone" in diagnostic
@@ -519,35 +500,6 @@ def test_a_vanished_episode_stage_becomes_a_durable_diagnostic(loop, tmp_path) -
         ).invocations_used
         == 1
     )
-
-
-def test_provider_provenance_does_not_block_current_episode_delivery(loop, tmp_path) -> None:
-    """`status` reads "stopped" once the origin episode ends, and this delivery spends the last
-    invocation, so the claimed notification id proves delivery race-free.
-    """
-    loop.start_episode()
-    loop.bind_session(tmp_path / "stage")
-    loop.record_answers()
-    loop.arm_watcher(
-        "other-provider",
-        status="completed",
-        continuation=loop.continuation(provider="claude"),
-    )
-
-    loop.deliver("other-provider")
-
-    record = loop.store.watcher("other-provider")
-    assert record.notified is True
-    assert record.notification_operation_id is not None
-    woken = [
-        item
-        for item in loop.store.agent_tasks(loop.project_id)
-        if item.request.get("trigger") == "watcher"
-    ]
-    assert len(woken) == 1
-    assert woken[0].request["provider"] == "codex"
-    assert woken[0].request["chat_id"] == loop.chat_id
-    assert loop.control()["operational"]["session"]["diagnostic"] is None
 
 
 def test_a_ready_wake_resumes_the_episode_session_at_the_next_invocation(loop, tmp_path) -> None:
@@ -585,7 +537,7 @@ def test_a_ready_wake_resumes_the_episode_session_at_the_next_invocation(loop, t
         if item.category == "operation_admitted"
     )
     assert admission.payload["parent_operation_id"] is None
-    assert loop.store.watcher("finished-unclaimed").notified is True
+    assert loop.store.watcher("finished-unclaimed").wake_turn_id == task.operation_id
 
 
 def test_control_state_exposes_the_operational_block_without_the_session_id(loop, tmp_path) -> None:
@@ -622,22 +574,6 @@ def test_stop_on_a_node_that_is_not_an_experiment_is_not_found(loop, tmp_path) -
     )
 
     assert response.status_code == 404
-
-
-def test_legacy_experiment_watcher_stop_requires_graceful_stop_loop(loop, tmp_path) -> None:
-    loop.start_episode()
-    loop.arm_watcher("still-running")
-
-    response = loop.client.post(
-        f"/api/projects/{loop.project_id}/experiments/{NODE_PATH}/watchers/stop", json={}
-    )
-
-    assert response.status_code == 409, response.text
-    assert "Use Stop loop" in response.json()["detail"]
-    assert loop.store.watcher("still-running").status == "active"
-    episode = loop.store.experiment_episode(loop.episode_id)
-    assert episode is not None
-    assert episode.session_bound is False
 
 
 def test_episode_binding_is_immutable_after_first_success(loop, tmp_path) -> None:
@@ -820,72 +756,14 @@ def test_automatic_wake_requires_session_and_exact_episode_stage(loop, tmp_path)
 
     with pytest.raises(ValueError, match="episode binding"):
         loop.store.create_experiment_watcher_invocation(record, ["ready"])
-    assert loop.store.watcher("ready").notified is False
-
-    no_session = request.model_copy(update={"session_id": None})
-    with pytest.raises(ValueError, match="session and exact stage"):
-        start_watcher_notification(
-            loop.app.state.background_tasks,
-            loop.project_id,
-            "node_chat",
-            no_session,
-            ["ready"],
-            authorized_by=loop.authorizer,
-            episode_stage_machine_id=BACKEND_MACHINE_ID,
-            episode_stage_root=str(stage),
-        )
-
-
-def test_automatic_compatibility_ignores_model_reasoning_and_packages(loop, tmp_path) -> None:
-    loop.start_episode()
-    loop.bind_session(tmp_path / "stage")
-    loop.arm_watcher(
-        "old-config",
-        status="completed",
-        continuation=loop.continuation(
-            model="old-model",
-            reasoning="low",
-            resolved_skill_packages=[
-                SkillReference(id="old-package", kind="skill", version="1.0.0")
-            ],
-        ),
-    )
-    loop.arm_watcher(
-        "new-config",
-        status="completed",
-        continuation=loop.continuation(
-            model="new-model",
-            reasoning="high",
-            resolved_skill_packages=[
-                SkillReference(id="new-package", kind="skill", version="2.0.0")
-            ],
-        ),
-    )
-
-    groups = loop.app.state.background_tasks.store.completed_watcher_groups()
-    experiment_group = next(group for group in groups if group[0].watcher_id == "old-config")
-    assert {item.watcher_id for item in experiment_group} == {"old-config", "new-config"}
-
-    loop.record_answers()
-    loop.deliver("old-config", "new-config")
-    task = next(
-        task
-        for task in loop.store.agent_tasks(loop.project_id)
-        if task.request.get("trigger") == "watcher"
-    )
-    assert task.request["model"] == "gpt-5"
-    assert task.request["reasoning"] == "medium"
+    assert loop.store.watcher("ready").wake_turn_id is None
 
 
 def test_provider_default_model_stays_pinned_after_settings_change(loop, tmp_path) -> None:
     root_request = loop.root_request().model_copy(update={"model": ""})
     loop.start_episode(request=root_request)
     loop.bind_session(tmp_path / "stage")
-    loop.arm_watcher(
-        "provider-default-result",
-        status="completed",
-        continuation=loop.continuation(model=""),
-    )
+    loop.arm_watcher("provider-default-result", status="completed")
     project = loop.client.get(f"/api/projects/{loop.project_id}").json()
     profiles = {
         surface: {key: profile[key] for key in ("provider", "model", "reasoning")}
@@ -921,11 +799,7 @@ def test_default_truth_scope_is_pinned_before_watcher_completion(
     assert resolved.run_truth_scope == writable
     loop.start_episode(request=resolved)
     loop.bind_session(tmp_path / "scope-stage")
-    loop.arm_watcher(
-        "default-scope-result",
-        status="completed",
-        continuation=loop.continuation(run_truth_scope=writable),
-    )
+    loop.arm_watcher("default-scope-result", status="completed")
     loop.record_answers()
 
     loop.deliver("default-scope-result")
@@ -1385,7 +1259,7 @@ def test_a_wake_that_lost_its_link_before_composing_reruns_as_that_wake(manifest
 
 
 def test_a_completed_watcher_waits_for_a_wake_long_enough_to_launch(manifest, tmp_path) -> None:
-    """The group stays completed, so the next poll offers it again."""
+    """The watcher stays ready, so the next poll offers it again."""
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     loop = _Loop(app, invocation_ceiling=3)
     loop.start_episode()
@@ -1393,23 +1267,20 @@ def test_a_completed_watcher_waits_for_a_wake_long_enough_to_launch(manifest, tm
     loop.bind_session(tmp_path / "wake-stage")
     loop.arm_watcher("finished-job", status="completed")
     delivery = app.state.services.watcher_delivery
-    (group,) = loop.store.completed_watcher_groups()
     before = loop.loop_task_ids()
 
     delivery._launch_wait = lambda: 25.0
-    delivery.deliver_watcher_group(group)
+    loop.deliver("finished-job")
 
     assert loop.loop_task_ids() == before
-    assert [
-        [item.watcher_id for item in held] for held in loop.store.completed_watcher_groups()
-    ] == [["finished-job"]]
+    assert [watcher.watcher_id for watcher in loop.store.ready_watchers()] == ["finished-job"]
 
     async def stream(*_args, **_kwargs):
         yield _sse(AgentEvent(event="done"))
 
     app.state.background_tasks.stream = stream
     delivery._launch_wait = lambda: 0.0
-    delivery.deliver_watcher_group(group)
+    loop.deliver("finished-job")
 
     assert loop.loop_task_ids() != before
 
@@ -1936,15 +1807,6 @@ def test_human_reauthorization_uses_current_node_profile_and_new_chat(manifest, 
     app = create_app(str(manifest.path), data_dir=tmp_path / "data")
     loop = _Loop(app, invocation_ceiling=1)
     loop.start_episode()
-    loop.arm_watcher(
-        "other-provider-result",
-        status="completed",
-        continuation=loop.continuation(
-            provider="claude",
-            model="sonnet",
-            reasoning="high",
-        ),
-    )
     loop.record_answers()
     new_chat_id = str(uuid.uuid4())
     reconcile = app.state.watcher_poller.on_poll_completed
@@ -2031,8 +1893,8 @@ def test_stop_preserves_compatible_stopped_watcher_history_across_episodes(loop,
 
     loop.stop()
 
-    assert loop.store.watcher("current-watcher").status == "stopped"
-    assert loop.store.watcher("old-watcher").status == "stopped"
+    assert loop.store.watcher("current-watcher").state == "cancelled"
+    assert loop.store.watcher("old-watcher").state == "cancelled"
 
 
 def test_reconciling_stopped_episode_does_not_retire_new_episode_watcher(loop, tmp_path) -> None:
@@ -2058,41 +1920,7 @@ def test_reconciling_stopped_episode_does_not_retire_new_episode_watcher(loop, t
 
     current = loop.store.watcher("current-watcher")
     assert current is not None
-    assert current.status == "active"
-    assert current.notified is False
-
-
-def test_stop_fences_current_turn_and_preserves_compatible_prior_watcher(loop, tmp_path) -> None:
-    loop.start_episode(operation_id="old-root")
-    old_episode = loop.episode_id
-    loop.arm_watcher("adopted-watcher", origin_operation_id="old-root")
-    loop.stop()
-    loop.episode_id = str(uuid.uuid4())
-    loop.chat_id = str(uuid.uuid4())
-    loop.start_episode(status="running", operation_id="current-root")
-
-    control = loop.stop()
-
-    assert control["operational"]["stop_settled"] is False
-    assert loop.store.watcher("adopted-watcher").status == "stopped"
-    assert "adopted-watcher" not in {record.watcher_id for record in loop.store.pollable_watchers()}
-    loop.store.complete_agent_task("current-root", applied_revision=None, result={})
-    assert loop.store.settle_ready_experiment_loop_stops() == 1
-    adopted = loop.store.watcher("adopted-watcher")
-    assert adopted is not None and adopted.status == "stopped" and adopted.notified is True
-    assert loop.store.experiment_watcher_compatible_with_episode(
-        "adopted-watcher",
-        loop.episode_id,
-    )
-    assert adopted.continuation.control_episode_id == old_episode
-
-    loop.record_answers()
-    response = loop.client.post(
-        f"/api/projects/{loop.project_id}/experiments/{NODE_PATH}/run",
-        json={"chat_id": str(uuid.uuid4()), "run_truth_scope": ["repo-a"]},
-    )
-    assert response.status_code == 202, response.text
-    assert response.json()["request"]["watcher_ids"] == []
+    assert current.open
 
 
 def test_final_handoff_is_born_stopped_when_stop_wins_transaction(loop, tmp_path) -> None:
@@ -2100,23 +1928,42 @@ def test_final_handoff_is_born_stopped_when_stop_wins_transaction(loop, tmp_path
     loop.store.request_experiment_loop_stop(
         loop.project_id, EXPERIMENT_ID, graph_target=GraphTargetRef()
     )
-    desired = loop._watcher("final-handoff")
-
-    stored = loop.store.persist_experiment_watchers_idempotently(
-        [desired],
-        binding=WatcherBinding(
-            project_id=loop.project_id,
-            origin_operation_id="loop-root",
-            origin_task_kind="node_chat",
-            chat_id=loop.chat_id,
-            node_id=EXPERIMENT_ID,
-            machine_id=BACKEND_MACHINE_ID,
-            continuation=loop.continuation(),
-        ),
+    desired = WatcherRecord(
+        watcher_id="final-handoff",
+        agent_id=loop.chat_id,
+        project_id=loop.project_id,
+        purpose="final handoff",
+        origin_turn_id="loop-root",
+        created_at=loop.store.now(),
+        checks=[loop._check("final-handoff")],
     )
 
-    assert stored[0].status == "stopped"
-    assert stored[0].notified is True
+    binding = WatcherBinding(
+        project_id=loop.project_id,
+        agent_id=loop.chat_id,
+        origin_turn_id="loop-root",
+        machine_id=BACKEND_MACHINE_ID,
+    )
+    request = loop.root_request()
+    assert request.control_invocation is not None and request.provider is not None
+
+    stored, _episode = loop.store.commit_experiment_episode_handoff(
+        binding=binding,
+        episode_id=loop.episode_id,
+        control_node_id=EXPERIMENT_ID,
+        invocation=request.control_invocation,
+        provider=request.provider,
+        operation_id="loop-root",
+        native_session_id="native-session",
+        stage_machine_id=None,
+        stage_root=str(tmp_path / "stage"),
+        graph_result="no graph change",
+        context_baseline={},
+        folder_change=WatcherFolderChange(binding, "final", {}, [desired], [], []),
+    )
+
+    assert stored[0].state == "cancelled"
+    assert stored[0].cancelled_by == "rcp"
 
 
 def test_a_turn_failing_before_its_session_ends_the_episode_without_a_report(
@@ -2172,61 +2019,6 @@ def test_a_turn_failing_before_its_session_ends_the_episode_without_a_report(
     )
     assert response.status_code == 202, response.text
     assert response.json()["episode_id"] != loop.episode_id
-
-
-def test_human_stops_a_watcher_left_live_by_an_ended_episode(manifest, tmp_path) -> None:
-    """An exhausted episode's observer keeps a non-destructive human control.
-
-    Stop loop is refused once wrap-up owns the episode, so without this the only
-    enabled control on a live observer is Cancel, which kills the observed job.
-
-    Retiring the observer is not cancelling the job, and the Experiment is startable once nothing
-    detached is observed.
-    """
-
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app, invocation_ceiling=1)
-    loop.start_episode()
-    loop.arm_watcher("exhausted-watcher")
-    loop.settle_exhausted_ending()
-
-    listed = loop.client.get(f"/api/projects/{loop.project_id}/watchers")
-    assert listed.status_code == 200, listed.text
-    row = next(item for item in listed.json() if item["watcher_id"] == "exhausted-watcher")
-    assert row["can_stop_watching"] is True
-
-    response = loop.client.post(
-        f"/api/projects/{loop.project_id}/watchers/exhausted-watcher/stop", json={}
-    )
-
-    assert response.status_code == 200, response.text
-    assert response.json()["can_stop_watching"] is False
-    stopped = loop.store.watcher("exhausted-watcher")
-    assert stopped.status == "stopped"
-    assert stopped.stopped_by == "human"
-    assert stopped.cancel_requested_at is None
-    control = loop.client.get(f"/api/projects/{loop.project_id}").json()["experiment_control"][
-        EXPERIMENT_ID
-    ]
-    assert control["reasons"] == [], control["reasons"]
-    assert control["can_start"] is True
-
-
-def test_live_episode_still_routes_watcher_stop_through_stop_loop(loop, tmp_path) -> None:
-    loop.start_episode()
-    loop.arm_watcher("live-watcher")
-
-    listed = loop.client.get(f"/api/projects/{loop.project_id}/watchers")
-    row = next(item for item in listed.json() if item["watcher_id"] == "live-watcher")
-    assert row["can_stop_watching"] is False
-
-    response = loop.client.post(
-        f"/api/projects/{loop.project_id}/watchers/live-watcher/stop", json={}
-    )
-
-    assert response.status_code == 409
-    assert "Use Stop loop" in response.json()["detail"]
-    assert loop.store.watcher("live-watcher").status == "active"
 
 
 def test_reauthorized_run_pins_its_ceiling_without_a_graph_revision(loop, tmp_path) -> None:
@@ -2286,84 +2078,13 @@ def test_a_ready_report_does_not_hide_the_resumable_loop(manifest, tmp_path) -> 
     assert blocked["can_start"] is False
     assert blocked["recommendation"] == "open_report"
 
-    stopped = loop.client.post(
-        f"/api/projects/{loop.project_id}/watchers/detached-observer/stop", json={}
-    )
-    assert stopped.status_code == 200, stopped.text
+    loop.store.cancel_watchers(["detached-observer"], by="agent")
 
     resumable = loop.control()
     assert resumable["health"] == "paused_at_limit"
     assert resumable["can_start"] is True
     assert resumable["recommendation"] == "start_episode"
     assert resumable["can_open_report"] is True
-
-
-def test_listing_watchers_reads_each_episode_once(manifest, tmp_path) -> None:
-    """The list route answers for many observers without a read per observer.
-
-    Every episode read opens its own SQLite connection, and the browser polls
-    this route, so the memo is what keeps that cost per episode.
-
-    Four observers in one episode need one read.
-    """
-
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app, invocation_ceiling=1)
-    loop.start_episode()
-    for index in range(4):
-        loop.arm_watcher(f"shared-episode-observer-{index}")
-    loop.settle_exhausted_ending()
-
-    reads: list[str] = []
-    original = loop.store.episode
-
-    def counting_episode(episode_id: str):
-        reads.append(episode_id)
-        return original(episode_id)
-
-    loop.store.episode = counting_episode  # type: ignore[method-assign]
-    try:
-        listed = loop.client.get(f"/api/projects/{loop.project_id}/watchers")
-    finally:
-        loop.store.episode = original  # type: ignore[method-assign]
-
-    assert listed.status_code == 200, listed.text
-    rows = {item["watcher_id"]: item for item in listed.json()}
-    assert len(rows) == 4
-    assert all(row["can_stop_watching"] is True for row in rows.values())
-    assert reads == [loop.episode_id]
-
-
-def test_a_retained_completion_is_not_offered_a_stop(manifest, tmp_path) -> None:
-    """A completed observation is a result to claim, not an observer to retire.
-
-    Retiring it marks it notified, so the next human Run could no longer claim it
-    as invocation one. That loss must not sit behind a control whose label says
-    the job keeps running.
-
-    The pickup the next episode depends on is still there.
-    """
-
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app, invocation_ceiling=1)
-    loop.start_episode()
-    loop.arm_watcher("retained-completion", status="completed")
-    loop.settle_exhausted_ending()
-
-    row = next(
-        item
-        for item in loop.client.get(f"/api/projects/{loop.project_id}/watchers").json()
-        if item["watcher_id"] == "retained-completion"
-    )
-    assert row["can_stop_watching"] is False
-
-    pending = loop.store.completed_experiment_watcher_group(
-        loop.project_id,
-        EXPERIMENT_ID,
-        graph_target=GraphTargetRef(),
-    )
-    assert pending is not None
-    assert [item.watcher_id for item in pending] == ["retained-completion"]
 
 
 def test_run_rejects_a_ceiling_no_browser_can_read_back(manifest, tmp_path) -> None:
@@ -2388,266 +2109,6 @@ def test_run_rejects_a_ceiling_no_browser_can_read_back(manifest, tmp_path) -> N
     )
     assert accepted.status_code == 202, accepted.text
     assert accepted.json()["request"]["control_invocation_ceiling"] == 2**53 - 1
-
-
-def test_a_completion_that_lands_before_the_stop_arrives_is_refused(manifest, tmp_path) -> None:
-    """The offer is a projection; the storage rule is the enforcement.
-
-    An observation can finish between the list response that offered Stop
-    watching and the POST that acts on it. Retiring it then would discard the
-    retained completion the next human Run claims as invocation one.
-
-    The job lands while the human is still looking at that row.
-    """
-
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app, invocation_ceiling=1)
-    loop.start_episode()
-    loop.arm_watcher("finishes-first")
-    loop.settle_exhausted_ending()
-
-    offered = next(
-        item
-        for item in loop.client.get(f"/api/projects/{loop.project_id}/watchers").json()
-        if item["watcher_id"] == "finishes-first"
-    )
-    assert offered["can_stop_watching"] is True
-
-    loop.store.record_watcher_check("finishes-first", status="completed", exit_code=0, error=None)
-
-    response = loop.client.post(
-        f"/api/projects/{loop.project_id}/watchers/finishes-first/stop", json={}
-    )
-
-    assert response.status_code == 409, response.text
-    retained = loop.store.watcher("finishes-first")
-    assert retained.status == "completed"
-    assert retained.notified is False
-    pending = loop.store.completed_experiment_watcher_group(
-        loop.project_id,
-        EXPERIMENT_ID,
-        graph_target=GraphTargetRef(),
-    )
-    assert pending is not None
-    assert [item.watcher_id for item in pending] == ["finishes-first"]
-
-
-def test_a_grouped_observer_is_not_retired_on_its_own(manifest, tmp_path) -> None:
-    """One human-stopped member makes the whole group undeliverable, forever.
-
-    A group wakes once, when every member has settled, and the readiness check
-    refuses a group holding a human-stopped member. Retiring one observer would
-    therefore strand every sibling's result behind a control that promises the
-    opposite.
-
-    The projection is the offer, not the gate, so storage refuses the request too.
-    """
-
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app, invocation_ceiling=1)
-    loop.start_episode()
-    loop.arm_watcher_group("array-1", ["array-member-1", "array-member-2"])
-    loop.settle_exhausted_ending()
-
-    rows = {
-        item["watcher_id"]: item
-        for item in loop.client.get(f"/api/projects/{loop.project_id}/watchers").json()
-    }
-    assert rows["array-member-1"]["can_stop_watching"] is False
-    assert rows["array-member-2"]["can_stop_watching"] is False
-
-    response = loop.client.post(
-        f"/api/projects/{loop.project_id}/watchers/array-member-1/stop", json={}
-    )
-
-    assert response.status_code == 422, response.text
-    assert "retired with its group" in response.json()["detail"]
-    assert loop.store.watcher("array-member-1").status == "active"
-    assert loop.store.watcher("array-member-2").status == "active"
-
-
-def test_a_branch_observer_is_not_offered_a_stop_on_main(manifest, tmp_path) -> None:
-    """The main listing carries every target, and the run card groups by node.
-
-    Main and its branches share Experiment node ids, so a branch observer renders
-    inside the main card. Offering retirement there would fence a delivery the
-    main view never owned.
-
-    A branch watcher inherits its origin task's graph binding, and a branch target exists only as an
-    auto-research episode's graph. The branch row still lists on main with its control withheld.
-    """
-
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app, invocation_ceiling=1)
-    loop.start_episode()
-    loop.arm_watcher("main-observer")
-    branch_id = str(uuid.uuid4())
-    branch_target = GraphTargetRef(kind="branch", branch_id=branch_id)
-    branch_chat = str(uuid.uuid4())
-    loop.store.create_episode(
-        EpisodeRecord(
-            episode_id=branch_id,
-            project_id=loop.project_id,
-            mode="auto_research",
-            graph_target=branch_target,
-            graph_base_head=GraphHeadRef(revision=0),
-            status="queued",
-            invocation_ceiling=2,
-            authorized_by=loop.authorizer,
-            created_at=loop.store.now(),
-            updated_at=loop.store.now(),
-        )
-    )
-    branch_request = RunRequest(
-        provider="codex",
-        reasoning="medium",
-        run_on=BACKEND_MACHINE_ID,
-        run_truth_scope=["repo-a"],
-        chat_scope="node",
-        chat_id=branch_chat,
-        message="Observe the branch job.",
-        mode="work",
-        node_id=EXPERIMENT_ID,
-    )
-    loop.store.create_agent_task(
-        loop.task_record(
-            branch_request,
-            operation_id="branch-root",
-            status="succeeded",
-            graph_target=branch_target,
-            status_message="Observing on a branch.",
-        )
-    )
-    loop.arm_watcher(
-        "branch-observer",
-        origin_operation_id="branch-root",
-        graph_target=branch_target,
-        chat_id=branch_chat,
-        continuation=loop.continuation(
-            patch_kind="work",
-            control_node_id=None,
-            control_revision=None,
-            control_episode_id=None,
-            control_invocation=None,
-            control_invocation_ceiling=None,
-            control_completion_criteria=[],
-        ),
-    )
-    loop.settle_exhausted_ending()
-
-    rows = {
-        item["watcher_id"]: item
-        for item in loop.client.get(f"/api/projects/{loop.project_id}/watchers").json()
-    }
-    assert set(rows) == {"main-observer", "branch-observer"}
-    assert rows["main-observer"]["can_stop_watching"] is True
-    assert rows["branch-observer"]["can_stop_watching"] is False
-
-
-def test_a_graph_condition_is_not_offered_a_stop(manifest, tmp_path) -> None:
-    """The control answers an observed job, and a condition runs none.
-
-    A canonical-graph condition carries the episode's own experiment_loop
-    continuation, so after the ending fence it would otherwise qualify. Retiring
-    it runs no scheduler command and frees no machine; it only discards a future
-    graph delivery.
-
-    It holds the episode shut, and this control is still not the answer.
-    """
-
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app, invocation_ceiling=1)
-    loop.start_episode()
-    loop.store.create_watchers(
-        [
-            GraphWatcherRecord(
-                watcher_id="graph-condition",
-                project_id=loop.project_id,
-                origin_operation_id="loop-root",
-                origin_task_kind="node_chat",
-                chat_id=loop.chat_id,
-                node_id=EXPERIMENT_ID,
-                condition=NodeStatusGraphCondition(node_id=EXPERIMENT_ID, status_in=["done"]),
-                armed_revision=0,
-                continuation=loop.continuation(),
-                status="active",
-                created_at=loop.store.now(),
-                last_evaluated_at=loop.store.now(),
-            )
-        ]
-    )
-    loop.settle_exhausted_ending()
-
-    row = next(
-        item
-        for item in loop.client.get(f"/api/projects/{loop.project_id}/watchers").json()
-        if item["watcher_id"] == "graph-condition"
-    )
-    assert row["can_stop_watching"] is False
-    assert row["can_cancel"] is False
-
-    response = loop.client.post(
-        f"/api/projects/{loop.project_id}/watchers/graph-condition/stop", json={}
-    )
-
-    assert response.status_code == 422, response.text
-    assert "not an observed job to retire" in response.json()["detail"]
-    assert loop.store.watcher("graph-condition").status == "active"
-
-
-def test_an_ordinary_graph_condition_keeps_its_retirement(manifest, tmp_path) -> None:
-    """Only the Experiment path is narrowed; a chat's own condition is untouched.
-
-    An ordinary conversation could always retire the condition it armed. That
-    predates this control and is not this branch's to revoke.
-
-    The arming task is the loop root, so the row keeps its binding.
-    """
-
-    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
-    loop = _Loop(app, invocation_ceiling=1)
-    loop.start_episode()
-    loop.store.create_watchers(
-        [
-            GraphWatcherRecord(
-                watcher_id="chat-condition",
-                project_id=loop.project_id,
-                origin_operation_id="loop-root",
-                origin_task_kind="node_chat",
-                chat_id=loop.chat_id,
-                node_id=EXPERIMENT_ID,
-                episode_id=loop.episode_id,
-                condition=NodeStatusGraphCondition(node_id=EXPERIMENT_ID, status_in=["done"]),
-                armed_revision=0,
-                continuation=loop.continuation(
-                    patch_kind="work",
-                    control_node_id=None,
-                    control_revision=None,
-                    control_episode_id=None,
-                    control_invocation=None,
-                    control_invocation_ceiling=None,
-                    control_completion_criteria=[],
-                ),
-                status="active",
-                created_at=loop.store.now(),
-                last_evaluated_at=loop.store.now(),
-            )
-        ]
-    )
-
-    row = next(
-        item
-        for item in loop.client.get(f"/api/projects/{loop.project_id}/watchers").json()
-        if item["watcher_id"] == "chat-condition"
-    )
-    assert row["can_stop_watching"] is True
-
-    response = loop.client.post(
-        f"/api/projects/{loop.project_id}/watchers/chat-condition/stop", json={}
-    )
-
-    assert response.status_code == 200, response.text
-    assert loop.store.watcher("chat-condition").status == "stopped"
 
 
 @pytest.mark.parametrize("isolated", [False, True])
@@ -2789,8 +2250,7 @@ def test_artifact_edit_does_not_replace_episode_control_or_block_watcher_wake(lo
     assert span.owner_episode_id == loop.episode_id
     loop.deliver("after-edit")
     watcher = loop.store.watcher("after-edit")
-    assert watcher.notified
-    assert watcher.notification_operation_id is not None
+    assert watcher.wake_turn_id is not None
 
 
 @pytest.mark.parametrize("route", ["experiments", "episodes"])

@@ -252,7 +252,12 @@ export async function mockApi(page, writes) {
     ...thread,
     agent: agents.get(thread.thread_id) ?? null,
     capabilities: capabilities[thread.kind],
+    archived: false,
   });
+  /** Saved comment threads, as each scope's comment routes keep them. */
+  const commentThreads = [];
+  const commentScope =
+    /^(\/api\/(?:projects\/[^/]+|agent-threads\/[^/]+))\/comment-threads(?:\/([^/]+))?(?:\/(posts|resolve|reopen))?$/;
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -263,6 +268,65 @@ export async function mockApi(page, writes) {
     if (method !== "GET") {
       writes.push({ method, path, body: request.postData() && JSON.parse(request.postData()) });
     }
+    const commented = commentScope.exec(path);
+    if (commented) {
+      const [, scope, threadId, action] = commented;
+      const body = request.postData() ? JSON.parse(request.postData()) : {};
+      const at = new Date().toISOString();
+      const post = (text) => ({
+        post_id: `post-${Math.random()}`,
+        thread_id: threadId,
+        author: { user_id: "alex", display_name: "Alex" },
+        text,
+        created_at: at,
+      });
+      if (method === "GET" && !threadId)
+        return json({ threads: commentThreads.filter((thread) => thread.scope === scope) });
+      if (method === "POST" && !threadId) {
+        const thread = {
+          scope,
+          thread_id: `comment-${commentThreads.length + 1}`,
+          project_id: "p1",
+          target_kind: body.target.kind,
+          target_id: body.target.id,
+          graph_target: "main",
+          drawn_version: body.drawn_version ?? null,
+          anchor: body.anchor,
+          state: "open",
+          created_by: "alex",
+          created_at: at,
+          closed_by: null,
+          closed_at: null,
+          sent_operation_id: null,
+          can_send: true,
+          posts: [],
+        };
+        thread.posts.push({ ...post(body.text), thread_id: thread.thread_id });
+        commentThreads.push(thread);
+        return json({ thread });
+      }
+      const thread = commentThreads.find((item) => item.thread_id === threadId);
+      if (!thread) return json({ detail: "not in this fixture" }, 404);
+      if (action === "posts") thread.posts.push(post(body.text));
+      if (action === "resolve") thread.state = "resolved";
+      if (action === "reopen") thread.state = "open";
+      return json({ thread });
+    }
+    if (/^\/api\/projects\/[^/]+\/members$/.test(path)) return json([]);
+    if (/^\/api\/projects\/[^/]+\/chats\/[^/]+\/worktree$/.test(path))
+      return json({
+        show_chooser: true,
+        can_choose: true,
+        unavailable_reason: null,
+        binding: null,
+        integration_options: [],
+        can_remove: false,
+        remove_reason: null,
+        ahead_count: null,
+        remote_branch_exists: null,
+        remote_branch_evidence: null,
+        dirty_worktree: [],
+      });
     if (path === "/api/agent-threads") return json({ threads: threads.map(withAgent) });
     if (path === "/api/agent-threads/cards")
       return json({
@@ -274,6 +338,7 @@ export async function mockApi(page, writes) {
         questions: [],
       });
     if (path === "/api/agent-threads/running") return json({ rows: [], needs: 0, total: 0 });
+    if (/^\/api\/agent-threads\/[^/]+\/watchers$/.test(path)) return json([]);
     if (/^\/api\/agent-threads\/[^/]+\/queue$/.test(path) && method === "GET")
       return json({ items: [] });
     if (/^\/api\/agent-threads\/[^/]+\/agent$/.test(path) && method === "POST") {
@@ -290,9 +355,9 @@ export async function mockApi(page, writes) {
         agent_threads: { version: "1" },
       });
     if (path === "/api/agent-threads/space/transcript") return json(spaceTranscript);
-    if (path === "/api/projects/p1/chats/moss") return json(mossTranscript);
-    if (/^\/api\/projects\/p\d\/chats\/[^/]+$/.test(path))
-      return json(transcript(path.split("/").at(-1), []));
+    if (path === "/api/agent-threads/moss/transcript") return json(mossTranscript);
+    if (/^\/api\/agent-threads\/[^/]+\/transcript$/.test(path))
+      return json(transcript(path.split("/").at(-2), []));
     if (path === "/api/projects/p1/chats/moss/questions") return json([card]);
     if (path.endsWith("/questions")) return json([]);
     if (path === "/api/agent-threads/space/tasks/op-space")
@@ -313,10 +378,14 @@ export async function mockApi(page, writes) {
     if (/^\/api\/agent-threads\/[^/]+\/schedules$/.test(path))
       return json({ schedules: path.includes("/space/") ? schedules : schedules.slice(1) });
     if (method === "DELETE") return route.fulfill({ status: 204 });
-    if (path === "/api/agent-threads/space/turns") return json({ operation_id: "op-new" }, 202);
+    if (/^\/api\/agent-threads\/[^/]+\/turns$/.test(path))
+      return json({ operation_id: "op-new" }, 202);
     if (/\/read$/.test(path)) {
       const id = path.split("/").at(-2);
-      return json({ ...threads.find((thread) => thread.thread_id === id), unread: false });
+      return json({
+        ...withAgent(threads.find((thread) => thread.thread_id === id)),
+        unread: false,
+      });
     }
     if (path === "/api/approval-cards/q1") return json({ outcome: "approved" });
     if (path.startsWith("/api/approval-cards/proposals/") && method === "POST")

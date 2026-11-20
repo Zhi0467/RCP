@@ -55,8 +55,6 @@ from rcp.core.transitions import (
 from rcp.core.validation import ValidationReport, build_validation_context, validate_patch
 from rcp.core.validation.quality import flag_introduced_quality_issues
 from rcp.history.delta import (
-    RefreshDelta,
-    build_refresh_delta,
     build_revision_summaries,
 )
 from rcp.limits import (
@@ -1668,20 +1666,6 @@ class HistoryManager:
         )
         self._atomic_json(self.root / "cursors.json", result.processed_cursors)
         self._atomic_text(self.root / "research.md", render_research_md(result.state))
-
-    def refresh_delta(
-        self,
-        materialization: MaterializationResult | None = None,
-    ) -> RefreshDelta:
-        """Return the bounded delta without coupling context assembly to history I/O."""
-
-        if materialization is not None:
-            return build_refresh_delta(materialization.patches, materialization)
-        if self.workspace.remote:
-            with self.read_view() as reader:
-                return reader.refresh_delta()
-        result, steps = self.history_engine.projection(self.graph_target)
-        return build_refresh_delta(result.patches, result, steps=steps)
 
     def slice(self, from_revision: int, to_revision: int | None = None) -> list[dict[str, object]]:
         if self.workspace.remote:

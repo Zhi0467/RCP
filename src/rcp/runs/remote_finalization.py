@@ -50,11 +50,6 @@ from rcp.runs.tasks.experiment_loop import (
     finalize_recorded_experiment_loop_result,
     resume_experiment_command_mailbox,
 )
-from rcp.runs.tasks.graph import (
-    GRAPH_FINALIZATION_ROLE,
-    finalize_recorded_graph_result,
-    resume_graph_command_mailbox,
-)
 from rcp.runs.tasks.work import (
     WORK_FINALIZATION_CONTEXT_ROLE,
     finalize_recorded_work_result,
@@ -101,7 +96,6 @@ RECORDED_FINALIZERS: dict[str, RecordedFinalizer] = {
     ),
     EXPERIMENT_LOOP_FINALIZATION_CONTEXT_ROLE: finalize_recorded_experiment_loop_result,
     AUTO_RESEARCH_FINALIZATION_ROLE: finalize_recorded_auto_research_result,
-    GRAPH_FINALIZATION_ROLE: finalize_recorded_graph_result,
     EPISODE_REPORT_FINALIZATION_ROLE: finalize_recorded_episode_report_result,
     BRANCH_MERGE_FINALIZATION_ROLE: finalize_recorded_branch_merge_result,
 }
@@ -126,7 +120,6 @@ RECORDED_MAILBOX_RESUMERS: dict[
     DISCUSS_FINALIZATION_CONTEXT_ROLE: resume_discuss_command_mailbox,
     AUTO_RESEARCH_CHILD_FINALIZATION_CONTEXT_ROLE: resume_child_work_command_mailbox,
     EXPERIMENT_LOOP_FINALIZATION_CONTEXT_ROLE: resume_experiment_command_mailbox,
-    GRAPH_FINALIZATION_ROLE: resume_graph_command_mailbox,
     BRANCH_MERGE_FINALIZATION_ROLE: resume_branch_merge_command_mailbox,
 }
 

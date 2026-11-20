@@ -1,3 +1,4 @@
+import { RotateCcw } from "lucide-react";
 import { chatBrowserProfile } from "../chat/chatResources";
 import { resourceKeyId } from "./resourceStore";
 import { useRefreshRuntime, useResource } from "./useResource";
@@ -42,14 +43,12 @@ export function ChatBrowserControl({
   chatId,
   machine,
   disabled = false,
-  onRequestedChange,
 }: {
   apiBase: string;
   chatId: string;
   /** The project machine alias the next turn runs on, whose browser is checked while on. */
   machine: string;
   disabled?: boolean;
-  onRequestedChange?: (requested: boolean) => void;
 }) {
   const { store } = useRefreshRuntime();
   const projectId = decodeURIComponent(apiBase.split("/projects/")[1]?.split("/")[0] ?? "");
@@ -58,7 +57,6 @@ export function ChatBrowserControl({
   const requested = preference.value?.browser_requested ?? null;
   const pending = preference.pending.length > 0;
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => onRequestedChange?.(requested ?? false), [requested, onRequestedChange]);
   const [checked, setChecked] = useState<{
     machine: string;
     readiness: MachineBrowserReadiness;
@@ -124,14 +122,12 @@ export function ChatBrowserControl({
       setError(errorMessage(failure));
     }
   }
+  const failure = error ?? (preference.error ? errorMessage(preference.error) : null);
   return (
-    <div
-      className="chat-browser-control"
-      style={error || preference.error ? { outline: "1px solid var(--danger, #c44)" } : undefined}
-    >
+    <div className="chat-browser-control" title={failure ?? undefined}>
       <BrowserToggle
         checked={requested ?? false}
-        disabled={disabled || pending || requested === null}
+        disabled={disabled || pending || requested === null || failure !== null}
         onChange={(value) => void change(value)}
       />
       {warning && (
@@ -139,16 +135,16 @@ export function ChatBrowserControl({
           ⚠
         </span>
       )}
-      {Boolean(error || preference.error) && (
+      {failure !== null && (
         <button
           type="button"
-          className="button icon"
+          className="chat-browser-retry"
           aria-label="Retry browser preference"
-          title={error ?? String(preference.error)}
+          title={failure}
           disabled={pending}
           onClick={() => void change()}
         >
-          ↻
+          <RotateCcw size={12} aria-hidden="true" />
         </button>
       )}
     </div>

@@ -1,4 +1,4 @@
-"""Owner-only schedule controls on the private thread seam."""
+"""Schedule controls on the agent seam."""
 
 from __future__ import annotations
 
@@ -18,16 +18,25 @@ Store = Annotated[AppStore, Depends(get_store)]
 Identity = Annotated[IdentityAccess, Depends(get_identity_access)]
 
 
-def require_schedule_owner(store: AppStore, thread_id: str, user_id: str) -> None:
-    with store.connection() as connection:
-        row = connection.execute(
-            "SELECT * FROM agent_threads WHERE thread_id=? AND user_id=? AND closed_at IS NULL",
-            (thread_id, user_id),
-        ).fetchone()
-    if row is None or (
-        row["project_id"] and not store.is_project_member(row["project_id"], user_id)
+def require_schedule_owner(
+    store: AppStore, thread_id: str, user_id: str, schedule_id: str | None = None
+) -> None:
+    """The member sees the agent and, for one schedule, authorized its creating turn."""
+    from rcp.api.agent_threads import accessible_agent
+
+    accessible_agent(store, thread_id, user_id)
+    if schedule_id is not None and not any(
+        item.schedule_id == schedule_id for item in _member_schedules(store, thread_id, user_id)
     ):
-        raise HTTPException(status_code=404, detail="Thread not found")
+        raise HTTPException(status_code=404, detail="Schedule not found")
+
+
+def _member_schedules(store: AppStore, thread_id: str, user_id: str) -> list:
+    def author(schedule) -> str | None:
+        task = store.agent_task(schedule.created_operation_id)
+        return task.authorized_by.user_id if task and task.authorized_by else None
+
+    return [item for item in store.agent_schedules(thread_id) if author(item) == user_id]
 
 
 @router.get("/api/agent-threads/{thread_id}/schedules")
@@ -36,7 +45,9 @@ def list_schedules(
 ) -> dict:
     user = identity_access.acting_user(request)
     require_schedule_owner(store, thread_id, user.user_id)
-    return {"schedules": [_view(item) for item in store.agent_schedules(thread_id)]}
+    return {
+        "schedules": [_view(item) for item in _member_schedules(store, thread_id, user.user_id)]
+    }
 
 
 def _view(schedule) -> dict:
@@ -58,7 +69,7 @@ def cancel_schedule(
     thread_id: str, schedule_id: str, request: Request, *, store: Store, identity_access: Identity
 ) -> Response:
     human = identity_access.require_patch_capable_identity(request)
-    require_schedule_owner(store, thread_id, human.user_id)
+    require_schedule_owner(store, thread_id, human.user_id, schedule_id)
     try:
         store.cancel_agent_schedule(thread_id, schedule_id)
     except KeyError as exc:
@@ -71,7 +82,7 @@ def enable_schedule(
     thread_id: str, schedule_id: str, request: Request, *, store: Store, identity_access: Identity
 ) -> dict:
     human = identity_access.require_patch_capable_identity(request)
-    require_schedule_owner(store, thread_id, human.user_id)
+    require_schedule_owner(store, thread_id, human.user_id, schedule_id)
     try:
         schedule = thread_schedule(store, thread_id, schedule_id)
     except KeyError as exc:
@@ -94,7 +105,7 @@ def pause_schedule(
     thread_id: str, schedule_id: str, request: Request, *, store: Store, identity_access: Identity
 ) -> dict:
     human = identity_access.require_patch_capable_identity(request)
-    require_schedule_owner(store, thread_id, human.user_id)
+    require_schedule_owner(store, thread_id, human.user_id, schedule_id)
     try:
         return _view(store.pause_agent_schedule(thread_id, schedule_id))
     except KeyError as exc:
@@ -109,7 +120,7 @@ def resume_schedule_route(
 ) -> dict:
     """Resume at the next fire after now; one whose limits have passed is done."""
     human = identity_access.require_patch_capable_identity(request)
-    require_schedule_owner(store, thread_id, human.user_id)
+    require_schedule_owner(store, thread_id, human.user_id, schedule_id)
     try:
         return _view(resume_schedule(store, thread_id, schedule_id))
     except KeyError as exc:

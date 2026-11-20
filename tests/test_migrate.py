@@ -368,7 +368,7 @@ def test_migrate_check_rejects_other_unknown_storage_states(
     else:
         AppStore(database)
         with closing(sqlite3.connect(database)) as connection, connection:
-            connection.execute("DROP INDEX watchers_due")
+            connection.execute("DROP INDEX watchers_agent")
 
     code, output, errors = _run_cli(
         monkeypatch,

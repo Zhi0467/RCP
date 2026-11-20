@@ -83,7 +83,7 @@ def resolved_agent_surface(
     """
 
     if kind in {"seed", "refresh"}:
-        return cast(AgentExecutionProfile, kind)
+        raise ValueError("Seed and Refresh runs are retired; their tasks are history only.")
     if kind in {"node_chat", "project_chat"}:
         if not isinstance(request, RunRequest):
             raise TypeError("A chat task requires its pinned run request.")

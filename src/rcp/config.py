@@ -161,8 +161,10 @@ class StateConfig(BaseModel):
     repository: str
 
 
-AgentSurface = Literal["seed", "refresh", "node_chat", "project_chat", "paper_coach"]
+AgentSurface = Literal["node_chat", "project_chat", "paper_coach"]
 AgentExecutionProfile = AgentSurface | Literal["orchestrator"]
+RecordedAgentProfile = AgentExecutionProfile | Literal["seed", "refresh"]
+RETIRED_AGENT_PROFILES: frozenset[str] = frozenset({"seed", "refresh"})
 
 
 class AgentPermissions(BaseModel):
@@ -195,8 +197,6 @@ class AgentConfig(BaseModel):
         description="Operational invocations per newly authorized episode.",
     )
     skill_defaults: SkillDefaults = Field(default_factory=SkillDefaults)
-    seed: AgentSurfaceConfig | None = None
-    refresh: AgentSurfaceConfig | None = None
     node_chat: AgentSurfaceConfig | None = None
     project_chat: AgentSurfaceConfig | None = None
     paper_coach: AgentSurfaceConfig | None = None
@@ -204,10 +204,17 @@ class AgentConfig(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def migrate_legacy_auto_research_ceiling(cls, value: Any) -> Any:
+    def migrate_legacy_agent_keys(cls, value: Any) -> Any:
         if not isinstance(value, dict):
             return value
         migrated = dict(value)
+        legacy_refresh = migrated.pop("refresh", None)
+        migrated.pop("seed", None)
+        if isinstance(legacy_refresh, dict):
+            migrated.setdefault(
+                "orchestrator",
+                {key: item for key, item in legacy_refresh.items() if key != "permissions"},
+            )
         legacy_key = "default_campaign_invocation_ceiling"
         current_key = "default_auto_research_invocation_ceiling"
         if legacy_key not in migrated:
@@ -284,19 +291,14 @@ class Manifest(BaseModel):
             if getattr(self.agent, surface) is None:
                 setattr(self.agent, surface, AgentSurfaceConfig())
         if self.agent.orchestrator is None:
-            refresh = self.agent.refresh
-            assert refresh is not None
-            self.agent.orchestrator = refresh.model_copy(
-                deep=True,
-                update={"permissions": permissions_for("orchestrate")},
-            )
+            self.agent.orchestrator = AgentSurfaceConfig(permissions=permissions_for("orchestrate"))
         for surface in AGENT_EXECUTION_PROFILES:
             profile = getattr(self.agent, surface)
             assert profile is not None
             expected = permissions_for(surface)
             legacy_chat = surface in {"node_chat", "project_chat"} and (
                 profile.permissions
-                in (permissions_for("scratch_patch"), permissions_for("discuss"))
+                in (_RETIRED_SCRATCH_PATCH_PERMISSIONS, permissions_for("discuss"))
             )
             legacy_coach = (
                 surface == "paper_coach" and profile.permissions == _RETIRED_COACH_PERMISSIONS
@@ -350,8 +352,6 @@ class Manifest(BaseModel):
 
 
 _AGENT_SURFACES: tuple[AgentSurface, ...] = (
-    "seed",
-    "refresh",
     "node_chat",
     "project_chat",
     "paper_coach",
@@ -375,6 +375,14 @@ def launches_work_like(surface: AgentExecutionProfile) -> bool:
     return surface in _WORK_LIKE_SURFACES
 
 
+_RETIRED_SCRATCH_PATCH_PERMISSIONS = AgentPermissions(
+    read_graph=True,
+    read_research_md=True,
+    read_repositories="run_scope",
+    read_conversations="run_scope",
+    write_graph_patch=True,
+    write_project_files=False,
+)
 _RETIRED_COACH_PERMISSIONS = AgentPermissions(
     read_graph=True,
     read_research_md=True,
@@ -389,9 +397,7 @@ def permissions_for(target: AgentExecutionProfile | AgentCapability) -> AgentPer
     """Return the immutable authority envelope for one launch capability."""
 
     capability: AgentCapability
-    if target in {"seed", "refresh"}:
-        capability = "scratch_patch"
-    elif target in {"node_chat", "project_chat", "paper_coach"}:
+    if target in {"node_chat", "project_chat", "paper_coach"}:
         capability = "work_auto"
     elif target == "discuss":
         capability = "discuss"
@@ -399,8 +405,6 @@ def permissions_for(target: AgentExecutionProfile | AgentCapability) -> AgentPer
         capability = "work_auto"
     elif target in {"orchestrator", "orchestrate"}:
         capability = "orchestrate"
-    elif target == "scratch_patch":
-        capability = "scratch_patch"
     else:
         raise ValueError(f"Unknown agent surface or capability: {target!r}")
 
@@ -421,15 +425,6 @@ def permissions_for(target: AgentExecutionProfile | AgentCapability) -> AgentPer
             read_conversations="run_scope",
             write_graph_patch=True,
             write_project_files=True,
-        )
-    if capability == "scratch_patch":
-        return AgentPermissions(
-            read_graph=True,
-            read_research_md=True,
-            read_repositories="run_scope",
-            read_conversations="run_scope",
-            write_graph_patch=True,
-            write_project_files=False,
         )
     raise ValueError(f"Unknown agent capability: {capability!r}")
 

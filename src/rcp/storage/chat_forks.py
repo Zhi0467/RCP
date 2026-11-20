@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from rcp.core.transition_models import GraphTargetRef
+from rcp.storage.agents import ensure_agent
 from rcp.storage.chat_names import initialize_chat_name
 from rcp.storage.mixin_base import StoreMixinBase
 
@@ -90,13 +91,6 @@ class ChatForkStoreMixin(StoreMixinBase):
         self, connection: sqlite3.Connection, project_id: str, source_chat_id: str
     ) -> sqlite3.Row:
         """The chat's latest turn, which must hold a settled, usable native session."""
-        if (
-            connection.execute(
-                "SELECT 1 FROM agent_threads WHERE thread_id=?", (source_chat_id,)
-            ).fetchone()
-            is not None
-        ):
-            raise ValueError("A private agent thread cannot fork into a public conversation")
         return cast("AppStore", self)._usable_chat_fork_source(
             connection, self._latest_chat_turn_id(connection, project_id, source_chat_id)
         )
@@ -269,6 +263,22 @@ class ChatForkStoreMixin(StoreMixinBase):
             connection.execute(
                 "INSERT INTO chat_forks VALUES (?, ?, ?)",
                 (project_id, record.chat_id, record.model_dump_json()),
+            )
+            owner = connection.execute(
+                "SELECT user_id FROM agent_threads WHERE thread_id=?", (source_chat_id,)
+            ).fetchone()
+            if owner is not None:
+                connection.execute(
+                    "INSERT INTO agent_threads(thread_id,user_id,kind,project_id,created_at,"
+                    "is_default) VALUES(?,?,'project',?,?,0)",
+                    (record.chat_id, owner[0], project_id, record.created_at),
+                )
+            ensure_agent(
+                connection,
+                record.chat_id,
+                project_id=project_id,
+                owner_user_id=owner[0] if owner is not None else None,
+                created_at=record.created_at,
             )
             initialize_chat_name(connection, project_id, record.chat_id, title)
         return record

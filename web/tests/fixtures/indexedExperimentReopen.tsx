@@ -268,7 +268,6 @@ function Fixture() {
       selectedAutoResearchEpisodeId={coexisting ? null : parentEpisodeId}
       runBusy={false}
       stopBusyIds={stopBusyIds}
-      watcherCheckBusyId={null}
       taskActionId={null}
       selectedExperimentConversation={
         selectedExperimentId ? (
@@ -309,7 +308,6 @@ function Fixture() {
           });
         });
       }}
-      onCheckExperimentWatcher={() => undefined}
       onRecoverExperiment={() => undefined}
       onSwitchExperimentProvider={() => undefined}
       episodeReportHref={() => "#"}

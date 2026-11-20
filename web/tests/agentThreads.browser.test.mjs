@@ -341,12 +341,12 @@ test("a send, a read mark and history reads stay with the thread they belong to"
       await sendHeld;
       await route.fulfill({ status: 500, contentType: "application/json", body: "{}" });
     });
-    await page.route("**/api/projects/p1/chats/moss", async (route) => {
+    await page.route("**/api/agent-threads/moss/transcript", async (route) => {
       await new Promise((resolve) => setTimeout(resolve, 400));
       await route.fallback();
     });
     let historyReads = 0;
-    await page.route("**/api/projects/p1/tasks/op-check", async (route) => {
+    await page.route("**/api/agent-threads/moss/tasks/op-check", async (route) => {
       historyReads += 1;
       await route.fulfill({ status: 404, contentType: "application/json", body: "{}" });
     });
@@ -394,7 +394,7 @@ test("a send, a read mark and history reads stay with the thread they belong to"
     // An upload that finishes after switching threads stays owned by its old route.
     let releaseUpload;
     const uploadHeld = new Promise((resolve) => (releaseUpload = resolve));
-    await page.route("**/api/projects/p1/chats/moss/attachments", async (route) => {
+    await page.route("**/api/agent-threads/moss/attachments?*", async (route) => {
       await uploadHeld;
       await route.fulfill({
         json: {
@@ -422,7 +422,7 @@ test("a send, a read mark and history reads stay with the thread they belong to"
     const cleaned = page.waitForRequest(
       (request) =>
         request.method() === "DELETE" &&
-        new URL(request.url()).pathname === "/api/projects/p1/chats/moss/attachments/old-file",
+        new URL(request.url()).pathname === "/api/agent-threads/moss/attachments/old-file",
     );
     releaseUpload();
     await cleaned;
@@ -461,7 +461,7 @@ test("a sent turn stays live when an older reload answers late", async () => {
     // project transcript gains the new turn only when it settles.
     let release;
     const held = new Promise((resolve) => (release = resolve));
-    await page.route("**/api/projects/p1/tasks/op-moss", async (route) => {
+    await page.route("**/api/agent-threads/moss/tasks/op-moss", async (route) => {
       await held;
       await route.fallback();
     });
@@ -471,10 +471,10 @@ test("a sent turn stays live when an older reload answers late", async () => {
       settled: false,
       status_message: "Running",
     };
-    await page.route("**/api/projects/p1/tasks/project_chat", (route) =>
+    await page.route("**/api/agent-threads/moss/turns", (route) =>
       route.fulfill({ status: 202, json: running }),
     );
-    await page.route("**/api/projects/p1/tasks/op-new", (route) =>
+    await page.route("**/api/agent-threads/moss/tasks/op-new", (route) =>
       route.fulfill({ json: running }),
     );
     await page.goto(
@@ -548,7 +548,7 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
         );
       return transcript(space ? "space" : "moss", messages);
     };
-    await page.route("**/api/projects/p1/chats/moss", (route) =>
+    await page.route("**/api/agent-threads/moss/transcript", (route) =>
       route.fulfill({ json: windowTranscript(false) }),
     );
     await page.route("**/api/agent-threads/space/transcript", (route) =>
@@ -571,13 +571,10 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
       writes.push({ path: "/api/approval-cards/q1", body: route.request().postDataJSON() });
       return route.fulfill({ json: { outcome: "approved" } });
     });
-    await page.route(
-      /\/api\/(?:projects\/p1|agent-threads\/space)\/tasks\/op-(?:moss|space)$/,
-      (route) => {
-        const op = new URL(route.request().url()).pathname.split("/").at(-1);
-        return route.fulfill({ json: { ...settled(op), result: { artifacts: [artifact] } } });
-      },
-    );
+    await page.route(/\/api\/agent-threads\/(?:moss|space)\/tasks\/op-(?:moss|space)$/, (route) => {
+      const op = new URL(route.request().url()).pathname.split("/").at(-1);
+      return route.fulfill({ json: { ...settled(op), result: { artifacts: [artifact] } } });
+    });
     await page.route("**/api/projects/p1/artifacts/report/state", (route) =>
       route.fulfill({
         json: {
@@ -608,7 +605,7 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
     await page.route(/\/artifacts\/report\/viewer(?:\?.*)?$/, (route) =>
       route.fulfill({ contentType: "text/html", body: "<p>Rendered report</p>" }),
     );
-    await page.route(/\/attachments$/, (route) => {
+    await page.route(/\/attachments(?:\?.*)?$/, (route) => {
       writes.push({
         path: new URL(route.request().url()).pathname,
         body: route.request().postData(),
@@ -630,9 +627,9 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
     let sawProjectSend;
     const projectSendHeld = new Promise((resolve) => (admitProjectSend = resolve));
     const projectSendStarted = new Promise((resolve) => (sawProjectSend = resolve));
-    await page.route("**/api/projects/p1/tasks/project_chat", async (route) => {
+    await page.route("**/api/agent-threads/moss/turns", async (route) => {
       writes.push({
-        path: "/api/projects/p1/tasks/project_chat",
+        path: "/api/agent-threads/moss/turns",
         body: route.request().postDataJSON(),
       });
       sawProjectSend();
@@ -660,18 +657,28 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
       await project.getByText("Approved the proposed action", { exact: true }).count(),
       0,
     );
-    const projectComment = project.getByRole("button", { name: "Comment on this answer" });
-    assert.equal(
-      await projectComment.evaluate((button) => button.getBoundingClientRect().width),
-      1,
-    );
-    await projectComment.focus();
-    await projectComment.press("Enter");
-    const selection = page.getByRole("textbox", { name: "Select answer text" });
-    await selection.press(process.platform === "darwin" ? "Meta+A" : "Control+A");
-    await page.getByRole("button", { name: "Comment on selection" }).click();
-    await page.getByRole("textbox", { name: "Comment", exact: true }).fill("Show the comparison");
-    await page.getByRole("textbox", { name: "Comment", exact: true }).press("Enter");
+    const commentOn = async (region, text) => {
+      await region.locator(".chat-annotatable-answer").first().waitFor();
+      await region.evaluate((element) => {
+        const answer = element.querySelector(".chat-annotatable-answer");
+        const walker = document.createTreeWalker(answer, NodeFilter.SHOW_TEXT);
+        const node = walker.nextNode();
+        const range = document.createRange();
+        range.setStart(node, 0);
+        range.setEnd(node, Math.min(node.length, 12));
+        getSelection().removeAllRanges();
+        getSelection().addRange(range);
+      });
+      await page.locator(".chat-selection-comment").click();
+      const field = page.getByRole("textbox", { name: "Comment", exact: true });
+      await field.fill(text);
+      await page
+        .getByRole("dialog", { name: "Comment" })
+        .getByRole("button", { name: "Comment", exact: true })
+        .click();
+      await region.locator(".chat-annotation-count").waitFor();
+    };
+    await commentOn(project, "Show the comparison");
     await project
       .locator('input[type="file"]')
       .setInputFiles({ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("notes") });
@@ -683,52 +690,17 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
       location.hash = "#/agent/space";
     });
     const space = page.getByRole("region", { name: "Pip" });
-    const spaceComment = space.getByRole("button", { name: "Comment on this answer" });
-    await spaceComment.focus();
-    await spaceComment.press("Enter");
-    await page
-      .getByRole("textbox", { name: "Select answer text" })
-      .press(process.platform === "darwin" ? "Meta+A" : "Control+A");
-    await page.getByRole("button", { name: "Comment on selection" }).click();
-    await page
-      .getByRole("textbox", { name: "Comment", exact: true })
-      .fill("Keep the Space comparison");
-    await page.getByRole("textbox", { name: "Comment", exact: true }).press("Enter");
+    await commentOn(space, "Keep the Space comparison");
     admitProjectSend();
-    // The completed project's comments and draft clear while Space keeps its own comment.
     await page.waitForFunction(
-      () =>
-        !localStorage.getItem("rcp:member-draft:alex:agent-window-comments:p1:moss") &&
-        !localStorage.getItem("rcp:member-draft:alex:agent-window:p1:moss"),
+      () => !localStorage.getItem("rcp:member-draft:alex:agent-window:p1:moss"),
     );
-    assert.equal(await space.getByRole("button", { name: "1 annotation" }).count(), 1);
-    await page.evaluate(() => {
-      const key = "rcp:member-draft:alex:agent-window-comments:space:space";
-      sessionStorage.setItem(key, localStorage.getItem(key));
-      localStorage.removeItem(key);
-      sessionStorage.setItem("test:block-local-writes", "1");
-    });
-    await page.addInitScript(() => {
-      if (!sessionStorage.getItem("test:block-local-writes")) return;
-      const setItem = Storage.prototype.setItem;
-      Storage.prototype.setItem = function (key, value) {
-        if (this === localStorage) throw new DOMException("full", "QuotaExceededError");
-        return setItem.call(this, key, value);
-      };
-    });
-    await page.reload();
-    await space.getByRole("button", { name: "1 annotation" }).waitFor();
-    await page.evaluate(() => sessionStorage.removeItem("test:block-local-writes"));
-    await page.reload();
-    await space.getByRole("button", { name: "1 annotation" }).waitFor();
-    await page.evaluate(() => sessionStorage.clear());
-    await page.reload();
-    await space.getByRole("button", { name: "1 annotation" }).waitFor();
-    const sent = writes.find((write) => write.path === "/api/projects/p1/tasks/project_chat");
-    assert.ok(sent.body.message.includes("Show the comparison"));
+    assert.equal(await space.getByRole("button", { name: "1 comment" }).count(), 1);
+    const sent = writes.find((write) => write.path === "/api/agent-threads/moss/turns");
+    assert.deepEqual(sent.body.comment_thread_ids, ["comment-1"]);
     assert.equal(sent.body.attachment_set_id, "set-1");
     assert.equal(typeof sent.body.attachment_client_id, "string");
-    assert.ok(writes.some((write) => write.path === "/api/projects/p1/chats/moss/attachments"));
+    assert.ok(writes.some((write) => write.path === "/api/agent-threads/moss/attachments"));
     const spaceFrame = space.locator(".chat-inline-artifact-frame");
     await spaceFrame.waitFor();
     assert.equal(
@@ -763,7 +735,7 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
       () => document.querySelector('textarea[aria-label="Message"]').value === "",
     );
     const spaceSent = writes.find((write) => write.path === "/api/agent-threads/space/turns");
-    assert.ok(spaceSent.body.message.includes("Keep the Space comparison"));
+    assert.deepEqual(spaceSent.body.comment_thread_ids, ["comment-2"]);
     assert.equal(spaceSent.body.attachment_set_id, "set-1");
     assert.equal(typeof spaceSent.body.attachment_client_id, "string");
     assert.equal("artifact_context" in spaceSent.body, false);
@@ -776,7 +748,7 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
   }
 });
 
-test("Pip refreshes an inline artifact version and sends its displayed version with a selection", async () => {
+test("Pip refreshes an inline artifact version and docks a comment drawn on its displayed version", async () => {
   await withFixture(async (browser, base) => {
     const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
     const writes = [];
@@ -890,21 +862,25 @@ test("Pip refreshes an inline artifact version and sends its displayed version w
     );
     const comment = page.getByRole("textbox", { name: "Comment", exact: true });
     await comment.fill("Tighten this");
-    await comment.press("Enter");
+    await page
+      .getByRole("dialog", { name: "Comment" })
+      .getByRole("button", { name: "Comment", exact: true })
+      .click();
+    await space.locator(".chat-annotation-count").waitFor();
     await space.getByRole("textbox", { name: "Message" }).fill("Revise it");
     await space.getByRole("button", { name: "Send", exact: true }).click();
     await page.waitForFunction(
       () => document.querySelector('textarea[aria-label="Message"]').value === "",
     );
     const sent = writes.find((write) => write.path === "/api/agent-threads/space/turns");
-    assert.equal(sent.body.artifact_context.artifact_id, "report");
-    assert.equal(sent.body.artifact_context.operation_id, "op-space");
-    assert.equal(sent.body.artifact_context.base_version, "v2");
-    assert.deepEqual(
-      sent.body.artifact_context.selections.map((selection) => [selection.text, selection.comment]),
-      [["Rendered report", "Tighten this"]],
+    assert.deepEqual(sent.body.comment_thread_ids, ["comment-1"]);
+    const saved = writes.find(
+      (write) =>
+        write.path === "/api/agent-threads/space/comment-threads" && write.method === "POST",
     );
-    assert.equal(sent.body.message.includes("Tighten this"), false);
+    assert.deepEqual(saved.body.target, { kind: "artifact", id: "report" });
+    assert.equal(saved.body.drawn_version, "v2");
+    assert.equal(saved.body.text, "Tighten this");
     const beats = writes.filter((write) => write.path === "/api/resource-watermarks");
     assert.ok(beats.length > 0);
     assert.ok(beats.every((beat) => beat.body.open.every((project) => project.project_id !== "")));
@@ -922,7 +898,7 @@ const codexReadiness = {
   models: [{ id: "gpt-6.1-sol", label: "gpt-6.1-sol", reasoning: ["low", "medium"] }],
 };
 
-test("Space and project threads pick their agent from one row in the thread menu", async () => {
+test("Space and project threads pick their agent from the header's agent chip", async () => {
   await withFixture(async (browser, base) => {
     for (const width of [1280, 390]) {
       const page = await browser.newPage({ viewport: { width, height: 844 } });
@@ -950,32 +926,33 @@ test("Space and project threads pick their agent from one row in the thread menu
         await page.goto(`${base}#/agent/${hash}`);
         const thread = page.getByRole("region", { name });
         await thread.getByRole("textbox", { name: "Message" }).waitFor();
-        // The composer carries no picker of its own, and no picker panel sits outside the menu.
-        assert.equal(await thread.locator(".chat-composer .agent-config-chip").count(), 0);
-        assert.equal(await thread.locator(".agent-config").count(), 0);
-        await thread.getByRole("button", { name: "Thread menu" }).click();
-        const menu = page.getByRole("menu", { name: "Thread menu" });
-        const row = menu.getByRole("button", { name: new RegExp(`^${name} agent:`) });
+        // The picker lives in the header menu, shut until asked for.
+        assert.equal(await thread.locator(".agent-config-chip").count(), 0);
+        await thread.getByRole("button", { name: "Chat menu" }).click();
+        const row = thread.getByRole("button", { name: /^Chat agent:/ });
         await row.waitFor();
         assert.equal(await row.getAttribute("aria-expanded"), "false");
         await row.click();
         assert.equal(await row.getAttribute("aria-expanded"), "true");
-        assert.equal((await menu.locator(".agent-config select").count()) >= 2, true);
+        const menu = thread.locator(".agent-config");
+        assert.equal((await menu.locator("select").count()) >= 2, true);
         await page.waitForTimeout(200);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
         if (shots) await page.screenshot({ path: `${shots}/menu-picker-${hash}-${width}.png` });
         if (hash === "space") {
           // A provider chosen here is stored on the thread, survives a reload, and
           // goes with the next turn.
-          await menu.locator(".agent-config select").first().selectOption("codex");
-          assert.match(await row.textContent(), /Codex/);
+          await menu.locator("select").first().selectOption("codex");
+          await page.waitForFunction(() =>
+            /Codex/.test(document.querySelector(".agent-config-chip")?.textContent ?? ""),
+          );
           assert.equal(
             writes.find((write) => write.path === "/api/agent-threads/space/agent").body.provider,
             "codex",
           );
           await page.reload();
           await thread.getByRole("textbox", { name: "Message" }).waitFor();
-          await thread.getByRole("button", { name: "Thread menu" }).click();
+          await thread.getByRole("button", { name: "Chat menu" }).click();
           await row.waitFor();
           assert.match(await row.textContent(), /Codex/);
           await page.keyboard.press("Escape");
@@ -989,19 +966,19 @@ test("Space and project threads pick their agent from one row in the thread menu
         } else {
           // Unpicked, the next turn names exactly what the row shows: the Settings default.
           assert.match(await row.textContent(), /Claude · opus · high/);
-          await page.keyboard.press("Escape");
+          await row.click();
           await thread.getByRole("textbox", { name: "Message" }).fill("Next");
           await thread.getByRole("button", { name: "Send", exact: true }).click();
           await page.waitForFunction(() =>
             document.querySelector(".chat-send-button:not(:has(.spin))"),
           );
-          const turn = writes.find((write) => write.path === "/api/projects/p1/tasks/project_chat");
+          const turn = writes.find((write) => write.path === "/api/agent-threads/moss/turns");
           assert.deepEqual(
             [turn.body.provider, turn.body.model, turn.body.reasoning],
             ["claude", "opus", "high"],
           );
         }
-        assert.equal(await menu.count(), 0);
+        assert.equal(await thread.locator(".agent-config").count(), 0);
       }
       assert.deepEqual(errors, []);
       await page.close();
@@ -1013,7 +990,7 @@ test("/ in either thread window offers the official skills and sends the chosen 
   await withFixture(async (browser, base) => {
     for (const [url, name, path] of [
       [`${base}#/agent/space`, "Pip", "/api/agent-threads/space/turns"],
-      [`${base}?view=project`, "Moss", "/api/projects/p1/tasks/project_chat"],
+      [`${base}?view=project`, "Moss", "/api/agent-threads/moss/turns"],
     ]) {
       const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
       const errors = [];
@@ -1072,7 +1049,7 @@ test("a failed turn shows its error once, in the transcript column, with Retry",
     for (const width of [1280, 390]) {
       const page = await browser.newPage({ viewport: { width, height: 844 } });
       await mockApi(page, []);
-      await page.route("**/api/projects/p1/chats/moss", (route) =>
+      await page.route("**/api/agent-threads/moss/transcript", (route) =>
         route.fulfill({
           json: transcript("moss", [message("f1", "user", "Run the 64k sweep", "op-fail")]),
         }),
@@ -1080,7 +1057,7 @@ test("a failed turn shows its error once, in the transcript column, with Retry",
       await page.route("**/api/projects/p1/chats/moss/questions", (route) =>
         route.fulfill({ json: [] }),
       );
-      await page.route("**/api/projects/p1/tasks/op-fail", (route) =>
+      await page.route("**/api/agent-threads/moss/tasks/op-fail", (route) =>
         route.fulfill({
           json: {
             ...settled("op-fail"),
@@ -1120,7 +1097,7 @@ test("a failed turn shows its error once, in the transcript column, with Retry",
       const retried = page.waitForRequest(
         (request) =>
           request.method() === "POST" &&
-          new URL(request.url()).pathname === "/api/projects/p1/tasks/op-fail/retry",
+          new URL(request.url()).pathname === "/api/agent-threads/moss/tasks/op-fail/retry",
       );
       await retry.click();
       await retried;
@@ -1175,7 +1152,7 @@ test("a retried turn shows its message once, and a stopped one sits in the colum
       assert.equal(await banner.getByRole("button", { name: "Continue" }).count(), 1);
       // The retry's own copy of the message goes once its lineage reaches the first attempt.
       await page.waitForFunction(
-        () => document.querySelectorAll(".agent-thread .agent-chat-view-line.human").length === 1,
+        () => document.querySelectorAll(".chat-dock .agent-chat-view-line.human").length === 1,
         undefined,
         { timeout: 5_000 },
       );
@@ -1284,17 +1261,17 @@ test("thread switches keep the last view, a failed load retries, and notices cle
         ? route.fulfill({ status: 500, contentType: "application/json", body: "{}" })
         : route.fulfill({ json: { browser_requested: false } });
     });
-    const menu = space.getByRole("button", { name: "Thread menu" });
-    const browserItem = page.getByRole("menuitem", { name: /browser/i });
+    const menu = space.getByRole("button", { name: "Chat menu" });
+    const browserItem = space.getByRole("switch", { name: "Browser use" });
     await menu.click();
     await browserItem.click();
     const notice = space.locator(
       ".agent-chat-view-lines > .agent-chat-view-line.error[role=alert]",
     );
     await notice.waitFor();
-    await menu.click();
     await browserItem.click();
     await notice.waitFor({ state: "detached" });
+    await page.keyboard.press("Escape");
 
     // Escape keeps the name; Enter renames once.
     const name = space.getByRole("textbox", { name: "Agent name" });
@@ -1370,7 +1347,7 @@ test("Space and project replies link and embed repository files and saved artifa
         await page.route("**/api/agent-threads/space/transcript", (route) =>
           route.fulfill({ json: replyTranscript("space") }),
         );
-        await page.route("**/api/projects/p1/chats/moss", (route) =>
+        await page.route("**/api/agent-threads/moss/transcript", (route) =>
           route.fulfill({ json: replyTranscript("moss") }),
         );
         await page.route("**/api/projects/p1/chats/moss/questions", (route) =>
@@ -1428,7 +1405,7 @@ test("Space and project replies link and embed repository files and saved artifa
   });
 });
 
-test("a provider signed in after mount is offered when the thread menu opens", async () => {
+test("a provider signed in after mount is offered when the agent chip opens", async () => {
   await withFixture(async (browser, base) => {
     const page = await browser.newPage({ viewport: { width: 1280, height: 844 } });
     await mockApi(page, []);
@@ -1451,20 +1428,18 @@ test("a provider signed in after mount is offered when the thread menu opens", a
     await page.goto(`${base}#/agent/space`);
     const thread = page.getByRole("region", { name: "Pip" });
     await thread.locator(".chat-progress").waitFor();
-    await thread.getByRole("button", { name: "Thread menu" }).click();
-    const menu = page.getByRole("menu", { name: "Thread menu" });
-    await menu.getByRole("button", { name: /^Pip agent:/ }).waitFor();
-    await page.keyboard.press("Escape");
     // Codex is signed in from Settings while the thread stays open.
     signedIn = true;
-    await thread.getByRole("button", { name: "Thread menu" }).click();
-    await menu.getByRole("button", { name: /^Pip agent:/ }).click();
-    const provider = menu.locator(".agent-config select").first();
+    await thread.getByRole("button", { name: "Chat menu" }).click();
+    await thread.getByRole("button", { name: /^Chat agent:/ }).click();
+    const provider = thread.locator(".agent-config select").first();
     await page.waitForFunction(() =>
-      document.querySelector('[role=menu] .agent-config select option[value="codex"]'),
+      document.querySelector('.agent-config select option[value="codex"]'),
     );
     await provider.selectOption("codex");
-    assert.match(await menu.getByRole("button", { name: /^Pip agent:/ }).textContent(), /Codex/);
+    await page.waitForFunction(() =>
+      /Codex/.test(document.querySelector(".agent-config-chip")?.textContent ?? ""),
+    );
   });
 });
 
@@ -1491,16 +1466,14 @@ test("a pick stored by a send reads its default machine's readiness", async () =
     ]) {
       await page.goto(`${base}#/agent/${hash}`);
       const thread = page.getByRole("region", { name });
-      await thread.getByRole("button", { name: "Thread menu" }).click();
-      const row = page
-        .getByRole("menu", { name: "Thread menu" })
-        .getByRole("button", { name: new RegExp(`^${name} agent:`) });
+      await thread.getByRole("textbox", { name: "Message" }).waitFor();
+      await thread.getByRole("button", { name: "Chat menu" }).click();
+      const row = thread.getByRole("button", { name: /^Chat agent:/ });
       await row.waitFor();
       await page.waitForFunction(
         () => document.querySelector(".agent-config-chip")?.getAttribute("aria-busy") === "false",
       );
       assert.equal(await row.textContent(), "Claude · opus · high");
-      await page.keyboard.press("Escape");
     }
   });
 });
@@ -1571,12 +1544,12 @@ test("a provider switch picks that provider's first model, listed before any pro
     );
     await page.goto(`${base}#/agent/space`);
     const thread = page.getByRole("region", { name: "Pip" });
-    await thread.getByRole("button", { name: "Thread menu" }).click();
-    const menu = page.getByRole("menu", { name: "Thread menu" });
-    const row = menu.getByRole("button", { name: /^Pip agent:/ });
+    await thread.getByRole("textbox", { name: "Message" }).waitFor();
+    await thread.getByRole("button", { name: "Chat menu" }).click();
+    const row = thread.getByRole("button", { name: /^Chat agent:/ });
     await row.click();
     const [provider, model] = [0, 1].map((index) =>
-      menu.locator(".agent-config select").nth(index),
+      thread.locator(".agent-config select").nth(index),
     );
     const models = () => model.locator("option").evaluateAll((items) => items.map((i) => i.value));
     assert.match(await row.textContent(), /Codex · gpt-6\.1-sol/);
@@ -1610,7 +1583,7 @@ test("Snowbound gives Agent threads the same available height as other themes", 
             await new Promise(requestAnimationFrame);
             const panel = document.querySelector(".space-agent").getBoundingClientRect();
             const composer = document
-              .querySelector(".agent-thread .chat-composer")
+              .querySelector(".space-agent .chat-composer")
               .getBoundingClientRect();
             return { bottom: panel.bottom, height: panel.height, composerBottom: composer.bottom };
           }, theme);
@@ -1677,7 +1650,7 @@ test("both thread kinds show the context ring just left of the thread menu", asy
     await page.route("**/api/agent-threads/space/tasks/op-space", (route) =>
       route.fulfill({ json: withContext("op-space") }),
     );
-    await page.route("**/api/projects/p1/tasks/op-moss", (route) =>
+    await page.route("**/api/agent-threads/moss/tasks/op-moss", (route) =>
       route.fulfill({ json: withContext("op-moss") }),
     );
     for (const [hash, name] of [
@@ -1685,10 +1658,10 @@ test("both thread kinds show the context ring just left of the thread menu", asy
       ["moss", "Moss"],
     ]) {
       await page.goto(`${base}#/agent/${hash}`);
-      const header = page.getByRole("region", { name }).locator(".thread-header");
+      const header = page.getByRole("region", { name }).locator(".conversation-header");
       const ring = header.getByRole("button", { name: "Context" });
       await ring.waitFor();
-      const menu = await header.getByRole("button", { name: "Thread menu" }).boundingBox();
+      const menu = await header.getByRole("button", { name: "Chat menu" }).boundingBox();
       const box = await ring.boundingBox();
       assert.ok(box.x + box.width <= menu.x && menu.x - (box.x + box.width) < 16);
       if (shots) await page.screenshot({ path: `${shots}/context-ring-${hash}-1280.png` });
@@ -1696,7 +1669,7 @@ test("both thread kinds show the context ring just left of the thread menu", asy
   });
 });
 
-test("handoff results read as one row and browser loss shows once on the menu", async () => {
+test("handoff results read as one row and browser loss shows on its turn", async () => {
   await withFixture(async (browser, base) => {
     const page = await browser.newPage({ viewport: { width: 1280, height: 844 } });
     const errors = [];
@@ -1727,7 +1700,7 @@ test("handoff results read as one row and browser loss shows once on the menu", 
       }),
     );
     const lost = { status: "unavailable", reason_code: "not_installed", detail: "not_installed" };
-    await page.route("**/api/projects/p1/chats/moss", (route) =>
+    await page.route("**/api/agent-threads/moss/transcript", (route) =>
       route.fulfill({
         json: transcript(
           "moss",
@@ -1751,11 +1724,8 @@ test("handoff results read as one row and browser loss shows once on the menu", 
     await page.goto(`${base}#/agent/moss`);
     const moss = page.getByRole("region", { name: "Moss" });
     await moss.getByRole("button", { name: "Approve" }).waitFor();
-    assert.equal(await moss.locator("[data-browser-status]").count(), 0);
-    await moss.getByRole("button", { name: "Thread menu" }).click();
-    const item = page.getByRole("menuitem", { name: /browser/i });
-    const note = await item.getAttribute("title");
-    assert.ok(note && !note.includes("not_installed"));
+    const notices = moss.locator("[data-browser-status]");
+    assert.ok((await notices.count()) > 0);
     assert.deepEqual(errors, []);
   });
 });
@@ -1933,12 +1903,14 @@ test("a live turn polls only its task, pauses while hidden, and reloads on a wat
       message(`h${index}a`, "assistant", answer(index), `op-h${index}`),
     ]).flat();
     const live = transcript("moss", [...history, message("n1", "user", "Run it", "op-live")]);
-    await page.route("**/api/projects/p1/chats/moss", (route) => route.fulfill({ json: live }));
+    await page.route("**/api/agent-threads/moss/transcript", (route) =>
+      route.fulfill({ json: live }),
+    );
     const running = { ...settled("op-live"), active: true, settled: false };
-    await page.route("**/api/projects/p1/tasks/op-live", (route) =>
+    await page.route("**/api/agent-threads/moss/tasks/op-live", (route) =>
       route.fulfill({ json: running }),
     );
-    await page.route("**/api/projects/p1/tasks/op-h29", (route) =>
+    await page.route("**/api/agent-threads/moss/tasks/op-h29", (route) =>
       route.fulfill({ status: 404, contentType: "application/json", body: "{}" }),
     );
     const reads = [];
@@ -1960,16 +1932,18 @@ test("a live turn polls only its task, pauses while hidden, and reloads on a wat
     await moss.locator(".agent-turn-live").waitFor();
     await page.waitForTimeout(1000);
     // Only turns near the view load their detail, each once.
-    const history_reads = reads.filter((read) => read.startsWith("/api/projects/p1/tasks/op-h"));
+    const history_reads = reads.filter((read) =>
+      read.startsWith("/api/agent-threads/moss/tasks/op-h"),
+    );
     const opened = { total: history_reads.length, distinct: new Set(history_reads).size };
 
     reads.length = 0;
     await page.waitForTimeout(4500);
     const visible = {
-      transcript: count("/api/projects/p1/chats/moss"),
+      transcript: count("/api/agent-threads/moss/transcript"),
       questions: count("/api/projects/p1/chats/moss/questions"),
-      failed: count("/api/projects/p1/tasks/op-h29"),
-      live: count("/api/projects/p1/tasks/op-live"),
+      failed: count("/api/agent-threads/moss/tasks/op-h29"),
+      live: count("/api/agent-threads/moss/tasks/op-live"),
     };
 
     await setHidden(true);
@@ -1978,7 +1952,7 @@ test("a live turn polls only its task, pauses while hidden, and reloads on a wat
     const hidden = reads.filter((read) => read.startsWith("/api/")).length;
 
     const back = page.waitForRequest(
-      (request) => new URL(request.url()).pathname === "/api/projects/p1/tasks/op-live",
+      (request) => new URL(request.url()).pathname === "/api/agent-threads/moss/tasks/op-live",
       { timeout: 1000 },
     );
     await setHidden(false);
@@ -1987,11 +1961,11 @@ test("a live turn polls only its task, pauses while hidden, and reloads on a wat
     reads.length = 0;
     await page.evaluate(() => (window.agentThreadsVersion = "2"));
     await page.waitForTimeout(2500);
-    const moved = count("/api/projects/p1/chats/moss");
+    const moved = count("/api/agent-threads/moss/transcript");
 
     // Scrolling back loads the oldest turn once its row nears the view.
     const oldest = page.waitForRequest(
-      (request) => new URL(request.url()).pathname === "/api/projects/p1/tasks/op-h0",
+      (request) => new URL(request.url()).pathname === "/api/agent-threads/moss/tasks/op-h0",
     );
     await moss.locator(".agent-chat-view-lines").evaluate((lines) => (lines.scrollTop = 0));
     await oldest;
@@ -2694,7 +2668,7 @@ test("Pip's Running button counts what needs the member and each row opens its r
       await button.waitFor();
       assert.equal((await button.textContent()).trim(), "2 / 5");
       const header = await pip
-        .locator(".thread-header-tools")
+        .locator(".chat-context-controls")
         .evaluate((tools) => [...tools.children].map((child) => child.getAttribute("title")));
       assert.ok(header.indexOf("Running") < header.indexOf("Wakes"));
       await button.click();
@@ -2997,14 +2971,16 @@ test("Enter steers a steerable text-only run and otherwise queues behind the tur
       status_message: "Working",
     };
     let task = running;
-    await page.route("**/api/projects/p1/tasks/op-moss", (route) => route.fulfill({ json: task }));
+    await page.route("**/api/agent-threads/moss/tasks/op-moss", (route) =>
+      route.fulfill({ json: task }),
+    );
     const steers = [];
-    await page.route("**/api/projects/p1/tasks/op-moss/steer", (route) => {
+    await page.route("**/api/agent-threads/moss/tasks/op-moss/steer", (route) => {
       const body = route.request().postDataJSON();
       steers.push(body);
       return route.fulfill({ json: message(body.message_id, "user", body.message, "op-moss") });
     });
-    await page.route(/\/attachments$/, (route) =>
+    await page.route(/\/attachments(?:\?.*)?$/, (route) =>
       route.fulfill({
         json: {
           attachment_set_id: "set-1",
@@ -3082,7 +3058,7 @@ test("Enter steers a steerable text-only run and otherwise queues behind the tur
     await rows.nth(2).waitFor();
     assert.deepEqual(served.posted[2].body, { message: "And summarize" });
     assert.equal(
-      writes.filter((write) => write.path === "/api/projects/p1/tasks/project_chat").length,
+      writes.filter((write) => write.path === "/api/agent-threads/moss/turns").length,
       0,
     );
 
@@ -3108,7 +3084,7 @@ test("Enter steers a steerable text-only run and otherwise queues behind the tur
       0,
     );
     await pip.getByRole("textbox", { name: "Message" }).fill("");
-    assert.equal(await pip.getByRole("button", { name: "Queue", exact: true }).count(), 0);
+    await pip.getByRole("button", { name: "Queue", exact: true }).waitFor();
     assert.equal(await pip.locator(".thread-queue").count(), 0);
     assert.deepEqual(errors, []);
     await page.close();
@@ -3130,9 +3106,11 @@ test("Stop with a typed message stops the turn and sends it as the next one", as
       can_pause: true,
       status_message: "Working",
     };
-    await page.route("**/api/projects/p1/tasks/op-moss", (route) => route.fulfill({ json: task }));
+    await page.route("**/api/agent-threads/moss/tasks/op-moss", (route) =>
+      route.fulfill({ json: task }),
+    );
     const paused = [];
-    await page.route("**/api/projects/p1/tasks/op-moss/pause", (route) => {
+    await page.route("**/api/agent-threads/moss/tasks/op-moss/pause", (route) => {
       paused.push(route.request().method());
       task = {
         ...settled("op-moss"),
@@ -3144,7 +3122,7 @@ test("Stop with a typed message stops the turn and sends it as the next one", as
       return route.fulfill({ json: task });
     });
     const sent = [];
-    await page.route("**/api/projects/p1/tasks/project_chat", (route) => {
+    await page.route("**/api/agent-threads/moss/turns", (route) => {
       sent.push(route.request().postDataJSON());
       return route.fulfill({ json: { operation_id: "op-next" } });
     });
@@ -3171,7 +3149,7 @@ test("Stop with a typed message stops the turn and sends it as the next one", as
   });
 });
 
-test("job wakes on one log read apart and open to what they run, on a phone too", async () => {
+test("a thread's job watchers show in the chat watcher bar, on a phone too", async () => {
   await withFixture(async (browser, base) => {
     const job = (watcher_id, check, purpose, extra = {}) => ({
       watcher_id,
@@ -3199,22 +3177,15 @@ test("job wakes on one log read apart and open to what they run, on a phone too"
     for (const width of [1280, 390]) {
       const page = await browser.newPage({ viewport: { width, height: 844 } });
       await mockApi(page, []);
-      await page.route("**/api/projects/p1/watchers", (route) => route.fulfill({ json: watchers }));
+      await page.route("**/api/agent-threads/moss/watchers", (route) =>
+        route.fulfill({ json: watchers }),
+      );
       await page.goto(`${base}#/agent/moss`);
       const thread = page.getByRole("region", { name: "Moss" });
-      await thread.getByRole("button", { name: /wakes$/ }).click();
-      const popover = page.getByRole("dialog", { name: "Wakes" });
-      const titles = await popover.locator(".upcoming-open strong").allTextContents();
-      assert.equal(new Set(titles).size, 3);
-      assert.ok(titles.includes("GCP2 astra run finishes"));
-      const second = popover.locator(".upcoming-row:has(.upcoming-open)").nth(1);
-      await second.getByRole("button", { name: titles[1] }).click();
-      const facts = second.locator(".upcoming-facts");
-      await facts.waitFor();
-      const text = await facts.textContent();
-      for (const value of [watchers[1].check_command, watchers[1].log_path, watchers[1].cwd])
-        assert.ok(text.includes(value));
-      assert.equal(await popover.locator(".upcoming-facts").count(), 1);
+      await thread.getByRole("button", { name: "3 active watchers" }).click();
+      const bar = thread.getByRole("region", { name: "Watchers" });
+      assert.equal(await bar.locator(".chat-watcher-row").count(), watchers.length);
+      assert.equal(await bar.getByRole("button", { name: "Stop watching" }).count(), 3);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
       await shoot(page, `wakes-open-${width}`);
       await page.close();

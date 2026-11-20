@@ -247,11 +247,10 @@
   min-height: 0;
   width: 100%;
 }
-/* The selection pill and annotation popover are portaled out of the dock, so
-   they carry the owning component's colours themselves. */
+/* The selection pill is portaled out of the dock, so it carries the owning
+   component's colours itself. */
 .chat-dock,
-.chat-selection-comment,
-.chat-annotation-composer {
+.chat-selection-comment {
   --chat-accent: var(--forest);
   --chat-soft: color-mix(in srgb, var(--sheet) 78%, var(--forest));
 }
@@ -1251,16 +1250,14 @@
   right: 9px;
   z-index: 18;
 }
-.chat-annotation-review > header,
-.chat-annotation-composer > header {
+.chat-annotation-review > header {
   align-items: center;
   border-bottom: 1px solid var(--line);
   display: flex;
   justify-content: space-between;
   padding: 7px 9px;
 }
-.chat-annotation-review > header strong,
-.chat-annotation-composer > header strong {
+.chat-annotation-review > header strong {
   font: 700 var(--type-2xs) var(--mono);
 }
 .chat-annotation-review-list {
@@ -1276,8 +1273,7 @@
 .chat-annotation-review article + article {
   border-top: 1px solid var(--line);
 }
-.chat-annotation-review blockquote,
-.chat-annotation-composer blockquote {
+.chat-annotation-review blockquote {
   border-left: 2px solid var(--chat-accent, var(--plum));
   color: var(--ink-soft);
   font-family: var(--editorial);
@@ -1287,19 +1283,6 @@
   overflow: auto;
   padding: 4px 7px;
   white-space: pre-wrap;
-}
-.chat-annotation-review article > small {
-  color: var(--muted);
-  font: var(--type-3xs) var(--mono);
-}
-.chat-annotation-review textarea {
-  flex: none;
-  font-size: var(--type-xs);
-  height: 58px;
-  min-height: 58px;
-  padding: 6px 7px;
-  resize: vertical;
-  width: 100%;
 }
 .chat-annotation-review article > button {
   align-items: center;
@@ -1343,72 +1326,6 @@
 .chat-selection-comment:focus-visible {
   outline: 2px solid var(--cobalt);
   outline-offset: 2px;
-}
-.chat-annotation-composer {
-  background: var(--surface);
-  border: 1px solid color-mix(in srgb, var(--chat-accent, var(--plum)) 65%, var(--line));
-  border-radius: 9px;
-  box-shadow: 0 16px 42px rgb(var(--shadow-rgb) / 22%);
-  display: grid;
-  gap: 8px;
-  max-height: max(0px, calc(var(--chat-annotation-viewport-height, 100dvh) - 24px));
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  position: fixed;
-  width: min(320px, max(0px, calc(var(--chat-annotation-viewport-width, 100vw) - 24px)));
-  z-index: 1200;
-}
-.chat-annotation-composer blockquote {
-  margin: 0 10px;
-}
-.chat-annotation-composer textarea {
-  background: var(--paper);
-  border: 1px solid var(--line-strong);
-  border-radius: 6px;
-  font: var(--type-xs)/1.45 var(--body);
-  height: 68px;
-  margin: 0 10px;
-  padding: 7px 8px;
-  resize: none;
-}
-.chat-annotation-composer .chat-annotation-source {
-  height: 150px;
-  white-space: pre-wrap;
-}
-.chat-annotation-composer textarea:focus-visible {
-  border-color: var(--chat-accent, var(--plum));
-  outline: 2px solid color-mix(in srgb, var(--chat-accent, var(--plum)) 30%, transparent);
-  outline-offset: 1px;
-}
-.chat-annotation-composer > .button {
-  justify-self: end;
-  margin: 0 10px 10px;
-}
-.chat-annotation-error {
-  color: var(--red);
-  font: 700 var(--type-3xs)/1.35 var(--mono);
-  margin: 0 10px;
-}
-@media (max-width: 640px) {
-  .chat-annotation-composer {
-    bottom: calc(
-      var(--chat-annotation-viewport-bottom, 0px) + max(10px, env(safe-area-inset-bottom))
-    );
-    left: calc(var(--chat-annotation-viewport-left, 0px) + 10px) !important;
-    max-height: min(
-      440px,
-      calc(var(--chat-annotation-viewport-height, 100dvh) - 20px - env(safe-area-inset-bottom))
-    );
-    right: calc(var(--chat-annotation-viewport-right, 0px) + 10px);
-    top: auto !important;
-    width: auto;
-  }
-  .chat-annotation-composer blockquote {
-    max-height: 96px;
-  }
-  .chat-annotation-composer textarea {
-    height: 84px;
-  }
 }
 .chat-compute-picker {
   position: relative;
@@ -1981,7 +1898,32 @@
 }
 .chat-add-menu {
   display: grid;
-  min-width: 180px;
+  min-width: min(280px, calc(100vw - 38px));
+}
+.chat-add-menu[hidden] {
+  display: none;
+}
+.chat-add-options {
+  border: 0;
+  border-top: 1px solid var(--line-strong);
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+.chat-add-file {
+  position: relative;
+}
+.chat-add-count {
+  background: var(--cobalt);
+  border-radius: 999px;
+  color: var(--surface);
+  font-size: var(--type-4xs);
+  line-height: 15px;
+  min-width: 15px;
+  padding: 0 3px;
+  position: absolute;
+  right: -4px;
+  top: -4px;
 }
 .chat-reference-picker {
   width: min(360px, calc(100vw - 38px));
@@ -1989,7 +1931,7 @@
 .chat-reference-picker.is-error {
   border-color: var(--red);
 }
-.chat-add-menu button,
+.chat-add-menu > button,
 .chat-reference-picker li button {
   align-items: center;
   background: none;
@@ -2004,12 +1946,12 @@
   text-align: left;
   width: 100%;
 }
-.chat-add-menu button:last-child,
+.chat-add-menu > button:last-of-type,
 .chat-reference-picker li:last-child button {
   border-bottom: 0;
 }
-.chat-add-menu button:hover:not(:disabled),
-.chat-add-menu button:focus-visible,
+.chat-add-menu > button:hover:not(:disabled),
+.chat-add-menu > button:focus-visible,
 .chat-reference-picker li button:hover:not(:disabled),
 .chat-reference-picker li button:focus-visible {
   background: var(--cobalt-soft);
@@ -2116,42 +2058,41 @@
   margin: 0;
   padding: 0;
 }
-.chat-options-menu {
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
-  bottom: 34px;
-  box-shadow: var(--shadow);
-  left: 0;
-  margin: 0;
-  min-width: min(300px, calc(100vw - 38px));
-  padding: 0;
-  position: absolute;
-  z-index: 16;
-}
-.chat-options-menu[hidden] {
-  display: none;
-}
-/* A phone has no room beside the chip; the menu spans the composer instead. */
-@media (max-width: 640px) {
-  .chat-options-picker {
-    position: static;
-  }
-  .chat-options-menu {
-    bottom: calc(100% + 6px);
-    min-width: 0;
-    right: 0;
-  }
-}
-.chat-options-menu > * {
+.chat-add-options > * {
   border-bottom: 1px solid var(--line);
   padding: 9px 10px;
 }
-.chat-options-menu > :last-child {
+.chat-add-options > :last-child {
   border-bottom: 0;
 }
-.chat-options-menu .browser-consent {
+.chat-add-options .browser-consent {
   font-size: var(--type-xs);
   gap: 3px;
+}
+.chat-browser-control {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+/* A failed save keeps the row's height: one small retry at its end, the error on hover. */
+.chat-browser-control > .chat-browser-retry {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: var(--coral);
+  cursor: pointer;
+  display: inline-flex;
+  flex: none;
+  height: 20px;
+  justify-content: center;
+  margin-left: auto;
+  padding: 0;
+  width: 20px;
+}
+.chat-browser-control > .chat-browser-retry:hover:not(:disabled),
+.chat-browser-control > .chat-browser-retry:focus-visible {
+  background: var(--cobalt-soft);
 }
 .chat-option > p,
 .chat-browser-control > p {

@@ -176,6 +176,17 @@ def test_unknown_backend_stays_running_even_with_exit(launch_environment, tmp_pa
     assert "could not determine" in result.diagnostic
 
 
+def test_a_natural_exit_outranks_a_late_cancel_marker(launch_environment, tmp_path, manifest):
+    store, backend, launch = launch_environment
+    record = launch()
+    Path(record.exit_path).write_text("0 1757000000")
+    Path(record.job_root, "cancelled").write_text("1757000001")
+    backend.is_alive = False
+    result = jobs.refresh_compute_job(store, record.job_id, data_dir=tmp_path / "data")
+    assert (result.status, result.exit_status) == ("exited", 0)
+    assert result.ended_at == jobs.epoch_timestamp("1757000000")
+
+
 def test_cancel_receipt_waits_for_owner_to_disappear(launch_environment, tmp_path, manifest):
     store, backend, launch = launch_environment
     record = launch()

@@ -90,6 +90,70 @@ def test_handoff_task_and_delivery_claim_commit_together(tmp_path: Path) -> None
     assert store.agent_task("report") is None and store.agent_task("duplicate") is None
 
 
+def test_handoff_lands_in_the_default_agent_when_the_member_has_another(
+    manifest, tmp_path: Path
+) -> None:
+    from rcp.agents.command_mailbox import CommandTurnIdentity
+    from rcp.agents.command_protocol import HandoffArguments, HandoffCommandRequest
+    from rcp.runs.agent_thread_commands import (
+        ThreadCommandHandler,
+        project_details,
+        projects_projection,
+    )
+    from tests.helpers import authorized_human, create_named_app
+    from tests.test_storage import _task_record
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    store, catalog = app.state.background_tasks.store, app.state.catalog
+    actor = authorized_human(store)
+    project_id = app.state.default_project_id
+    threads = store.ensure_agent_threads(actor.user_id, [project_id], default_names=("Pip",))
+    source = next(row for row in threads if row.kind == "space")
+    default = next(row for row in threads if row.project_id == project_id)
+    with store.connection() as connection:
+        for thread_id, created_at in (("earlier", "2000-01-01"), ("later", "2999-01-01")):
+            connection.execute(
+                "INSERT INTO agent_threads(thread_id,user_id,kind,project_id,created_at,"
+                "is_default) VALUES(?,?,'project',?,?,0)",
+                (thread_id, actor.user_id, project_id, created_at),
+            )
+    assert projects_projection(store, catalog, actor.user_id)[0]["thread_id"] == default.thread_id
+    assert (
+        project_details(store, catalog, actor.user_id, project_id)["thread_id"] == default.thread_id
+    )
+    store.create_agent_task(
+        _task_record(
+            store.now(),
+            operation_id="source",
+            project_id=store.space_id,
+            kind="space_chat",
+            authorized_by=actor,
+            request={"chat_id": source.thread_id, "chat_scope": "project", "mode": "work"},
+        )
+    )
+    (tmp_path / "message.md").write_text("Please check the project")
+    handler = ThreadCommandHandler(store, catalog, "source", tmp_path)
+    request = HandoffCommandRequest(
+        verb="handoff",
+        mailbox_id="a" * 32,
+        request_id="b" * 32,
+        credential="c" * 64,
+        idempotency_key="once",
+        arguments=HandoffArguments(project_id=project_id, message_file="message.md"),
+    )
+    response = handler(request, CommandTurnIdentity(None, "source", "turn", "broker"))
+    assert response.status == "ok"
+    assert [item.target_thread_id for item in store.pending_agent_handoffs()] == [default.thread_id]
+    with pytest.raises(ValueError):
+        store.create_agent_handoff(
+            source_thread_id=source.thread_id,
+            source_operation_id="source",
+            idempotency_key="other",
+            target_thread_id="later",
+            message="Please check the project",
+        )
+
+
 def test_projects_and_handoff_share_cards_and_member_ownership(
     manifest, tmp_path: Path, monkeypatch
 ) -> None:
@@ -148,8 +212,8 @@ def test_projects_and_handoff_share_cards_and_member_ownership(
         arguments=HandoffArguments(project_id=project_id, message_file="message.md"),
     )
     identity = CommandTurnIdentity(None, "source", "turn", "broker")
+    from rcp.agents.agent_profile import UsageContext
     from rcp.agents.command_protocol import AskCommandRequest
-    from rcp.runs.agent_thread_commands import space_command_usages
 
     ask = AskCommandRequest.model_validate(
         {
@@ -167,12 +231,8 @@ def test_projects_and_handoff_share_cards_and_member_ownership(
         }
     )
     assert handler(ask, identity).status == "invalid"
-    usages = space_command_usages(handler.allowed_verbs)
-    assert {usage.split()[0] for usage in usages} == handler.allowed_verbs
+    assert set(handler.profile.usage(UsageContext(client="rcp"))) == handler.allowed_verbs
     assert handler.allowed_verbs == {"ask", "handoff", "projects", "schedule"}
-    assert {usage.split()[0] for usage in space_command_usages(frozenset({"handoff"}))} == {
-        "handoff"
-    }
     first = handler(request, identity)
     assert first.status == "ok"
     assert first.result["state"] == "pending"
@@ -881,21 +941,21 @@ def test_only_the_thread_members_own_turn_gets_thread_grants(manifest, tmp_path:
         ).allowed_verbs
         own = operation_id == "own"
         assert (task_member_memory_owner(store, task) == actor.user_id) is own
-        assert ("projects" in verbs, "schedule" in verbs) == (own, own)
+        assert "projects" in verbs
+        assert ("schedule" in verbs) is own
 
 
-def test_every_verb_a_thread_turn_can_be_granted_has_a_capability_line(monkeypatch) -> None:
+def test_a_thread_turn_with_every_gate_open_gets_its_placement_offer(monkeypatch) -> None:
     from types import SimpleNamespace
 
+    from rcp.agents.agent_profile import OFFER, PRIVATE_PROJECT, resolve_agent_profile
     from rcp.agents.graph_read_scope import GraphReadScope
     from rcp.runs import agent_names, agent_schedules, approval_cards, questions
-    from rcp.runs.agent_thread_commands import _THREAD_VERBS, thread_capabilities
-    from rcp.runs.tasks.compute_commands import WorkComputeCommands
 
-    assert all(verb.capability for verb in _THREAD_VERBS.values())
     task = SimpleNamespace(
         dispatch_authority=SimpleNamespace(task_contract="work_auto"),
         request={"chat_id": "thread"},
+        episode_id=None,
     )
     store = SimpleNamespace(
         consolidation_run_for_operation=lambda _: None,
@@ -904,40 +964,42 @@ def test_every_verb_a_thread_turn_can_be_granted_has_a_capability_line(monkeypat
     )
     monkeypatch.setattr(agent_names, "resolve_agent_name_state", lambda _: {"can_self_name": True})
     monkeypatch.setattr(agent_schedules, "schedule_thread", lambda *_: {})
-    monkeypatch.setattr(questions, "bound_thread", lambda *_: object())
+    monkeypatch.setattr(
+        questions, "bound_thread", lambda *_: SimpleNamespace(user_id="member", closed_at=None)
+    )
     monkeypatch.setattr(approval_cards, "approval_card_member", lambda *_: None)
     monkeypatch.setattr(questions, "work_ask_authorized", lambda _: True)
     monkeypatch.setattr(questions, "work_experiment_allowed", lambda _: True)
-    monkeypatch.setattr(questions, "member_work_chat_turn", lambda _: True)
-    compute = SimpleNamespace(
-        allowed_verbs=WorkComputeCommands.allowed_verbs.fget(
-            SimpleNamespace(helper_backend=object())
-        )
-    )
     handler = questions.work_command_handler(
         SimpleNamespace(operation_id="turn", store=store),  # pyright: ignore[reportArgumentType]
-        compute,  # pyright: ignore[reportArgumentType]
+        SimpleNamespace(launch_available=True),  # pyright: ignore[reportArgumentType]
         service=SimpleNamespace(project_catalog=object()),  # pyright: ignore[reportArgumentType]
         graph_read_scope=GraphReadScope.model_construct(
             verbs=GraphReadScope.model_fields["verbs"].default
         ),
     )
-    assert handler.allowed_verbs == set(questions.WORK_THREAD_VERB_CAPABILITIES)
-    space, project = thread_capabilities("space"), thread_capabilities("project")
-    assert space and project and space != project
-    assert len(set(project)) == len(project)
+    assert handler.profile == resolve_agent_profile(PRIVATE_PROJECT, None, OFFER)
 
 
 def test_the_handoff_usage_names_every_project_agent_capability() -> None:
-    from rcp.runs.agent_thread_commands import _handoff_usages, thread_capabilities
+    from rcp.agents.agent_profile import (
+        OFFER,
+        PRIVATE_PROJECT,
+        SINGLE_ENTRY,
+        AgentTurn,
+        UsageContext,
+        resolve_agent_profile,
+    )
 
-    (usage,) = _handoff_usages()
-    assert all(line in usage for line in thread_capabilities("project"))
+    usage = resolve_agent_profile(SINGLE_ENTRY, None, AgentTurn()).usage(UsageContext("rcp"))
+    welcome = resolve_agent_profile(PRIVATE_PROJECT, None, OFFER).welcome()
+    assert all(line in usage["handoff"] for line in welcome)
 
 
 def test_a_refused_merge_in_a_member_thread_points_to_the_approval_card() -> None:
     import uuid
 
+    from rcp.agents.agent_profile import PRIVATE_PROJECT, AgentProfile
     from rcp.agents.command_protocol import MergeCommandRequest
     from rcp.core.models import AuthorizedHuman
     from rcp.runs.questions import WorkCommandHandler
@@ -946,8 +1008,9 @@ def test_a_refused_merge_in_a_member_thread_points_to_the_approval_card() -> Non
     member = AuthorizedHuman(
         space_id=str(uuid.uuid4()), user_id=str(uuid.uuid4()), display_name="M"
     )
-    carded = WorkCommandHandler(None, None, frozenset({"ask"}), approval_card_member=member)
-    plain = WorkCommandHandler(None, None, frozenset({"ask"}))
+    profile = AgentProfile(PRIVATE_PROJECT, None, frozenset({"ask"}))
+    carded = WorkCommandHandler(None, None, profile, approval_card_member=member)
+    plain = WorkCommandHandler(None, None, profile)
     identity = None
     assert carded(request, identity).result == {"code": "approval_card_required"}  # pyright: ignore[reportArgumentType]
     assert plain(request, identity).result["code"] == "verb_not_granted"  # pyright: ignore[reportArgumentType]

@@ -78,7 +78,7 @@ async def test_an_unreachable_readiness_probe_types_its_error(
             cwd=tmp_path,
             machine_id="gpu",
             host=HOST,
-            capability="scratch_patch",
+            capability="discuss",
         )
     ]
     (error,) = [event for event in events if event.event == "error"]

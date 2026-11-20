@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Callable
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -17,10 +17,12 @@ from rcp.limits import (
     AGENT_THREAD_QUEUE_RETRY_SECONDS,
 )
 from rcp.projects import ProjectCatalog
-from rcp.runs.agent_thread_commands import _TRANSIENT_DELIVERY, _thread_busy, _thread_request
+from rcp.runs.agent_thread_commands import _TRANSIENT_DELIVERY, _thread_request
+from rcp.runs.agent_threads import agent_turn_busy, latest_agent_turn
 from rcp.runs.turn_attachments import claim_turn_attachments
 from rcp.storage import AppStore
-from rcp.storage.agent_threads import AgentThreadQueueRecord, AgentThreadRecord
+from rcp.storage.agent_threads import AgentThreadQueueRecord
+from rcp.storage.agents import AgentRecord
 
 if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks
@@ -106,7 +108,7 @@ def _admit_queued_message(
     row: AgentThreadQueueRecord,
     project_admission: Callable[[str], AbstractContextManager[object]],
 ) -> str | None:
-    thread = store.agent_thread(row.thread_id)
+    thread = store.agent(row.thread_id)
     ready = _queue_ready(store, thread, row)
     if isinstance(ready, str):
         _refuse(store, catalog, row, ready)
@@ -121,7 +123,7 @@ def _admit_queued_message(
     except _TRANSIENT_DELIVERY as exc:
         _defer(store, catalog, row, str(exc))
     except (ValueError, KeyError) as exc:
-        if _thread_busy(store, thread):
+        if agent_turn_busy(store, thread.agent_id):
             logger.warning("Queued message %s waits: another turn took the thread", row.queue_id)
         else:
             _refuse(store, catalog, row, str(exc) or type(exc).__name__)
@@ -129,26 +131,26 @@ def _admit_queued_message(
 
 
 def _queue_ready(
-    store: AppStore, thread: AgentThreadRecord | None, row: AgentThreadQueueRecord
+    store: AppStore, thread: AgentRecord | None, row: AgentThreadQueueRecord
 ) -> AuthorizedHuman | str | None:
     """The member to start as, a final refusal reason, or None while the thread is busy."""
+    private_thread = store.agent_thread(row.thread_id)
     if (
         thread is None
-        or thread.closed_at
-        or thread.project_id is None
-        or thread.user_id != row.user_id
+        or (private_thread is not None and private_thread.closed_at)
+        or (thread.owner_user_id is not None and thread.owner_user_id != row.user_id)
     ):
         return "thread_closed"
-    if refusal := store.chat_turn_refusal(thread.project_id, thread.thread_id):
+    if refusal := store.chat_turn_refusal(thread.project_id or store.space_id, thread.agent_id):
         return refusal
-    if not store.is_project_member(thread.project_id, row.user_id):
+    if thread.project_id and not store.is_project_member(thread.project_id, row.user_id):
         return "not_project_member"
     member = store.space_user(row.user_id)
     if member is None or member.removed_at or member.removal_started_at:
         return "member_removed"
     if not (member.display_name or "").strip():
         return "display_name_blank"
-    if _thread_busy(store, thread):
+    if agent_turn_busy(store, thread.agent_id):
         return None
     return AuthorizedHuman(
         space_id=store.space_id, user_id=row.user_id, display_name=member.display_name or ""
@@ -160,39 +162,86 @@ def _start_queued_turn(
     catalog: ProjectCatalog,
     background: BackgroundAgentTasks,
     row: AgentThreadQueueRecord,
-    thread: AgentThreadRecord,
+    thread: AgentRecord,
     member: AuthorizedHuman,
     project_admission: Callable[[str], AbstractContextManager[object]],
 ) -> str:
+    from rcp.api.dependencies import get_graph_service
     from rcp.api.task_requests import _resolved_graph_request
     from rcp.runs.chat_admission import admit_fresh_chat_turn
+    from rcp.service import RunRequest
 
-    project_id = thread.project_id or ""
+    project_id = thread.project_id or store.space_id
     operation_id = queued_turn_operation_id(row.queue_id)
-    with project_admission(project_id):
-        service = catalog.open_execution(project_id)
-        request = _thread_request(store, thread, row.message, wake=False).model_copy(
-            update={"source": None}
+    previous = latest_agent_turn(store, thread.agent_id, ordinary=True)
+    private_thread = store.agent_thread(thread.agent_id)
+    if private_thread is not None:
+        request = _thread_request(store, private_thread, row.message, wake=False)
+        kind = "project_chat" if thread.project_id else "space_chat"
+    elif previous is not None:
+        last = RunRequest.model_validate(previous.request)
+        request = RunRequest(
+            chat_id=thread.agent_id,
+            chat_scope=last.chat_scope,
+            node_id=last.node_id,
+            mode="work",
+            provider=last.provider,
+            model=last.model,
+            reasoning=last.reasoning,
+            run_on=last.run_on,
+            browser_requested=store.chat_browser_requested(project_id, thread.agent_id),
         )
-        request = _resolved_graph_request(service, "project_chat", request)
-        with admit_fresh_chat_turn(service, store, project_id, request) as request:
+        kind = previous.kind
+    else:
+        raise ValueError("The agent has no ordinary turn to continue")
+    request = request.model_copy(
+        update={
+            "message": row.message,
+            "source": None,
+            "trigger": "human",
+            "session_id": None,
+            "attachments": [],
+            "references": [],
+            "artifact_context": None,
+            "artifact_edit": None,
+            "attachment_batch_id": None,
+            "attachment_set_id": row.attachment_set_id,
+            "attachment_client_id": row.attachment_client_id,
+            "watcher_ids": [],
+            "invoked_workflow_ids": [],
+            "invoked_skill_ids": [],
+            "invoked_provider_skill_names": [],
+            "resolved_provider_skills": [],
+        }
+    )
+    with project_admission(project_id) if thread.project_id else nullcontext():
+        service = (
+            get_graph_service(
+                catalog, project_id, previous.graph_target.branch_id if previous else None
+            )
+            if thread.project_id
+            else None
+        )
+        if service is not None:
+            request = _resolved_graph_request(service, kind, request)
+        admission = (
+            admit_fresh_chat_turn(service, store, project_id, request)
+            if service is not None
+            else nullcontext(request)
+        )
+        with admission as request:
             request, _ = claim_turn_attachments(
                 store,
                 catalog,
                 queue_attachment_store(catalog),
                 project_id,
-                request.model_copy(
-                    update={
-                        "attachment_set_id": row.attachment_set_id,
-                        "attachment_client_id": row.attachment_client_id,
-                    }
-                ),
+                request,
                 operation_id=operation_id,
                 viewer_id=row.user_id,
             )
             return background.start(
                 project_id,
-                "project_chat",
+                kind,
                 request,
                 operation_id=operation_id,
                 authorized_by=member,

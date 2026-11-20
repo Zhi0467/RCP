@@ -594,6 +594,7 @@ function viewerState(artifactId, version = 1) {
     comment_unavailable_reason: null,
     fresh_session_required: false,
     thread_href: "#/projects/project?view=chats&chat=plot-chat",
+    origin_chat_id: "plot-chat",
     viewer_url: `/viewer-shell/${artifactId}?version=${version}`,
     download_url: `/api/projects/project/artifacts/${artifactId}/download`,
     can_keep: true,
@@ -893,7 +894,7 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
             project: {
               id: "project",
               name: "Project",
-              agent_profiles: { seed: profile, node_chat: profile, project_chat: profile },
+              agent_profiles: { node_chat: profile, project_chat: profile },
               repositories: [{ alias: "repo", machine: "local", path: "/repo" }],
               project_truth_scope: ["repo"],
               state_repository: "repo",
@@ -989,7 +990,7 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
     await page.getByRole("button", { name: "Close viewer", exact: true }).click();
     const created = [];
     let saved = null;
-    await page.route("**/api/projects/project/comment-threads*", (route) => {
+    await page.route("**/api/agent-threads/error-chat/comment-threads*", (route) => {
       if (route.request().method() === "GET")
         return route.fulfill({ json: { threads: saved ? [saved] : [] } });
       const body = route.request().postDataJSON();
@@ -1028,7 +1029,27 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
     await author.locator("#drawn").dblclick();
     const composer = page.getByRole("dialog", { name: "Comment" });
     await composer.getByRole("textbox", { name: "Comment" }).fill("Make it bigger");
-    await composer.getByRole("button", { name: "Send to agent" }).click();
+    await composer.getByRole("button", { name: "Comment", exact: true }).click();
+    await composer.waitFor({ state: "detached" });
+    const pin = page.getByRole("button", { name: "Comment 1", exact: true });
+    await pin.waitFor();
+    const [pinBox, drawnBox, frameBox] = await Promise.all([
+      pin.boundingBox(),
+      author.locator("#drawn").boundingBox(),
+      embed.locator("iframe").boundingBox(),
+    ]);
+    assert.ok(pinBox.x > drawnBox.x && pinBox.x < drawnBox.x + 30);
+    assert.ok(pinBox.y < drawnBox.y + drawnBox.height && pinBox.y + pinBox.height > drawnBox.y);
+    assert.ok(pinBox.y + pinBox.height / 2 < frameBox.y + frameBox.height);
+    await pin.click();
+    const shown = page.getByRole("dialog", { name: "Comment" });
+    await shown.getByText("Make it bigger").waitFor();
+    await page.keyboard.press("Escape");
+    await shown.waitFor({ state: "detached" });
+    await page.locator(".chat-annotation-count").waitFor();
+    const field = page.locator(".chat-composer textarea").first();
+    await field.fill("Please address this.");
+    await field.press("Enter");
     await page.waitForFunction(() => window.errorTestSent);
     assert.deepEqual(created, [
       {
@@ -1043,19 +1064,6 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
     assert.deepEqual(sent.request.comment_thread_ids, ["inline-thread"]);
     assert.equal(sent.request.chat_id, "error-chat");
     assert.equal(sent.request.artifact_context, undefined);
-    await composer.waitFor({ state: "detached" });
-    const pin = page.getByRole("button", { name: "Comment 1", exact: true });
-    await pin.waitFor();
-    const [pinBox, drawnBox, frameBox] = await Promise.all([
-      pin.boundingBox(),
-      author.locator("#drawn").boundingBox(),
-      embed.locator("iframe").boundingBox(),
-    ]);
-    assert.ok(pinBox.x > drawnBox.x && pinBox.x < drawnBox.x + 30);
-    assert.ok(pinBox.y < drawnBox.y + drawnBox.height && pinBox.y + pinBox.height > drawnBox.y);
-    assert.ok(pinBox.y + pinBox.height / 2 < frameBox.y + frameBox.height);
-    await pin.click();
-    await page.getByRole("dialog", { name: "Comment" }).getByText("Make it bigger").waitFor();
     assert.ok(
       errors.every((error) => error === "inline-failure"),
       JSON.stringify(errors),
@@ -1220,7 +1228,7 @@ print(json.dumps(dict(page=shell("tall.html", "text/html", "/tall-content"), ima
               project: {
                 id: "project",
                 name: "Project",
-                agent_profiles: { seed: profile, node_chat: profile, project_chat: profile },
+                agent_profiles: { node_chat: profile, project_chat: profile },
                 repositories: [{ alias: "repo", machine: "local", path: "/repo" }],
                 project_truth_scope: ["repo"],
                 state_repository: "repo",

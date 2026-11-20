@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import shlex
-import uuid
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import AsyncExitStack, aclosing, suppress
 from dataclasses import replace
@@ -22,7 +20,7 @@ from rcp.agents import (
     validate_agent_patch_shape,
     validate_work_patch,
 )
-from rcp.agents.auto_research_prompt import render_child_profile_choices
+from rcp.agents.agent_profile import UsageContext
 from rcp.agents.command_mailbox import (
     StagedCommandMailbox,
 )
@@ -46,7 +44,6 @@ from rcp.agents.prompts import (
     chat_master_contract_key,
     invoked_package_pointers,
     invoked_provider_skill_section,
-    live_ask_contract,
     render_chat_read_context,
 )
 from rcp.agents.write_scope import ProjectWriteScope
@@ -68,9 +65,7 @@ from rcp.limits import (
 )
 from rcp.machine_cards import BACKEND_MACHINE_ID, card, host_of
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
-from rcp.runs.auto_research_admission import auto_research_child_profile_choices
 from rcp.runs.browser_lifecycle import browser_turn
-from rcp.runs.bulletin import bulletin_command_usage
 from rcp.runs.chat import (
     _append_chat_exchange,
     _append_chat_graph_receipt,
@@ -85,7 +80,6 @@ from rcp.runs.chat import (
     _project_write_scope,
     _read_chat_patch,
     _read_turn_outcome,
-    _read_watch_request,
     _record_artifact_discovery_receipt,
     _stage_chat_patch_inputs,
     _stage_chat_turn_contract,
@@ -106,11 +100,8 @@ from rcp.runs.consolidation import (
     retry_refused_correction,
     settlement_source_effect_id,
 )
-from rcp.runs.evidence_flag_commands import flag_command_usage, hold_consolidation_additions
+from rcp.runs.evidence_flag_commands import hold_consolidation_additions
 from rcp.runs.experiment_loop import (
-    StagedExperimentWatcherResource,
-    read_experiment_watcher_outputs,
-    stage_chat_experiment_watcher_resources,
     stage_chat_loop_status,
 )
 from rcp.runs.operational_context import stage_operational_context_pointer
@@ -174,9 +165,6 @@ from rcp.runs.shared import (
     stage_branch_read_context,
 )
 from rcp.runs.tasks.compute_commands import WorkComputeCommands
-from rcp.runs.tasks.experiment_watcher_maintenance import (
-    _process_experiment_watcher_maintenance,
-)
 from rcp.runs.tasks.work_staging import (
     StagedArtifactAccess,
     WorkStageLayout,
@@ -186,7 +174,6 @@ from rcp.runs.tasks.work_turn_runtime import (
     WORK_CORRECTION_SESSION_ROLE,
     WorkFinalizationContext,
     WorkTurn,
-    _AppliedWorkTurn,
     _ComposedWorkPrompt,
     _CorrectionPatchRead,
     _DeliverableFailure,
@@ -217,24 +204,24 @@ from rcp.runs.tasks.work_turn_runtime import (
 from rcp.runs.tasks.work_turn_runtime import (
     stream_turn_agent_events as _stream_turn_agent_events,
 )
-from rcp.runs.work_episode_controls import work_episode_control_usage
-from rcp.runs.work_experiment_commands import work_experiment_command_usage
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.skill_registry import SkillSelection
 from rcp.skills.staging import skill_bundle_label, stage_skill_selection
 from rcp.storage import (
     AppStore,
-    ExperimentWatcherResourceRecord,
-    WatcherContinuation,
 )
 from rcp.storage.request_compat import persisted_request_roundtrips
 from rcp.transport import RemoteRunStage, RunLockCancelled, StateUnavailable
 from rcp.turn_outcomes import TurnOutcome, WorkTurnOutcome
+from rcp.watcher_folder import (
+    WatcherFile,
+    read_watcher_folder,
+    reconcile_watcher_files,
+    stage_watcher_folder,
+    watcher_binding,
+)
 from rcp.watchers import (
-    WatcherBinding,
     WatcherInitialCheckError,
-    arm_watchers,
-    parse_watch_json,
 )
 
 # Auto-research shares the same patch-failure value while its orchestration remains separate.
@@ -246,14 +233,6 @@ _WORK_PRIMARY_ANSWER_ROLE = "work_primary_answer"
 _WORK_READ_SCOPE_ROLE = "work_read_scope"
 
 
-class _StoredExperimentFinalizationResource(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    resource: ExperimentWatcherResourceRecord
-    watcher_state_path: str
-    watch_path: str
-
-
 class _StoredWorkFinalizationContext(BaseModel):
     """Immutable launch snapshot consumed only after the provider has stopped."""
 
@@ -261,10 +240,13 @@ class _StoredWorkFinalizationContext(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def discard_retired_empty_view(cls, value: object) -> object:
-        if isinstance(value, dict) and value.get("result_view", True) is None:
-            return {key: item for key, item in value.items() if key != "result_view"}
-        return value
+    def discard_retired_fields(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        retired = {"experiment_resources"}
+        if value.get("result_view", True) is None:
+            retired.add("result_view")
+        return {key: item for key, item in value.items() if key not in retired}
 
     version: Literal[1] = 1
     request: RunRequest
@@ -277,7 +259,6 @@ class _StoredWorkFinalizationContext(BaseModel):
     write_scope: ProjectWriteScope
     artifact_scope_id: str
     artifact_directory: str
-    experiment_resources: list[_StoredExperimentFinalizationResource]
     skill_selection: SkillSelection
     compute_commands: bool
     # The native session this launch pinned its provider to, so recovery can
@@ -395,122 +376,30 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
     """The launch instructions, naming the helper relative to ``client`` when given."""
 
     lifecycle = getattr(turn, "validator_lifecycle", None)
-    if lifecycle is not None and lifecycle.allowed_verbs is not None:
-        verbs, artifacts = lifecycle.allowed_verbs, WORK_TURN_ARTIFACTS
-        handler = getattr(lifecycle, "command_handler", None)
-        approval_cards = getattr(handler, "approval_card_member", None) is not None
-    else:
+    handler = getattr(lifecycle, "command_handler", None)
+    profile = getattr(lifecycle, "profile", None)
+    if not isinstance(handler, WorkCommandHandler) and profile is None:
         handler = _work_turn_command_handler(turn)
-        verbs, artifacts, approval_cards = (
-            handler.allowed_verbs,
-            handler.turn_artifacts,
-            handler.approval_card_member is not None,
+    if profile is None:
+        assert isinstance(handler, WorkCommandHandler)
+        profile = handler.profile
+    approval_cards = getattr(handler, "approval_card_member", None) is not None
+    return profile.instructions(
+        UsageContext(
+            client=client or turn.patch_inputs.validator_staged.client_command(),
+            execution=turn.execution,
+            service=turn.service,
+            compute_commands=turn.compute_commands,
+            ask_wait_seconds=(
+                turn.patch_inputs.validator_staged.ask_wait_seconds
+                if "ask" in profile.verbs
+                else None
+            ),
+            approval_cards=approval_cards,
+            turn_artifacts=WORK_TURN_ARTIFACTS,
+            patch_path=turn.patch_inputs.patch_path,
         )
-    assert verbs is not None
-    instructions = []
-    if "schedule" in verbs and turn.execution is not None:
-        from rcp.agents.staged_command_client import schedule_usages
-        from rcp.runs.agent_schedules import schedule_instructions
-
-        command = client or turn.patch_inputs.validator_staged.client_command()
-        instructions.append(
-            schedule_instructions(
-                turn.execution.store,
-                turn.execution.operation_id,
-                tuple(f"{command} {usage}" for usage in schedule_usages()),
-            )
-        )
-    if "flag" in verbs:
-        instructions.append(
-            flag_command_usage(client or turn.patch_inputs.validator_staged.client_command())
-        )
-    if "projects" in verbs:
-        from rcp.runs.agent_thread_commands import projects_command_usage
-
-        instructions.append(
-            projects_command_usage(client or turn.patch_inputs.validator_staged.client_command())
-        )
-    if "name" in verbs:
-        from rcp.runs.agent_names import name_command_usage
-
-        instructions.append(
-            name_command_usage(client or turn.patch_inputs.validator_staged.client_command())
-        )
-    if "bulletin" in verbs:
-        instructions.append(
-            bulletin_command_usage(
-                client or turn.patch_inputs.validator_staged.client_command(),
-                turn_artifacts=artifacts,
-            )
-        )
-    if "ask" in verbs:
-        instructions.append(live_ask_contract(turn.patch_inputs.validator_staged.ask_wait_seconds))
-        from rcp.runs.approval_cards import approval_card_usage
-
-        if approval_cards:
-            instructions.append(
-                approval_card_usage(client or turn.patch_inputs.validator_staged.client_command())
-            )
-    if "apply" in verbs:
-        instructions.append(
-            "Use apply --key <key> patch.json to commit patch.json and read the returned revision before reporting. "
-            "If apply returns unavailable, retry the same bytes with the same key. "
-            "This turn cannot create watchers."
-        )
-    if "watcher" in verbs:
-        from rcp.runs.work_watcher_commands import work_watcher_command_usage
-
-        instructions.append(
-            work_watcher_command_usage(
-                client or turn.patch_inputs.validator_staged.client_command()
-            )
-        )
-    if "episode" in verbs:
-        authorizer = (
-            turn.execution.store.agent_task_authorizer(turn.execution.operation_id)
-            if turn.execution is not None
-            else None
-        )
-        member_id = authorizer.user_id if authorizer else None
-        episode_client = client or turn.patch_inputs.validator_staged.client_command()
-        instructions.append(
-            work_experiment_command_usage(
-                episode_client,
-                render_child_profile_choices(
-                    auto_research_child_profile_choices(
-                        turn.service, kind="node_chat", member_id=member_id
-                    )
-                ),
-            )
-        )
-        instructions.append(
-            work_episode_control_usage(
-                episode_client,
-                render_child_profile_choices(
-                    auto_research_child_profile_choices(
-                        turn.service, kind="orchestrator", member_id=member_id
-                    )
-                ),
-            )
-        )
-    if turn.compute_commands is None or "launch" not in verbs:
-        return "\n\n".join(instructions)
-    arguments = (
-        "launch",
-        "--key",
-        "<idempotency-key>",
-        "--cwd",
-        "<working-directory>",
-        "--",
-        "<argv...>",
     )
-    command = (
-        f"{client} {shlex.join(arguments)}"
-        if client is not None
-        else turn.patch_inputs.validator_staged.client_command(*arguments)
-    )
-    instructions.append(turn.compute_commands.execution_instructions(command))
-    return "\n\n".join(instructions)
 
 
 def _work_launch_values(turn: WorkTurn) -> dict[str, object]:
@@ -568,7 +457,6 @@ def _work_prompt_values(turn: WorkTurn, staged: _StagedWorkInputs) -> dict[str, 
         repositories=staged.repositories,
         compute_profiles=turn.compute_profiles,
         skill_pointers=staged.skill_pointers,
-        experiment_watcher_resources=staged.experiment_resource_pointers,
         patch=turn.patch_inputs.prompt_values(),
         workspace=str(turn.workspace),
         work=_work_launch_values(turn),
@@ -631,7 +519,6 @@ def _work_finalization_context(
         outcome=turn.outcome,
         artifact_scope_id=staged.artifact_scope_id,
         artifact_directory=staged.artifact_directory,
-        experiment_resources=list(staged.experiment_resources),
         skill_selection=staged.skill_selection,
         compute_commands=turn.compute_commands,
         finalization_role=role,
@@ -669,14 +556,6 @@ def _record_work_finalization_context(
         write_scope=turn.write_scope,
         artifact_scope_id=staged.artifact_scope_id,
         artifact_directory=str(staged.artifact_directory),
-        experiment_resources=[
-            _StoredExperimentFinalizationResource(
-                resource=item.resource,
-                watcher_state_path=item.watcher_state_path,
-                watch_path=item.watch_path,
-            )
-            for item in staged.experiment_resources
-        ],
         skill_selection=staged.skill_selection,
         compute_commands=turn.compute_commands is not None,
         required_session_id=required_session_id,
@@ -753,15 +632,6 @@ def _load_work_finalization_context(
         owner=owner,
     )
 
-    experiment_resources = [
-        StagedExperimentWatcherResource(
-            resource=item.resource,
-            host=host_of(execution.store, item.resource.machine_id),
-            watcher_state_path=item.watcher_state_path,
-            watch_path=item.watch_path,
-        )
-        for item in stored.experiment_resources
-    ]
     compute_commands = (
         WorkComputeCommands(
             execution,
@@ -787,7 +657,6 @@ def _load_work_finalization_context(
         outcome=_ProviderOutcome(session_id=stored.request.session_id),
         artifact_scope_id=stored.artifact_scope_id,
         artifact_directory=artifact_directory,
-        experiment_resources=experiment_resources,
         skill_selection=stored.skill_selection,
         compute_commands=compute_commands,
         finalization_role=role,
@@ -833,6 +702,18 @@ async def _stage_work_turn(
     def clear_handoffs(layout: WorkStageLayout) -> None:
         if clear_stale_handoffs:
             _clear_stale_turn_handoffs(layout.workspace, layout.remote_stage)
+        if execution and request.chat_id and not is_consolidation(execution):
+            stage_watcher_folder(
+                execution.store,
+                watcher_binding(
+                    execution.store,
+                    execution.operation_id,
+                    request.chat_id,
+                    resolved.machine.machine_id,
+                ),
+                layout.workspace,
+                layout.remote_stage,
+            )
 
     def stage_artifacts(
         layout: WorkStageLayout, artifact_directory: Path | PurePosixPath
@@ -887,9 +768,7 @@ async def _stage_work_turn(
             }
         )
 
-    async def stage_chat_resources(
-        layout: WorkStageLayout, read_scope: GraphReadScope
-    ) -> list[StagedExperimentWatcherResource]:
+    def stage_loop_status(layout: WorkStageLayout, read_scope: GraphReadScope) -> None:
         layout.context.loop_status = stage_chat_loop_status(
             request,
             execution,
@@ -898,15 +777,6 @@ async def _stage_work_turn(
             state=service.history.state(),
             graph_target=service.history.graph_target,
             read_scope=read_scope,
-        )
-        return await stage_chat_experiment_watcher_resources(
-            request,
-            execution,
-            layout.local_stage,
-            layout.remote_stage,
-            workspace=layout.workspace,
-            token=layout.token,
-            clear_stale=clear_stale_handoffs,
         )
 
     turn, staged, _ = await stage_work_turn(
@@ -921,7 +791,7 @@ async def _stage_work_turn(
         start_validator_mailbox=_start_work_validator_mailbox,
         bind_context=bind_conversation_worktree,
         stage_artifacts=stage_artifacts,
-        stage_experiment_resources=stage_chat_resources,
+        stage_loop_status=stage_loop_status,
         select_skills=select_skills,
     )
     return turn, staged
@@ -1009,7 +879,6 @@ def _work_contract_text(
         retry_diagnostics_path=retry_diagnostics_path,
         watch_path=turn.patch_inputs.watch_path,
         execution_host=turn.execution_host,
-        experiment_watcher_resources=staged.experiment_resource_pointers,
         command_client=turn.patch_inputs.command_client,
         graph_read_prompt=turn.graph_read_prompt,
         write_scope=turn.write_scope,
@@ -1252,7 +1121,6 @@ def _work_chat_master_context(
         graph_read_prompt=turn.graph_read_prompt,
         watch_path=turn.patch_inputs.watch_path,
         execution_host=turn.execution_host,
-        experiment_watcher_resources=staged.experiment_resource_pointers,
         skill_pointers=staged.skill_pointers,
         compute_connections=turn.compute_profiles,
         write_scope=turn.write_scope,
@@ -1414,26 +1282,13 @@ def _compose_retry_prompt(
 
 def _capture_retry_deliverable_baseline(turn: WorkTurn) -> _RetryDeliverableBaseline:
     if not turn.retrying:
-        return _RetryDeliverableBaseline(None, None, {})
+        return _RetryDeliverableBaseline(None, None)
     assert turn.execution is not None
     predecessor_patch = _read_chat_patch(turn.workspace, turn.remote_stage)
-    predecessor_watch = _read_watch_request(turn.workspace, turn.remote_stage)
     predecessor_outcome = _read_turn_outcome(turn.workspace, turn.remote_stage)
-    experiment_watch_digests = {
-        name: hashlib.sha256(text.encode("utf-8")).hexdigest()
-        for name, text in read_experiment_watcher_outputs(
-            turn.workspace,
-            turn.remote_stage,
-        ).items()
-    }
     patch_digest = (
         hashlib.sha256(predecessor_patch.encode("utf-8")).hexdigest()
         if predecessor_patch is not None
-        else None
-    )
-    watch_digest = (
-        hashlib.sha256(predecessor_watch.encode("utf-8")).hexdigest()
-        if predecessor_watch is not None
         else None
     )
     outcome_digest = (
@@ -1446,16 +1301,13 @@ def _capture_retry_deliverable_baseline(turn: WorkTurn) -> _RetryDeliverableBase
         "retry_deliverable_baseline",
         {
             "patch_sha256": patch_digest,
-            "watch_sha256": watch_digest,
             "outcome_sha256": outcome_digest,
-            "experiment_watch_sha256": experiment_watch_digests,
         },
         tier="diagnostic",
     )
     return _RetryDeliverableBaseline(
         patch_digest=patch_digest,
-        watch_digest=watch_digest,
-        experiment_watch_digests=experiment_watch_digests,
+        watch_digest=None,
         outcome_digest=outcome_digest,
     )
 
@@ -1490,12 +1342,26 @@ def _read_initial_patch_deliverable(
     return _DeliverableRead(text=text, failure=failure)
 
 
+def _folder_baseline(turn: WorkFinalizationContext | WorkTurn, attempt: int) -> str | None:
+    if turn.execution is None:
+        return None
+    return turn.execution.store.agent_task_contract(
+        turn.execution.operation_id, f"watcher_folder:{attempt}"
+    )
+
+
+def _watcher_output(turn: WorkFinalizationContext | WorkTurn) -> str | None:
+    if turn.execution is None or not turn.request.chat_id:
+        return None
+    return json.dumps(read_watcher_folder(turn.workspace, turn.remote_stage), sort_keys=True)
+
+
 def _read_initial_watch_deliverable(
     turn: WorkFinalizationContext,
     predecessor_digest: str | None,
 ) -> _DeliverableRead:
     try:
-        text = _read_watch_request(turn.workspace, turn.remote_stage)
+        text = _watcher_output(turn)
     except (OSError, StateUnavailable, ValueError) as exc:
         if turn.recorded and isinstance(exc, StateUnavailable):
             raise
@@ -1509,7 +1375,7 @@ def _read_initial_watch_deliverable(
         failure = None
     if _retry_deliverable_is_unchanged(
         turn.execution,
-        filename="watch.json",
+        filename="watchers",
         predecessor_digest=predecessor_digest,
         current_text=text,
     ):
@@ -1566,26 +1432,6 @@ async def _validate_patch_deliverable(
         # its result on an outage.
         raise StateUnavailable(failure.message)
     return _DeliverableStep(failure=failure)
-
-
-def _watcher_continuation(
-    turn: WorkFinalizationContext,
-) -> WatcherContinuation:
-    request_values = turn.request.model_dump(mode="json")
-    values = {
-        name: request_values[name]
-        for name in WatcherContinuation.model_fields
-        if name in request_values
-    }
-    values.update(
-        provider=turn.request.provider or "",
-        run_on=turn.request.run_on or "",
-        run_truth_scope=turn.run_truth_scope,
-        workflow_ids=turn.skill_selection.workflow_ids,
-        skill_ids=turn.skill_selection.skill_ids,
-        resolved_skill_packages=turn.skill_selection.resolved_skill_packages,
-    )
-    return WatcherContinuation.model_validate(values)
 
 
 def _patch_correction_contract(diagnostics_path: str) -> str:
@@ -1671,7 +1517,7 @@ def _read_corrected_patch_deliverable(
 
 def _read_corrected_watch_deliverable(turn: WorkTurn) -> _DeliverableRead:
     try:
-        corrected_watch = _read_watch_request(turn.workspace, turn.remote_stage)
+        corrected_watch = _watcher_output(turn)
     except (OSError, StateUnavailable, ValueError) as exc:
         return _DeliverableRead(
             text=None,
@@ -1684,7 +1530,7 @@ def _read_corrected_watch_deliverable(turn: WorkTurn) -> _DeliverableRead:
         return _DeliverableRead(
             text=None,
             failure=_DeliverableFailure(
-                "The correction completed without writing watch.json.",
+                "The correction left no readable watcher folder.",
                 correctable=True,
             ),
         )
@@ -1727,56 +1573,32 @@ async def _validate_watch_deliverable(
     try:
         if turn.execution is None:
             raise ValueError("Watcher arming requires a durable originating operation.")
-        origin_task = turn.execution.store.agent_task(turn.execution.operation_id)
-        if origin_task is None:
-            raise ValueError("The originating Work operation is no longer available.")
-        ordinary_handoff = parse_watch_json(watch_text)
+        if not turn.request.chat_id:
+            raise ValueError("Watcher arming requires the turn's agent.")
+        binding = watcher_binding(
+            turn.execution.store,
+            turn.execution.operation_id,
+            turn.request.chat_id,
+            turn.write_scope.machine_id,
+        )
+        files = json.loads(watch_text)
+        definitions = [WatcherFile.model_validate_json(raw) for raw in files.values()]
         if turn.compute_commands is not None:
             await asyncio.to_thread(
                 turn.compute_commands.validate_handoff,
-                {item.check_command for item in ordinary_handoff.external},
+                {item.check_command for entry in definitions for item in entry.checks},
             )
-        specs = ordinary_handoff.external
-        graph_conditions = ordinary_handoff.graph
-        child_route = turn.execution.store.auto_research_child_work_for_operation(
-            turn.execution.operation_id
-        )
-        binding = WatcherBinding(
-            project_id=origin_task.project_id,
-            origin_operation_id=turn.execution.operation_id,
-            origin_task_kind=turn.surface,
-            chat_id=turn.request.chat_id or "",
-            node_id=turn.request.node_id,
-            episode_id=origin_task.episode_id,
-            worker_id=child_route.worker_id if child_route is not None else None,
-            graph_target=origin_task.graph_target,
-            machine_id=turn.write_scope.machine_id,
-            continuation=_watcher_continuation(turn),
-        )
-        graph_state = (
-            await asyncio.to_thread(turn.service.history.state) if graph_conditions else None
-        )
-        if graph_conditions:
-            turn.execution.armed_graph_watchers = True
-        watcher_ids = [
-            str(
-                uuid.uuid5(
-                    uuid.NAMESPACE_URL,
-                    f"rcp-work-watcher:{turn.execution.operation_id}:{index}",
-                )
-            )
-            for index in range(len(specs) + len(graph_conditions))
-        ]
+        graphs = any(entry.graph is not None for entry in definitions)
+        state = await asyncio.to_thread(turn.service.history.state) if graphs else None
         armed = await asyncio.to_thread(
-            arm_watchers,
+            reconcile_watcher_files,
             turn.execution.store,
-            specs,
             binding,
-            graph_conditions=graph_conditions,
-            state=graph_state,
-            watcher_ids=watcher_ids,
-            reuse_live=True,
+            json.loads(_folder_baseline(turn, correction_rounds) or "{}"),
+            files,
+            state=state,
         )
+        turn.execution.armed_graph_watchers |= graphs
     except WatcherInitialCheckError as exc:
         return _DeliverableStep(failure=_DeliverableFailure(str(exc), correctable=True))
     except ValueError as exc:
@@ -2163,6 +1985,19 @@ async def _settle_watch_deliverable(
             phase="correcting",
             event=True,
         )
+        if turn.request.chat_id:
+            stage_watcher_folder(
+                turn.execution.store,
+                watcher_binding(
+                    turn.execution.store,
+                    turn.execution.operation_id,
+                    turn.request.chat_id,
+                    turn.write_scope.machine_id,
+                ),
+                turn.workspace,
+                turn.remote_stage,
+                attempt=correction_rounds,
+            )
         correction_validator = stage_patch_validation_mailbox(
             local_stage=(launch_turn.workspace if launch_turn.remote_stage is None else None),
             remote_stage=launch_turn.remote_stage,
@@ -2280,72 +2115,6 @@ async def _settle_watch_deliverable(
         else:
             text = None
             failure = None
-
-
-async def _apply_work_turn(
-    turn: WorkFinalizationContext,
-    launcher: AgentLauncher,
-    retry_baseline: _RetryDeliverableBaseline,
-    applied: _AppliedWorkTurn,
-    *,
-    launch_turn: WorkTurn | None = None,
-    composed: _ComposedWorkPrompt | None = None,
-    maximum_corrections: int = PATCH_CORRECTION_MAX_ROUNDS,
-) -> AsyncIterator[str]:
-    if is_consolidation(turn.execution):
-        return
-    (
-        maintenance_frames,
-        native_session_id,
-        maintenance_paused,
-    ) = await _process_experiment_watcher_maintenance(
-        service=turn.service,
-        launcher=launcher,
-        request=turn.request,
-        execution=turn.execution,
-        staged_resources=turn.experiment_resources,
-        workspace=turn.workspace,
-        remote_stage=turn.remote_stage,
-        local_stage=turn.local_stage,
-        token=_task_token(turn.execution),
-        native_session_id=applied.native_session_id,
-        read_dirs=launch_turn.read_dirs if launch_turn is not None else [],
-        write_dirs=launch_turn.write_dirs if launch_turn is not None else [],
-        write_scope=turn.write_scope,
-        execution_host=turn.execution_host,
-        provider_binary=launch_turn.provider_binary if launch_turn is not None else None,
-        retry_output_digests=retry_baseline.experiment_watch_digests,
-        maximum_corrections=maximum_corrections,
-        continuation=_maintenance_continuation(launch_turn, composed),
-    )
-    applied.native_session_id = native_session_id
-    for frame in maintenance_frames:
-        yield frame
-    if maintenance_paused:
-        applied.stop = True
-
-
-def _maintenance_continuation(
-    turn: WorkTurn | None,
-    composed: _ComposedWorkPrompt | None,
-) -> Callable[[str, str], str] | None:
-    """Compose a watcher maintenance correction in the Work session it corrects."""
-
-    if turn is None or composed is None or composed.prompt_values is None:
-        return None
-    values = composed.prompt_values
-
-    def continuation(session_id: str, part: str) -> str:
-        return _work_continuation(
-            turn,
-            composed.render_master,
-            session_id=session_id,
-            node=classify(LaunchPhase(session_id=session_id, phase="correction")),
-            part=part,
-            values=values,
-        )
-
-    return continuation
 
 
 def _work_observed_apply_revision(
@@ -2679,29 +2448,10 @@ async def finalize_work_result(
             yield frame
     if settled.stop:
         return
-    applied = _AppliedWorkTurn(
-        graph_update=settled.graph_update,
-        native_session_id=settled.native_session_id,
-    )
-    apply_stream = _apply_work_turn(
-        turn,
-        launcher,
-        retry_baseline,
-        applied,
-        launch_turn=launch_turn,
-        composed=composed,
-        maximum_corrections=maximum_corrections,
-    )
-    async with aclosing(apply_stream) as stream:
-        async for frame in stream:
-            yield frame
-    if applied.stop:
-        return
-
     for artifact in _finalize_work_artifacts(turn):
         yield _sse(AgentEvent(event="artifact", artifact=artifact))
 
-    for frame in _finalize_work_turn(turn, answer, applied.graph_update, settled.turn_outcome):
+    for frame in _finalize_work_turn(turn, answer, settled.graph_update, settled.turn_outcome):
         yield frame
 
 
@@ -3118,8 +2868,6 @@ async def _stream_work_graph_repair(
             token=token,
             artifact_scope_id=execution.operation_id,
             artifact_directory=workspace / "turns" / execution.operation_id / "artifacts",
-            experiment_resources=[],
-            experiment_resource_pointers=[],
             skill_selection=skill_selection,
             skill_pointers=stage_skill_selection(
                 skill_selection,
@@ -3294,7 +3042,7 @@ def _start_work_validator_mailbox(
         execution=execution,
         budget=budget,
         command_handler=command_handler,
-        allowed_verbs=command_handler.allowed_verbs,
+        profile=command_handler.profile,
         serve=serve_patch_validation_mailbox,
         resume_context=_work_mailbox_context(
             run_truth_scope,
@@ -3405,10 +3153,10 @@ def _resume_work_command_handler(
             service=service() if context.graph_read_scope is not None else None,
             graph_read_scope=context.graph_read_scope,
             mailbox=mailbox,
+            ask_allowed=context.ask_allowed,
+            open_service=service,
         )
-    if not context.ask_allowed:
-        handler = replace(handler, allowed_verbs=handler.allowed_verbs - {"ask"})
-    return handler if handler.allowed_verbs != {"validate"} else None
+    return handler if len(handler.allowed_verbs) > 1 else None
 
 
 def resume_work_command_mailbox(
@@ -3648,16 +3396,14 @@ def _recorded_retry_deliverable_baseline(
         if receipt.category != "retry_deliverable_baseline":
             continue
         payload = receipt.payload
-        digests = payload.get("experiment_watch_sha256")
         return _RetryDeliverableBaseline(
             patch_digest=payload.get("patch_sha256"),
             watch_digest=payload.get("watch_sha256"),
-            experiment_watch_digests=digests if isinstance(digests, dict) else {},
             outcome_digest=(
                 outcome if isinstance(outcome := payload.get("outcome_sha256"), str) else None
             ),
         )
-    return _RetryDeliverableBaseline(None, None, {})
+    return _RetryDeliverableBaseline(None, None)
 
 
 def open_recorded_work_turn(
@@ -3767,4 +3513,10 @@ def _write_recorded_patch(
     turn: WorkFinalizationContext,
     recorded: RecordedProviderTurn,
 ) -> None:
+    if (
+        recorded.intact
+        and recorded.watcher_folder is None
+        and _folder_baseline(turn, 0) is not None
+    ):
+        raise ValueError("The recorded turn is missing its watcher folder snapshot.")
     write_recorded_patch(turn.workspace, turn.remote_stage, recorded)

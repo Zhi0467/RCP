@@ -7,7 +7,11 @@ import {
   encodeCommentMentions,
   decodeCommentMentions,
 } from "../src/comments/mentions.ts";
-import { createCommentsClient, fetchRequest } from "../src/comments/api.ts";
+import {
+  createCommentsClient,
+  createScopedCommentsClient,
+  fetchRequest,
+} from "../src/comments/api.ts";
 import { textLocatorCases } from "./fixtures/textLocatorCases.mjs";
 
 const rect = { x: 0.1, y: 0.2, width: 0.3, height: 0.4 };
@@ -84,24 +88,23 @@ test("locateThread scrolls and flashes only found anchors", () => {
     false,
   );
 });
-test("rail excludes resolved and unsendable ticks and checks full selected text plus quote", () => {
-  const items = [
-    thread("a"),
-    { ...thread("b", "resolved"), sent_operation_id: "op" },
-    { ...thread("c"), can_send: false },
-  ];
-  const state = railState(items, new Set(["a", "b", "c", "missing"]));
-  assert.deepEqual([...state.ticked], ["a"]);
+test("rail splits open and resolved threads", () => {
+  const items = [thread("a"), { ...thread("b", "resolved"), sent_operation_id: "op" }];
+  const state = railState(items);
+  assert.deepEqual(
+    state.open.map((item) => item.thread_id),
+    ["a"],
+  );
   assert.equal(state.resolved[0].sent_operation_id, "op");
-  assert.equal(state.sendLength, 10);
-  assert.equal(state.canSend, true);
-  assert.equal(railState([thread("a", "open", "x".repeat(31996))], new Set(["a"])).canSend, false);
   assert.equal(anchorQuote({ kind: "whole" }), "");
 });
-test("mention picker puts one agent first but only encodes members", () => {
-  const candidates = commentMentionCandidates([{ user_id: "m", display_name: "Ada" }], true);
-  assert.equal(candidates[0].mention.kind, "agent");
-  assert.equal(commentMentionCandidates([], false).length, 0);
+test("mention picker lists and encodes members only", () => {
+  const candidates = commentMentionCandidates([{ user_id: "m", display_name: "Ada" }]);
+  assert.deepEqual(
+    candidates.map((candidate) => candidate.mention.kind),
+    ["member"],
+  );
+  assert.equal(commentMentionCandidates([]).length, 0);
   assert.equal(encodeCommentMentions("Hi @Ada", candidates), "Hi <@member:m>");
   assert.equal(decodeCommentMentions("Hi <@member:m>", candidates), "Hi @Ada");
 });
@@ -142,12 +145,6 @@ test("HTML boxes follow the element after a scroll instead of the original viewp
   const moved = { ...context, element: () => ({ ...bounds, y: bounds.y - 150 }) };
   assert.deepEqual(findAnchor(anchor, moved), { x: 130, y: 130, width: 90, height: 160 });
 });
-test("send budget includes typed text and permits the exact limit", () => {
-  const item = thread("a", "open", "x".repeat(31994));
-  assert.equal(railState([item], new Set(["a"]), "!").canSend, true);
-  assert.equal(railState([item], new Set(["a"]), "!!").canSend, false);
-  assert.equal(railState([item], new Set()).canSend, false);
-});
 test("all mutation entry points preserve their contract", async () => {
   const calls = [];
   const client = createCommentsClient(
@@ -170,13 +167,6 @@ test("all mutation entry points preserve their contract", async () => {
   assert.deepEqual(calls[0].body, { target, anchor, text: "note", drawn_version: "version" });
   assert.equal(calls[2].url, "/api/projects/p/comment-threads/t/resolve");
   assert.equal(calls[3].url, "/api/projects/p/comment-threads/t/reopen");
-});
-
-test("rail respects the send selection count and never encodes an agent token", () => {
-  const items = [thread("a"), thread("b")];
-  assert.equal(railState(items, new Set(["a", "b"]), "", 1).canSend, false);
-  const candidates = commentMentionCandidates([], true);
-  assert.equal(encodeCommentMentions("@Agent review", candidates), "@Agent review");
 });
 
 test("clients unwrap the backend thread and mention response envelopes", async () => {
@@ -214,4 +204,24 @@ test("PDF anchors without a rectangle refind their quote on the same page", () =
     height: 10,
   });
   assert.equal(findAnchor({ kind: "pdf", page: 2, rect: null, text: "" }, context), null);
+});
+
+test("project agent and Space comments share the agent endpoint family", async () => {
+  const calls = [];
+  const request = async (path, init) => {
+    calls.push([path, init.method]);
+    return { thread: { thread_id: "comment" }, threads: [] };
+  };
+  for (const scope of [
+    { kind: "project", projectId: "project", threadId: "agent/a" },
+    { kind: "space", threadId: "agent/a" },
+  ]) {
+    const client = createScopedCommentsClient(scope, request);
+    await client.listChatReplies("agent/a");
+    await client.reply("comment", "Reply");
+    await client.resolve("comment");
+    await client.reopen("comment");
+  }
+  assert.deepEqual(calls.slice(0, 4), calls.slice(4));
+  assert.equal(calls[1][0], "/api/agent-threads/agent%2Fa/comment-threads/comment/posts");
 });

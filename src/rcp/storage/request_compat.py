@@ -54,14 +54,15 @@ def migrate_stored_task_request(
     return migrated
 
 
-_RETIRED_TASK_CONTRACTS: Final = frozenset({"paper_readonly", "paper_suggest"})
+_RETIRED_TASK_CONTRACTS: Final = frozenset({"paper_readonly", "paper_suggest", "scratch_patch"})
 
 
 def stored_dispatch_authority(stored: str | None) -> AgentDispatchAuthority | None:
     """Load one persisted dispatch binding; a retired contract binds nothing.
 
     Paper coach turns ran under `paper_readonly`, then `paper_suggest`, until the
-    Coach became a Paper chat. Their rows stay history only.
+    Coach became a Paper chat. Seed and Refresh runs ran under `scratch_patch`
+    until they were retired. Their rows stay history only.
     """
 
     if stored is None:

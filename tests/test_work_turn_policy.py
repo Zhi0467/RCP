@@ -102,7 +102,12 @@ def test_resumed_mailbox_preserves_validation_policy_without_opening_graph(
     )
     resume(open_service, execution)
     assert opened == []
-    assert restored["command_handler"].allowed_verbs == {"validate", "bulletin", "name", "watcher"}
+    assert restored["command_handler"].allowed_verbs == {
+        "validate",
+        "bulletin",
+        "name",
+        "projects",
+    }
     assert restored["validate"]("candidate").status == "valid"
     assert opened == [True]
     expected = {
@@ -230,10 +235,10 @@ def test_resumed_mailbox_retains_ask_without_compute_and_rechecks_authority(
             "validate",
             "bulletin",
             "name",
-            "watcher",
+            "projects",
         }
     else:
-        assert restored is not None and restored.allowed_verbs == {"validate", "name"}
+        assert restored is not None and restored.allowed_verbs == {"validate", "name", "projects"}
 
 
 @pytest.mark.parametrize("ask_allowed", [True, False])

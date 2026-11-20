@@ -4,7 +4,7 @@ import json
 import sqlite3
 import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import TypeAdapter
@@ -49,8 +49,12 @@ class CommentTargetRoute:
     graph_target: str
     media_type: str | None = None
     title: str | None = None
+    space: bool = False
 
     def readable_by(self, connection: sqlite3.Connection, user_id: str) -> bool:
+        """A Space thread's comments belong to its owner alone; a project's to its members."""
+        if self.space:
+            return self.chat_owner is not None and self.chat_owner == user_id
         return live_project_member(connection, self.project_id, user_id) and self.owner in {
             None,
             user_id,
@@ -232,7 +236,10 @@ def _target_route(
     store: AppStore, connection: sqlite3.Connection, project_id: str, kind: str, target_id: str
 ) -> CommentTargetRoute | None:
     resolve = _TARGET_ROUTES.get(kind)
-    return resolve(store, connection, project_id, target_id) if resolve else None
+    route = resolve(store, connection, project_id, target_id) if resolve else None
+    if route is None or project_id != store.space_id:
+        return route
+    return replace(route, space=True) if kind in {"artifact", "reply"} else None
 
 
 def readable_comment_target(
@@ -448,9 +455,14 @@ class CommentStoreMixin(StoreMixinBase):
         user cannot read the chat."""
         store = cast("AppStore", self)
         with self.connection() as connection:
-            if not live_project_member(connection, project_id, user_id) or _chat_owner(
-                connection, chat_id
-            ) not in {None, user_id}:
+            owner = _chat_owner(connection, chat_id)
+            if project_id == store.space_id:
+                if owner != user_id:
+                    return None
+            elif not live_project_member(connection, project_id, user_id) or owner not in {
+                None,
+                user_id,
+            }:
                 return None
             route_of = _readable_routes(store, connection, user_id, project_id)
             listed: list[tuple[dict[str, Any], CommentTargetRoute]] = []

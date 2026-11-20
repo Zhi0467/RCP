@@ -20,6 +20,7 @@ import {
 } from "./artifactViewerModel";
 import {
   acceptsArtifactEditMessage,
+  artifactDockMessage,
   artifactVersionChanged,
   collapseViewer,
   toggleViewerFullscreen,
@@ -41,6 +42,7 @@ import {
 } from "../comments/commentThreadRequest";
 import { repositoryFilePreviewUrl } from "../core/repositoryFileLinks";
 import { DraggableWindow } from "../ui/DraggableWindow";
+import { chatDockScope, dockInScope } from "../comments/react/CommentDock";
 import "../styles/artifact-viewer.css";
 
 const placementKey = "rcp:artifact-viewer-placement";
@@ -163,6 +165,19 @@ export function ArtifactViewer({ onMerge }: { onMerge?: BranchMergeRequest }) {
   useEffect(() => {
     if (!target || target.kind !== "artifact") return;
     const message = (event: MessageEvent) => {
+      const docked = artifactDockMessage(
+        event,
+        iframe.current?.contentWindow,
+        window.location.origin,
+        target.artifactId,
+      );
+      if (docked) {
+        if (!state?.origin_chat_id) return;
+        dockInScope(chatDockScope(target.projectId, state.origin_chat_id), docked);
+        if (state.thread_href && window.location.hash !== state.thread_href)
+          window.location.hash = state.thread_href;
+        return;
+      }
       if (
         !acceptsArtifactEditMessage(
           event,
@@ -179,7 +194,7 @@ export function ArtifactViewer({ onMerge }: { onMerge?: BranchMergeRequest }) {
     };
     window.addEventListener("message", message);
     return () => window.removeEventListener("message", message);
-  }, [target, store]);
+  }, [target, store, state]);
 
   const title = !target
     ? null

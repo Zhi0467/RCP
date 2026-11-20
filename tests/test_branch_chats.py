@@ -232,12 +232,6 @@ def test_branch_chat_api_requires_existing_canonical_branch_and_explicit_route(m
     )
     assert (
         client.post(
-            f"{base}/tasks/refresh?branch_id={episode.graph_target.branch_id}", json={}
-        ).status_code
-        == 422
-    )
-    assert (
-        client.post(
             f"{base}/tasks/project_chat",
             json={**payload, "graph_target": episode.graph_target.model_dump(mode="json")},
         ).status_code
@@ -462,18 +456,18 @@ def test_human_branch_experiment_has_own_episode_and_target_bound_recovery(
             yield AgentEvent(event="paused", text="Paused at native checkpoint.")
             return
         repository = manifest.repository_map["repo-a"].path
-        (Path(kwargs["cwd"]) / "watch.json").write_text(
+        (Path(kwargs["cwd"]) / "watchers").mkdir(exist_ok=True)
+        (Path(kwargs["cwd"]) / "watchers" / "job.json").write_text(
             json.dumps(
                 {
-                    "external": [
+                    "purpose": "job finishes",
+                    "checks": [
                         {
-                            "purpose": "job finishes",
                             "check_command": "false",
                             "log_path": str(Path(repository) / "check.log"),
                             "cwd": repository,
                         }
                     ],
-                    "graph": [],
                 }
             )
         )

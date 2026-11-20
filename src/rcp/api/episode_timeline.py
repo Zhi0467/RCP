@@ -7,6 +7,8 @@ import re
 from collections.abc import Callable
 from typing import Any
 
+from pydantic import TypeAdapter
+
 from rcp.api.episode_timeline_models import (
     EpisodeTimelineActor,
     EpisodeTimelineHandoff,
@@ -20,6 +22,7 @@ from rcp.api.episode_timeline_models import (
     EpisodeTimelineText,
 )
 from rcp.api.episodes import episode_chain_records
+from rcp.api.watchers import watcher_check_views
 from rcp.core.models import AuthorizedHuman
 from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import (
@@ -30,7 +33,7 @@ from rcp.limits import (
 )
 from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord
 from rcp.storage.chat_names import chat_titles
-from rcp.storage.models import GraphWatcherRecord
+from rcp.storage.models import GraphCondition
 
 
 def worker_label(instruction: str) -> str:
@@ -46,6 +49,22 @@ def _node_row(node_id: str, target: GraphTargetRef) -> str:
 
 def _span(operation_id: str | None) -> str | None:
     return f"span:{operation_id}" if operation_id else None
+
+
+_GRAPH_CONDITION: TypeAdapter[GraphCondition] = TypeAdapter(GraphCondition)
+
+
+def _watcher_condition(view: dict[str, object]) -> GraphCondition | None:
+    condition = view.get("condition")
+    return _GRAPH_CONDITION.validate_python(condition) if condition is not None else None
+
+
+def _watcher_target(view: dict[str, object]) -> GraphTargetRef:
+    return GraphTargetRef.model_validate(view["graph_target"])
+
+
+def _optional_str(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
 
 
 def _headline(task: AgentTaskRecord) -> str | None:
@@ -444,10 +463,11 @@ def _communications(
     chain_ids = {member.episode_id for member in chain}
     orchestrator = f"actor:orchestrator:{chain[0].episode_id}"
     watchers_by_episode = {
-        member.episode_id: store.episode_watchers(member.episode_id) for member in chain
+        member.episode_id: watcher_check_views(store, store.episode_watchers(member.episode_id))
+        for member in chain
     }
     watcher_by_id = {
-        watcher.watcher_id: watcher
+        str(watcher["watcher_id"]): watcher
         for watchers in watchers_by_episode.values()
         for watcher in watchers
     }
@@ -485,65 +505,67 @@ def _communications(
                     text_ref=f"message:{message.message_id}",
                 )
             )
-        watchers = watchers_by_episode[member.episode_id]
-        for watcher in watchers:
-            graph = isinstance(watcher, GraphWatcherRecord)
-            if auto and not graph:
+        for watcher in watchers_by_episode[member.episode_id]:
+            watcher_id = str(watcher["watcher_id"])
+            condition = _watcher_condition(watcher)
+            if auto and condition is None:
                 continue
-            actor_id = None if graph else f"actor:watcher:{watcher.watcher_id}"
-            node = watcher.condition.node_id if graph else watcher.node_id
+            actor_id = None if condition is not None else f"actor:watcher:{watcher_id}"
+            node = condition.node_id if condition is not None else _optional_str(watcher["node_id"])
+            group_label = _optional_str(watcher.get("group_label"))
+            completed_at = _optional_str(watcher["completed_at"])
+            stopped_at = _optional_str(watcher["stopped_at"])
+            woken_by = _optional_str(watcher["notification_operation_id"])
+            origin = str(watcher["origin_operation_id"])
+            status = str(watcher["status"])
             # A shell-watcher group shares one row, as it does in the Watchers fold.
             row_key = (
-                _node_row(watcher.condition.node_id, watcher.graph_target)
-                if isinstance(watcher, GraphWatcherRecord)
-                else f"watchers:{watcher.group_label}"
-                if watcher.group_label
+                _node_row(condition.node_id, _watcher_target(watcher))
+                if condition is not None
+                else f"watchers:{group_label}"
+                if group_label
                 else actor_id
             )
             if actor_id:
                 actors[actor_id] = EpisodeTimelineActor(
                     actor_id=actor_id,
                     kind="watcher",
-                    label=watcher.group_label or "Watcher",
+                    label=group_label or "Watcher",
                     subtitle=node,
                     row_key=row_key,
                     owner_episode_id=member.episode_id,
-                    started_at=watcher.created_at,
-                    ended_at=watcher.completed_at or watcher.stopped_at,
-                    outcome=watcher.status,
-                    started_by_span_id=_span(watcher.origin_operation_id),
+                    started_at=str(watcher["created_at"]),
+                    ended_at=completed_at or stopped_at,
+                    outcome=status,
+                    started_by_span_id=_span(origin),
                     links=EpisodeTimelineLinks(
-                        watcher_id=watcher.watcher_id,
+                        watcher_id=watcher_id,
                         control_node_id=node,
                         episode_id=member.episode_id,
                     ),
                 )
-            notification = tasks.get(watcher.notification_operation_id)
+            notification = tasks.get(woken_by) if woken_by else None
             signals.append(
                 EpisodeTimelineSignal(
-                    item_id=f"watcher:{watcher.watcher_id}",
+                    item_id=f"watcher:{watcher_id}",
                     kind="watcher",
                     source_actor_id=actor_id,
                     source_row_key=row_key,
-                    event="fired"
-                    if watcher.completed_at
-                    else "stopped"
-                    if watcher.stopped_at
-                    else "armed",
-                    recorded_at=watcher.completed_at or watcher.stopped_at or watcher.created_at,
+                    event="fired" if completed_at else "stopped" if stopped_at else "armed",
+                    recorded_at=completed_at or stopped_at or str(watcher["created_at"]),
                     landed_at=(notification.started_at or notification.created_at)
                     if notification
                     else None,
-                    landed_span_id=_span(watcher.notification_operation_id),
-                    landing="woke" if watcher.notification_operation_id else None,
-                    armed_span_id=_span(watcher.origin_operation_id),
-                    armed_at=watcher.created_at,
-                    state=watcher.status,
-                    payload=watcher.condition.model_dump(mode="json")
-                    if graph
+                    landed_span_id=_span(woken_by),
+                    landing="woke" if woken_by else None,
+                    armed_span_id=_span(origin),
+                    armed_at=str(watcher["created_at"]),
+                    state=status,
+                    payload=condition.model_dump(mode="json")
+                    if condition is not None
                     else {
-                        "check_command": watcher.check_command,
-                        "stop_reason": watcher.stop_reason,
+                        "check_command": watcher["check_command"],
+                        "stop_reason": watcher["stop_reason"],
                     },
                 )
             )
@@ -566,9 +588,10 @@ def _communications(
                 if source in actors
                 else f"{notice.source_kind}:{notice.source_id}"
             )
-            if isinstance(watcher, GraphWatcherRecord):
+            notice_condition = _watcher_condition(watcher) if watcher is not None else None
+            if watcher is not None and notice_condition is not None:
                 source = None
-                source_row = _node_row(watcher.condition.node_id, watcher.graph_target)
+                source_row = _node_row(notice_condition.node_id, _watcher_target(watcher))
             landing = (
                 "woke"
                 if notice.delivery_operation_id

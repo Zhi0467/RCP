@@ -84,8 +84,8 @@ test("Agents board spins working logos, drags to reorder and archive, and opens 
     let display = { archived: ["Archived chat"], titles: {}, pinned: [] };
     await page.route("**/api/projects/*/chat-display", (route) => route.fulfill({ json: display }));
     const archives = [];
-    await page.route("**/api/projects/*/chats/*/archive", (route) => {
-      const chatId = decodeURIComponent(route.request().url().split("/chats/")[1].split("/")[0]);
+    await page.route("**/api/agent-threads/*/archive?project_id=project", (route) => {
+      const chatId = decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-2));
       const { archived } = route.request().postDataJSON();
       archives.push([chatId, archived]);
       display = {

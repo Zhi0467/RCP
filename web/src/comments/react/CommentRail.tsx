@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
-import { MAX_SEND_CHARS, railState } from "../model.ts";
+import { railState } from "../model.ts";
 import type { CommentThread } from "../types.ts";
 import { CommentThreadCard } from "./CommentThreadCard";
 import type { CommentsController } from "./useCommentActions";
@@ -9,35 +9,18 @@ import "./rail.css";
 
 export interface CommentListProps {
   comments: CommentsController;
-  agentLabel: string;
   wholeLabel: string;
   selected: string | null;
   onLocate: (thread: CommentThread) => void;
   /** Why a thread has no pin here, shown on hover; undefined when it has one. */
   note?: (thread: CommentThread) => string | undefined;
-  maxSelections?: number;
 }
 
-/** The open threads, the Resolved fold, and Send N; the rail and the chat list share it. */
-export function CommentList({
-  comments,
-  agentLabel,
-  wholeLabel,
-  selected,
-  onLocate,
-  note,
-  maxSelections,
-}: CommentListProps) {
-  const [ticks, setTicks] = useState<ReadonlySet<string>>(() => new Set());
+/** The open threads and the Resolved fold; the rail and the chat list share it. */
+export function CommentList({ comments, wholeLabel, selected, onLocate, note }: CommentListProps) {
   const [foldOpen, setFoldOpen] = useState(false);
   const list = useRef<HTMLDivElement>(null);
-  const {
-    open,
-    resolved,
-    selected: chosen,
-    canSend,
-    tooLong,
-  } = railState(comments.threads, ticks, "", maxSelections);
+  const { open, resolved } = railState(comments.threads);
   const selectedResolved = resolved.some((thread) => thread.thread_id === selected);
   useEffect(() => {
     if (selectedResolved) setFoldOpen(true);
@@ -54,18 +37,8 @@ export function CommentList({
       key={thread.thread_id}
       thread={thread}
       comments={comments}
-      agentLabel={agentLabel}
       wholeLabel={wholeLabel}
       selected={thread.thread_id === selected}
-      ticked={ticks.has(thread.thread_id)}
-      onTick={(on) =>
-        setTicks((current) => {
-          const next = new Set(current);
-          if (on) next.add(thread.thread_id);
-          else next.delete(thread.thread_id);
-          return next;
-        })
-      }
       onLocate={() => onLocate(thread)}
       note={note?.(thread)}
     />
@@ -84,26 +57,6 @@ export function CommentList({
           <summary>Resolved · {resolved.length}</summary>
           <div>{resolved.map(card)}</div>
         </details>
-      )}
-      {comments.canSend && chosen.length > 0 && (
-        <footer className="rcp-comments-footer">
-          <button
-            type="button"
-            className="rcp-comment-primary"
-            disabled={comments.busy || !canSend}
-            title={
-              tooLong
-                ? `The selected threads exceed ${MAX_SEND_CHARS.toLocaleString("en-US")} characters`
-                : undefined
-            }
-            onClick={async () => {
-              if (await comments.send(chosen.map((thread) => thread.thread_id)))
-                setTicks(new Set());
-            }}
-          >
-            Send {chosen.length} to agent
-          </button>
-        </footer>
       )}
       <div className="rcp-comments-notice" role="status">
         {comments.error}

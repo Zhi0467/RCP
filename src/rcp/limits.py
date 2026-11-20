@@ -122,12 +122,8 @@ TURN_JOURNAL_MAX_EVENT_BYTES = 16 * 1024 * 1024
 TURN_JOURNAL_MAX_STDERR_BYTES = 1024 * 1024
 TURN_JOURNAL_MAX_PATCH_BYTES = 16 * 1024 * 1024
 TURN_JOURNAL_MAX_CONTROL_MESSAGES = 1024
-# Experiment watcher maintenance snapshots a set the provider chose the size of,
-# so the set is bounded as a whole and not only file by file. The count also
-# bounds the digest map `outcome.json` carries, which the journal reader has to
-# read back within its own limit.
-TURN_JOURNAL_MAX_EXPERIMENT_WATCH_FILES = 64
-TURN_JOURNAL_MAX_EXPERIMENT_WATCH_BYTES = 16 * 1024 * 1024
+TURN_JOURNAL_MAX_WATCHER_FILES = 64
+TURN_JOURNAL_MAX_WATCHER_BYTES = 16 * 1024 * 1024
 REMOTE_RESULT_RECONCILIATION_INTERVAL_SECONDS = 5.0
 
 # Staged agent command mailbox, and the Auto-research broker that fronts it.
@@ -304,7 +300,7 @@ PATCH_SELF_CHECK_POLL_SECONDS = 0.2
 PATCH_SELF_CHECK_TIMEOUT_SECONDS = 30
 PATCH_SELF_CHECK_MAX_REQUEST_BYTES = 16 * 1024 * 1024
 
-# Scratch-only correction rounds in the recovery ladder. Seed/Refresh, Work, and the
+# Scratch-only correction rounds in the recovery ladder. Work and the
 # Auto-research worker each hand validation errors back to the same live session at
 # most this many times before the run is rejected. One number, one policy: raising it
 # here raises it everywhere, which is the point.
@@ -335,8 +331,6 @@ WATCHER_GROUP_DIAGNOSTIC_ERROR_COUNT = 5
 CHAT_CONVERSATION_LIMIT = 120
 RUN_INLINE_SESSION_LIMIT = 40
 RUN_INLINE_SESSION_BYTES = 12 * 1024
-REFRESH_DELTA_MAX_ENTRIES = 50
-REFRESH_DELTA_MAX_BYTES = 16 * 1024
 
 # Rebuildable display/source caches and remote source operations.
 PROJECT_DISPLAY_SNAPSHOT_MAX_BYTES = 16 * 1024 * 1024

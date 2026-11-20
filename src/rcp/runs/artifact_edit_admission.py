@@ -246,6 +246,19 @@ def admit_chat_artifact_comment(
     )
 
 
+def artifact_turn_chat(
+    store: AppStore, artifact: Artifact
+) -> tuple[AgentTaskRecord, str | None, str] | None:
+    """The artifact's chat when it takes human turns now, with its origin task."""
+    origin, reply_episode_id = artifact_reply_origin(store, artifact)
+    chat_id = artifact_chat_id(origin, reply_episode_id)
+    if not isinstance(chat_id, str) or not chat_id:
+        return None
+    if store.child_human_turn_refusal(artifact.project_id, chat_id) is not None:
+        return None
+    return origin, reply_episode_id, chat_id
+
+
 def artifact_send_chat_turn(
     store: AppStore, artifact: Artifact, context: ArtifactContextRequest, message: str
 ) -> tuple[Literal["node_chat", "project_chat"], dict[str, object]] | None:
@@ -257,12 +270,10 @@ def artifact_send_chat_turn(
     orchestrator thread is its root's project chat. The turn runs on the chat's
     latest profile, as the composer would.
     """
-    origin, reply_episode_id = artifact_reply_origin(store, artifact)
-    chat_id = artifact_chat_id(origin, reply_episode_id)
-    if not isinstance(chat_id, str) or not chat_id:
+    chat = artifact_turn_chat(store, artifact)
+    if chat is None:
         return None
-    if store.child_human_turn_refusal(artifact.project_id, chat_id) is not None:
-        return None
+    origin, reply_episode_id, chat_id = chat
     kind: Literal["node_chat", "project_chat"] = (
         "project_chat"
         if reply_episode_id is not None or origin.request.get("chat_scope") == "project"

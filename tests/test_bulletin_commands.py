@@ -54,7 +54,9 @@ def test_contract_usage_and_enforcement_share_the_bulletin_verb(store, tmp_path,
         compute_commands=None,
         service=None,
         graph_read_scope=None,
-        patch_inputs=SimpleNamespace(validator_staged=SimpleNamespace(ask_wait_seconds=1.0)),
+        patch_inputs=SimpleNamespace(
+            validator_staged=SimpleNamespace(ask_wait_seconds=1.0), patch_path="patch.json"
+        ),
     )
     post = request("post", key="once", text="note")
     assert "bulletin" in work_command_handler(execution, None).allowed_verbs
@@ -77,7 +79,9 @@ async def test_child_work_link_follows_the_usage_it_renders(store, monkeypatch):
         compute_commands=None,
         service=None,
         graph_read_scope=None,
-        patch_inputs=SimpleNamespace(validator_staged=SimpleNamespace(ask_wait_seconds=1.0)),
+        patch_inputs=SimpleNamespace(
+            validator_staged=SimpleNamespace(ask_wait_seconds=1.0), patch_path="patch.json"
+        ),
     )
     usage = _work_execution_instructions(turn, client="rcp-client")
     seen = []
@@ -99,7 +103,7 @@ async def test_child_work_link_follows_the_usage_it_renders(store, monkeypatch):
         validate=lambda _: pytest.fail("a link must not validate a patch"),
         stop=asyncio.Event(),
         budget=patch_validator.PatchValidationBudget(),
-        compute_commands=SimpleNamespace(allowed_verbs=frozenset()),
+        compute_commands=SimpleNamespace(launch_available=False),
         allowed_verbs=frozenset({"validate", "bulletin"}),
     )
     assert seen == [True]

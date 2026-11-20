@@ -3,18 +3,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import os
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
-from uuid import NAMESPACE_URL, UUID, uuid5
+from uuid import uuid4
 
-from rcp.agents.schema import (
-    EXPERIMENT_WATCH_OUTPUT_PREFIX as _EXPERIMENT_WATCH_OUTPUT_PREFIX,
-)
-from rcp.agents.schema import (
-    EXPERIMENT_WATCH_OUTPUT_SUFFIX as _EXPERIMENT_WATCH_OUTPUT_SUFFIX,
-)
 from rcp.agents.schema import (
     CreateEdgesOperation as AgentCreateEdgesOperation,
 )
@@ -28,40 +23,44 @@ from rcp.agents.schema import (
     parse_agent_patch_json,
 )
 from rcp.background import AgentTaskExecution
-from rcp.control import decision_drift
-from rcp.core.models import ExperimentDecisionPin, GraphState, Patch
+from rcp.control import (
+    ExperimentInvocationAdmission,
+    admit_experiment_watcher_invocation,
+    decision_drift,
+)
+from rcp.core.models import AuthorizedHuman, ExperimentDecisionPin, GraphState, Patch
 from rcp.core.operations import UpdateNodesOperation as CoreUpdateNodesOperation
 from rcp.core.project_types import project_type_of
 from rcp.core.transition_models import GraphTargetRef
 from rcp.limits import EPISODE_RECEIPT_MAX_BYTES
 from rcp.loop_status import LoopStatusProjection, chat_loop_status, loop_status_projection
 from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
+from rcp.runs.provider_login import AdmissionRefused
 from rcp.runs.shared import _stage_json_task_input, _stage_or_reuse_task_input
+from rcp.runs.task_policy import resolved_dispatch_authority
 from rcp.service import GraphUpdateResult, ProjectService, RunRequest
 from rcp.storage import (
     AgentTaskRecord,
+    AutoResearchExperimentAllowanceReached,
+    EpisodeInvocationCeilingReached,
+    EpisodeNotRunning,
+    EpisodeRecord,
     ExperimentEpisodeRecord,
     ExperimentLoopRuntime,
-    ExperimentWatcherResourceRecord,
-    GraphCondition,
-    GraphWatcherRecord,
-    StoredWatcherRecord,
     WatcherRecord,
-    WatcherStopRequest,
 )
-from rcp.transport import RemoteRunStage, StateUnavailable
+from rcp.transport import RemoteRunStage
 from rcp.watchers import (
-    ExperimentWatchSpec,
+    AdmissionFence,
     WatcherBinding,
-    WatcherCheckResult,
-    graph_condition_result,
-    validate_graph_conditions,
 )
 
 if TYPE_CHECKING:
     from rcp.agents.graph_read_scope import GraphReadScope
+    from rcp.background import BackgroundAgentTasks
     from rcp.runs.episodes.wrapup import EpisodeWrapupSpec
     from rcp.storage import AppStore
+    from rcp.watcher_folder import WatcherFolderChange
 
 _EXIT_STATUSES = frozenset({"completed"})
 _COMPLETED_NEXT_ACTION_PROBLEM = (
@@ -78,7 +77,7 @@ _MAX_RECEIPT_DECISIONS = 4
 _MAX_RECEIPT_ID = 100
 _MAX_RECEIPT_LIST_TEXT = 120
 
-EpisodeWakeReadiness = Literal["ready", "transient", "incompatible", "unavailable"]
+EpisodeWakeReadiness = Literal["ready", "transient", "unavailable"]
 
 ExperimentLoopPhase = Literal[
     "initial_run",
@@ -91,11 +90,10 @@ ExperimentLoopPhase = Literal[
 
 @dataclass(frozen=True)
 class EpisodeWakePreflight:
-    """Whether a completed group may claim the current episode's native session.
+    """Whether a wake may claim the current episode's native session.
 
-    `transient` and `incompatible` both leave the watchers completed and
-    unnotified for a later pass; only `unavailable` is a durable Needs-action
-    fact about the episode itself.
+    `transient` leaves the watchers ready for a later pass; only `unavailable`
+    is a durable Needs-action fact about the episode itself.
     """
 
     readiness: EpisodeWakeReadiness
@@ -126,133 +124,14 @@ class ExperimentLoopSemanticEnding:
         return self.ending == "human_pause"
 
 
-@dataclass(frozen=True)
-class StagedExperimentWatcherResource:
-    """One live node-and-episode watcher resource exposed to a chat turn."""
-
-    resource: ExperimentWatcherResourceRecord
-    host: str
-    watcher_state_path: str
-    watch_path: str
-
-    def prompt_value(self) -> dict[str, str]:
-        return {
-            "control_node_id": self.resource.control_node_id,
-            "episode_id": self.resource.episode_id,
-            "execution_host": self.host,
-            "watcher_state_path": self.watcher_state_path,
-            "watch_path": self.watch_path,
-        }
-
-
-def experiment_watcher_output_name(
-    control_node_id: str,
-    graph_target: GraphTargetRef,
-) -> str:
-    """Return the stable physical filename that selects one Experiment resource."""
-
-    target = graph_target
-    digest = hashlib.sha256(f"{target.key}\0{control_node_id}".encode()).hexdigest()
-    return f"{_EXPERIMENT_WATCH_OUTPUT_PREFIX}{digest}{_EXPERIMENT_WATCH_OUTPUT_SUFFIX}"
-
-
-def _experiment_watcher_output_names(
-    workspace: Path,
-    remote_stage: RemoteRunStage | None,
-) -> list[str]:
-    if remote_stage is not None:
-        return [
-            name
-            for name in remote_stage.list_workspace_files()
-            if name.startswith(_EXPERIMENT_WATCH_OUTPUT_PREFIX)
-            and name.endswith(_EXPERIMENT_WATCH_OUTPUT_SUFFIX)
-        ]
-    try:
-        entries = list(os.scandir(workspace))
-    except OSError as exc:
-        raise StateUnavailable(f"could not inspect chat watcher outputs: {exc}") from exc
-    names: list[str] = []
-    for entry in entries:
-        if not (
-            entry.name.startswith(_EXPERIMENT_WATCH_OUTPUT_PREFIX)
-            and entry.name.endswith(_EXPERIMENT_WATCH_OUTPUT_SUFFIX)
-        ):
-            continue
-        if not entry.is_file(follow_symlinks=False):
-            raise ValueError(
-                f"Experiment watcher output is not a direct regular file: {entry.name}"
-            )
-        names.append(entry.name)
-    return sorted(names)
-
-
-def clear_stale_experiment_watcher_outputs(
-    workspace: Path,
-    remote_stage: RemoteRunStage | None,
-    resources: list[ExperimentWatcherResourceRecord],
-) -> None:
-    """Remove prior-turn resource outputs from a reusable chat workspace."""
-
-    if remote_stage is not None:
-        names = set(_experiment_watcher_output_names(workspace, remote_stage))
-    else:
-        try:
-            with os.scandir(workspace) as entries:
-                names = {
-                    entry.name
-                    for entry in entries
-                    if entry.name.startswith(_EXPERIMENT_WATCH_OUTPUT_PREFIX)
-                    and entry.name.endswith(_EXPERIMENT_WATCH_OUTPUT_SUFFIX)
-                }
-        except OSError as exc:
-            raise StateUnavailable(f"could not inspect stale chat watcher outputs: {exc}") from exc
-    # Exact current paths are removed even when a previous agent replaced one
-    # with a symlink; the remote regular-file listing deliberately omits symlinks.
-    names.update(
-        experiment_watcher_output_name(item.control_node_id, item.graph_target)
-        for item in resources
-    )
-    for name in sorted(names):
-        if remote_stage is not None:
-            remote_stage.remove_workspace_file(name)
-        else:
-            path = workspace / name
-            if path.is_dir() and not path.is_symlink():
-                raise ValueError(f"Experiment watcher output path is an unsafe directory: {name}")
-            path.unlink(missing_ok=True)
-
-
-def read_experiment_watcher_outputs(
-    workspace: Path,
-    remote_stage: RemoteRunStage | None,
-) -> dict[str, str]:
-    """Read each physical Experiment watcher file written by this turn."""
-
-    outputs: dict[str, str] = {}
-    for name in _experiment_watcher_output_names(workspace, remote_stage):
-        if remote_stage is not None:
-            outputs[name] = remote_stage.read_text(remote_stage.workspace / name)
-        else:
-            outputs[name] = (workspace / name).read_text(encoding="utf-8")
-    return outputs
-
-
 def preflight_episode_wake(
     runtime: ExperimentLoopRuntime,
     episode: ExperimentEpisodeRecord | None,
-    group: list[StoredWatcherRecord],
     *,
     store: AppStore,
 ) -> EpisodeWakePreflight:
-    """Prove the episode session and exact stage before any claim or budget spend.
+    """Prove the episode session and exact stage before any claim or budget spend."""
 
-    Watcher provenance never selects the session — the current authorized
-    episode does. Compatible observations from earlier episodes keep their
-    origin while continuing the receiving episode's exact session and stage.
-    """
-
-    if not group:
-        raise ValueError("An Experiment watcher wake requires a completed watcher group.")
     if episode is None or not episode.session_bound:
         return EpisodeWakePreflight(
             readiness="unavailable",
@@ -265,32 +144,8 @@ def preflight_episode_wake(
         return EpisodeWakePreflight(
             readiness="unavailable",
             diagnostic=(
-                "The completed watcher group no longer belongs to the current Experiment episode. "
+                "This agent's episode is no longer the Experiment's current episode. "
                 "Use Stop loop and press Start new episode."
-            ),
-        )
-    mismatched: list[str] = []
-    for record in group:
-        continuation = record.continuation
-        for label, expected, actual in (
-            ("project", episode.project_id, record.project_id),
-            ("Experiment", episode.control_node_id, record.node_id),
-            ("graph target", episode.graph_target, record.graph_target),
-            ("check machine", episode.machine_id, record.machine_id),
-            ("continuation Experiment", episode.control_node_id, continuation.control_node_id),
-            ("origin episode", record.episode_id, continuation.control_episode_id),
-            ("Patch authority", "experiment_loop", continuation.patch_kind),
-        ):
-            if expected != actual and label not in mismatched:
-                mismatched.append(label)
-        if record.episode_id is None and "origin episode" not in mismatched:
-            mismatched.append("origin episode")
-    if mismatched:
-        return EpisodeWakePreflight(
-            readiness="incompatible",
-            diagnostic=(
-                "This completed watcher group does not match the current node-attached episode's "
-                f"{', '.join(mismatched)}; it stays pending for an explicit human Run."
             ),
         )
     assert episode.stage_root is not None
@@ -323,73 +178,221 @@ def preflight_episode_wake(
 
 
 def experiment_watcher_delivery_request(
-    group: list[StoredWatcherRecord],
+    watcher_ids: list[str],
     *,
-    trigger: Literal["experiment_run", "watcher"],
-    episode_id: str,
-    invocation: int,
-    invocation_ceiling: int,
-    control_revision: int,
-    decision_bundle: list[ExperimentDecisionPin],
-    completion_criteria: list[str],
-    session_id: str | None = None,
+    episode: EpisodeRecord,
+    runtime: ExperimentLoopRuntime,
+    admission: ExperimentInvocationAdmission,
+    session_id: str,
 ) -> RunRequest:
-    """Build one explicitly attributed Experiment watcher delivery request.
+    """Build one automatic wake from the episode's current runtime, never from a watcher."""
 
-    An automatic wake carries the episode's session id; a human Run that
-    reauthorizes pending completion carries none, because it is a fresh episode.
-    A continuation adds the source session afterwards; see ``continue_experiment_episode``.
-    """
-
-    if trigger == "experiment_run" and session_id:
-        raise ValueError("A human Experiment Run always starts a fresh native session.")
-
-    first = group[0]
-    continuation = first.continuation
-    if continuation.patch_kind != "experiment_loop" or not continuation.control_node_id:
-        raise ValueError("An Experiment watcher must retain its origin control binding.")
-    try:
-        UUID(continuation.control_episode_id or "")
-    except ValueError as exc:
-        raise ValueError("An Experiment watcher has an invalid origin episode id.") from exc
     if (
-        continuation.control_invocation is None
-        or continuation.control_invocation_ceiling is None
-        or continuation.control_invocation > continuation.control_invocation_ceiling
+        episode.control_node_id is None
+        or runtime.chat_id is None
+        or runtime.control_revision is None
     ):
-        raise ValueError("An Experiment watcher has an invalid origin invocation binding.")
+        raise ValueError("An Experiment watcher wake requires its episode's control binding.")
     return RunRequest(
-        browser_requested=continuation.browser_requested,
-        provider=continuation.provider,
-        # Older persisted watcher envelopes used null for the provider default.
-        # Make it explicit before profile resolution so a later Settings change
-        # cannot reinterpret this frozen continuation.
-        model=continuation.model if continuation.model is not None else "",
-        reasoning=continuation.reasoning,
-        run_on=continuation.run_on,
-        run_truth_scope=continuation.run_truth_scope,
-        chat_scope="node" if first.origin_task_kind == "node_chat" else "project",
-        node_id=first.node_id,
+        browser_requested=episode.browser_requested,
+        code_worktree=episode.code_worktree,
+        graph_isolation=episode.graph_isolation,
+        provider=runtime.provider,
+        model=runtime.model,
+        reasoning=runtime.reasoning,
+        run_on=runtime.run_on,
+        run_truth_scope=runtime.run_truth_scope,
+        chat_scope="node",
+        node_id=episode.control_node_id,
         message="Continue the bounded Experiment loop from its staged watcher state.",
-        chat_id=first.chat_id,
+        chat_id=runtime.chat_id,
         session_id=session_id,
         mode="work",
-        trigger=trigger,
+        trigger="watcher",
         patch_kind="experiment_loop",
-        control_node_id=continuation.control_node_id,
-        control_revision=control_revision,
-        control_episode_id=episode_id,
-        control_invocation=invocation,
-        control_invocation_ceiling=invocation_ceiling,
-        control_decision_bundle=decision_bundle,
-        control_completion_criteria=completion_criteria,
-        workflow_ids=continuation.workflow_ids,
-        skill_ids=continuation.skill_ids,
+        control_node_id=episode.control_node_id,
+        control_revision=runtime.control_revision,
+        control_episode_id=admission.episode_id,
+        control_invocation=admission.invocation,
+        control_invocation_ceiling=admission.invocation_ceiling,
+        control_decision_bundle=admission.decision_bundle,
+        control_completion_criteria=runtime.completion_criteria,
+        workflow_ids=runtime.workflow_ids,
+        skill_ids=runtime.skill_ids,
         invoked_workflow_ids=[],
         invoked_skill_ids=[],
-        resolved_skill_packages=continuation.resolved_skill_packages,
-        watcher_ids=[item.watcher_id for item in group],
+        resolved_skill_packages=runtime.resolved_skill_packages,
+        watcher_ids=watcher_ids,
     )
+
+
+def deliver_experiment_watchers(
+    agent_id: str,
+    episode: EpisodeRecord,
+    ready: list[WatcherRecord],
+    fence: AdmissionFence | None,
+    *,
+    tasks: BackgroundAgentTasks,
+    graph_project_service: Callable[[str, GraphTargetRef], ProjectService],
+    experiment_operation_lock: Callable[[str], AbstractContextManager[object]],
+) -> None:
+    """The Experiment episode's half of a wake: check, spend, claim, and launch at once.
+
+    The session is proved before the claim and the spend, so an unusable binding
+    never costs an invocation and never quietly becomes a fresh session.
+    """
+
+    store = tasks.store
+    control_node_id = episode.control_node_id
+    if control_node_id is None:
+        raise ValueError("An Experiment episode is missing its control node.")
+    ids = [watcher.watcher_id for watcher in ready]
+    service = graph_project_service(episode.project_id, episode.graph_target)
+    with experiment_operation_lock(episode.project_id):
+        state = service.history.state()
+        node = state.nodes.get(control_node_id)
+        if node is None or not project_type_of(state).is_control_node(node.type):
+            store.cancel_watchers(
+                ids, by="rcp", reason="The Experiment this agent ran no longer exists."
+            )
+            return
+        runtime = store.experiment_loop_runtime(
+            episode.project_id, control_node_id, graph_target=episode.graph_target
+        )
+        if runtime.episode_id != episode.episode_id or runtime.chat_id != agent_id:
+            store.cancel_watchers(
+                ids,
+                by="rcp",
+                reason="A newer Run of this Experiment replaced the one that armed this watcher.",
+            )
+            return
+
+        def diagnose(diagnostic: str | None) -> None:
+            store.record_experiment_episode_diagnostic(
+                episode_id=episode.episode_id,
+                project_id=episode.project_id,
+                control_node_id=control_node_id,
+                diagnostic=diagnostic,
+            )
+
+        authorized_by = episode.authorized_by
+        if authorized_by is None:
+            diagnose(
+                "This Experiment episode has no recorded human authorizer. "
+                "Stop the loop and start a new episode."
+            )
+            return
+        experiment = store.experiment_episode(episode.episode_id)
+        if (
+            runtime.run_on is None
+            or experiment is None
+            or experiment.machine_id != runtime.run_on
+            or experiment.stage_machine_id != runtime.run_on
+        ):
+            diagnose(
+                "The Experiment episode's saved execution host or stage host no longer "
+                "matches the current project manifest. Stop the loop and start a new Run "
+                "after confirming the execution target."
+            )
+            return
+        preflight = preflight_episode_wake(runtime, experiment, store=store)
+        if preflight.readiness == "unavailable":
+            diagnose(preflight.diagnostic)
+            return
+        if preflight.readiness != "ready":
+            return
+        if runtime.session_diagnostic is not None:
+            diagnose(None)
+        admission = admit_experiment_watcher_invocation(
+            state,
+            control_node_id,
+            episode_id=runtime.episode_id,
+            invocations_used=runtime.invocations_used,
+            invocation_ceiling=runtime.invocation_ceiling,
+            decision_bundle=[
+                ExperimentDecisionPin.model_validate(item) for item in runtime.decision_bundle
+            ],
+            task_active=runtime.task_active,
+            episode_exited=runtime.episode_exited,
+            stop_requested=runtime.stop_requested,
+        )
+        if admission is None:
+            return
+        assert preflight.session_id is not None
+        request = experiment_watcher_delivery_request(
+            ids,
+            episode=episode,
+            runtime=runtime,
+            admission=admission,
+            session_id=preflight.session_id,
+        )
+        _start_experiment_wake(
+            tasks, episode, request, ids, authorized_by, preflight=preflight, fence=fence
+        )
+
+
+def _start_experiment_wake(
+    tasks: BackgroundAgentTasks,
+    episode: EpisodeRecord,
+    request: RunRequest,
+    watcher_ids: list[str],
+    authorized_by: AuthorizedHuman,
+    *,
+    preflight: EpisodeWakePreflight,
+    fence: AdmissionFence | None,
+) -> None:
+    store = tasks.store
+    project_id = episode.project_id
+    request_data = request.model_dump(mode="json")
+    estimate, samples = store.agent_task_estimate(project_id, "node_chat", request_data)
+    now = store.now()
+    record = AgentTaskRecord(
+        operation_id=str(uuid4()),
+        project_id=project_id,
+        episode_id=episode.episode_id,
+        graph_target=episode.graph_target,
+        kind="node_chat",
+        status="queued",
+        request=request_data,
+        created_at=now,
+        updated_at=now,
+        status_message="Waiting to deliver a watcher update.",
+        native_session_id=request.session_id,
+        stage_machine_id=preflight.stage_machine_id,
+        stage_root=preflight.stage_root,
+        estimate_seconds=estimate,
+        estimate_samples=samples,
+        phase="queued",
+        last_activity_at=now,
+        authorized_by=authorized_by,
+        dispatch_authority=resolved_dispatch_authority(
+            store, tasks.dispatch_authority_resolver, "node_chat", request, project_id=project_id
+        ),
+    )
+
+    def claim_and_launch() -> None:
+        with tasks._watcher_delivery_lock:
+            if not tasks._accepting_watcher_deliveries:
+                return
+            try:
+                tasks.admit_provider_task(
+                    project_id, request, authorized_by=authorized_by, automatic=True
+                )
+                stored = store.create_experiment_watcher_invocation(record, watcher_ids)
+            except (
+                AdmissionRefused,
+                AutoResearchExperimentAllowanceReached,
+                EpisodeInvocationCeilingReached,
+                EpisodeNotRunning,
+            ):
+                return
+            if stored is not None and stored.status == "queued":
+                tasks.launch_admitted(stored.operation_id)
+
+    if fence is not None:
+        fence(claim_and_launch)
+    else:
+        claim_and_launch()
 
 
 def _completion_problem(operations: list[object], control_node_id: str) -> str | None:
@@ -813,308 +816,30 @@ def root_experiment_loop_operation_id(execution: AgentTaskExecution) -> str:
         operation_id = record.parent_operation_id
 
 
-def experiment_observer_watcher_id(
-    binding: WatcherBinding,
-    index: int,
-    spec: ExperimentWatchSpec,
-) -> str:
-    """Derive one observer's deterministic id so Retry re-arms the same row.
+@dataclass(frozen=True)
+class ExperimentHandoffScope:
+    """The Run and invocation a handoff's watchers are armed from."""
 
-    The declaration's list position is part of the identity, so the same
-    observer moved elsewhere in the list is a different row. Validation derives
-    ids with this too, so it excludes exactly the rows persistence will treat as
-    an idempotent re-arm rather than refusing them as repeats.
-    """
-
-    identity = json.dumps(
-        {
-            "origin": binding.origin_operation_id,
-            "node_id": binding.node_id,
-            "episode_id": binding.continuation.control_episode_id,
-            "index": index,
-            "check_command": spec.check_command,
-            "log_path": spec.log_path,
-            "cwd": spec.cwd,
-            "group": getattr(spec, "group", None),
-            "cancel_command": spec.cancel_command,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return str(uuid5(NAMESPACE_URL, f"rcp-experiment-watcher:{identity}"))
-
-
-def prepare_experiment_watcher_records(
-    execution: AgentTaskExecution,
-    specs: list[ExperimentWatchSpec],
-    results: list[WatcherCheckResult],
-    binding: WatcherBinding,
-    *,
-    graph_conditions: list[GraphCondition] | None = None,
-    graph_state: GraphState | None = None,
-    armed_revision: int | None = None,
-) -> list[StoredWatcherRecord]:
-    """Prepare one deterministic watcher handoff without writing storage."""
-
-    if len(specs) != len(results):
-        raise ValueError("Experiment-loop watcher checks do not match their specifications.")
-    conditions = list(graph_conditions or [])
-    if conditions:
-        if graph_state is None:
-            raise ValueError("Experiment graph conditions require current canonical graph state.")
-        if armed_revision is None:
-            raise ValueError("Experiment graph conditions require their validated base revision.")
-        if armed_revision > graph_state.revision:
-            raise ValueError("Experiment graph condition baseline is ahead of canonical state.")
-        serialized = [item.model_dump_json() for item in conditions]
-        if len(serialized) != len(set(serialized)):
-            raise ValueError("an Experiment handoff cannot repeat a graph condition")
-        validate_graph_conditions(conditions, graph_state)
-    created_at = execution.store.now()
-    desired: list[StoredWatcherRecord] = []
-    for index, (spec, result) in enumerate(zip(specs, results, strict=True)):
-        group = getattr(spec, "group", None)
-        completed = result.state == "complete"
-        desired.append(
-            WatcherRecord(
-                watcher_id=experiment_observer_watcher_id(binding, index, spec),
-                project_id=binding.project_id,
-                origin_operation_id=binding.origin_operation_id,
-                origin_task_kind=binding.origin_task_kind,
-                chat_id=binding.chat_id,
-                node_id=binding.node_id,
-                episode_id=binding.episode_id,
-                graph_target=binding.graph_target,
-                machine_id=binding.machine_id,
-                cancel_command=spec.cancel_command,
-                check_command=spec.check_command,
-                log_path=spec.log_path,
-                cwd=spec.cwd,
-                purpose=spec.purpose,
-                continuation=binding.continuation,
-                status="completed" if completed else "active",
-                created_at=created_at,
-                last_checked_at=result.checked_at,
-                last_exit_code=result.exit_code,
-                completed_at=result.checked_at if completed else None,
-                group_id=(
-                    str(
-                        uuid5(
-                            NAMESPACE_URL,
-                            "rcp-experiment-watcher-group:"
-                            f"{binding.origin_operation_id}:{binding.node_id}:"
-                            f"{binding.continuation.control_episode_id}:{spec.group}",
-                        )
-                    )
-                    if group is not None
-                    else None
-                ),
-                group_label=group,
-            )
-        )
-    for index, condition in enumerate(conditions):
-        identity = json.dumps(
-            {
-                "origin": binding.origin_operation_id,
-                "node_id": binding.node_id,
-                "episode_id": binding.continuation.control_episode_id,
-                "index": index,
-                "condition": condition.model_dump(mode="json"),
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        assert graph_state is not None
-        assert armed_revision is not None
-        result = graph_condition_result(
-            condition,
-            graph_state,
-            armed_revision=armed_revision,
-        )
-        if result == "removed":
-            raise ValueError(
-                f"Experiment graph condition target {condition.node_id!r} is not canonical."
-            )
-        completed = result == "completed"
-        desired.append(
-            GraphWatcherRecord(
-                watcher_id=str(uuid5(NAMESPACE_URL, f"rcp-experiment-graph-watcher:{identity}")),
-                project_id=binding.project_id,
-                origin_operation_id=binding.origin_operation_id,
-                origin_task_kind=binding.origin_task_kind,
-                chat_id=binding.chat_id,
-                node_id=binding.node_id,
-                episode_id=binding.episode_id,
-                graph_target=binding.graph_target,
-                machine_id=binding.machine_id,
-                condition=condition,
-                armed_revision=armed_revision,
-                continuation=binding.continuation,
-                status="completed" if completed else "active",
-                created_at=created_at,
-                last_evaluated_at=created_at,
-                completed_at=created_at if completed else None,
-            )
-        )
-
-    return desired
-
-
-def persist_experiment_watchers_idempotently(
-    execution: AgentTaskExecution,
-    specs: list[ExperimentWatchSpec],
-    results: list[WatcherCheckResult],
-    binding: WatcherBinding,
-    stops: list[WatcherStopRequest] | None = None,
-    *,
-    graph_conditions: list[GraphCondition] | None = None,
-    graph_state: GraphState | None = None,
-    armed_revision: int | None = None,
-    expected_watcher_snapshot_token: str | None = None,
-) -> list[StoredWatcherRecord]:
-    """Persist one validated handoff once across Retry/crash recovery."""
-
-    desired = prepare_experiment_watcher_records(
-        execution,
-        specs,
-        results,
-        binding,
-        graph_conditions=graph_conditions,
-        graph_state=graph_state,
-        armed_revision=armed_revision,
-    )
-    # The store owns the BEGIN IMMEDIATE boundary shared with Stop loop. It
-    # atomically deduplicates this deterministic handoff and, when stop intent
-    # won the race, persists/returns every watcher as stopped and notified.
-    return execution.store.persist_experiment_watchers_idempotently(
-        desired,
-        stops=stops,
-        binding=binding,
-        expected_watcher_snapshot_token=expected_watcher_snapshot_token,
-    )
-
-
-def _stopped_history_episode_id(
-    execution: AgentTaskExecution,
-    project_id: str,
-    control_node_id: str,
-    episode_id: str,
-) -> str | None:
-    """The immediately preceding episode's id, but only when a human stopped it.
-
-    A fresh Run after S72 **Stop loop** stages that episode's watcher records so
-    the agent can inspect external work that may still exist. Any other preceding
-    episode contributes nothing: a stopped observer is context, never a trigger.
-    """
-
-    previous = execution.store.previous_experiment_episode(
-        project_id,
-        control_node_id,
-        episode_id,
-    )
-    if previous is None or previous.stop_requested_at is None:
-        return None
-    return previous.episode_id
+    binding: WatcherBinding
+    node_id: str | None
+    episode_id: str
 
 
 def _watcher_state(
     execution: AgentTaskExecution,
-    control_node_id: str,
+    agent_id: str | None,
     delivered_watcher_ids: list[str],
-    episode_id: str,
-    phase: ExperimentLoopPhase,
 ) -> list[dict[str, object]]:
-    """Return current operational watcher evidence without duplicating loop control.
+    """The agent's open watchers and the ones that woke this turn, as staged evidence."""
 
-    Every shape carries the relevant active, degraded, and completed-unnotified
-    observers. A wake and a human reauthorization additionally retain their own
-    delivered group after its atomic claim marked it notified, and a fresh Run
-    after a human stop additionally retains that stopped episode's records.
-    """
-
-    task = execution.store.agent_task(execution.operation_id)
-    if task is None:
-        raise ValueError("The Experiment-loop operation is no longer available.")
+    if not agent_id:
+        return []
     delivered = set(delivered_watcher_ids)
-    all_records = execution.store.watchers(task.project_id)
-    delivered_group_ids = {
-        record.group_id
-        for record in all_records
-        if record.watcher_id in delivered and record.group_id is not None
-    }
-    stopped_history_episode_id = (
-        _stopped_history_episode_id(execution, task.project_id, control_node_id, episode_id)
-        if phase == "initial_run"
-        else None
-    )
-    records = [
-        record
-        for record in all_records
-        if record.continuation.patch_kind == "experiment_loop"
-        and record.graph_target == task.graph_target
-        and record.continuation.control_node_id == control_node_id
-        and (
-            record.watcher_id in delivered
-            or record.group_id in delivered_group_ids
-            or (record.status in {"active", "degraded"} and not record.notified)
-            or (record.status == "completed" and not record.notified)
-            or (record.status == "stopped" and record.continuation.control_episode_id == episode_id)
-            or (
-                stopped_history_episode_id is not None
-                and record.status == "stopped"
-                and execution.store.experiment_watcher_compatible_with_episode(
-                    record.watcher_id,
-                    stopped_history_episode_id,
-                )
-            )
-        )
+    return [
+        {**watcher.model_dump(mode="json"), "state": watcher.state}
+        for watcher in execution.store.agent_watchers(agent_id)
+        if watcher.open or watcher.watcher_id in delivered
     ]
-    state: list[dict[str, object]] = []
-    for record in records:
-        item: dict[str, object] = {
-            "watcher_id": record.watcher_id,
-            "origin_operation_id": record.origin_operation_id,
-            "machine_id": record.machine_id,
-            "status": record.status,
-            "created_at": record.created_at,
-            "completed_at": record.completed_at,
-            "notified": record.notified,
-            "notification_operation_id": record.notification_operation_id,
-            "stopped_by": record.stopped_by,
-            "stop_reason": record.stop_reason,
-            "stopped_at": record.stopped_at,
-            "stop_operation_id": record.stop_operation_id,
-            "episode_id": record.continuation.control_episode_id,
-            "invocation": record.continuation.control_invocation,
-            "invocation_ceiling": record.continuation.control_invocation_ceiling,
-            "control_revision": record.continuation.control_revision,
-            "decision_bundle": record.continuation.control_decision_bundle,
-        }
-        if isinstance(record, GraphWatcherRecord):
-            item["condition"] = record.condition.model_dump(mode="json")
-            item["armed_revision"] = record.armed_revision
-            item["last_evaluated_at"] = record.last_evaluated_at
-        else:
-            item.update(
-                {
-                    "check_command": record.check_command,
-                    "log_path": record.log_path,
-                    "cwd": record.cwd,
-                    "cancel_command": record.cancel_command,
-                    "cancel_requested_by": record.cancel_requested_by,
-                    "cancel_requested_at": record.cancel_requested_at,
-                    "cancel_error": record.cancel_error,
-                    "last_checked_at": record.last_checked_at,
-                    "last_exit_code": record.last_exit_code,
-                    "last_error": record.last_error,
-                    "next_check_at": record.next_check_at,
-                    "consecutive_error_count": record.consecutive_error_count,
-                    "group_id": record.group_id,
-                    "group_label": record.group_label,
-                }
-            )
-        state.append(item)
-    return state
 
 
 def stage_chat_loop_status(
@@ -1127,7 +852,7 @@ def stage_chat_loop_status(
     graph_target: GraphTargetRef,
     read_scope: GraphReadScope | None,
 ) -> dict[str, object] | None:
-    """Fresh read-only status, independent of live watcher-maintenance resources."""
+    """Fresh read-only loop status for a chat turn on a control node."""
 
     if request.chat_scope != "node" or request.node_id is None:
         return None
@@ -1148,9 +873,14 @@ def stage_chat_loop_status(
             node_id=request.node_id, graph_target=graph_target, state="unavailable"
         )
     )
-    watchers = (
-        _watcher_state(execution, request.node_id, [], status.current.episode_id, "resume")
+    run_episode = (
+        execution.store.experiment_episode(status.current.episode_id)
         if execution is not None and status.current is not None
+        else None
+    )
+    watchers = (
+        _watcher_state(execution, run_episode.chat_id, [])
+        if execution is not None and run_episode is not None
         else []
     )
     content = json.dumps(watchers, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
@@ -1161,127 +891,6 @@ def stage_chat_loop_status(
     return {**chat_loop_status(status), "watcher_state_path": path}
 
 
-async def stage_chat_experiment_watcher_resources(
-    request: RunRequest,
-    execution: AgentTaskExecution | None,
-    local_stage: Path | None,
-    remote_stage: RemoteRunStage | None,
-    *,
-    workspace: Path,
-    token: str,
-    clear_stale: bool,
-) -> list[StagedExperimentWatcherResource]:
-    """Stage live Experiment watcher state within the chat's resolved node scope."""
-
-    if execution is None:
-        return []
-    task = execution.store.agent_task(execution.operation_id)
-    if task is None:
-        raise ValueError("The chat operation is no longer available for watcher resource staging.")
-    all_resources = execution.store.experiment_watcher_resources(
-        task.project_id,
-        graph_target=task.graph_target,
-    )
-    if clear_stale:
-        clear_stale_experiment_watcher_outputs(workspace, remote_stage, all_resources)
-
-    def visible_resources(
-        resources: list[ExperimentWatcherResourceRecord],
-    ) -> list[ExperimentWatcherResourceRecord]:
-        return (
-            [item for item in resources if item.control_node_id == request.node_id]
-            if request.chat_scope == "node"
-            else resources
-        )
-
-    visible = visible_resources(all_resources)
-    for _attempt in range(3):
-        watcher_states = await asyncio.gather(
-            *(
-                asyncio.to_thread(
-                    _watcher_state,
-                    execution,
-                    resource.control_node_id,
-                    [],
-                    resource.episode_id,
-                    "resume",
-                )
-                for resource in visible
-            )
-        )
-        refreshed = visible_resources(
-            execution.store.experiment_watcher_resources(
-                task.project_id,
-                graph_target=task.graph_target,
-            )
-        )
-        if {
-            (item.control_node_id, item.graph_target.key): item.watcher_snapshot_token
-            for item in visible
-        } == {
-            (item.control_node_id, item.graph_target.key): item.watcher_snapshot_token
-            for item in refreshed
-        }:
-            break
-        visible = refreshed
-    else:
-        raise StateUnavailable(
-            "Experiment watcher state changed repeatedly while staging this chat turn."
-        )
-    staged: list[StagedExperimentWatcherResource] = []
-    for resource, watcher_state in zip(visible, watcher_states, strict=True):
-        digest = hashlib.sha256(
-            f"{resource.graph_target.key}\0{resource.control_node_id}".encode()
-        ).hexdigest()[:16]
-        watcher_state_path = _stage_json_task_input(
-            local_stage,
-            remote_stage,
-            f"task-{token}-experiment-watchers-{digest}.json",
-            watcher_state,
-        )
-        staged.append(
-            StagedExperimentWatcherResource(
-                resource=resource,
-                host=host_of(execution.store, resource.machine_id),
-                watcher_state_path=watcher_state_path,
-                watch_path=str(
-                    workspace
-                    / experiment_watcher_output_name(
-                        resource.control_node_id,
-                        resource.graph_target,
-                    )
-                ),
-            )
-        )
-    return staged
-
-
-def _delivered_watcher_groups(
-    watcher_state: list[dict[str, object]],
-    delivered_watcher_ids: list[str],
-) -> list[dict[str, object]]:
-    """Retain each delivered group's identity and complete staged membership."""
-
-    delivered = set(delivered_watcher_ids)
-    delivered_group_ids = {
-        record["group_id"]
-        for record in watcher_state
-        if isinstance(record.get("group_id"), str) and record.get("watcher_id") in delivered
-    }
-    return [
-        {
-            "group_id": group_id,
-            "label": next(
-                record.get("group_label")
-                for record in watcher_state
-                if record.get("group_id") == group_id
-            ),
-            "members": [record for record in watcher_state if record.get("group_id") == group_id],
-        }
-        for group_id in sorted(delivered_group_ids)
-    ]
-
-
 def experiment_loop_phase(request: RunRequest, continuation: str) -> ExperimentLoopPhase:
     """Name the agent-facing phase for one bounded-loop turn."""
 
@@ -1289,7 +898,7 @@ def experiment_loop_phase(request: RunRequest, continuation: str) -> ExperimentL
         return "resume"
     if continuation in {"retry", "handoff"}:
         return "retry"
-    if request.trigger == "experiment_run" and (request.watcher_ids or request.session_id):
+    if request.trigger == "experiment_run" and request.session_id:
         return "human_reauthorization"
     if request.trigger == "watcher":
         return "watcher_wake"
@@ -1561,19 +1170,17 @@ def commit_experiment_episode_binding(
 def commit_experiment_episode_handoff(
     execution: AgentTaskExecution,
     request: RunRequest,
-    watcher_records: list[StoredWatcherRecord],
-    binding: WatcherBinding,
+    scope: ExperimentHandoffScope,
     *,
     native_session_id: str | None,
     stage_machine_id: str | None,
     stage_root: str | None,
     graph_result: str,
     context_baseline: dict[str, object],
-    stops: list[WatcherStopRequest] | None = None,
-    expected_watcher_snapshot_token: str | None = None,
+    folder_change: WatcherFolderChange | None = None,
     ending_signal: dict[str, object] | None = None,
-) -> list[StoredWatcherRecord]:
-    """Commit prepared watchers and the episode binding as one handoff."""
+) -> list[WatcherRecord]:
+    """Commit the turn's watcher folder and the episode binding as one handoff."""
 
     task, _episode, replacement_authorized, replacement_provenance = (
         _prepare_experiment_episode_binding_intent(
@@ -1585,35 +1192,33 @@ def commit_experiment_episode_handoff(
             ending_signal=ending_signal,
         )
     )
-    continuation = binding.continuation
+    binding = scope.binding
     if (
-        binding.origin_operation_id != root_experiment_loop_operation_id(execution)
+        binding.origin_turn_id != root_experiment_loop_operation_id(execution)
         or binding.project_id != task.project_id
-        or binding.chat_id != request.chat_id
-        or binding.node_id != request.node_id
-        or binding.episode_id != request.control_episode_id
+        or binding.agent_id != request.chat_id
         or binding.machine_id != request.run_on
-        or continuation.browser_requested != request.browser_requested
-        or continuation.provider != request.provider
-        or continuation.run_on != request.run_on
-        or continuation.patch_kind != request.patch_kind
-        or continuation.control_node_id != request.control_node_id
-        or continuation.control_episode_id != request.control_episode_id
-        or continuation.control_invocation != request.control_invocation
-        or continuation.control_invocation_ceiling != request.control_invocation_ceiling
+        or scope.node_id != request.node_id
+        or scope.episode_id != request.control_episode_id
+        or request.patch_kind != "experiment_loop"
+        or not request.control_node_id
+        or request.control_invocation is None
+        or request.provider is None
     ):
         raise ValueError("Experiment handoff binding does not match the current task scope.")
     stored_watchers, _stored_episode = execution.store.commit_experiment_episode_handoff(
-        watcher_records,
         binding=binding,
+        episode_id=scope.episode_id,
+        control_node_id=request.control_node_id,
+        invocation=request.control_invocation,
+        provider=request.provider,
         operation_id=execution.operation_id,
         native_session_id=native_session_id,
         stage_machine_id=stage_machine_id,
         stage_root=stage_root,
         graph_result=graph_result,
         context_baseline=context_baseline,
-        stops=stops,
-        expected_watcher_snapshot_token=expected_watcher_snapshot_token,
+        folder_change=folder_change,
         ending_signal=ending_signal,
         replace_binding=replacement_authorized,
         replacement_provenance=replacement_provenance,
@@ -1662,14 +1267,7 @@ async def stage_experiment_loop_context(
     phase = experiment_loop_phase(request, continuation)
     state, watcher_state = await asyncio.gather(
         asyncio.to_thread(service.history.state),
-        asyncio.to_thread(
-            _watcher_state,
-            execution,
-            request.control_node_id,
-            request.watcher_ids,
-            request.control_episode_id,
-            phase,
-        ),
+        asyncio.to_thread(_watcher_state, execution, request.chat_id, request.watcher_ids),
     )
     watcher_state_path = _stage_json_task_input(
         local_stage,
@@ -1677,7 +1275,6 @@ async def stage_experiment_loop_context(
         f"task-{token}-experiment-watchers.json",
         watcher_state,
     )
-    delivered_groups = _delivered_watcher_groups(watcher_state, request.watcher_ids)
     drift = decision_drift(state, request.control_decision_bundle)
     if request.control_invocation > request.control_invocation_ceiling:
         raise ValueError("Experiment-loop invocation exceeds its pinned ceiling.")
@@ -1699,7 +1296,6 @@ async def stage_experiment_loop_context(
             "decision_drift": [item.model_dump(mode="json") for item in drift],
             "completion_criteria": request.control_completion_criteria,
             "delivered_watcher_ids": request.watcher_ids,
-            "delivered_watcher_groups": delivered_groups,
             "watcher_state_path": watcher_state_path,
         },
     )

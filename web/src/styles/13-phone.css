@@ -21,16 +21,6 @@
   .button {
     overflow-wrap: normal;
   }
-  /* The chat's picker, New session, and repository scope share one row that
-     fits the screen: the picker truncates and New session is its icon. */
-  .chat-context-controls {
-    max-width: 100%;
-    min-width: 0;
-  }
-  .chat-context-controls > .agent-config-chip {
-    flex: 0 1 auto;
-    min-width: 0;
-  }
   .agent-config-chip-text {
     min-width: 0;
     overflow: hidden;
@@ -130,6 +120,7 @@
   .agent-list-filters button,
   .agent-status-chip,
   .overflow-menu-list > button,
+  .chat-header-menu-list > .chat-browser-control,
   .chat-header-menu-list .branch-picker-trigger {
     height: auto;
     min-height: 44px;

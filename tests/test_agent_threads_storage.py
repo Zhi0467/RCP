@@ -69,7 +69,7 @@ def test_lazy_thread_creation_seeds_names_and_browser_once(tmp_path: Path) -> No
     assert closed.closed_reason == "access_lost"
     store.set_chat_archived("project-a", project.thread_id, "member", archived=True)
     reopened = store.ensure_agent_threads("member", ["project-a"], default_names=("Pip", "Puck"))
-    assert not store.chat_archived("project-a", project.thread_id)
+    assert store.chat_archived("project-a", project.thread_id)
     assert next(row for row in reopened if row.project_id == "project-a").closed_at is None
 
 
@@ -497,14 +497,31 @@ def _insert_watcher(
     episode_id: str | None = None,
     status: str = "active",
 ) -> None:
+    now = store.now()
+    origin = f"origin-{watcher_id}"
     with store.connection() as connection:
         connection.execute(
-            "INSERT INTO watchers (watcher_id, project_id, origin_operation_id, "
-            "origin_task_kind, chat_id, episode_id, machine_id, check_command, "
-            "log_path, cwd, continuation_json, status, created_at) "
-            "VALUES (?, ?, 'origin', 'project_chat', ?, ?, '', 'true', '/tmp/log', "
-            "'/tmp', '{}', ?, ?)",
-            (watcher_id, project_id, chat_id, episode_id, status, store.now()),
+            "INSERT INTO graph_runs (operation_id, project_id, episode_id, kind, status, "
+            "request_json, created_at, updated_at, status_message) "
+            "VALUES (?, ?, ?, 'project_chat', 'succeeded', '{}', ?, ?, '')",
+            (origin, project_id, episode_id, now, now),
+        )
+        connection.execute(
+            "INSERT INTO watchers (watcher_id, agent_id, project_id, purpose, origin_turn_id, "
+            "created_at) VALUES (?, ?, ?, 'Job', ?, ?)",
+            (watcher_id, chat_id, project_id, origin, now),
+        )
+        connection.execute(
+            "INSERT INTO watcher_checks (check_id, watcher_id, definition, check_command, "
+            "log_path, cwd, created_at, completed_at, consecutive_error_count) "
+            "VALUES (?, ?, 'external', 'true', '/tmp/log', '/tmp', ?, ?, ?)",
+            (
+                watcher_id,
+                watcher_id,
+                now,
+                now if status == "completed" else None,
+                1 if status == "degraded" else 0,
+            ),
         )
 
 

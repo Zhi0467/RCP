@@ -42,22 +42,26 @@ and separate Experiment episodes must not create separate agent identities.
 
 ## Private agent threads
 
-Each member has one Space thread and one project thread per project membership.
-Both are private to the member and continue indefinitely. Listing
+Each member has one default Space thread and one default project thread per
+project membership. Both are private to the member and continue indefinitely.
+Storage allows a member more private threads in the same place; exactly one is
+the default, and the project list and `handoff` always name it. Listing
 `/api/agent-threads`, and the `projects` and `handoff` verbs, create missing
 threads atomically. `agent_threads` is the
 privacy authority; filename prefixes are only read-hiding selectors. Existing
 board chats remain public. Every thread turn, wake and schedule fire is a
-captured Work turn on main, authorized by the owning member. A task counts as a
-thread's turn only when its chat, kind, scope and authorizing member all match
+captured Work turn authorized by the owning member. Private project agents may
+work on main or a graph branch; continuations retain their admitted graph target.
+A task counts as a thread's turn only when its chat, kind, scope and authorizing member all match
 the thread (`bound_thread` in `storage/agent_threads.py`); member memory, the
 `projects`, `schedule` and approval-card grants, Space controls and handoff
 claims all use it. Loss of membership closes that project thread; after rejoining,
 the next list or command reopens it. The browser loads and polls the thread list only while the Space
 Agent view, a project's Agents view, or a voice session is active.
-Private threads cannot be archived. Ensuring the thread list clears legacy
-archive flags along with reopening eligible threads. It takes the write lock only
-when a thread is missing, closed or archived.
+Private project threads may be archived and restored under the ordinary
+[conversation archive](#conversation-archive) rules. Listing threads preserves
+archive state, including when membership returns. It takes the write lock only
+when a default thread is missing or closed.
 
 **The Space thread owns no project lifecycle.** It reads across the member's
 projects. It writes files and Patches only for projects whose state and base
@@ -128,8 +132,8 @@ branch and starts no episodes. A Space turn records the member's message at
 launch, once per turn: a Resume or Retry keeps its first attempt's record. A
 reply with no outcome file is not stated, as in project Work.
 
-`handoff` passes a Space request to the same member's project thread, with that
-member's authority. It is not mail. Its usage lists the project thread's
+`handoff` passes a Space request to the same member's default project thread,
+with that member's authority. It is not mail. Its usage lists the project thread's
 capabilities from `thread_capabilities("project")`, so the Space agent knows
 what a handoff can ask for. The verb records the request and returns at
 once with `pending`, or `refused` and its reason. The request stays pending until the Space turn that made it succeeds, so
@@ -166,9 +170,10 @@ message as `handoff_report` for display. The Space thread shows only the agent a
 status; the reply stays in the project thread that wrote it. Content is omitted
 once the member has left the project.
 
-A member can queue a message, with files and project references, on their own
-project thread instead of steering it. `agent_thread_queue` keeps it until the
-thread is free; a Space thread has no queue. Queueing claims the files for the
+A member can queue a message, with files and project references, on any agent
+they can access instead of steering it. Each message retains its sending member
+as its authorizer, including on shared agents. `agent_thread_queue` keeps it until the
+agent is free, including single-entry agents. Queueing claims the files for the
 queued turn's derived operation id, so they stay staged. The handoff drain then
 starts each free thread's oldest queued message, after its handoff deliveries;
 each kind is first in, first out. A paused turn makes queued messages wait,
@@ -221,7 +226,7 @@ project's base machine, and a Space task always runs on the backend. A changed p
 Project transcripts use `private-<user_id>-<chat_id>.jsonl`, with `privateOwner`
 on each record. The reader verifies the filename against the record. Source
 indexing excludes `private-*.jsonl` before reading, using the hidden-read selector;
-private transcripts never enter ingestion or consolidation sources. Space
+private transcripts never enter consolidation sources. Space
 transcripts live under `<data_dir>/agent-threads/<user_id>/<chat_id>.jsonl` and
 use `chatScope: "space"` without node or graph target fields. One reader,
 `read_space_chat_records`, serves Space turns, steering, the transcript route
@@ -375,8 +380,8 @@ Every turn settled by ordinary Work (human Work chat and nightly consolidation) 
 `outcome.json` in its exact task stage: `status` is `done`, `partial`, or
 `could_not`; `reason` is optional for `done`, and required and non-blank otherwise.
 The reason is one line of at most 240 characters. The answer is never parsed for
-an outcome. Experiment loops, Auto-research, child Work, historical Discuss, and
-Seed/Refresh are outside this contract. New turns clear stale outcomes with the other handoffs.
+an outcome. Experiment loops, Auto-research, child Work, and historical Discuss
+are outside this contract. New turns clear stale outcomes with the other handoffs.
 
 A missing or invalid outcome gets one same-session correction through the watcher
 handoff correction loop, without another invocation, budget, or repeated operational
@@ -474,7 +479,7 @@ left on it. Neither archive nor Restore changes the native session. The shared
 
 ## Native chat context
 
-RCP chat history is display data, never an input for transcript ingestion or
+RCP chat history is display data, never an agent's source material or
 task authority. Native provider continuation may retain its own context. An
 agent the member runs in their authenticated page acts as that member under
 [Authority and Proposals](authority-and-proposals.md); a Work message it sends
@@ -492,6 +497,18 @@ The [API spec](api-web-and-desktop-projections.md) owns the tool surface.
 Task insertion resolves the latest native-session binding of the exact chat in
 the same transaction as overlap and stage admission. Client hints and transcript
 text cannot select it; resolution never skips an unusable current binding.
+
+Every conversation, worker and episode is an agent with one id, recorded once
+in `agents` with its placement: private or shared, single-entry or project.
+`agent_sessions` names each chat agent's current native session and the turn
+that bound it. The newest session-holding turn owns it; an older turn never
+takes it back. A turn that binds a different native session leaves an
+`agent_session_replaced` receipt naming what it replaced and why. Each episode
+records the agent it runs on: the agent of the episode it continues, else of its
+first turn, else the episode itself. The migration backfill applies the same
+rule. The session pointer is keyed by agent, project and task kind, exactly as
+turn resolution reads it, so an Experiment's turns and a member's turns in the
+same conversation each keep their own session line.
 
 - Active turns block human turns. Active and paused-resumable turns defer wakes
   and queued messages. A human message after a paused turn starts the next turn
@@ -530,7 +547,9 @@ reuse them.
 A member can create a new conversation on a new graph branch forked at the
 source conversation's current target and head, or on an existing non-archived
 branch (including main when leaving a branch). The source conversation and its
-stage stay unchanged. Creation records the source chat, its latest operation,
+stage stay unchanged. The new conversation keeps the source's visibility and,
+for a private source, its owner; it is an additional private thread, never the
+member's default. Creation records the source chat, its latest operation,
 source graph target, title and launch profile; it launches no provider. An active,
 paused, imported or unusable latest session cannot seed a branch, and the client
 checks this before it creates a new graph branch for the chat. The request carries
@@ -664,13 +683,13 @@ So a saved stage outside the current data directory, after the directory moved
 or was copied, cannot resume: that turn fails and records
 `continuation_context_unavailable`, and Retry or the next message starts a
 fresh session with that recorded reason.
-Each logical turn owns `turns/<turn-id>/artifacts`. New turns clear stale
-`patch.json` and `watch.json` fail-closed. Committed native context retains its
+Each logical turn owns `turns/<turn-id>/artifacts`. New turns clear a stale
+`patch.json` fail-closed and restage `watchers/` from the agent's live watchers. Committed native context retains its
 stage and master even while idle.
 
 Human chat turns and human Experiment invocations may `ask`; the question
 card receives answers while the composer remains steering. Viewer edits,
-consolidation, ingestion, Paper, workers and child Work/Experiments cannot ask.
+consolidation, Paper, workers and child Work/Experiments cannot ask.
 [The command protocol](providers-and-containment.md#one-graph-output-channel)
 owns idempotency, allowed verbs and acknowledgement. Answers never change authority.
 
@@ -773,17 +792,13 @@ keyboard text-control alternative. In agent threads it shows only while keyboard
 focus is on it, because a mouse or touch selection already opens the comment. The comment editor stays within the keyboard-adjusted
 viewport at every width.
 
-In project chats, a comment on a reply saves a
-[shared thread](paper-artifacts-and-result-views.md#shared-comments) on that
-reply turn. A pin at its quote opens the thread as a popover, and a count in the
-chat header lists the chat's open threads. The composer sends ticked threads as
-message text after the typed text.
-
-Space threads keep comments as per-chat drafts with a count, editable and
-removable; blank comments block send until completed or removed. Sending appends
-copied text and `comment: <comment>` to the human message, with no source ids,
-offsets or durable annotation model. Acceptance clears drafts; refusal retains
-them.
+In project chats and agent threads, Space threads included, a comment on a
+reply saves a [shared thread](paper-artifacts-and-result-views.md#shared-comments)
+on that reply turn. A pin at its quote opens the thread as a popover, and a count
+in the chat header lists the chat's open threads. Saved threads dock at the
+composer, which sends them as message text after the typed text. Acceptance
+clears the dock; refusal keeps it. A Space thread's comments are its owner's
+alone.
 
 ## Common episode parent
 
@@ -878,9 +893,9 @@ Readiness separates graph and operational reasons and adds
 `isolated_start_reasons` for a prospective branch. Run waits while other-target
 loops load; failed/partial reads report unknown overlap but leave Run available.
 Every Experiment-node chat/wake receives this target's loop status, authorizer,
-Stop attribution, other-target loops and refreshed watcher-state file, without
-maintenance authority. Agents able to ask should clarify interference with other
-branches; children pause conflicting work and tell their orchestrator. Branch
+Stop attribution, other-target loops and refreshed watcher-state file. Agents
+able to ask should clarify interference with other branches; children pause
+conflicting work and tell their orchestrator. Branch
 turns also receive read-only main graph and shared-checkout/Git pointers.
 
 A completed, abandoned or superseded Experiment cannot start fresh until an
@@ -1135,48 +1150,31 @@ ceiling and may claim retained compatible completion as its invocation one, and
 
 ## Watcher resources
 
-Conversation, Experiment, and Auto-research child Work watcher targets are
-separate exact resources, not a client-chosen mode field.
+Project Work and Experiment invocations receive their current definitions in `watchers/<watcher_id>.json`.
+Each file has a short `purpose` and either a list of external `checks` or one
+`graph` condition. At turn end RCP applies file additions, edits, and removals
+together. Removing a definition cancels its wake and leaves its job running.
+Edits retain observations for matching checks. Changing a graph condition
+replaces the watcher. A correction starts with the current live definitions.
 
-- A conversation `watch.json` wakes that same conversation. A later turn that
-  re-arms a check or graph condition the conversation already watches, live and
-  undelivered at the same target, reuses that watcher instead of adding another.
-- An Experiment watcher resource is keyed by project, exact graph target,
-  Experiment node, and compatible episode, and wakes that bounded episode.
-- A child Work watcher retains the parent episode and child route worker id and
-  wakes that same route and native session, never the Auto-research root.
+A watcher belongs to its arming agent and contains one or more checks.
+RCP retains observations for each check, including checks that were later
+removed. Readiness and the displayed state derive from these observations.
 
-A branch watcher can never wake a main task, and a main watcher can never spend
-a branch episode. Watcher selection, staging, atomic claim, task creation, and
-episode association retain the same target.
+Ready watchers are delivered together to their agent. An ordinary wake uses
+the current conversation settings and the arming turn's human authority. An
+Experiment or Auto-research episode owns its admission, budget and Stop
+fence. Its watcher claim and wake task commit together. A child Work wake
+returns to the child route that armed it.
 
-An Experiment episode adopts unclaimed compatible observations from earlier
-episodes of that Experiment on the same exact graph target and execution
-machine.
-Completions may coalesce across those origin episodes, including on a branch.
-The receiving episode supplies the human authorization, native session, stage,
-pinned Experiment execution policy and invocation budget; official packages
-follow the [current Settings selection](providers-and-containment.md#official-skills-and-workflows)
-on that new turn. Watcher origin is immutable provenance, including when another human
-created or maintained the observation.
-This adoption does not change ordinary conversation, Auto-research root, or
-child Work routing. Existing group readiness and atomic, once-only claims still
-apply. A child Experiment also retains its receiving parent's admission and
-shared Experiment allowance gates.
+A new Experiment Run gets a new agent. Continuing an existing Run with
+additional turns keeps its agent and watchers. Cancelling a watcher ends
+observation and leaves the underlying job running.
 
-Every watcher file has two all-or-none lists:
-
-- `external` observations with a required one-line `purpose` (at most 120
-  characters), literal `check_command`, absolute `log_path`, and absolute `cwd`,
-  plus optional nonblank `cancel_command`. The purpose titles the watcher in
-  Wakes, where several watchers may share one log; a watcher saved before
-  purposes existed shows its check script name instead; and
-- `graph` conditions from a closed vocabulary.
-
-This is one external watcher form for direct scheduler submissions and
-helper-launched processes. Experiment items may additionally carry their
-existing `group` label; ordinary conversation items cannot. A helper's returned
-watcher object uses these same fields; there is no job-id observer form.
+Each external check records a literal `check_command`, absolute `log_path`, and
+absolute `cwd`. Checks sharing a file wake together. Each Experiment invocation
+commits its watcher changes with the episode session binding. An empty folder
+requires an explicit graph exit or a durable pending question.
 
 The graph vocabulary is exactly: a named node reaching one of named statuses,
 or any Proposal related to a named node being resolved after arming. There is no arbitrary query,
@@ -1232,32 +1230,17 @@ carries a durable ending. While the episode can still take a graceful **Stop
 loop** that control owns its watchers; after the ending fence Stop is refused, so
 the observer would otherwise keep the loop shut with no control but Cancel.
 Retiring is not cancelling: the observed job keeps running, and the retired
-observer can no longer deliver a retained completion. It is offered for one lone
-external observation on the graph target being shown: a grouped member cannot be
-retired alone, because a human-stopped member makes its whole group
-undeliverable; a completed observation is a retained result to claim rather than
-an observer to retire; and an Experiment graph condition runs no job, so this
-control is not its answer. A live condition can therefore still hold an ended
+observer can no longer deliver a retained completion. It is offered for a live external check and releases
+that check's whole watcher. A completed observation is a retained result to claim
+rather than an observer to retire, and an Experiment graph condition runs no job,
+so this control is not its answer. A live condition can therefore still hold an ended
 episode shut.
 
 An optional saved `cancel_command` runs only on a member's Cancel request, from
-Runs or that member's own chat, after a fresh check confirms active work. Exact registered helper recovery follows the
-[human Cancel contract](machines-and-compute.md#one-watcher-and-human-cancel-contract),
-including lost work without an exit receipt. It uses the recorded execution host and cwd,
-and never changes the watcher into a separate cancelled lifecycle. A successful
-command is an attributed request; observation still determines completion.
-Stop fences continuation and leaves the action available for still-live work.
-Cancellation failures permit explicit retry. Transfer and offline restore
-remove executable actions; ordinary restart preserves them.
-
-A member's ordinary Work chat, the same turns that may start an Experiment, holds
-the `watcher` verb over the watchers its own Work turns armed for the chat: the
-chat id, project and Work continuation match. `watcher --list` shows the live
-ones. `watcher --stop <id>` retires one under the same storage rule as the
-human's stop, recorded as stopped by `agent`. `watcher --cancel <id>` is the
-member's Cancel, attributed to that member, under the same write admission. An
-Experiment loop's watcher wakes its episode, not the chat, so it is refused with
-`watcher_not_armed_here` like another chat's; it stops with that episode.
+Runs or that member's own chat, following the
+[human Cancel contract](machines-and-compute.md#one-watcher-and-human-cancel-contract).
+An accepted Cancel also ends the watcher. Transfer and offline restore remove
+executable actions; ordinary restart preserves them.
 
 Prompt guidance lets short jobs finish inline and recommends a watcher for
 roughly more than ten minutes of waiting. This is not a runtime cutoff.
@@ -1313,7 +1296,7 @@ job launched by the turn. A still-running job absent from the declared job
 observers is a correctable handoff defect listing the unobserved job ids. The same correction
 round repairs it without another invocation; jobs already exited need no
 observer, and a turn that launched nothing is unaffected. Child Work uses the
-ordinary Work reader, validator, and arming path for its final `watch.json`.
+ordinary Work reader, validator, and reconcile path for its `watchers/` folder.
 
 A child watcher claim creates one continuation atomically and spends no parent
 budget. It requires a running parent, a route without a Stop fence, and a
@@ -1321,27 +1304,6 @@ succeeded current child task. A repeated delivery cannot create a second wake. A
 undelivered watcher is waiting, which blocks the root's guarded finish. Episode
 Stop and the root's child `stop` verb retire the child's watchers within their
 admission fence. They never cancel the observed jobs.
-
-## Watcher maintenance authority
-
-An authorized node Work chat may maintain only its focused Experiment resource;
-authorized project Work may maintain live Experiment resources in that project
-and exact graph target. A historical Discuss turn may inspect staged state but cannot mutate it.
-Origin chat, provider, path, or maintenance machine grants no authority.
-
-Maintenance uses its own Work task/session, spends no Experiment invocation,
-does not create an attempt, and never replaces the episode's native-session
-binding. Stop, watcher claim, and competing maintenance have one atomic winner.
-
-A Work turn is not an episode turn, even on the episode's own session, so its
-maintenance cannot end the episode. A file that stops watchers and arms none is
-refused when, after its stops, the episode has no pending turn, no live watcher,
-and no undelivered completion. The refusal rolls back. Its diagnostic states
-that episode state and enters the ordinary maintenance correction round. The
-agent either drops a stop, so that watcher still wakes the loop, or arms an
-observer for replacement work it already launched. Completion and authority
-pauses remain the episode turn's Patch exits, recorded when a watcher wakes it,
-and a human **Stop loop** remains the other way to end the loop.
 
 ## Live artifact reconciliation
 

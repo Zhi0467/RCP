@@ -19,6 +19,7 @@ from fastapi import (
 )
 from pydantic import UUID4, AwareDatetime, BaseModel, ConfigDict
 
+from rcp.agents.agent_owner import resolve_agent
 from rcp.api.dependencies import (
     get_attachment_store,
     get_catalog,
@@ -26,6 +27,7 @@ from rcp.api.dependencies import (
     get_identity_access,
     get_project_service,
     get_store,
+    project_write_admission,
     require_project_membership,
     require_project_write_admission,
     require_registered_project,
@@ -61,6 +63,7 @@ from rcp.storage.chat_forks import ChatForkRefused
 from rcp.storage.chat_names import ChatNameError
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
+agent_router = APIRouter()
 
 CatalogDependency = Annotated[ProjectCatalog, Depends(get_catalog)]
 AttachmentStoreDependency = Annotated[ChatAttachmentStore, Depends(get_attachment_store)]
@@ -80,6 +83,12 @@ class BranchChatBody(BaseModel):
 def branchable_chat(
     project_id: str, chat_id: str, *, catalog: CatalogDependency, store: StoreDependency
 ) -> None:
+    _branchable_chat(project_id, chat_id, catalog=catalog, store=store)
+
+
+def _branchable_chat(
+    project_id: str, chat_id: str, *, catalog: CatalogDependency, store: StoreDependency
+) -> None:
     """Refuse an unbranchable chat before the client creates a graph branch for it."""
     try:
         store.require_chat_fork_source(
@@ -97,6 +106,17 @@ def branchable_chat(
     response_model=ChatTranscript,
 )
 def branch_chat(
+    project_id: str,
+    chat_id: str,
+    body: BranchChatBody,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+) -> ChatTranscript:
+    return _branch_chat(project_id, chat_id, body, catalog=catalog, store=store)
+
+
+def _branch_chat(
     project_id: str,
     chat_id: str,
     body: BranchChatBody,
@@ -308,12 +328,33 @@ def archive_chat(
     store: StoreDependency,
     identity_access: IdentityDependency,
 ) -> ChatDisplay:
+    return _archive_chat(
+        project_id,
+        chat_id,
+        body,
+        request,
+        background_tasks,
+        catalog=catalog,
+        store=store,
+        identity_access=identity_access,
+    )
+
+
+def _archive_chat(
+    project_id: str,
+    chat_id: str,
+    body: ChatArchiveBody,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+) -> ChatDisplay:
     """Hide or restore one conversation in the agent list; nothing is deleted."""
     chat_id = _canonical_chat_id(chat_id)
     project_id = catalog.resolve_project_id(project_id)
     user = identity_access.acting_user(request)
-    if body.archived and store.agent_thread(chat_id) is not None:
-        raise HTTPException(status_code=409, detail="private_thread_cannot_be_archived")
     try:
         store.set_chat_archived(project_id, chat_id, user.user_id, archived=body.archived)
     except AgentTaskAdmissionConflict as exc:
@@ -807,3 +848,62 @@ def delete_conversation_worktree(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@agent_router.get("/api/agent-threads/{thread_id}/branch", status_code=204)
+def branchable_agent(
+    thread_id: str,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+) -> None:
+    owner = resolve_agent(store, thread_id, identity_access.acting_user(request).user_id)
+    if owner.project_id is None:
+        raise HTTPException(status_code=422, detail="This agent has no project branch")
+    _branchable_chat(owner.project_id, thread_id, catalog=catalog, store=store)
+
+
+@agent_router.post("/api/agent-threads/{thread_id}/branch", response_model=ChatTranscript)
+def branch_agent(
+    thread_id: str,
+    body: BranchChatBody,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+) -> ChatTranscript:
+    owner = resolve_agent(store, thread_id, identity_access.acting_user(request).user_id)
+    if owner.project_id is None:
+        raise HTTPException(status_code=422, detail="This agent has no project branch")
+    with project_write_admission(owner.project_id, request):
+        return _branch_chat(owner.project_id, thread_id, body, catalog=catalog, store=store)
+
+
+@agent_router.post("/api/agent-threads/{thread_id}/archive", response_model=ChatDisplay)
+def archive_agent(
+    thread_id: str,
+    body: ChatArchiveBody,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+) -> ChatDisplay:
+    owner = resolve_agent(store, thread_id, identity_access.acting_user(request).user_id)
+    if owner.project_id is None:
+        raise HTTPException(status_code=409, detail="private_thread_cannot_be_archived")
+    with project_write_admission(owner.project_id, request):
+        return _archive_chat(
+            owner.project_id,
+            thread_id,
+            body,
+            request,
+            background_tasks,
+            catalog=catalog,
+            store=store,
+            identity_access=identity_access,
+        )

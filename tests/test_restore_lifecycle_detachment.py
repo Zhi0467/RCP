@@ -18,13 +18,10 @@ from rcp.storage import (
     AutoResearchMessageRecord,
     AutoResearchStateRecord,
     EpisodeRecord,
-    GraphWatcherRecord,
     NodeStatusGraphCondition,
     ProviderReadinessSnapshotRecord,
-    WatcherContinuation,
-    WatcherRecord,
 )
-from rcp.storage.models import MACHINE_LOGIN_ID
+from rcp.storage.models import MACHINE_LOGIN_ID, WatcherCheckRecord, WatcherRecord
 from tests.helpers import signed_in_client
 
 RESTORE_DIAGNOSTIC = "This work was stopped because RCP restored an older snapshot."
@@ -104,16 +101,6 @@ def _auto_parent(
             updated_at=now,
         ),
         task,
-    )
-
-
-def _watcher_continuation() -> WatcherContinuation:
-    return WatcherContinuation(
-        provider="codex",
-        model="gpt-5",
-        reasoning="medium",
-        run_on=BACKEND_MACHINE_ID,
-        run_truth_scope=["repo"],
     )
 
 
@@ -251,60 +238,63 @@ def _seed_restorable_lifecycle(
         )
     )
 
-    common = {
-        "project_id": project_id,
-        "origin_operation_id": live_root.operation_id,
-        "origin_task_kind": "auto_research",
-        "chat_id": "auto-research-chat",
-        "episode_id": live_episode.episode_id,
-        "graph_target": live_episode.graph_target,
-        "continuation": _watcher_continuation(),
-        "created_at": now,
-    }
-    store.create_watchers(
+    def watcher(watcher_id: str, **check: object) -> WatcherRecord:
+        external = check.pop("graph", None) is None
+        return WatcherRecord(
+            watcher_id=watcher_id,
+            agent_id=live_episode.episode_id,
+            project_id=project_id,
+            purpose=watcher_id,
+            origin_turn_id=live_root.operation_id,
+            created_at=now,
+            checks=[
+                WatcherCheckRecord(
+                    check_id=watcher_id,
+                    watcher_id=watcher_id,
+                    created_at=now,
+                    **(
+                        {
+                            "definition": "external",
+                            "check_command": "true",
+                            "log_path": f"/tmp/{watcher_id}.log",
+                            "cwd": "/tmp",
+                        }
+                        if external
+                        else {
+                            "definition": "graph",
+                            "condition": NodeStatusGraphCondition(
+                                node_id="exp/pending", status_in=["done"]
+                            ),
+                            "graph_target": live_episode.graph_target,
+                            "armed_head": 0,
+                        }
+                    ),
+                    **check,
+                )
+            ],
+        )
+
+    store.arm_watchers(
         [
-            WatcherRecord(
-                watcher_id="active-external",
-                check_command="true",
-                log_path="/tmp/active-external.log",
-                cwd="/tmp",
+            watcher(
+                "active-external",
                 last_checked_at=PRESERVED_WATCHER_CHECK_AT,
                 last_exit_code=0,
-                **common,
             ),
-            GraphWatcherRecord(
-                watcher_id="completed-graph",
-                condition=NodeStatusGraphCondition(node_id="exp/pending", status_in=["done"]),
-                armed_revision=0,
-                status="completed",
-                completed_at=now,
-                **common,
-            ),
-            WatcherRecord(
-                watcher_id="delivered-external",
-                check_command="true",
-                log_path="/tmp/delivered-external.log",
-                cwd="/tmp",
-                status="completed",
-                completed_at=now,
-                notified=True,
-                notification_operation_id=live_root.operation_id,
-                **common,
-            ),
-            WatcherRecord(
-                watcher_id="stopped-external",
-                check_command="true",
-                log_path="/tmp/stopped-external.log",
-                cwd="/tmp",
-                status="stopped",
-                notified=True,
-                stopped_by="human",
-                stop_reason="Stopped earlier.",
-                stopped_at=now,
-                **common,
-            ),
+            watcher("completed-graph", graph=True, completed_at=now),
+            watcher("delivered-external", completed_at=now),
+            watcher("stopped-external"),
         ]
     )
+    with store.connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        assert store.claim_watcher_wake(
+            connection,
+            live_episode.episode_id,
+            ["delivered-external"],
+            live_root.operation_id,
+        )
+    store.cancel_watchers(["stopped-external"], by="human", reason="Stopped earlier.")
     return live_episode_id, completed_episode_id
 
 
@@ -323,6 +313,7 @@ def _operational_rows(store: AppStore) -> dict[str, tuple[tuple[object, ...], ..
         "graph_run_receipts",
         "graph_run_outputs",
         "watchers",
+        "watcher_checks",
         "auto_research_recoveries",
         "auto_research_messages",
         "auto_research_child_experiments",
@@ -426,21 +417,22 @@ def test_restore_detachment_is_atomic_idempotent_and_leaves_no_startup_work(
     completed = store.watcher("completed-graph")
     delivered = store.watcher("delivered-external")
     stopped = store.watcher("stopped-external")
-    assert active is not None and active.status == "stopped" and active.notified
-    assert active.last_checked_at == PRESERVED_WATCHER_CHECK_AT
-    assert active.last_exit_code == 0
-    assert completed is not None and completed.status == "stopped" and completed.notified
-    assert active.stopped_by == completed.stopped_by == "human"
-    assert RESTORE_DIAGNOSTIC in (active.stop_reason or "")
-    assert RESTORE_CONFIRMER in (active.stop_reason or "")
-    assert delivered is not None and delivered.status == "completed" and delivered.notified
-    assert stopped is not None and stopped.stop_reason == "Stopped earlier."
+    assert active is not None and active.state == "cancelled"
+    assert active.checks[0].last_checked_at == PRESERVED_WATCHER_CHECK_AT
+    assert active.checks[0].last_exit_code == 0
+    assert completed is not None and completed.state == "cancelled"
+    assert active.cancelled_by == completed.cancelled_by == "human"
+    assert RESTORE_DIAGNOSTIC in (active.cancel_reason or "")
+    assert RESTORE_CONFIRMER in (active.cancel_reason or "")
+    assert delivered is not None and delivered.state == "finished"
+    assert delivered.cancelled_at is None
+    assert stopped is not None and stopped.cancel_reason == "Stopped earlier."
 
     assert store.due_auto_research_recoveries(as_of="9999-01-01T00:00:00+00:00") == []
     assert store.pending_auto_research_lifecycle_episode_ids() == []
     assert store.graph_watcher_project_ids() == []
-    assert store.pollable_watchers(as_of="9999-01-01T00:00:00+00:00") == []
-    assert store.completed_watcher_groups() == []
+    assert store.due_external_checks(as_of="9999-01-01T00:00:00+00:00") == []
+    assert store.ready_watchers() == []
     assert store.episodes_awaiting_report() == []
 
     async def unused_stream(*_args):

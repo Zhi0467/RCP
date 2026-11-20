@@ -10,14 +10,13 @@ import pytest
 
 import rcp.runs.auto_research_delivery as delivery_module
 from rcp.agents import AgentEvent, AgentProcessControl
-from rcp.agents.command_protocol import MessageArguments, MessageCommandRequest, WatchGraphArguments
+from rcp.agents.command_protocol import MessageArguments, MessageCommandRequest
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.core.models import Blocker, GraphState
 from rcp.core.transition_models import GraphHeadRef
 from rcp.limits import AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS
 from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.runs.auto_research import (
-    AutoResearchCommandContext,
     AutoResearchRunRequest,
     AutoResearchStartRequest,
 )
@@ -27,13 +26,11 @@ from rcp.runs.auto_research_admission import (
     start_auto_research_turn,
 )
 from rcp.runs.auto_research_delivery import (
-    arm_auto_research_graph_condition,
-    deliver_auto_research_watcher_group,
+    deliver_auto_research_watchers,
     deliver_pending_auto_research_lifecycle,
     deliver_pending_auto_research_mail,
     pending_auto_research_lifecycle_episodes,
     pending_auto_research_mail_recipients,
-    reconcile_auto_research_graph_condition,
     reconcile_pending_auto_research_lifecycle,
     reconcile_pending_auto_research_mail,
     record_auto_research_message,
@@ -45,11 +42,13 @@ from rcp.storage import (
     AppStore,
     AutoResearchLifecycleNoticeRecord,
     EpisodeRecord,
-    GraphWatcherRecord,
     NodeStatusGraphCondition,
     ProjectRecord,
+    WatcherRecord,
 )
 from rcp.storage.models import _required_timestamp
+from rcp.watcher_folder import WatcherFile, reconcile_watcher_files
+from rcp.watchers import WatcherBinding
 
 from .helpers import (
     async_wait_until,
@@ -188,9 +187,7 @@ def _arm_completed_graph_condition(
     origin: AgentTaskRecord,
     *,
     watcher_id: str = "auto_research-watcher",
-) -> GraphWatcherRecord:
-    current = store.episode(auto_research.episode_id)
-    assert current is not None
+) -> WatcherRecord:
     condition = NodeStatusGraphCondition(node_id="blk/result", status_in=["resolved"])
     blocker = Blocker(
         id="blk/result",
@@ -199,32 +196,40 @@ def _arm_completed_graph_condition(
         description="The auto_research continues after this blocker resolves.",
         status="resolved",
     )
-    watcher = arm_auto_research_graph_condition(
+    (watcher,) = reconcile_watcher_files(
         store,
-        AutoResearchCommandContext(
-            episode=current,
-            task=origin,
-            request=AutoResearchRunRequest.model_validate(origin.request),
+        WatcherBinding(
+            project_id=origin.project_id,
+            agent_id=auto_research.episode_id,
+            origin_turn_id=origin.operation_id,
+            graph_target=origin.graph_target,
+            machine_id=origin.stage_machine_id or "backend",
         ),
-        WatchGraphArguments(
-            condition=condition,
-            reason="Continue after the canonical result is available.",
-        ),
-        watcher_id=watcher_id,
+        {},
+        {
+            f"{watcher_id}.json": WatcherFile(
+                purpose="Wait for the result", graph=condition
+            ).model_dump_json(exclude_none=True)
+        },
         state=GraphState(revision=2, nodes={blocker.id: blocker}),
-        machine_id=origin.stage_machine_id or "backend",
     )
-    assert watcher.watcher_id == watcher_id
-    assert watcher.status == "completed"
-    assert watcher.origin_task_kind == "auto_research"
-    assert watcher.origin_operation_id == origin.operation_id
-    assert watcher.graph_target == auto_research.graph_target
-    assert watcher.chat_id == origin.operation_id
-    assert watcher.notified is False
+    assert watcher.ready
     return watcher
 
 
-def test_auto_research_effect_ids_are_exact_and_graph_reconciliation_is_read_only(tmp_path) -> None:
+def _deliver(tasks: BackgroundAgentTasks, watcher: WatcherRecord) -> str | None:
+    """Run the Auto-research wake owner and return the turn that claimed the watcher."""
+
+    store = tasks.store
+    episode = store.agent_episode(watcher.agent_id)
+    assert episode is not None
+    deliver_auto_research_watchers(tasks, watcher.agent_id, episode, [watcher], None)
+    claimed = store.watcher(watcher.watcher_id)
+    assert claimed is not None
+    return claimed.wake_turn_id
+
+
+def test_auto_research_message_keeps_its_planned_identity(tmp_path) -> None:
     store = _store(tmp_path)
     stage = tmp_path / "auto_research-stage"
     stage.mkdir()
@@ -255,72 +260,6 @@ def test_auto_research_effect_ids_are_exact_and_graph_reconciliation_is_read_onl
     assert message.message_id == "planned-message"
     assert store.auto_research_message("planned-message") == message
 
-    watcher = _arm_completed_graph_condition(
-        store,
-        auto_research,
-        root,
-        watcher_id="planned-watcher",
-    )
-    context = AutoResearchCommandContext(
-        episode=auto_research,
-        task=root,
-        request=AutoResearchRunRequest.model_validate(root.request),
-    )
-    arguments = WatchGraphArguments(
-        condition=watcher.condition,
-        reason="Continue after the canonical result is available.",
-    )
-    events_before = store.agent_task_events(root.operation_id)
-    receipts_before = store.agent_task_receipts(root.operation_id)
-
-    assert (
-        reconcile_auto_research_graph_condition(
-            store,
-            context,
-            arguments,
-            watcher_id="planned-watcher",
-            machine_id=root.stage_machine_id or "backend",
-        )
-        == watcher
-    )
-    assert (
-        reconcile_auto_research_graph_condition(
-            store,
-            context,
-            arguments,
-            watcher_id="missing-watcher",
-            machine_id=root.stage_machine_id or "backend",
-        )
-        is None
-    )
-    mismatched_arguments = WatchGraphArguments(
-        condition=NodeStatusGraphCondition(node_id="blk/other", status_in=["resolved"]),
-        reason=arguments.reason,
-    )
-    assert (
-        reconcile_auto_research_graph_condition(
-            store,
-            context,
-            mismatched_arguments,
-            watcher_id="planned-watcher",
-            machine_id=root.stage_machine_id or "backend",
-        )
-        is None
-    )
-    assert (
-        reconcile_auto_research_graph_condition(
-            store,
-            context,
-            arguments,
-            watcher_id="planned-watcher",
-            machine_id="different-machine",
-        )
-        is None
-    )
-    assert store.agent_task_events(root.operation_id) == events_before
-    assert store.agent_task_receipts(root.operation_id) == receipts_before
-    assert store.watcher("planned-watcher") == watcher
-
 
 def test_auto_research_graph_watcher_wake_is_one_atomic_paid_actor_continuation(tmp_path) -> None:
     store = _store(tmp_path)
@@ -345,15 +284,11 @@ def test_auto_research_graph_watcher_wake_is_one_atomic_paid_actor_continuation(
     watcher = _arm_completed_graph_condition(store, auto_research, root)
     before = store.episode_budget_meter(auto_research.episode_id)
 
-    wake_id = deliver_auto_research_watcher_group(tasks, [watcher])
+    wake_id = _deliver(tasks, watcher)
 
     assert root.request["invoked_skill_ids"] == ["graph-audit"]
     assert wake_id is not None
     wake = wait_for_task(store, wake_id, expect="succeeded")
-    delivered = store.watcher(watcher.watcher_id)
-    assert isinstance(delivered, GraphWatcherRecord)
-    assert delivered.notified is True
-    assert delivered.notification_operation_id == wake.operation_id
     assert store.episode_budget_meter(auto_research.episode_id).invocations_used == (
         before.invocations_used + 1
     )
@@ -376,21 +311,6 @@ def test_auto_research_graph_watcher_wake_is_one_atomic_paid_actor_continuation(
         (root.operation_id, "fresh", None),
         (wake.operation_id, "graph_condition_wake", "orchestrator-session"),
     ]
-
-    from rcp.storage.watchers import WatcherStoreMixin
-
-    for forged in (
-        {"invoked_skill_ids": ["graph-audit"]},
-        {"invoked_workflow_ids": ["research-graph-audit"]},
-        {"model": "changed-model"},
-        {"browser_requested": not wake.request["browser_requested"]},
-        {"run_truth_scope": ["another-repo"]},
-        {"role": "worker"},
-    ):
-        candidate = wake.model_copy(update={"request": {**wake.request, **forged}})
-        with store.connection() as connection, pytest.raises(ValueError):
-            WatcherStoreMixin._validate_watcher_notification_scope(connection, candidate, [watcher])
-    assert store.watcher(watcher.watcher_id).continuation == watcher.continuation
     assert store.agent_task(root.operation_id).request == root.request
 
 
@@ -415,12 +335,11 @@ def test_auto_research_watcher_wake_waits_while_every_login_is_limited(
     before = store.episode_budget_meter(episode.episode_id)
     monkeypatch.setattr(ProviderAccounts, "automatic_launch_wait", lambda *_args: 60.0)
 
-    assert deliver_auto_research_watcher_group(tasks, [watcher]) is None
-    assert store.watcher(watcher.watcher_id).notified is False
+    assert _deliver(tasks, watcher) is None
     assert store.episode_budget_meter(episode.episode_id) == before
 
     monkeypatch.setattr(ProviderAccounts, "automatic_launch_wait", lambda *_args: 0.0)
-    wake_id = deliver_auto_research_watcher_group(tasks, [watcher])
+    wake_id = _deliver(tasks, watcher)
     assert wake_id is not None
     wait_for_task(store, wake_id, expect="succeeded")
 
@@ -488,10 +407,7 @@ def test_root_wake_coalesces_notices_and_mail_with_lifecycle_grace(
     ] == task_ids_before
     assert store.pending_auto_research_lifecycle_notices(episode.episode_id) == notices
     if wake_source == "graph_condition":
-        wake_id = deliver_auto_research_watcher_group(tasks, [watcher])
-        delivered_watcher = store.watcher(watcher.watcher_id)
-        assert delivered_watcher.notified
-        assert delivered_watcher.notification_operation_id == wake_id
+        wake_id = _deliver(tasks, watcher)
     else:
         clock += timedelta(seconds=AUTO_RESEARCH_LIFECYCLE_WAKE_GRACE_SECONDS + 1)
         wake_id = deliver_pending_auto_research_lifecycle(tasks, episode_id=episode.episode_id)
@@ -556,10 +472,10 @@ def test_watcher_wake_prefix_race_rolls_back_allocation_and_claims(
         body="Result.",
     )
     before = store.episode_budget_meter(episode.episode_id)
-    real_admit = store.create_watcher_notification_task
+    real_admit = store.create_auto_research_watcher_wake_task
     attempted_ids = []
 
-    def change_prefix(record, watcher_ids, **kwargs):
+    def change_prefix(record, agent_id, watcher_ids, **kwargs):
         """A newer row sorts after the snapshot prefix and must still refuse the claim."""
         attempted_ids.append(record.operation_id)
         offset = timedelta(seconds=1 if changed_input.startswith("newer") else -1)
@@ -583,20 +499,18 @@ def test_watcher_wake_prefix_race_rolls_back_allocation_and_claims(
                     }
                 )
             )
-        return real_admit(record, watcher_ids, **kwargs)
+        return real_admit(record, agent_id, watcher_ids, **kwargs)
 
-    monkeypatch.setattr(store, "create_watcher_notification_task", change_prefix)
-    assert deliver_auto_research_watcher_group(tasks, [watcher]) is None
+    monkeypatch.setattr(store, "create_auto_research_watcher_wake_task", change_prefix)
+    assert _deliver(tasks, watcher) is None
     assert len(attempted_ids) == 1
     assert store.agent_task(attempted_ids[0]) is None
     assert store.episode_budget_meter(episode.episode_id) == before
-    assert not store.watcher(watcher.watcher_id).notified
-    assert store.watcher(watcher.watcher_id).notification_operation_id is None
     assert notice in store.pending_auto_research_lifecycle_notices(episode.episode_id)
     assert store.auto_research_message(mail.message_id).delivery_operation_id is None
 
-    monkeypatch.setattr(store, "create_watcher_notification_task", real_admit)
-    wake_id = deliver_auto_research_watcher_group(tasks, [watcher])
+    monkeypatch.setattr(store, "create_auto_research_watcher_wake_task", real_admit)
+    wake_id = _deliver(tasks, watcher)
     assert wake_id is not None
     wait_for_task(store, wake_id, expect="succeeded")
     assert store.pending_auto_research_lifecycle_notices(episode.episode_id) == []
@@ -644,12 +558,10 @@ def test_committed_watcher_wake_reconciles_after_thread_start_failure(
 
     monkeypatch.setattr(threading.Thread, "start", fail_once)
     with pytest.raises(RuntimeError, match="Thread.start failure"):
-        deliver_auto_research_watcher_group(tasks, [watcher])
+        _deliver(tasks, watcher)
     monkeypatch.setattr(threading.Thread, "start", real_start)
 
-    claimed = store.watcher(watcher.watcher_id)
-    assert isinstance(claimed, GraphWatcherRecord)
-    wake_id = claimed.notification_operation_id
+    wake_id = store.watcher(watcher.watcher_id).wake_turn_id
     assert wake_id is not None
     queued = store.agent_task(wake_id)
     assert queued is not None and queued.status == "queued"
@@ -662,9 +574,7 @@ def test_committed_watcher_wake_reconciles_after_thread_start_failure(
     ) == [wake_id]
     wait_for_task(store, wake_id, expect="succeeded")
 
-    delivered = store.watcher(watcher.watcher_id)
-    assert isinstance(delivered, GraphWatcherRecord)
-    assert delivered.notification_operation_id == wake_id
+    assert store.watcher(watcher.watcher_id).wake_turn_id == wake_id
     assert store.episode_budget_meter(auto_research.episode_id) == after_claim
     assert executions.count(wake_id) == 1
     assert (
@@ -721,11 +631,7 @@ def test_busy_auto_research_actor_leaves_completed_watcher_unclaimed_and_unspent
     ]
 
     try:
-        assert deliver_auto_research_watcher_group(tasks, [watcher]) is None
-        unchanged = store.watcher(watcher.watcher_id)
-        assert isinstance(unchanged, GraphWatcherRecord)
-        assert unchanged.notified is False
-        assert unchanged.notification_operation_id is None
+        assert _deliver(tasks, watcher) is None
         assert store.episode_budget_meter(auto_research.episode_id) == before
         assert [
             task.operation_id for task in store.auto_research_tasks(auto_research.episode_id)
@@ -1497,7 +1403,7 @@ def test_active_child_reply_waits_and_coalesces_with_its_lifecycle_notice(
     spent_before_settlement = 0
     if graph_wake_while_child_runs:
         watcher = _arm_completed_graph_condition(store, auto_research, root)
-        graph_wake_id = deliver_auto_research_watcher_group(tasks, [watcher])
+        graph_wake_id = _deliver(tasks, watcher)
         assert graph_wake_id is not None
         wait_for_task(store, graph_wake_id, expect="succeeded")
         assert store.auto_research_message(message_id).delivered_at is None  # type: ignore[union-attr]
@@ -2022,3 +1928,72 @@ def test_newest_notices_and_messages_are_a_bounded_suffix_in_order(tmp_path):
     messages = store.auto_research_messages(episode.episode_id, newest=2)
     assert [message.message_id for message in messages] == ["message-1", "message-2"]
     assert len(store.auto_research_messages(episode.episode_id)) == 3
+
+
+@pytest.mark.asyncio
+async def test_an_orchestrator_arms_a_watcher_from_its_folder_and_the_wake_continues_it(
+    tmp_path,
+) -> None:
+    import json
+
+    from rcp.runs.tasks.auto_research_stream import (
+        _reconcile_orchestrator_watchers,
+        _stage_orchestrator_watchers,
+    )
+
+    store = _store(tmp_path)
+    stage_root = tmp_path / "auto_research-stage"
+    stage_root.mkdir()
+
+    async def stream(_project_id, _kind, request, execution):
+        if execution.continuation == "fresh":
+            execution.checkpoint_stage("execution-host", str(stage_root))
+        yield _sse(
+            AgentEvent(event="session", session_id=request.session_id or "orchestrator-session")
+        )
+        yield _sse(AgentEvent(event="done"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    auto_research, root = _start_auto_research(tasks)
+    workspace = stage_root / "workspace"
+    workspace.mkdir()
+    execution = SimpleNamespace(
+        store=store, operation_id=root.operation_id, armed_graph_watchers=False
+    )
+    turn = SimpleNamespace(
+        task=root,
+        request=SimpleNamespace(episode_id=auto_research.episode_id),
+        recovering_allocation=False,
+    )
+    stage = SimpleNamespace(
+        workspace=workspace, remote=None, machine=SimpleNamespace(machine_id=BACKEND_MACHINE_ID)
+    )
+    _stage_orchestrator_watchers(execution, turn, stage)
+    (tmp_path / "job.log").write_text("done\n")
+    (workspace / "watchers" / "job.json").write_text(
+        json.dumps(
+            {
+                "purpose": "Training job finishes",
+                "checks": [
+                    {
+                        "check_command": "true",
+                        "log_path": str(tmp_path / "job.log"),
+                        "cwd": str(tmp_path),
+                    }
+                ],
+            }
+        )
+    )
+
+    await _reconcile_orchestrator_watchers(SimpleNamespace(), execution, turn, stage)
+
+    (watcher,) = store.agent_watchers(auto_research.episode_id)
+    assert watcher.ready and watcher.origin_turn_id == root.operation_id
+    before = store.episode_budget_meter(auto_research.episode_id).invocations_used
+    wake_id = _deliver(tasks, watcher)
+    assert wake_id is not None
+    wake = wait_for_task(store, wake_id, expect="succeeded")
+    assert store.auto_research_invocation_role(wake.operation_id) == "orchestrator"
+    assert wake.request["actor_operation_id"] == root.operation_id
+    assert wake.native_session_id == root.native_session_id
+    assert store.episode_budget_meter(auto_research.episode_id).invocations_used == before + 1

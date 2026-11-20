@@ -11,6 +11,7 @@ from __future__ import annotations
 from rcp.storage.agent_schedules import AgentSchedulesStoreMixin
 from rcp.storage.agent_tasks import AgentTaskStoreMixin
 from rcp.storage.agent_threads import AgentThreadStoreMixin
+from rcp.storage.agents import AgentStoreMixin
 from rcp.storage.approval_cards import ApprovalCardStoreMixin
 from rcp.storage.artifact_imports import ArtifactImportStoreMixin
 from rcp.storage.artifact_models import (
@@ -64,6 +65,7 @@ from rcp.storage.watchers import WatcherStoreMixin
 
 
 class AppStore(
+    AgentStoreMixin,
     AgentThreadStoreMixin,
     AgentSchedulesStoreMixin,
     ApprovalCardStoreMixin,

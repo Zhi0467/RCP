@@ -16,7 +16,7 @@
   },
   "src/agentWindow/useAgentWindowArtifacts.tsx": {
     "rcp/no-comments": {
-      "count": 32
+      "count": 26
     }
   },
   "src/agentWindow/useAgentWindowScroll.ts": {
@@ -34,11 +34,6 @@
       "count": 6
     }
   },
-  "src/agents/AgentThreadView.tsx": {
-    "rcp/no-comments": {
-      "count": 35
-    }
-  },
   "src/agents/ApprovalCard.tsx": {
     "rcp/no-comments": {
       "count": 2
@@ -46,7 +41,7 @@
   },
   "src/agents/agentTasks.ts": {
     "rcp/no-comments": {
-      "count": 12
+      "count": 10
     }
   },
   "src/agents/agentThreadModel.ts": {
@@ -56,7 +51,7 @@
   },
   "src/agents/agentThreadsApi.ts": {
     "rcp/no-comments": {
-      "count": 4
+      "count": 1
     }
   },
   "src/agents/chatSendMutation.ts": {
@@ -141,7 +136,7 @@
   },
   "src/chat/AgentChatView.tsx": {
     "rcp/no-comments": {
-      "count": 64
+      "count": 47
     }
   },
   "src/chat/AgentRename.tsx": {
@@ -176,7 +171,7 @@
   },
   "src/chat/ChatsWorkspace.tsx": {
     "rcp/no-comments": {
-      "count": 41
+      "count": 40
     }
   },
   "src/chat/OrchestratorComposer.tsx": {
@@ -204,11 +199,6 @@
       "count": 2
     }
   },
-  "src/chat/answerComments.tsx": {
-    "rcp/no-comments": {
-      "count": 25
-    }
-  },
   "src/chat/bulletinModel.ts": {
     "rcp/no-comments": {
       "count": 6
@@ -216,7 +206,7 @@
   },
   "src/chat/chatInput.ts": {
     "rcp/no-comments": {
-      "count": 5
+      "count": 1
     }
   },
   "src/chat/chatWorkspace.ts": {
@@ -386,7 +376,7 @@
   },
   "src/experiments/ExperimentRunDetail.tsx": {
     "rcp/no-comments": {
-      "count": 14
+      "count": 11
     }
   },
   "src/experiments/ExternalJobRow.tsx": {
@@ -401,7 +391,7 @@
   },
   "src/experiments/RunDialog.tsx": {
     "rcp/no-comments": {
-      "count": 15
+      "count": 14
     }
   },
   "src/experiments/SpaceRuns.tsx": {
@@ -492,11 +482,6 @@
   "src/graph/dagLens.ts": {
     "rcp/no-comments": {
       "count": 1
-    }
-  },
-  "src/graph/graphAuthority.ts": {
-    "rcp/no-comments": {
-      "count": 4
     }
   },
   "src/graph/graphResources.ts": {
@@ -906,7 +891,7 @@
   },
   "tests/agentThreads.browser.test.mjs": {
     "rcp/no-comments": {
-      "count": 52
+      "count": 51
     }
   },
   "tests/agentThreads.test.mjs": {
@@ -996,7 +981,7 @@
   },
   "tests/chatInput.test.mjs": {
     "rcp/no-comments": {
-      "count": 8
+      "count": 3
     }
   },
   "tests/chatMarkdown.test.mjs": {
@@ -1175,11 +1160,6 @@
     }
   },
   "tests/fixtures/providerLogin.tsx": {
-    "rcp/no-comments": {
-      "count": 1
-    }
-  },
-  "tests/fixtures/settingsProject.ts": {
     "rcp/no-comments": {
       "count": 1
     }
@@ -1451,7 +1431,7 @@
   },
   "tests/runDialog.test.mjs": {
     "rcp/no-comments": {
-      "count": 12
+      "count": 11
     }
   },
   "tests/runProjection.test.mjs": {

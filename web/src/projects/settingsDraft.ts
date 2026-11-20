@@ -12,7 +12,12 @@ export function mergeAgentProfiles(
   saved: Record<AgentExecutionProfile, AgentProfileSettings>,
   staged: SettingsDraft["profiles"],
 ): Record<AgentExecutionProfile, AgentProfileSettings> {
-  return { ...saved, ...staged };
+  return Object.fromEntries(
+    Object.entries(saved).map(([id, profile]) => [
+      id,
+      staged[id as AgentExecutionProfile] ?? profile,
+    ]),
+  ) as Record<AgentExecutionProfile, AgentProfileSettings>;
 }
 
 /**

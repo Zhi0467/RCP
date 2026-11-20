@@ -22,12 +22,7 @@ import rcp.projects as projects_module
 import rcp.runs.tasks.work as work_module
 from rcp.agents import AgentEvent, AgentPatch, AgentProcessControl, ProviderReadiness
 from rcp.agents.context import ChatContext, RepositoryPointer
-from rcp.agents.continuation_prompt import SECTIONS
-from rcp.agents.graph_rules import graph_rules
 from rcp.agents.project_repositories import RepositoryReadScope
-from rcp.api.app import (
-    _generic_watcher_delivery_request,
-)
 from rcp.api.tasks import _validate_stored_task_request, _validated_task_request
 from rcp.artifacts import AgentArtifactDescriptor
 from rcp.background import AgentTaskExecution
@@ -36,8 +31,7 @@ from rcp.core.materialize import MaterializationResult
 from rcp.core.models import AuthorizedHuman, Blocker, Decision, GraphState, Patch
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.core.validation.constants import NODE_ADAPTER
-from rcp.history import HistoryManager, ReplayHalted
-from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
+from rcp.history import HistoryManager
 from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey, card
 from rcp.providers import ProviderSkill, ProviderUsage
 from rcp.runs.chat import (
@@ -47,7 +41,6 @@ from rcp.runs.chat import (
     _prepare_local_artifact_directory,
     _project_write_scope,
 )
-from rcp.runs.experiment_loop import persist_experiment_watchers_idempotently
 from rcp.runs.shared import (
     _MAX_PATCH_CANDIDATES,
     AgentOutputProblem,
@@ -62,12 +55,6 @@ from rcp.runs.shared import (
 )
 from rcp.runs.tasks.discuss import stream_discuss_run
 from rcp.runs.tasks.experiment_loop import stream_experiment_loop_task
-from rcp.runs.tasks.graph import (
-    _record_context_reuse,
-    _record_progress_handoff,
-    _stage_graph_context,
-    stream_graph_run,
-)
 from rcp.runs.tasks.work import stream_work_run
 from rcp.service import (
     ProposalDecisionRequest,
@@ -82,9 +69,8 @@ from rcp.storage import (
     AgentTaskRecord,
     AppStore,
     EpisodeRecord,
-    GraphWatcherRecord,
     ProjectRecord,
-    WatcherContinuation,
+    WatcherCheckRecord,
     WatcherRecord,
 )
 from rcp.transport import (
@@ -95,8 +81,10 @@ from rcp.transport import (
     StateUnavailable,
     StateUnreachable,
 )
-from rcp.watchers import AgentWatchSpec, WatcherBinding, WatcherCheckResult
-from tests.helpers import sign_in_async_client, signed_in_client
+from rcp.watchers import (
+    watcher_wake_message,
+)
+from tests.helpers import fake_launch_admitted, sign_in_async_client, signed_in_client
 
 from .helpers import (
     TASK_SETTLE_TIMEOUT,
@@ -106,8 +94,6 @@ from .helpers import (
     changed_values,
     create_named_app,
     discuss_turn,
-    gated_patch,
-    launch_contract_path,
     refresh_patch,
     seed_patch,
     shape_invalid_patch,
@@ -136,7 +122,7 @@ def _named_test_authorizer(store: AppStore) -> AuthorizedHuman:
 
 
 def _persist_skill_defaults(service, defaults: SkillDefaults) -> None:
-    surfaces = ("seed", "refresh", "node_chat", "project_chat", "paper_coach")
+    surfaces = ("node_chat", "project_chat", "paper_coach")
     service.history.update_agent_settings(
         service.manifest.agent.default_run_truth_scope,
         {surface: service.manifest.agent_profile(surface) for surface in surfaces},
@@ -196,52 +182,23 @@ def _experiment_request(message: str) -> RunRequest:
     )
 
 
-def test_generic_watcher_wake_keeps_packages_available_without_reinvoking_them(
-    tmp_path: Path,
-) -> None:
-    continuation = WatcherContinuation(
-        provider="codex",
-        run_on=BACKEND_MACHINE_ID,
-        run_truth_scope=["repo-a"],
-        patch_kind="work",
-        skill_ids=["experiment-causality"],
-        invoked_skill_ids=["experiment-causality"],
-    )
-    watcher = WatcherRecord(
-        watcher_id="generic-turn-local-invocation",
-        project_id="project-turn-local-invocation",
-        origin_operation_id="origin-turn-local-invocation",
-        origin_task_kind="project_chat",
-        chat_id="chat-turn-local-invocation",
-        check_command="false",
-        log_path=str(tmp_path / "detached.log"),
-        cwd=str(tmp_path),
-        continuation=continuation,
-        status="completed",
-        created_at="2026-08-08T00:00:00Z",
-    )
-
-    request = _generic_watcher_delivery_request([watcher])
-
-    assert request.skill_ids == ["experiment-causality"]
-    assert request.invoked_skill_ids == []
-    assert request.invoked_workflow_ids == []
-    assert request.invoked_provider_skill_names == []
-    assert request.resolved_provider_skills == []
-
-    experiment_watcher = watcher.model_copy(
-        update={"continuation": continuation.model_copy(update={"patch_kind": "experiment_loop"})}
-    )
-    with pytest.raises(ValueError, match="cannot carry Experiment-loop authority"):
-        _generic_watcher_delivery_request([experiment_watcher])
-
-
-def test_generic_watcher_delivery_wakes_its_own_project_chat(
+def test_plain_watcher_wake_continues_its_own_chat_without_reinvoking_packages(
     app, tmp_path: Path, monkeypatch
 ) -> None:
     project_id = app.state.default_project_id
-    store = app.state.background_tasks.store
+    tasks = app.state.background_tasks
+    store = tasks.store
     authorized_by = _named_test_authorizer(store)
+    chat_id = "generic-project-chat"
+    origin = RunRequest(
+        chat_scope="project",
+        chat_id=chat_id,
+        message="Start the detached job.",
+        run_truth_scope=["repo-a"],
+        mode="work",
+        skill_ids=["experiment-causality"],
+        invoked_skill_ids=["experiment-causality"],
+    )
     now = store.now()
     store.create_agent_task(
         AgentTaskRecord(
@@ -249,57 +206,56 @@ def test_generic_watcher_delivery_wakes_its_own_project_chat(
             project_id=project_id,
             kind="project_chat",
             status="succeeded",
-            request={},
+            request=origin.model_dump(mode="json"),
             created_at=now,
             updated_at=now,
             status_message="Generic watcher origin fixture.",
             authorized_by=authorized_by,
         )
     )
-    watcher = WatcherRecord(
-        watcher_id="generic-project-chat-wake",
-        project_id=project_id,
-        origin_operation_id="generic-project-chat-origin",
-        origin_task_kind="project_chat",
-        chat_id="generic-project-chat",
-        check_command="true",
-        log_path=str(tmp_path / "generic.log"),
-        cwd=str(tmp_path),
-        continuation=WatcherContinuation(
-            provider="claude",
-            run_on=BACKEND_MACHINE_ID,
-            run_truth_scope=["repo-a"],
-            patch_kind="work",
-        ),
-        status="completed",
-        created_at="2026-08-08T00:00:00Z",
-    )
-    store.create_watchers([watcher])
-    captured: dict[str, object] = {}
-
-    def capture(_tasks, project, kind, request, watcher_ids, **kwargs):
-        captured.update(
-            project_id=project,
-            kind=kind,
-            request=request,
-            watcher_ids=watcher_ids,
-            authorized_by=kwargs["authorized_by"],
+    watcher = store.arm_watcher(
+        WatcherRecord(
+            watcher_id="generic-project-chat-wake",
+            agent_id=chat_id,
+            project_id=project_id,
+            purpose="detached job finishes",
+            origin_turn_id="generic-project-chat-origin",
+            created_at=now,
+            checks=[
+                WatcherCheckRecord(
+                    check_id="generic-project-chat-wake",
+                    watcher_id="generic-project-chat-wake",
+                    machine_id=BACKEND_MACHINE_ID,
+                    definition="external",
+                    check_command="true",
+                    log_path=str(tmp_path / "generic.log"),
+                    cwd=str(tmp_path),
+                    created_at=now,
+                    completed_at=now,
+                )
+            ],
         )
+    )
+    monkeypatch.setattr(tasks, "admit_provider_task", lambda *args, **kwargs: None)
+    fake_launch_admitted(monkeypatch, tasks)
+    tasks.accept_watcher_notifications()
 
-    monkeypatch.setattr("rcp.api.app.start_watcher_notification", capture)
+    app.state.services.watcher_delivery.deliver_ready(chat_id, [watcher])
 
-    assert app.state.watcher_poller.on_completed is not None
-    app.state.watcher_poller.on_completed([watcher])
-
-    request = captured["request"]
-    assert isinstance(request, RunRequest)
-    assert captured["project_id"] == project_id
-    assert captured["kind"] == "project_chat"
-    assert captured["watcher_ids"] == [watcher.watcher_id]
-    assert captured["authorized_by"] == authorized_by
-    assert request.chat_scope == "project"
-    assert request.chat_id == watcher.chat_id
-    assert request.node_id is None
+    claimed = store.watcher(watcher.watcher_id)
+    assert claimed is not None and claimed.wake_turn_id is not None
+    wake = store.agent_task(claimed.wake_turn_id)
+    assert wake is not None
+    assert wake.kind == "project_chat"
+    assert wake.authorized_by == authorized_by
+    request = RunRequest.model_validate(wake.request)
+    assert request.chat_id == chat_id
+    assert request.trigger == "watcher"
+    assert request.patch_kind == "work"
+    assert request.watcher_ids == [watcher.watcher_id]
+    assert request.skill_ids == ["experiment-causality"]
+    assert request.invoked_skill_ids == []
+    assert request.invoked_workflow_ids == []
 
 
 class FakeLauncher:
@@ -688,6 +644,7 @@ class ScriptedLauncher:
         if self.outcome is not None and "outcome.json" not in turn:
             write_turn_outcome(workspace, self.outcome)
         for name, content in turn.items():
+            (workspace / name).parent.mkdir(parents=True, exist_ok=True)
             (workspace / name).write_text(content, encoding="utf-8")
         yield AgentEvent(event="session", session_id=self.native_session_id)
         if self.message:
@@ -863,10 +820,6 @@ def test_degraded_replay_is_visible_and_canonical_api_writes_are_blocked(
     assert sync.status_code == 409
     assert sync.json()["failed_revision"] == 3
 
-    refresh = client.post(f"/api/projects/{project_id}/tasks/refresh", json={})
-    assert refresh.status_code == 409
-    assert refresh.json()["code"] == "patch-schema-invalid"
-
     project = client.get(f"/api/projects/{project_id}").json()
     profiles = {
         surface: {key: profile[key] for key in ("provider", "model", "reasoning")}
@@ -890,8 +843,6 @@ def test_degraded_replay_is_visible_and_canonical_api_writes_are_blocked(
             },
         )
         assert accepted.mode == mode
-    with pytest.raises(ReplayHalted):
-        _validated_task_request(service, "refresh", {})
 
 
 def test_project_open_reuses_its_single_materialization(app, monkeypatch) -> None:
@@ -1562,171 +1513,6 @@ def test_project_registry_survives_hub_restart(manifest, tmp_path) -> None:
     assert cards.json()[0]["revision"] == 1
 
 
-def test_seed_runs_in_background_and_keeps_api_responsive(app) -> None:
-    project_id = app.state.default_project_id
-
-    async def stream(*_args):
-        yield _event_frame(AgentEvent(event="session", session_id=str(uuid.uuid4())))
-        await asyncio.sleep(0.1)
-        yield _event_frame(AgentEvent(event="message", text=json.dumps({"applied_revision": 1})))
-        yield _event_frame(AgentEvent(event="done"))
-
-    app.state.background_tasks.stream = stream
-    client = signed_in_client(app)
-    started = client.post(
-        f"/api/projects/{project_id}/tasks/seed",
-        json={"run_truth_scope": ["repo-a"]},
-    )
-
-    assert started.status_code == 202
-    assert client.get("/api/health/details").status_code == 200
-    operation_id = started.json()["operation_id"]
-    completed = _wait_for_run(client, project_id, operation_id)
-    assert completed["status"] == "succeeded"
-    assert completed["applied_revision"] == 1
-
-
-def test_seed_waits_for_live_canonical_owner_without_failing(app, monkeypatch) -> None:
-    project_id = app.state.default_project_id
-    workspace = app.state.service.history.workspace
-    lock_waiting = threading.Event()
-    release_lock = threading.Event()
-    launcher = ScriptedLauncher([{"patch.json": agent_patch_json(seed_patch())}])
-
-    @contextmanager
-    def contended_lock(*, on_wait=None, cancelled=None, on_lost=None):
-        del on_lost
-        if on_wait is not None:
-            on_wait("Waiting for another graph-writing run to release canonical state.")
-        lock_waiting.set()
-        while not release_lock.wait(timeout=0.01):
-            if cancelled is not None and cancelled():
-                raise RunLockCancelled("Run-lock acquisition was cancelled while waiting.")
-        yield RunLockLease(workspace.location)
-
-    monkeypatch.setattr(workspace, "run_lock", contended_lock)
-    monkeypatch.setattr(app.state.catalog.launcher, "stream", launcher.stream)
-    client = signed_in_client(app)
-    started = client.post(
-        f"/api/projects/{project_id}/tasks/seed",
-        json={"run_truth_scope": ["repo-a"]},
-    )
-    operation_id = started.json()["operation_id"]
-
-    try:
-        assert lock_waiting.wait(timeout=2)
-        waiting = client.get(f"/api/projects/{project_id}/tasks/{operation_id}").json()
-        assert waiting["status"] == "running"
-        assert waiting["phase"] == "waiting"
-        assert workspace.location in waiting["status_message"]
-        assert launcher.calls == 0
-    finally:
-        release_lock.set()
-
-    completed = _wait_for_run(client, project_id, operation_id)
-    assert completed["status"] == "succeeded"
-    assert launcher.calls == 1
-    assert "canonical_state_lock_wait" in {item["category"] for item in completed["debug_receipts"]}
-
-
-def test_seed_can_pause_while_waiting_for_canonical_owner(app, monkeypatch) -> None:
-    project_id = app.state.default_project_id
-    workspace = app.state.service.history.workspace
-    lock_waiting = threading.Event()
-
-    @contextmanager
-    def contended_lock(*, on_wait=None, cancelled=None, on_lost=None):
-        del on_lost
-        if on_wait is not None:
-            on_wait("Waiting for another graph-writing run to release canonical state.")
-        lock_waiting.set()
-        while cancelled is None or not cancelled():
-            time.sleep(0.01)
-        raise RunLockCancelled("Run-lock acquisition was cancelled while waiting.")
-        yield  # pragma: no cover - makes this function a context manager
-
-    monkeypatch.setattr(workspace, "run_lock", contended_lock)
-    client = signed_in_client(app)
-    started = client.post(
-        f"/api/projects/{project_id}/tasks/seed",
-        json={"run_truth_scope": ["repo-a"]},
-    )
-    operation_id = started.json()["operation_id"]
-    assert lock_waiting.wait(timeout=2)
-
-    paused_request = client.post(f"/api/projects/{project_id}/tasks/{operation_id}/pause", json={})
-
-    assert paused_request.status_code == 202
-    paused = _wait_for_status(client, project_id, operation_id, {"paused"})
-    assert paused["error"] is None
-    assert paused["can_resume"] is False
-
-
-def test_seed_pauses_and_retains_its_patch_when_run_lock_ownership_is_lost(
-    app, monkeypatch
-) -> None:
-    project_id = app.state.default_project_id
-    workspace = app.state.service.history.workspace
-    provider_started = threading.Event()
-    release_provider = threading.Event()
-    acquired_lease: list[RunLockLease] = []
-
-    class PausingLauncher(ScriptedLauncher):
-        async def stream(self, *args, browser_grant=None, **kwargs):
-            async for event in super().stream(*args, browser_grant=browser_grant, **kwargs):
-                if event.event == "done":
-                    provider_started.set()
-                    await async_wait_until(release_provider.is_set)
-                yield event
-
-    @contextmanager
-    def observable_lock(*, on_wait=None, cancelled=None, on_lost=None):
-        del on_wait, cancelled
-        lease = RunLockLease(workspace.location, on_lost=on_lost)
-        acquired_lease.append(lease)
-        yield lease
-
-    launcher = PausingLauncher([{"patch.json": agent_patch_json(seed_patch())}])
-    monkeypatch.setattr(workspace, "run_lock", observable_lock)
-    monkeypatch.setattr(app.state.catalog.launcher, "stream", launcher.stream)
-    client = signed_in_client(app)
-    started = client.post(
-        f"/api/projects/{project_id}/tasks/seed",
-        json={"run_truth_scope": ["repo-a"]},
-    )
-    operation_id = started.json()["operation_id"]
-
-    assert provider_started.wait(timeout=2)
-    acquired_lease[0]._mark_lost(
-        f"Canonical-state lock holder for {workspace.location} exited unexpectedly."
-    )
-    release_provider.set()
-
-    paused = _wait_for_status(client, project_id, operation_id, {"paused"})
-    assert paused["error"] is None
-    assert "lock holder" in paused["status_message"]
-    assert paused["stage_root"] is not None
-    assert (Path(paused["stage_root"]) / "patch.json").is_file()
-    assert client.get(f"/api/projects/{project_id}").json()["revision"] == 1
-    categories = {item["category"] for item in paused["debug_receipts"]}
-    assert "canonical_state_lock_lost" in categories
-
-
-@pytest.mark.parametrize("kind", ["seed", "refresh"])
-def test_seed_and_refresh_reject_caller_supplied_sessions(app, kind) -> None:
-    client = signed_in_client(app)
-    project_id = app.state.default_project_id
-    session_id = str(uuid.uuid4())
-
-    background = client.post(
-        f"/api/projects/{project_id}/tasks/{kind}",
-        json={"session_id": session_id},
-    )
-
-    assert background.status_code == 422
-    assert client.get(f"/api/projects/{project_id}/tasks").json() == []
-
-
 def test_task_validation_status_does_not_depend_on_exception_wording(app, monkeypatch) -> None:
     project_id = app.state.default_project_id
 
@@ -1736,436 +1522,11 @@ def test_task_validation_status_does_not_depend_on_exception_wording(app, monkey
     monkeypatch.setattr("rcp.api.tasks._validated_task_request", reject_validation)
 
     response = signed_in_client(app).post(
-        f"/api/projects/{project_id}/tasks/seed",
+        f"/api/projects/{project_id}/tasks/project_chat",
         json={"run_truth_scope": ["repo-a"]},
     )
 
     assert response.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_graph_stream_rejects_uncheckpointed_session_before_launch(
-    manifest, tmp_path
-) -> None:
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    launcher = FakeLauncher([AgentEvent(event="done")])
-
-    events = [
-        item
-        async for item in stream_graph_run(
-            app.state.service,
-            launcher,
-            "seed",
-            RunRequest(session_id=str(uuid.uuid4())),
-            tmp_path / "data",
-        )
-    ]
-
-    assert launcher.calls == 0
-    assert "only be resumed from an RCP background task checkpoint" in events[0]
-
-
-@pytest.mark.asyncio
-async def test_graph_stream_launches_with_degraded_source_fallback(
-    manifest, tmp_path, monkeypatch
-) -> None:
-    app, service = _seeded_project(manifest, tmp_path)
-
-    monkeypatch.setattr(
-        "rcp.service.preflight_provider_roots",
-        lambda *_args, **_kwargs: ["laptop/codex source root: provider source is unreadable"],
-    )
-    launcher = ScriptedLauncher([{"patch.json": agent_patch_json(refresh_patch())}])
-
-    frames = [
-        item
-        async for item in stream_graph_run(
-            service,
-            launcher,
-            "refresh",
-            RunRequest(run_truth_scope=["repo-a"]),
-            tmp_path / "data",
-            execution=_agent_task_execution(
-                app.state.background_tasks.store,
-                "degraded-source-refresh",
-            ),
-        )
-    ]
-
-    assert launcher.calls == 1
-    assert not _error_texts(frames)
-    contract = next(
-        value for name, value in launcher.input_snapshots[0].items() if name.endswith("-initial.md")
-    )
-    assert service.manifest.sources.codex_roots[0] in contract
-    assert any(
-        Path(path) == Path(service.manifest.sources.codex_roots[0])
-        for path in launcher.launch_kwargs[0]["read_dirs"]
-    )
-
-
-@pytest.mark.asyncio
-async def test_graph_stream_reuses_revision_from_assembled_context(
-    manifest, tmp_path, monkeypatch
-) -> None:
-    app, service = _seeded_project(manifest, tmp_path)
-    context = service.assemble_run(
-        RunRequest(run_truth_scope=["repo-a"]),
-        surface="refresh",
-    )
-    assert context.graph_revision == 2
-    monkeypatch.setattr(service, "assemble_run", lambda *_args, **_kwargs: context)
-    monkeypatch.setattr(
-        service,
-        "graph_snapshot",
-        lambda: (_ for _ in ()).throw(
-            AssertionError("fresh graph run must reuse its materialized revision")
-        ),
-    )
-    launcher = ScriptedLauncher([{"patch.json": agent_patch_json(refresh_patch())}])
-
-    frames = [
-        frame
-        async for frame in stream_graph_run(
-            service,
-            launcher,
-            "refresh",
-            RunRequest(run_truth_scope=["repo-a"]),
-            tmp_path / "data",
-            execution=_agent_task_execution(
-                app.state.background_tasks.store,
-                "assembled-context-refresh",
-            ),
-        )
-    ]
-
-    assert _applied_revision(frames) == 3
-
-
-def test_legacy_run_with_caller_session_cannot_resume(app) -> None:
-    store = app.state.background_tasks.store
-    project_id = app.state.default_project_id
-    session_id = str(uuid.uuid4())
-    now = store.now()
-    legacy = store.create_agent_task(
-        AgentTaskRecord(
-            operation_id=str(uuid.uuid4()),
-            project_id=project_id,
-            kind="seed",
-            status="paused",
-            request=RunRequest(session_id=session_id).model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
-            status_message="Paused legacy run.",
-            native_session_id=session_id,
-        )
-    )
-
-    response = signed_in_client(app).post(
-        f"/api/projects/{project_id}/tasks/{legacy.operation_id}/resume", json={}
-    )
-
-    assert response.status_code == 409
-    assert "not checkpointed or validated by RCP" in response.json()["detail"]
-
-
-def test_background_seed_persists_exact_failure(app) -> None:
-    project_id = app.state.default_project_id
-
-    async def stream(*_args):
-        yield _event_frame(
-            AgentEvent(
-                event="error",
-                text="Local execution would copy 3.8 GiB. Choose remote-1 in Run on.",
-            )
-        )
-
-    app.state.background_tasks.stream = stream
-    client = signed_in_client(app)
-    started = client.post(
-        f"/api/projects/{project_id}/tasks/seed",
-        json={"run_truth_scope": ["repo-a"]},
-    )
-
-    failed = _wait_for_run(client, project_id, started.json()["operation_id"])
-    assert failed["status"] == "failed"
-    assert failed["error"] == ("Local execution would copy 3.8 GiB. Choose remote-1 in Run on.")
-    receipt_categories = {receipt["category"] for receipt in failed["debug_receipts"]}
-    assert {"operation_created", "operation_failed"}.issubset(receipt_categories)
-    failure_receipt = next(
-        receipt for receipt in failed["debug_receipts"] if receipt["category"] == "operation_failed"
-    )
-    assert failure_receipt["payload"] == {
-        "status": "failed",
-        "error_length": len(failed["error"]),
-    }
-    assert failed["error"] not in json.dumps(failure_receipt["payload"])
-
-
-def test_rejected_refresh_is_corrected_without_burning_a_revision(app, tmp_path) -> None:
-    """A validator rejection is a correctable authoring error, not history."""
-    project_id = app.state.default_project_id
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    launcher = ScriptedLauncher(
-        [
-            {"patch.json": agent_patch_json(gated_patch())},
-            {"patch.json": agent_patch_json(refresh_patch())},
-        ]
-    )
-
-    async def stream(_project_id, kind, request, execution):
-        async for frame in stream_graph_run(
-            service,
-            launcher,
-            kind,
-            request,
-            tmp_path / "data",
-            execution=execution,
-        ):
-            yield frame
-
-    app.state.background_tasks.stream = stream
-    client = signed_in_client(app)
-    started = client.post(
-        f"/api/projects/{project_id}/tasks/refresh",
-        json={
-            "provider": "codex",
-            "run_truth_scope": ["repo-a"],
-            "run_on": BACKEND_MACHINE_ID,
-        },
-    )
-
-    completed = _wait_for_run(client, project_id, started.json()["operation_id"])
-    assert completed["status"] == "succeeded"
-    assert completed["applied_revision"] == 3
-    assert launcher.calls == 2
-    contract = next(
-        value for name, value in launcher.input_snapshots[0].items() if name.endswith("initial.md")
-    )
-    assert "authorized-session-keys.json" not in contract
-    assert "authorized-session-keys.json" not in launcher.input_snapshots[0]
-    assert service.history.state().revision == 3
-    assert "rq/transfer-after-shift" in service.history.state().nodes
-    receipt_categories = {receipt["category"] for receipt in completed["debug_receipts"]}
-    assert {
-        "context_assembled",
-        "stage_checkpoint",
-        "agent_launch",
-        "agent_prompt",
-        "native_agent_checkpoint",
-        "patch_retained",
-        "patch_parsed",
-        "patch_rejected",
-        "patch_correction_requested",
-        "operation_completed",
-    }.issubset(receipt_categories)
-
-    context_receipt = next(
-        receipt
-        for receipt in completed["debug_receipts"]
-        if receipt["category"] == "context_assembled"
-    )
-    assert context_receipt["payload"]["repository_count"] == 2
-    assert "source_errors" not in context_receipt["payload"]
-    prompt_receipt = next(
-        receipt for receipt in completed["debug_receipts"] if receipt["category"] == "agent_prompt"
-    )
-    exact_prompt = launcher.prompts[0]
-    assert prompt_receipt["payload"]["prompt"] == exact_prompt
-    assert prompt_receipt["payload"]["line_count"] == len(exact_prompt.splitlines())
-    assert (
-        prompt_receipt["payload"]["sha256"]
-        == hashlib.sha256(exact_prompt.encode("utf-8")).hexdigest()
-    )
-    contracts = {item["role"]: item for item in completed["contracts"]}
-    assert contracts["base"]["content"] == contract
-    assert contracts["base"]["sha256"] == hashlib.sha256(contract.encode("utf-8")).hexdigest()
-
-
-@pytest.mark.asyncio
-async def test_graph_launch_passes_the_recorded_provider_binary(manifest, tmp_path) -> None:
-    app, service = _seeded_project(manifest, tmp_path)
-    _record_local_codex_path(app)
-    launcher = ScriptedLauncher([{"patch.json": agent_patch_json(refresh_patch())}])
-
-    _ = [
-        frame
-        async for frame in stream_graph_run(
-            service,
-            launcher,
-            "refresh",
-            RunRequest(provider="codex", run_truth_scope=["repo-a"]),
-            tmp_path / "data",
-            execution=_agent_task_execution(
-                app.state.background_tasks.store,
-                "provider-binary-refresh",
-            ),
-        )
-    ]
-
-    assert launcher.launch_kwargs[0]["binary"] == "/opt/agents/codex"
-
-
-@pytest.mark.parametrize("file_name", ["Patch.json", "output.json"])
-@pytest.mark.asyncio
-async def test_patch_under_an_unexpected_filename_is_still_applied(
-    manifest, tmp_path, file_name
-) -> None:
-    """Rung 1: a filename mismatch must not throw away a whole run's work."""
-    app, service = _seeded_project(manifest, tmp_path)
-    launcher = ScriptedLauncher([{file_name: agent_patch_json(refresh_patch())}])
-
-    frames = [
-        item
-        async for item in stream_graph_run(
-            service,
-            launcher,
-            "refresh",
-            RunRequest(run_truth_scope=["repo-a"]),
-            tmp_path / "data",
-            execution=_agent_task_execution(
-                app.state.background_tasks.store,
-                f"unexpected-filename-{file_name}",
-            ),
-        )
-    ]
-
-    assert launcher.calls == 1
-    assert _applied_revision(frames) == 3
-    assert _events(frames)[-1].event == "done"
-    assert "rq/transfer-after-shift" in service.history.state().nodes
-
-
-@pytest.mark.asyncio
-async def test_invalid_patch_is_corrected_in_the_same_native_session(manifest, tmp_path) -> None:
-    """Rung 2: hand the concrete problem back to the session holding the analysis."""
-    app, service = _seeded_project(manifest, tmp_path)
-    launcher = ScriptedLauncher(
-        [
-            {"patch.json": agent_patch_json(shape_invalid_patch())},
-            {"patch.json": agent_patch_json(refresh_patch())},
-        ]
-    )
-
-    frames = [
-        item
-        async for item in stream_graph_run(
-            service,
-            launcher,
-            "refresh",
-            RunRequest(run_truth_scope=["repo-a"]),
-            tmp_path / "data",
-            execution=_agent_task_execution(
-                app.state.background_tasks.store,
-                "invalid-patch-correction",
-            ),
-        )
-    ]
-
-    assert launcher.calls == 2
-    assert _applied_revision(frames) == 3
-    assert service.history.state().revision == 3
-    assert launcher.resumed_sessions == [None, launcher.native_session_id]
-    correction = launcher.prompts[1]
-    assert "set_ontology" not in correction
-    correction_inputs = launcher.input_snapshots[1]
-    diagnostic = next(
-        value for name, value in correction_inputs.items() if name.endswith("correction-1.json")
-    )
-    contract = next(
-        value for name, value in correction_inputs.items() if name.endswith("correction-1.md")
-    )
-    assert "set_ontology" in diagnostic
-    assert str(launcher.workspaces[0] / "patch.json") in contract
-    assert contract == correction
-    start_path = Path(launcher.prompts[0].splitlines()[1])
-    start = launcher.input_snapshots[0][start_path.name]
-    assert correction.split("\n\n")[-1] == SECTIONS["master_pointer"].format(path=start_path)
-    assert start not in correction
-    assert graph_rules(edits=True, ontology_extensions=False) not in correction
-    store = app.state.background_tasks.store
-    assert store.agent_task_contract("invalid-patch-correction", "session_master") == start
-
-
-@pytest.mark.asyncio
-async def test_correction_rounds_are_bounded_instead_of_looping(manifest, tmp_path) -> None:
-    """Rung 3 plus the round limit: no patch at all, corrected only twice."""
-    app, service = _seeded_project(manifest, tmp_path)
-    launcher = ScriptedLauncher([{}])
-
-    frames = [
-        item
-        async for item in stream_graph_run(
-            service,
-            launcher,
-            "refresh",
-            RunRequest(run_truth_scope=["repo-a"]),
-            tmp_path / "data",
-        )
-    ]
-
-    assert _error_texts(frames)
-    assert launcher.calls == PATCH_CORRECTION_MAX_ROUNDS + 1
-    assert launcher.resumed_sessions == [None] + [launcher.native_session_id] * (
-        PATCH_CORRECTION_MAX_ROUNDS
-    )
-    assert _applied_revision(frames) is None
-    assert not any((workspace / "patch.json").exists() for workspace in launcher.workspaces)
-    assert service.history.state().revision == 2
-
-
-def test_failed_run_retains_its_patch_and_scratch_folder(manifest, tmp_path) -> None:
-    """Retention: a failure keeps its evidence; a success cleans up after itself.
-
-    The patch is persisted before validation, and rejected drafts never enter canonical history, so
-    the next accepted patch receives the next coherent revision.
-    """
-    app, service = _seeded_project(manifest, tmp_path)
-    store = app.state.background_tasks.store
-    rejected = agent_patch_json(gated_patch())
-
-    failed_execution = _agent_task_execution(store, "failed-operation")
-    failed_launcher = ScriptedLauncher([{"patch.json": rejected}])
-    failed_frames = _drain(
-        stream_graph_run(
-            service,
-            failed_launcher,
-            "refresh",
-            RunRequest(run_truth_scope=["repo-a"]),
-            tmp_path / "data",
-            execution=failed_execution,
-        )
-    )
-
-    assert _error_texts(failed_frames)
-    assert _applied_revision(failed_frames) is None
-    failed_stage = failed_launcher.workspaces[0]
-    assert failed_stage.is_dir()
-    assert (failed_stage / "patch.json").is_file()
-    assert store.agent_task_patch_output("failed-operation") == rejected
-    assert store.agent_task("failed-operation").stage_root == str(failed_stage)
-    store.fail_agent_task("failed-operation", _error_texts(failed_frames)[0])
-
-    applied_execution = _agent_task_execution(store, "applied-operation")
-    applied_launcher = ScriptedLauncher([{"patch.json": agent_patch_json(refresh_patch())}])
-    applied_frames = _drain(
-        stream_graph_run(
-            service,
-            applied_launcher,
-            "refresh",
-            RunRequest(run_truth_scope=["repo-a"]),
-            tmp_path / "data",
-            execution=applied_execution,
-        )
-    )
-
-    assert _applied_revision(applied_frames) == 3
-    assert service.history.state().revision == 3
-    assert "rq/transfer-after-shift" in service.history.state().nodes
-    assert not applied_launcher.workspaces[0].exists()
-    assert store.agent_task("applied-operation").stage_root is None
-    assert failed_stage.is_dir()
 
 
 def test_patch_collector_prefers_patch_json_and_refuses_ambiguity(tmp_path) -> None:
@@ -2219,37 +1580,38 @@ def test_exact_patch_digest_ignores_patch_shaped_drafts(tmp_path) -> None:
     )
 
 
-def test_local_state_repository_is_read_in_place_instead_of_copied(app, manifest) -> None:
-    """The canonical `.research/` on the execution machine is pointed at, never staged."""
-    service = app.state.service
-    context = service.assemble_run(RunRequest(run_truth_scope=["repo-a"]), surface="refresh")
-
-    class RecordingStage:
-        def __init__(self) -> None:
-            self.root = PurePosixPath("/tmp/rcp-run.test")
-            self.files: list[Path] = []
-            self.directories: list[str] = []
-
-        def put_file(self, source: Path, label: str, *, reuse: bool = False) -> str:
-            self.files.append(source)
-            return str(self.root / "inputs" / label)
-
-        def put_directory(self, _source: Path, label: str) -> str:
-            self.directories.append(label)
-            return str(self.root / "inputs" / label)
-
-        def write_workspace_text(self, name: str, content: str) -> None:
-            self.last_workspace_write = (name, content)
-
-    stage = RecordingStage()
-    staged = _stage_graph_context(context, service, stage, BACKEND_MACHINE_ID)
-
-    repository_path = manifest.repository_map["repo-a"].path
-    assert stage.files == []
-    assert stage.directories == []
-    assert staged.graph_path == f"{repository_path}/.research/graph.json"
-    assert staged.research_md_path == f"{repository_path}/.research/research.md"
-    assert staged.facts_dir == f"{repository_path}/.research/facts"
+def _agent_task_execution(store, operation_id: str) -> AgentTaskExecution:
+    now = store.now()
+    authorized_by = _named_test_authorizer(store)
+    projects = store.projects()
+    assert len(projects) == 1
+    request = RunRequest(
+        run_truth_scope=["repo-a"],
+        chat_scope="project",
+        chat_id=str(uuid.uuid4()),
+        mode="work",
+    )
+    dispatch_authority = resolve_dispatch_authority("project_chat", request)
+    assert dispatch_authority is not None
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id=operation_id,
+            project_id=projects[0].project_id,
+            kind="project_chat",
+            status="running",
+            request=request.model_dump(mode="json"),
+            created_at=now,
+            updated_at=now,
+            status_message="running",
+            authorized_by=authorized_by,
+            dispatch_authority=dispatch_authority,
+        )
+    )
+    return AgentTaskExecution(
+        operation_id=operation_id,
+        store=store,
+        control=AgentProcessControl(),
+    )
 
 
 SILENT_DOWNGRADE = (
@@ -2296,35 +1658,6 @@ def test_an_ignored_launch_setting_is_exported_by_both_task_projections(
     assert detail.json()["degradation"] == expected
 
 
-def _agent_task_execution(store, operation_id: str) -> AgentTaskExecution:
-    now = store.now()
-    authorized_by = _named_test_authorizer(store)
-    projects = store.projects()
-    assert len(projects) == 1
-    request = RunRequest(run_truth_scope=["repo-a"])
-    dispatch_authority = resolve_dispatch_authority("refresh", request)
-    assert dispatch_authority is not None
-    store.create_agent_task(
-        AgentTaskRecord(
-            operation_id=operation_id,
-            project_id=projects[0].project_id,
-            kind="refresh",
-            status="running",
-            request=request.model_dump(mode="json"),
-            created_at=now,
-            updated_at=now,
-            status_message="running",
-            authorized_by=authorized_by,
-            dispatch_authority=dispatch_authority,
-        )
-    )
-    return AgentTaskExecution(
-        operation_id=operation_id,
-        store=store,
-        control=AgentProcessControl(),
-    )
-
-
 def _drain(stream) -> list[str]:
     async def collect() -> list[str]:
         return [item async for item in stream]
@@ -2354,291 +1687,6 @@ def test_raw_agent_patch_rejects_forged_top_level_authority(field: str, value: s
     with pytest.raises(ValidationError) as caught:
         AgentPatch.model_validate(forged)
     assert (field,) in {error["loc"] for error in caught.value.errors()}
-
-
-def test_remote_context_uses_direct_paths_only_for_its_execution_machine(app, tmp_path) -> None:
-    service = app.state.service
-    context = service.assemble_run(
-        RunRequest(run_truth_scope=["repo-a"]),
-        surface="refresh",
-    )
-
-    class RecordingStage:
-        root = PurePosixPath("/tmp/rcp-run.test")
-
-        def put_file(self, _source: Path, label: str, *, reuse: bool = False) -> str:
-            return str(self.root / "inputs" / label)
-
-        def put_directory(self, _source: Path, label: str) -> str:
-            return str(self.root / "inputs" / label)
-
-        def write_workspace_text(self, name: str, content: str) -> None:
-            self.last_workspace_write = (name, content)
-
-    remote = _remote_card(app, "remote.example")
-    remote_repository = context.repositories[0].model_copy(
-        update={"machine": remote, "host": "remote.example"}
-    )
-    remote_context = context.model_copy(update={"repositories": [remote_repository]})
-    service.history.manifest.machines.append(remote)
-    service.history.manifest.repository_map[service.manifest.state.repository].machine = remote
-
-    staged = _stage_graph_context(remote_context, service, RecordingStage(), remote)
-
-    assert staged.repositories[0].path == remote_repository.path
-    assert staged.repositories[0].host == ""
-
-    with pytest.raises(StateUnavailable):
-        _stage_graph_context(context, service, RecordingStage(), remote)
-
-
-@pytest.mark.asyncio
-async def test_remote_stage_is_retained_after_failure_and_after_pause(
-    manifest, tmp_path, monkeypatch
-) -> None:
-    """A failed remote run keeps its scratch folder for inspection and for a Resume into the same
-    directory.
-    """
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    service = app.state.service
-    context = service.assemble_run(
-        RunRequest(run_truth_scope=["repo-a"]),
-        surface="refresh",
-    )
-    context = context.model_copy(
-        update={
-            "repositories": [
-                repository.model_copy(update={"host": "laptop.example"})
-                for repository in context.repositories
-            ]
-        }
-    )
-    remote = _remote_card(app, "research.example")
-    service.history.manifest.machines.append(remote)
-    service.history.manifest.repository_map[service.manifest.state.repository].machine = remote
-    monkeypatch.setattr(service.history, "_reload_manifest", lambda: None)
-    monkeypatch.setattr(service, "assemble_run", lambda *_args, **_kwargs: context)
-
-    class FakeRemoteStage:
-        instances = []
-        finalize_error = False
-
-        def __init__(self, host):
-            self.host = host
-            self.root = None
-            self.closed = False
-            self.finalized = 0
-            self.workspace_text: dict[str, str] = {}
-            self.instances.append(self)
-
-        @property
-        def workspace(self):
-            assert self.root is not None
-            return self.root / "workspace"
-
-        def open(self, operation_id=None, **_kwargs):
-            self.root = PurePosixPath(f"/tmp/rcp-run.{operation_id}")
-            return self
-
-        def put_file(self, _source, label, *, reuse=False):
-            assert self.root is not None
-            return str(self.root / "inputs" / label)
-
-        def put_directory(self, _source, label, *, reuse=False):
-            assert self.root is not None
-            return str(self.root / "inputs" / label)
-
-        def read_input_text(self, label):
-            raise ValueError(label)
-
-        def finalize_inputs(self):
-            self.finalized += 1
-            if self.finalize_error:
-                raise StateUnavailable("remote input batch was incomplete")
-
-        def list_workspace_files(self):
-            assert self.root is not None
-            return []
-
-        def list_workspace_entries(self):
-            assert self.root is not None
-            return sorted(self.workspace_text)
-
-        def write_workspace_text(self, name, content):
-            assert self.root is not None
-            self.workspace_text[name] = content
-
-        def read_workspace_text(self, name, *, max_bytes=None):
-            assert self.root is not None
-            content = self.workspace_text[name]
-            if max_bytes is not None and len(content.encode("utf-8")) > max_bytes:
-                raise ValueError("remote workspace file exceeds the test byte limit")
-            return content
-
-        def remove_workspace_file(self, name):
-            assert self.root is not None
-            self.workspace_text.pop(name, None)
-
-        def close(self):
-            self.closed = True
-            self.root = None
-            return True
-
-    monkeypatch.setattr("rcp.runs.tasks.graph.RemoteRunStage", FakeRemoteStage)
-    request = RunRequest(
-        provider="codex",
-        run_truth_scope=["repo-a"],
-        run_on=remote,
-    )
-
-    failed_execution = _agent_task_execution(
-        app.state.background_tasks.store,
-        "remote-failure",
-    )
-    failed_launcher = FakeLauncher([AgentEvent(event="error", text="provider failed")])
-    failed_events = [
-        item
-        async for item in stream_graph_run(
-            service,
-            failed_launcher,
-            "refresh",
-            request,
-            tmp_path / "data",
-            execution=failed_execution,
-        )
-    ]
-
-    assert any("provider failed" in item for item in failed_events)
-    assert FakeRemoteStage.instances[0].closed is False
-    assert FakeRemoteStage.instances[0].finalized == 3
-    assert failed_launcher.calls == 1
-
-    paused_execution = _agent_task_execution(
-        app.state.background_tasks.store,
-        "remote-pause",
-    )
-    paused_launcher = FakeLauncher([AgentEvent(event="paused", text="paused")])
-    paused_events = [
-        item
-        async for item in stream_graph_run(
-            service,
-            paused_launcher,
-            "refresh",
-            request,
-            tmp_path / "data",
-            execution=paused_execution,
-        )
-    ]
-
-    assert any('"event":"paused"' in item for item in paused_events)
-    assert FakeRemoteStage.instances[1].closed is False
-    assert FakeRemoteStage.instances[1].finalized == 3
-    assert paused_launcher.calls == 1
-
-    FakeRemoteStage.finalize_error = True
-    blocked_launcher = FakeLauncher([AgentEvent(event="done")])
-    blocked_events = [
-        item
-        async for item in stream_graph_run(
-            service,
-            blocked_launcher,
-            "refresh",
-            request,
-            tmp_path / "data",
-            execution=_agent_task_execution(
-                app.state.background_tasks.store,
-                "remote-incomplete-inputs",
-            ),
-        )
-    ]
-
-    assert any("remote input batch was incomplete" in item for item in blocked_events)
-    assert FakeRemoteStage.instances[2].finalized == 1
-    assert blocked_launcher.calls == 0
-
-
-def test_background_seed_can_pause_inspect_and_resume(app) -> None:
-    project_id = app.state.default_project_id
-    native_session_id = str(uuid.uuid4())
-    resumed_requests: list[RunRequest] = []
-
-    async def pausable_stream(_project_id, _kind, _request, execution):
-        yield _event_frame(AgentEvent(event="session", session_id=native_session_id))
-        await async_wait_until(execution.control.pause_requested.is_set)
-        yield _event_frame(AgentEvent(event="paused", text="Provider process paused."))
-
-    app.state.background_tasks.stream = pausable_stream
-    client = signed_in_client(app)
-    started = client.post(
-        f"/api/projects/{project_id}/tasks/seed",
-        json={"run_truth_scope": ["repo-a"]},
-    )
-    operation_id = started.json()["operation_id"]
-    _wait_for_status(client, project_id, operation_id, {"running"})
-
-    pause = client.post(f"/api/projects/{project_id}/tasks/{operation_id}/pause", json={})
-
-    assert pause.status_code == 202
-    paused = _wait_for_status(client, project_id, operation_id, {"paused"})
-    assert paused["can_resume"] is True
-    assert paused["can_retry"] is True
-    assert paused["native_session_id"] == native_session_id
-    assert paused["progress"] < 1
-
-    async def resumed_stream(_project_id, _kind, request, execution):
-        resumed_requests.append(request)
-        assert execution.continuation == "resume"
-        assert execution.reuses_native_checkpoint is True
-        assert execution.retry_feedback == ()
-        yield _event_frame(AgentEvent(event="message", text=json.dumps({"applied_revision": 1})))
-        yield _event_frame(AgentEvent(event="done"))
-
-    app.state.background_tasks.stream = resumed_stream
-    resumed = client.post(f"/api/projects/{project_id}/tasks/{operation_id}/resume", json={})
-
-    assert resumed.status_code == 202
-    resumed_id = resumed.json()["operation_id"]
-    completed = _wait_for_run(client, project_id, resumed_id)
-    assert completed["status"] == "succeeded"
-    assert completed["parent_operation_id"] == operation_id
-    assert completed["attempt"] == 2
-    assert completed["progress"] == 1
-    assert resumed_requests[0].session_id == native_session_id
-    created = next(
-        item for item in completed["debug_receipts"] if item["category"] == "operation_created"
-    )
-    assert created["payload"]["continuation_cause"] == "resume"
-
-
-def test_background_shutdown_requests_pause_with_shutdown_authority(app, monkeypatch) -> None:
-    project_id = app.state.default_project_id
-
-    async def pausable_stream(_project_id, _kind, _request, execution):
-        yield _event_frame(AgentEvent(event="session", session_id="shutdown-session"))
-        await async_wait_until(execution.control.pause_requested.is_set)
-        yield _event_frame(AgentEvent(event="paused", text="Provider process paused."))
-
-    app.state.background_tasks.stream = pausable_stream
-    client = signed_in_client(app)
-    started = client.post(f"/api/projects/{project_id}/tasks/seed", json={})
-    operation_id = started.json()["operation_id"]
-    _wait_for_status(client, project_id, operation_id, {"running"})
-
-    store = app.state.background_tasks.store
-    request_pause = store.request_agent_task_pause
-    pause_requests = []
-
-    def record_pause(operation_id, *, requested_by="human"):
-        pause_requests.append((operation_id, requested_by))
-        return request_pause(operation_id, requested_by=requested_by)
-
-    monkeypatch.setattr(store, "request_agent_task_pause", record_pause)
-    app.state.background_tasks.shutdown(timeout=2)
-
-    paused = _wait_for_status(client, project_id, operation_id, {"paused"})
-    assert paused["status"] == "paused"
-
-    assert pause_requests == [(operation_id, "shutdown")]
 
 
 @pytest.mark.asyncio
@@ -2717,748 +1765,6 @@ async def test_closing_paused_background_stream_awaits_launcher_cleanup(
     assert cleanup_finished.is_set()
 
 
-def test_failed_background_seed_can_retry_without_native_session(app) -> None:
-    project_id = app.state.default_project_id
-
-    async def failed_stream(*_args):
-        yield _event_frame(AgentEvent(event="error", text="provider connection dropped"))
-
-    app.state.background_tasks.stream = failed_stream
-    client = signed_in_client(app)
-    started = client.post(f"/api/projects/{project_id}/tasks/seed", json={})
-    failed = _wait_for_run(client, project_id, started.json()["operation_id"])
-    assert failed["can_resume"] is False
-    assert failed["can_retry"] is True
-
-    async def retry_stream(_project_id, _kind, request, _execution):
-        assert request.session_id is None
-        assert request.provider == "codex"
-        assert request.model == "gpt-5.6-codex"
-        assert request.reasoning == "high"
-        assert _execution.continuation == "handoff"
-        assert _execution.reuses_native_checkpoint is False
-        assert len(_execution.retry_feedback) == 1
-        assert "provider connection dropped" in _execution.retry_feedback[0]
-        yield _event_frame(AgentEvent(event="message", text=json.dumps({"applied_revision": 1})))
-        yield _event_frame(AgentEvent(event="done"))
-
-    app.state.background_tasks.stream = retry_stream
-    retried = client.post(
-        f"/api/projects/{project_id}/tasks/{failed['operation_id']}/retry",
-        json={
-            "provider": "codex",
-            "model": "gpt-5.6-codex",
-            "reasoning": "high",
-        },
-    )
-
-    assert retried.status_code == 202
-    completed = _wait_for_run(client, project_id, retried.json()["operation_id"])
-    assert completed["status"] == "succeeded"
-    assert completed["parent_operation_id"] == failed["operation_id"]
-    assert "native_resume_unavailable" in {item["category"] for item in completed["debug_receipts"]}
-
-
-def test_same_provider_retry_resumes_owned_checkpoint(app, tmp_path) -> None:
-    project_id = app.state.default_project_id
-    stage = tmp_path / "retained-stage"
-    stage.mkdir()
-
-    async def failed_stream(_project_id, _kind, _request, execution):
-        execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
-        yield _event_frame(AgentEvent(event="session", session_id="owned-session"))
-        yield _event_frame(AgentEvent(event="error", text="provider connection dropped"))
-
-    app.state.background_tasks.stream = failed_stream
-    client = signed_in_client(app)
-    started = client.post(f"/api/projects/{project_id}/tasks/seed", json={"provider": "codex"})
-    failed = _wait_for_run(client, project_id, started.json()["operation_id"])
-
-    async def resumed_stream(_project_id, _kind, request, execution):
-        assert request.session_id == "owned-session"
-        assert execution.continuation == "retry"
-        assert execution.reuses_native_checkpoint is True
-        assert len(execution.retry_feedback) == 1
-        assert "provider connection dropped" in execution.retry_feedback[0]
-        assert execution.stage_root == str(stage)
-        yield _event_frame(AgentEvent(event="message", text=json.dumps({"applied_revision": 1})))
-        yield _event_frame(AgentEvent(event="done"))
-
-    app.state.background_tasks.stream = resumed_stream
-    retried = client.post(
-        f"/api/projects/{project_id}/tasks/{failed['operation_id']}/retry", json={}
-    )
-    completed = _wait_for_run(client, project_id, retried.json()["operation_id"])
-
-    assert completed["status"] == "succeeded"
-    assert completed["native_session_id"] == "owned-session"
-    created = next(
-        item for item in completed["debug_receipts"] if item["category"] == "operation_created"
-    )
-    assert created["payload"]["continuation_cause"] == "retry"
-
-
-@pytest.mark.parametrize(
-    ("provider", "session_id", "error"),
-    [
-        (
-            "codex",
-            "dropped-session",
-            "collab spawn failed: no thread with id: 01a0976e-c283-7622-b2d6-43bf9d992198",
-        ),
-    ],
-)
-def test_same_provider_unusable_session_retry_starts_clean(
-    app, tmp_path, provider, session_id, error
-) -> None:
-    if provider == "claude":
-        store_test_claude_token(app.state.background_tasks.store)
-    project_id = app.state.default_project_id
-    stage = tmp_path / "exhausted-stage"
-    stage.mkdir()
-
-    async def failed_stream(_project_id, _kind, _request, execution):
-        execution.checkpoint_stage(BACKEND_MACHINE_ID, str(stage))
-        yield _event_frame(AgentEvent(event="session", session_id=session_id))
-        yield _event_frame(AgentEvent(event="error", text=error))
-
-    app.state.background_tasks.stream = failed_stream
-    client = signed_in_client(app)
-    started = client.post(f"/api/projects/{project_id}/tasks/seed", json={"provider": provider})
-    failed = _wait_for_run(client, project_id, started.json()["operation_id"])
-
-    async def clean_stream(_project_id, _kind, request, execution):
-        assert request.session_id is None
-        assert execution.continuation == "handoff"
-        assert execution.reuses_native_checkpoint is False
-        assert execution.stage_root is None
-        yield _event_frame(AgentEvent(event="message", text=json.dumps({"applied_revision": 1})))
-        yield _event_frame(AgentEvent(event="done"))
-
-    app.state.background_tasks.stream = clean_stream
-    retried = client.post(
-        f"/api/projects/{project_id}/tasks/{failed['operation_id']}/retry", json={}
-    )
-    completed = _wait_for_run(client, project_id, retried.json()["operation_id"])
-
-    assert completed["status"] == "succeeded"
-    assert "native_resume_skipped" in {item["category"] for item in completed["debug_receipts"]}
-
-
-def test_retry_reuse_and_handoff_fallback_events_include_concrete_reasons(tmp_path) -> None:
-    store = AppStore(tmp_path / "rcp.sqlite3")
-    now = store.now()
-    store.create_agent_task(
-        AgentTaskRecord(
-            operation_id="retry",
-            project_id="project",
-            kind="seed",
-            status="running",
-            request={},
-            created_at=now,
-            updated_at=now,
-            status_message="running",
-        )
-    )
-    execution = AgentTaskExecution(operation_id="retry", store=store, control=AgentProcessControl())
-
-    _record_context_reuse(
-        execution, reused=False, reason="attempt 2 has no prepared context metadata"
-    )
-    _record_progress_handoff(
-        execution, handed_off=False, reason="attempt 2 left no retained provider progress"
-    )
-
-    receipts = {item.category: item.payload for item in store.agent_task_receipts("retry")}
-    assert receipts["context_reuse_unavailable"] == {
-        "reused": False,
-        "reason": "attempt 2 has no prepared context metadata",
-    }
-    assert receipts["progress_handoff_unavailable"] == {
-        "handed_off": False,
-        "reason": "attempt 2 left no retained provider progress",
-    }
-
-
-def test_seed_quota_failure_retries_with_new_provider_and_reuses_context(
-    app, manifest, tmp_path, monkeypatch
-) -> None:
-    """A paused legacy retry made no provider dispatch and has no prepared context or native
-    session; it must not hide attempt 1's useful work.
-    """
-    store_test_claude_token(app.state.background_tasks.store)
-    project_id = app.state.default_project_id
-    service = app.state.service
-    original_assemble = service.assemble_run
-    assemble_calls = 0
-
-    def counted_assemble(*args, **kwargs):
-        nonlocal assemble_calls
-        assemble_calls += 1
-        return original_assemble(*args, **kwargs)
-
-    monkeypatch.setattr(service, "assemble_run", counted_assemble)
-
-    class ProviderSwitchLauncher:
-        def __init__(self) -> None:
-            self.calls: list[dict[str, object]] = []
-
-        async def stream(self, provider, prompt, *, browser_grant=None, **kwargs):
-            workspace = Path(kwargs["cwd"])
-            inputs = workspace / "inputs"
-            self.calls.append(
-                {
-                    "provider": provider,
-                    "prompt": prompt,
-                    "session_id": kwargs.get("session_id"),
-                    "workspace": str(workspace),
-                    "inputs": {
-                        item.name: item.read_text(encoding="utf-8")
-                        for item in inputs.iterdir()
-                        if item.is_file()
-                    },
-                }
-            )
-            if len(self.calls) == 1:
-                transcript = Path(manifest.sources.claude_roots[0]) / "claude-native-session.jsonl"
-                transcript.write_text(
-                    json.dumps(
-                        {
-                            "uuid": "partial-work",
-                            "sessionId": "claude-native-session",
-                            "cwd": manifest.repository_map["repo-a"].path,
-                            "timestamp": "2026-07-31T00:00:00Z",
-                            "type": "assistant",
-                            "message": {"content": "partial synthesis from provider A"},
-                        }
-                    )
-                    + "\n",
-                    encoding="utf-8",
-                )
-                yield AgentEvent(event="session", session_id="claude-native-session")
-                yield AgentEvent(event="message", text="Indexed the corpus and formed a draft.")
-                yield AgentEvent(
-                    event="error",
-                    text="You've hit your limit · resets 5pm (Asia/Shanghai)",
-                )
-                return
-            (workspace / "patch.json").write_text(agent_patch_json(seed_patch()), encoding="utf-8")
-            yield AgentEvent(event="session", session_id="codex-native-session")
-            yield AgentEvent(event="done")
-
-    launcher = ProviderSwitchLauncher()
-
-    async def stream(_project_id, kind, request, execution):
-        async for frame in stream_graph_run(
-            service,
-            launcher,
-            kind,
-            request,
-            tmp_path / "data",
-            execution=execution,
-        ):
-            yield frame
-
-    app.state.background_tasks.stream = stream
-    client = signed_in_client(app)
-    started = client.post(
-        f"/api/projects/{project_id}/tasks/seed",
-        json={"provider": "claude", "run_truth_scope": ["repo-a"]},
-    )
-    failed = _wait_for_run(client, project_id, started.json()["operation_id"])
-
-    assert failed["status"] == "failed"
-    assert failed["error"] == "You've hit your limit · resets 5pm (Asia/Shanghai)"
-    failed_categories = {item["category"] for item in failed["debug_receipts"]}
-    assert "patch_collection_skipped" in failed_categories
-    assert "patch_retained" not in failed_categories
-    assert "patch_correction_requested" not in failed_categories
-
-    store = app.state.catalog.store
-    now = store.now()
-    empty_stage = tmp_path / "attempt-2-stage"
-    (empty_stage / "inputs").mkdir(parents=True)
-    failed_request = RunRequest.model_validate(failed["request"])
-    failed_dispatch_authority = resolve_dispatch_authority("seed", failed_request)
-    assert failed_dispatch_authority is not None
-    attempt_2 = store.create_agent_task(
-        AgentTaskRecord(
-            operation_id="attempt-2-without-progress",
-            project_id=project_id,
-            kind="seed",
-            status="paused",
-            request=failed["request"],
-            created_at=now,
-            updated_at=now,
-            status_message="Paused before provider launch.",
-            attempt=2,
-            parent_operation_id=failed["operation_id"],
-            stage_root=str(empty_stage),
-            dispatch_authority=failed_dispatch_authority,
-        )
-    )
-
-    retried = client.post(
-        f"/api/projects/{project_id}/tasks/{attempt_2.operation_id}/retry",
-        json={"provider": "codex"},
-    )
-    assert retried.status_code == 202
-    completed = _wait_for_run(client, project_id, retried.json()["operation_id"])
-
-    assert completed["status"] == "succeeded"
-    assert completed["applied_revision"] == 2
-    assert assemble_calls == 1
-    assert [item["provider"] for item in launcher.calls] == ["claude", "codex"]
-    assert launcher.calls[1]["session_id"] is None
-    assert completed["parent_operation_id"] == attempt_2.operation_id
-    assert not any(name.endswith("handoff.json") for name in launcher.calls[1]["inputs"])
-    completed_categories = {item["category"] for item in completed["debug_receipts"]}
-    assert "context_reused" in completed_categories
-    assert "context_reuse_unavailable" not in completed_categories
-    assert "progress_handoff_unavailable" in completed_categories
-    first_base = store.agent_task_contract(failed["operation_id"], "base")
-    retry_base = store.agent_task_contract(completed["operation_id"], "base")
-    assert first_base is not None
-    assert retry_base is not None
-    assert retry_base != first_base
-    retry_workspace = Path(str(launcher.calls[1]["workspace"]))
-    assert str(retry_workspace / "patch.json") in retry_base
-    assert str(Path(failed["stage_root"]) / "patch.json") not in retry_base
-    assert str(retry_workspace / "inputs") in retry_base
-    assert f"task-{completed['operation_id']}-patch-schema.json" in retry_base
-    assert "authorized-session-keys.json" not in retry_base
-    assert f"task-{completed['operation_id']}-retry-diagnostics.json" in retry_base
-    retry_contract = store.agent_task_contract(completed["operation_id"], "retry")
-    assert retry_contract is None
-
-
-def test_clean_retry_without_progress_uses_reused_context_and_fresh_base(
-    app, tmp_path, monkeypatch
-) -> None:
-    project_id = app.state.default_project_id
-    service = app.state.service
-    original_assemble = service.assemble_run
-    assemble_calls = 0
-
-    def counted_assemble(*args, **kwargs):
-        nonlocal assemble_calls
-        assemble_calls += 1
-        return original_assemble(*args, **kwargs)
-
-    monkeypatch.setattr(service, "assemble_run", counted_assemble)
-
-    class NoProgressLauncher:
-        def __init__(self) -> None:
-            self.calls: list[dict[str, object]] = []
-
-        async def stream(self, _provider, prompt, *, browser_grant=None, **kwargs):
-            workspace = Path(kwargs["cwd"])
-            self.calls.append(
-                {
-                    "prompt": prompt,
-                    "workspace": str(workspace),
-                    "inputs": {
-                        item.name: item.read_text(encoding="utf-8")
-                        for item in (workspace / "inputs").iterdir()
-                        if item.is_file()
-                    },
-                }
-            )
-            if len(self.calls) == 1:
-                yield AgentEvent(event="error", text="provider connection dropped before work")
-                return
-            (workspace / "patch.json").write_text(agent_patch_json(seed_patch()), encoding="utf-8")
-            yield AgentEvent(event="done")
-
-    launcher = NoProgressLauncher()
-
-    async def stream(_project_id, kind, request, execution):
-        async for frame in stream_graph_run(
-            service, launcher, kind, request, tmp_path / "data", execution=execution
-        ):
-            yield frame
-
-    app.state.background_tasks.stream = stream
-    client = signed_in_client(app)
-    started = client.post(f"/api/projects/{project_id}/tasks/seed", json={})
-    failed = _wait_for_run(client, project_id, started.json()["operation_id"])
-    retried = client.post(
-        f"/api/projects/{project_id}/tasks/{failed['operation_id']}/retry", json={}
-    )
-    completed = _wait_for_run(client, project_id, retried.json()["operation_id"])
-
-    assert completed["status"] == "succeeded"
-    assert assemble_calls == 1
-    store = app.state.catalog.store
-    first_base = store.agent_task_contract(failed["operation_id"], "base")
-    retry_base = store.agent_task_contract(completed["operation_id"], "base")
-    assert first_base is not None
-    assert retry_base is not None
-    assert retry_base != first_base
-    assert store.agent_task_contract(completed["operation_id"], "retry") is None
-    retry_prompt = str(launcher.calls[1]["prompt"])
-    retry_base_path = Path(retry_prompt.splitlines()[1])
-    assert retry_base_path.name == f"task-{completed['operation_id']}-base.md"
-    retry_workspace = Path(str(launcher.calls[1]["workspace"]))
-    assert str(retry_workspace / "patch.json") in retry_base
-    assert str(Path(failed["stage_root"]) / "patch.json") not in retry_base
-    diagnostics = json.loads(
-        next(
-            value
-            for name, value in launcher.calls[1]["inputs"].items()
-            if name.endswith("retry-diagnostics.json")
-        )
-    )
-    assert len(diagnostics["prior_attempt_diagnostics"]) == 1
-    assert "provider connection dropped before work" in diagnostics["prior_attempt_diagnostics"][0]
-    categories = {item["category"] for item in completed["debug_receipts"]}
-    assert "context_reused" in categories
-    assert "progress_handoff_unavailable" in categories
-
-
-@pytest.mark.parametrize("recovery", ["resume", "retry"])
-def test_same_provider_recovery_continues_inline_without_reassembling_inputs(
-    app, tmp_path, monkeypatch, recovery: str
-) -> None:
-    """Current schema, validator, and diagnostics reach the session while the master stays a file."""
-    project_id = app.state.default_project_id
-    service = app.state.service
-    original_assemble = service.assemble_run
-    assemble_calls = 0
-
-    def counted_assemble(*args, **kwargs):
-        nonlocal assemble_calls
-        assemble_calls += 1
-        return original_assemble(*args, **kwargs)
-
-    monkeypatch.setattr(service, "assemble_run", counted_assemble)
-
-    class RetryLauncher:
-        def __init__(self) -> None:
-            self.calls: list[dict[str, object]] = []
-
-        async def stream(self, _provider, prompt, *, browser_grant=None, **kwargs):
-            workspace = Path(kwargs["cwd"])
-            self.calls.append(
-                {
-                    "prompt": prompt,
-                    "session_id": kwargs.get("session_id"),
-                    "workspace": str(workspace),
-                    "inputs": {
-                        item.name: item.read_text(encoding="utf-8")
-                        for item in (workspace / "inputs").iterdir()
-                        if item.is_file()
-                    },
-                }
-            )
-            if len(self.calls) == 1:
-                yield AgentEvent(event="session", session_id="owned-seed-session")
-                yield AgentEvent(
-                    event="paused" if recovery == "resume" else "error",
-                    text="provider connection dropped",
-                )
-                return
-            (workspace / "patch.json").write_text(agent_patch_json(seed_patch()), encoding="utf-8")
-            yield AgentEvent(event="session", session_id="owned-seed-session")
-            yield AgentEvent(event="done")
-
-    launcher = RetryLauncher()
-
-    async def stream(_project_id, kind, request, execution):
-        async for frame in stream_graph_run(
-            service,
-            launcher,
-            kind,
-            request,
-            tmp_path / "data",
-            execution=execution,
-        ):
-            yield frame
-
-    app.state.background_tasks.stream = stream
-    client = signed_in_client(app)
-    started = client.post(
-        f"/api/projects/{project_id}/tasks/seed",
-        json={"provider": "codex", "run_truth_scope": ["repo-a"]},
-    )
-    failed = _wait_for_run(client, project_id, started.json()["operation_id"])
-    assert failed["status"] == ("paused" if recovery == "resume" else "failed")
-    retried = client.post(
-        f"/api/projects/{project_id}/tasks/{failed['operation_id']}/{recovery}", json={}
-    )
-    completed = _wait_for_run(client, project_id, retried.json()["operation_id"])
-
-    assert completed["status"] == "succeeded"
-    assert assemble_calls == 1
-    assert launcher.calls[1]["session_id"] == "owned-seed-session"
-    if recovery == "retry":
-        retry_diagnostics = json.loads(
-            next(
-                value
-                for name, value in launcher.calls[1]["inputs"].items()
-                if name.endswith("retry-diagnostics.json")
-            )
-        )
-        assert len(retry_diagnostics["prior_attempt_diagnostics"]) == 1
-        assert "provider connection dropped" in retry_diagnostics["prior_attempt_diagnostics"][0]
-    store = app.state.catalog.store
-    prompt = str(launcher.calls[1]["prompt"])
-    assert store.agent_task_contract(completed["operation_id"], recovery) == prompt
-    assert store.agent_task_contract(completed["operation_id"], "base") is None
-    master = launcher.calls[1]["inputs"][launch_contract_path(prompt).name]
-    bootstrap = SECTIONS["master_bootstrap"].split("{path}")[0] in prompt
-    sent = prompt + (master if bootstrap else "")
-    assert f"task-{completed['operation_id']}-patch-schema.json" in sent
-    assert f"task-{failed['operation_id']}-patch-schema.json" not in sent
-    assert str(Path(str(launcher.calls[1]["workspace"])) / "patch.json") in sent
-    if recovery == "retry":
-        assert f"task-{completed['operation_id']}-retry-diagnostics.json" in sent
-    assert master in {
-        store.agent_task_contract(operation_id, "session_master")
-        for operation_id in (failed["operation_id"], completed["operation_id"])
-    }
-    assert master not in prompt
-    for extensions in (False, True):
-        assert graph_rules(edits=True, ontology_extensions=extensions) not in prompt
-    launches = [item for item in completed["debug_receipts"] if item["category"] == "agent_launch"]
-    assert launches[0]["payload"]["continuation_cause"] == recovery
-    assert launches[0]["payload"]["launch_kind"] == recovery
-
-
-def test_retry_launch_refuses_a_patch_it_did_not_write(app, tmp_path) -> None:
-    """A Retry reuses its predecessor's stage, patch file included.
-
-    A provider that writes nothing must not have that earlier file collected as
-    its own work: applying it would attribute inherited output to the Retry.
-    """
-    project_id = app.state.default_project_id
-    service = app.state.service
-
-    class StaleLauncher:
-        def __init__(self) -> None:
-            self.workspaces: list[str] = []
-
-        async def stream(self, _provider, _prompt, *, browser_grant=None, **kwargs):
-            """The first attempt writes a patch, then loses its connection before RCP collects it;
-            later launches write nothing.
-            """
-            workspace = Path(kwargs["cwd"])
-            self.workspaces.append(str(workspace))
-            if not self.workspaces[:-1]:
-                (workspace / "patch.json").write_text(
-                    agent_patch_json(seed_patch()), encoding="utf-8"
-                )
-                yield AgentEvent(event="session", session_id="owned-seed-session")
-                yield AgentEvent(event="error", text="provider connection dropped")
-                return
-            yield AgentEvent(event="session", session_id="owned-seed-session")
-            yield AgentEvent(event="done")
-
-    launcher = StaleLauncher()
-
-    async def stream(_project_id, kind, request, execution):
-        async for frame in stream_graph_run(
-            service, launcher, kind, request, tmp_path / "data", execution=execution
-        ):
-            yield frame
-
-    app.state.background_tasks.stream = stream
-    client = signed_in_client(app)
-    started = client.post(
-        f"/api/projects/{project_id}/tasks/seed",
-        json={"provider": "codex", "run_truth_scope": ["repo-a"]},
-    )
-    failed = _wait_for_run(client, project_id, started.json()["operation_id"])
-    assert failed["status"] == "failed"
-
-    retried = client.post(
-        f"/api/projects/{project_id}/tasks/{failed['operation_id']}/retry", json={}
-    )
-    completed = _wait_for_run(client, project_id, retried.json()["operation_id"])
-
-    assert launcher.workspaces[0] == launcher.workspaces[1]
-    assert completed["status"] == "failed"
-    assert completed["applied_revision"] is None
-    assert "provider connection dropped" in completed["error"]
-    assert "did not write a new patch" in completed["error"]
-    assert service.history.state().revision == 1
-    assert not service.history.state().nodes
-    assert any(
-        receipt["category"] == "patch_predates_launch" and receipt["payload"]["accepted"] is False
-        for receipt in completed["debug_receipts"]
-    )
-
-
-def test_literal_resume_uses_saved_context_without_reassembly(app, tmp_path, monkeypatch) -> None:
-    project_id = app.state.default_project_id
-    service = app.state.service
-    original_assemble = service.assemble_run
-    assemble_calls = 0
-
-    def counted_assemble(*args, **kwargs):
-        nonlocal assemble_calls
-        assemble_calls += 1
-        return original_assemble(*args, **kwargs)
-
-    monkeypatch.setattr(service, "assemble_run", counted_assemble)
-
-    class ResumeLauncher:
-        def __init__(self) -> None:
-            self.prompts: list[str] = []
-            self.sessions: list[str | None] = []
-
-        async def stream(self, _provider, prompt, *, browser_grant=None, **kwargs):
-            workspace = Path(kwargs["cwd"])
-            self.prompts.append(prompt)
-            self.sessions.append(kwargs.get("session_id"))
-            if len(self.prompts) == 1:
-                yield AgentEvent(event="session", session_id="paused-seed-session")
-                yield AgentEvent(event="paused", text="Provider process paused.")
-                return
-            (workspace / "patch.json").write_text(agent_patch_json(seed_patch()), encoding="utf-8")
-            yield AgentEvent(event="session", session_id="paused-seed-session")
-            yield AgentEvent(event="done")
-
-    launcher = ResumeLauncher()
-
-    async def stream(_project_id, kind, request, execution):
-        async for frame in stream_graph_run(
-            service,
-            launcher,
-            kind,
-            request,
-            tmp_path / "data",
-            execution=execution,
-        ):
-            yield frame
-
-    app.state.background_tasks.stream = stream
-    client = signed_in_client(app)
-    started = client.post(f"/api/projects/{project_id}/tasks/seed", json={})
-    paused = _wait_for_run(client, project_id, started.json()["operation_id"])
-    assert paused["status"] == "paused"
-
-    resumed = client.post(
-        f"/api/projects/{project_id}/tasks/{paused['operation_id']}/resume", json={}
-    )
-    completed = _wait_for_run(client, project_id, resumed.json()["operation_id"])
-
-    assert completed["status"] == "succeeded"
-    assert assemble_calls == 1
-    assert launcher.sessions == [None, "paused-seed-session"]
-    assert (
-        app.state.catalog.store.agent_task_contract(completed["operation_id"], "resume")
-        == launcher.prompts[1]
-    )
-    launch = next(
-        item for item in completed["debug_receipts"] if item["category"] == "agent_launch"
-    )
-    assert launch["payload"]["continuation_cause"] == "resume"
-
-
-def test_provider_exit_receipt_survives_terminal_error(app, tmp_path) -> None:
-    project_id = app.state.default_project_id
-    service = app.state.service
-
-    class ExitLauncher:
-        async def stream(self, _provider, _prompt, *, browser_grant=None, **_kwargs):
-            yield AgentEvent(event="session", session_id="failed-session")
-            yield AgentEvent(
-                event="provider_exit",
-                text=json.dumps(
-                    {
-                        "event_counts": {"session": 1},
-                        "explicit_terminal_event": False,
-                        "return_code": 7,
-                    }
-                ),
-            )
-            yield AgentEvent(event="error", text="provider exited with status 7")
-
-    async def stream(_project_id, kind, request, execution):
-        async for frame in stream_graph_run(
-            service,
-            ExitLauncher(),
-            kind,
-            request,
-            tmp_path / "data",
-            execution=execution,
-        ):
-            yield frame
-
-    app.state.background_tasks.stream = stream
-    client = signed_in_client(app)
-    started = client.post(f"/api/projects/{project_id}/tasks/seed", json={})
-    failed = _wait_for_run(client, project_id, started.json()["operation_id"])
-
-    assert failed["status"] == "failed"
-    receipt = next(item for item in failed["debug_receipts"] if item["category"] == "provider_exit")
-    assert receipt["payload"] == {
-        "event_counts": {"session": 1},
-        "explicit_terminal_event": False,
-        "return_code": 7,
-        "patch_json_exists": False,
-    }
-
-
-def test_retry_escapes_a_moved_saved_context_instead_of_looping(app, tmp_path) -> None:
-    project_id = app.state.default_project_id
-    service = app.state.service
-
-    class FailingLauncher:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        async def stream(self, _provider, _prompt, *, browser_grant=None, **_kwargs):
-            self.calls += 1
-            yield AgentEvent(event="session", session_id="moved-context-session")
-            yield AgentEvent(event="error", text="provider connection dropped")
-
-    launcher = FailingLauncher()
-
-    async def graph_stream(_project_id, kind, request, execution):
-        async for frame in stream_graph_run(
-            service,
-            launcher,
-            kind,
-            request,
-            tmp_path / "data",
-            execution=execution,
-        ):
-            yield frame
-
-    app.state.background_tasks.stream = graph_stream
-    client = signed_in_client(app)
-    started = client.post(f"/api/projects/{project_id}/tasks/seed", json={})
-    failed = _wait_for_run(client, project_id, started.json()["operation_id"])
-    append_fixture_patch(service, seed_patch())
-
-    correction = client.post(
-        f"/api/projects/{project_id}/tasks/{failed['operation_id']}/retry", json={}
-    )
-    moved = _wait_for_run(client, project_id, correction.json()["operation_id"])
-    assert moved["status"] == "failed"
-    assert "graph revision moved from 1 to 2" in moved["error"]
-    assert launcher.calls == 1
-    assert any(
-        item["category"] == "continuation_context_unavailable" for item in moved["debug_receipts"]
-    )
-
-    async def clean_stream(_project_id, _kind, request, execution):
-        assert request.session_id is None
-        assert execution.continuation == "handoff"
-        assert execution.stage_root is None
-        yield _event_frame(AgentEvent(event="message", text=json.dumps({"applied_revision": 2})))
-        yield _event_frame(AgentEvent(event="done"))
-
-    app.state.background_tasks.stream = clean_stream
-    escaped = client.post(
-        f"/api/projects/{project_id}/tasks/{moved['operation_id']}/retry", json={}
-    )
-    completed = _wait_for_run(client, project_id, escaped.json()["operation_id"])
-    assert completed["status"] == "succeeded"
-
-
 def test_failed_chat_task_retains_artifacts_emitted_before_the_error(app, tmp_path) -> None:
     append_fixture_patch(app.state.service, seed_patch())
     project_id = app.state.default_project_id
@@ -3503,26 +1809,6 @@ def test_failed_chat_task_retains_artifacts_emitted_before_the_error(app, tmp_pa
             }
         ],
     }
-
-
-def test_server_shutdown_pauses_live_background_seed(app) -> None:
-    project_id = app.state.default_project_id
-
-    async def pausable_stream(_project_id, _kind, _request, execution):
-        yield _event_frame(AgentEvent(event="session", session_id=str(uuid.uuid4())))
-        await async_wait_until(execution.control.pause_requested.is_set)
-        yield _event_frame(AgentEvent(event="paused"))
-
-    app.state.background_tasks.stream = pausable_stream
-    with signed_in_client(app) as client:
-        started = client.post(f"/api/projects/{project_id}/tasks/seed", json={})
-        operation_id = started.json()["operation_id"]
-        _wait_for_status(client, project_id, operation_id, {"running"})
-
-    persisted = app.state.background_tasks.store.agent_task(operation_id)
-    assert persisted is not None
-    assert persisted.status == "paused"
-    assert persisted.can_resume is True
 
 
 def test_node_chat_returns_as_task_then_persists_result_and_transcript(
@@ -6545,16 +4831,13 @@ def _experiment_fixture_patch(
     )
 
 
-def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenance(
-    manifest, tmp_path: Path
-) -> None:
+def test_experiment_watcher_wake_resumes_the_episode_session(manifest, tmp_path: Path) -> None:
     app, service = _seeded_project(manifest, tmp_path)
     append_fixture_patch(service, _experiment_fixture_patch(invocation_ceiling=3))
     project_id = app.state.default_project_id
     store = app.state.background_tasks.store
     episode_id = str(uuid.uuid4())
     loop_chat_id = str(uuid.uuid4())
-    maintenance_chat_id = str(uuid.uuid4())
     stage_root = tmp_path / "episode-stage"
     stage_root.mkdir()
     now = store.now()
@@ -6598,19 +4881,6 @@ def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenanc
         applied_revision=None,
         result={},
     )
-    store.create_agent_task(
-        AgentTaskRecord(
-            operation_id="maintenance-project-chat-turn",
-            project_id=project_id,
-            kind="project_chat",
-            status="succeeded",
-            request={},
-            created_at=now,
-            updated_at=now,
-            status_message="Maintenance watcher origin fixture.",
-            authorized_by=authorized_by,
-        )
-    )
     store.commit_experiment_episode_turn(
         episode_id=episode_id,
         project_id=project_id,
@@ -6627,37 +4897,29 @@ def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenanc
         watcher_ids=["maintenance-origin-observer"],
         context_baseline={},
     )
-    watcher = WatcherRecord(
-        watcher_id="maintenance-origin-observer",
-        project_id=project_id,
-        origin_operation_id="maintenance-project-chat-turn",
-        origin_task_kind="project_chat",
-        chat_id=maintenance_chat_id,
-        node_id="exp/bounded-loop",
-        machine_id=BACKEND_MACHINE_ID,
-        check_command="true",
-        log_path=str(tmp_path / "maintenance-observer.log"),
-        cwd=str(tmp_path),
-        continuation=WatcherContinuation(
-            provider="claude",
-            model="maintenance-model",
-            reasoning="high",
-            run_on="maintenance-machine",
-            run_truth_scope=["repo-b"],
-            patch_kind="experiment_loop",
-            control_node_id="exp/bounded-loop",
-            control_revision=3,
-            control_episode_id=episode_id,
-            control_invocation=1,
-            control_invocation_ceiling=3,
-            control_decision_bundle=[],
-            control_completion_criteria=["The detached fixture exits cleanly."],
-        ),
-        status="completed",
-        created_at=now,
-        completed_at=now,
+    watcher = store.arm_watcher(
+        WatcherRecord(
+            watcher_id="maintenance-origin-observer",
+            agent_id=loop_chat_id,
+            project_id=project_id,
+            purpose="detached fixture exits",
+            origin_turn_id="loop-root-for-maintenance-wake",
+            created_at=now,
+            checks=[
+                WatcherCheckRecord(
+                    check_id="maintenance-origin-observer",
+                    watcher_id="maintenance-origin-observer",
+                    machine_id=BACKEND_MACHINE_ID,
+                    definition="external",
+                    check_command="true",
+                    log_path=str(tmp_path / "maintenance-observer.log"),
+                    cwd=str(tmp_path),
+                    created_at=now,
+                    completed_at=now,
+                )
+            ],
+        )
     )
-    store.create_watchers([watcher])
     captured: dict[str, object] = {}
     entered = threading.Event()
 
@@ -6672,11 +4934,9 @@ def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenanc
         yield _sse(AgentEvent(event="done"))
 
     app.state.background_tasks.stream = stream
+    app.state.background_tasks.accept_watcher_notifications()
 
-    stored = store.watcher(watcher.watcher_id)
-    assert stored is not None
-    assert app.state.watcher_poller.on_completed is not None
-    app.state.watcher_poller.on_completed([stored])
+    app.state.services.watcher_delivery.deliver_ready(loop_chat_id, [watcher])
     wait_for_entry(entered)
 
     request = captured["request"]
@@ -6693,12 +4953,10 @@ def test_experiment_watcher_delivery_uses_live_episode_not_maintenance_provenanc
     assert request.reasoning == "medium"
     assert request.run_on == BACKEND_MACHINE_ID
     assert request.run_truth_scope == ["repo-a"]
-    assert request.chat_id != maintenance_chat_id
     delivered = store.watcher(watcher.watcher_id)
     assert delivered is not None
-    assert delivered.notified is True
-    assert delivered.notification_operation_id is not None
-    notification = store.agent_task(delivered.notification_operation_id)
+    assert delivered.wake_turn_id is not None
+    notification = store.agent_task(delivered.wake_turn_id)
     assert notification is not None
     assert notification.kind == "node_chat"
     assert notification.authorized_by == authorized_by
@@ -6953,7 +5211,6 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
     store = app.state.background_tasks.store
     old_episode = str(uuid.uuid4())
     loop_chat_id = str(uuid.uuid4())
-    maintenance_chat_id = str(uuid.uuid4())
     now = store.now()
     authorized_by = _named_test_authorizer(store)
     old_request = RunRequest(
@@ -6989,37 +5246,27 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
         )
     )
     store.complete_agent_task("old-loop-root", applied_revision=None, result={})
-    store.create_watchers(
-        [
-            WatcherRecord(
-                watcher_id="pending-loop-watcher",
-                project_id=project_id,
-                origin_operation_id="old-loop-root",
-                origin_task_kind="project_chat",
-                chat_id=maintenance_chat_id,
-                node_id="exp/bounded-loop",
-                machine_id=BACKEND_MACHINE_ID,
-                check_command="true",
-                log_path="/tmp/pending-loop.log",
-                cwd="/tmp",
-                continuation=WatcherContinuation(
-                    provider="claude",
-                    model="maintenance-model",
-                    reasoning="high",
-                    run_on="maintenance-machine",
-                    run_truth_scope=["repo-b"],
-                    patch_kind="experiment_loop",
-                    control_node_id="exp/bounded-loop",
-                    control_revision=3,
-                    control_episode_id=old_episode,
-                    control_invocation=1,
-                    control_invocation_ceiling=1,
-                    control_decision_bundle=[],
-                    control_completion_criteria=["The detached fixture exits cleanly."],
-                ),
-                created_at=now,
-            )
-        ]
+    store.arm_watcher(
+        WatcherRecord(
+            watcher_id="pending-loop-watcher",
+            agent_id=loop_chat_id,
+            project_id=project_id,
+            purpose="detached fixture exits",
+            origin_turn_id="old-loop-root",
+            created_at=now,
+            checks=[
+                WatcherCheckRecord(
+                    check_id="pending-loop-watcher",
+                    watcher_id="pending-loop-watcher",
+                    machine_id=BACKEND_MACHINE_ID,
+                    definition="external",
+                    check_command="true",
+                    log_path="/tmp/pending-loop.log",
+                    cwd="/tmp",
+                    created_at=now,
+                )
+            ],
+        )
     )
 
     client = signed_in_client(app)
@@ -7044,9 +5291,6 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
         exit_code=0,
         error=None,
     )
-    assert app.state.watcher_poller.on_completed is not None
-    app.state.watcher_poller.on_completed([store.watcher("pending-loop-watcher")])
-    assert store.watcher("pending-loop-watcher").notified is False
     assert app.state.watcher_poller.on_poll_completed is not None
     app.state.watcher_poller.on_poll_completed()
     exhausted_parent = store.episode(old_episode)
@@ -7097,7 +5341,6 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
         assert request.chat_scope == "node"
         assert request.node_id == "exp/bounded-loop"
         assert request.chat_id == new_loop_chat_id
-        assert request.chat_id != maintenance_chat_id
         assert request.provider == "codex"
         assert request.model == ""
         assert request.reasoning == "medium"
@@ -7119,7 +5362,7 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
     assert request["control_invocation"] == 1
     assert request["control_invocation_ceiling"] == 1
     assert request["control_episode_id"] != old_episode
-    assert request["watcher_ids"] == ["pending-loop-watcher"]
+    assert request["watcher_ids"] == []
     assert request["chat_scope"] == "node"
     assert request["node_id"] == "exp/bounded-loop"
     assert request["chat_id"] == new_loop_chat_id
@@ -7129,13 +5372,9 @@ def test_human_run_claims_over_ceiling_completion_into_a_new_episode(manifest, t
     assert request["run_on"] == BACKEND_MACHINE_ID
     assert request["run_truth_scope"] == writable
     assert response.json()["kind"] == "node_chat"
-    assert store.watcher("pending-loop-watcher").continuation.control_episode_id == old_episode
-    assert store.watcher("pending-loop-watcher").notified is True
+    assert store.watcher("pending-loop-watcher").wake_turn_id is None
     operation_id = response.json()["operation_id"]
     _wait_for_run(client, project_id, operation_id)
-    assert "watcher_notification" in {
-        receipt.category for receipt in store.agent_task_receipts(operation_id)
-    }
 
 
 def test_experiment_removal_and_run_admission_are_atomic_when_removal_wins(
@@ -7330,7 +5569,7 @@ def test_removed_experiment_fails_closed_for_every_continuation_admission(
     monkeypatch.setattr(app.state.background_tasks, "resume", unexpected_admission)
     monkeypatch.setattr(app.state.background_tasks, "retry", unexpected_admission)
     monkeypatch.setattr(app.state.background_tasks, "repair_graph_update", unexpected_admission)
-    monkeypatch.setattr("rcp.api.app.start_watcher_notification", unexpected_admission)
+    monkeypatch.setattr("rcp.api.app.start_plain_watcher_wake", unexpected_admission)
 
     for endpoint, operation_id in operation_ids.items():
         response = client.post(
@@ -7339,51 +5578,35 @@ def test_removed_experiment_fails_closed_for_every_continuation_admission(
         assert response.status_code == 409
         assert "no longer exists" in response.json()["detail"]
 
-    continuation = WatcherContinuation(
-        provider="codex",
-        run_on=BACKEND_MACHINE_ID,
-        patch_kind="experiment_loop",
-        control_node_id="exp/bounded-loop",
-        control_revision=3,
-        control_episode_id=str(uuid.uuid4()),
-        control_invocation=1,
-        control_invocation_ceiling=2,
-    )
-    watcher = WatcherRecord(
-        watcher_id="removed-experiment-watcher",
-        project_id=project_id,
-        origin_operation_id="removed-experiment-origin",
-        origin_task_kind="node_chat",
-        chat_id=request.chat_id,
-        node_id="exp/bounded-loop",
-        check_command="true",
-        log_path="/tmp/removed-experiment.log",
-        cwd="/tmp",
-        continuation=continuation,
-        status="completed",
-        created_at=now,
-        completed_at=now,
-    )
-    store.create_agent_task(
-        AgentTaskRecord(
-            operation_id="removed-experiment-origin",
+    assert request.chat_id is not None
+    watcher = store.arm_watcher(
+        WatcherRecord(
+            watcher_id="removed-experiment-watcher",
+            agent_id=request.chat_id,
             project_id=project_id,
-            kind="node_chat",
-            status="succeeded",
-            request={},
+            purpose="detached fixture exits",
+            origin_turn_id=operation_id,
             created_at=now,
-            updated_at=now,
-            status_message="Removed Experiment watcher origin fixture.",
-            authorized_by=_named_test_authorizer(store),
+            checks=[
+                WatcherCheckRecord(
+                    check_id="removed-experiment-watcher",
+                    watcher_id="removed-experiment-watcher",
+                    machine_id=BACKEND_MACHINE_ID,
+                    definition="external",
+                    check_command="true",
+                    log_path="/tmp/removed-experiment.log",
+                    cwd="/tmp",
+                    created_at=now,
+                    completed_at=now,
+                )
+            ],
         )
     )
-    store.create_watchers([watcher])
-    assert app.state.watcher_poller.on_completed is not None
-    app.state.watcher_poller.on_completed([store.watcher(watcher.watcher_id)])
+    app.state.services.watcher_delivery.deliver_ready(request.chat_id, [watcher])
     retired = store.watcher(watcher.watcher_id)
     assert retired is not None
-    assert retired.status == "stopped"
-    assert retired.notified is True
+    assert retired.state == "cancelled"
+    assert retired.cancelled_by == "rcp"
 
 
 @pytest.mark.asyncio
@@ -7438,75 +5661,48 @@ async def test_experiment_work_stamps_and_applies_the_bound_control_patch(
     )
     execution = _chat_task_execution(app, request, "experiment-work")
     watcher_now = execution.store.now()
-    execution.store.create_watchers(
-        [
+    for watcher_id, agent_id in (
+        ("open-current-agent", request.chat_id),
+        ("cancelled-current-agent", request.chat_id),
+        ("open-other-agent", "another-agent"),
+    ):
+        assert agent_id is not None
+        execution.store.arm_watcher(
             WatcherRecord(
-                watcher_id="stopped-current-episode",
+                watcher_id=watcher_id,
+                agent_id=agent_id,
                 project_id=app.state.default_project_id,
-                origin_operation_id=execution.operation_id,
-                origin_task_kind="node_chat",
-                chat_id=request.chat_id,
-                node_id=request.control_node_id,
-                check_command="false",
-                log_path="/tmp/stopped-current.log",
-                cwd="/tmp",
-                continuation=WatcherContinuation(
-                    provider="codex",
-                    run_on=BACKEND_MACHINE_ID,
-                    patch_kind="experiment_loop",
-                    control_node_id=request.control_node_id,
-                    control_revision=request.control_revision,
-                    control_episode_id=request.control_episode_id,
-                    control_invocation=request.control_invocation,
-                    control_invocation_ceiling=request.control_invocation_ceiling,
-                ),
-                status="stopped",
+                purpose=watcher_id,
+                origin_turn_id=execution.operation_id,
                 created_at=watcher_now,
+                checks=[
+                    WatcherCheckRecord(
+                        check_id=watcher_id,
+                        watcher_id=watcher_id,
+                        definition="external",
+                        check_command="false",
+                        log_path=f"/tmp/{watcher_id}.log",
+                        cwd="/tmp",
+                        created_at=watcher_now,
+                    )
+                ],
             )
-        ]
-    )
-    execution.store.create_watchers(
-        [
-            WatcherRecord(
-                watcher_id="stopped-prior-episode",
-                project_id=app.state.default_project_id,
-                origin_operation_id="legacy-prior-episode-operation",
-                origin_task_kind="node_chat",
-                chat_id=request.chat_id,
-                node_id=request.control_node_id,
-                check_command="false",
-                log_path="/tmp/stopped-prior.log",
-                cwd="/tmp",
-                continuation=WatcherContinuation(
-                    provider="codex",
-                    run_on=BACKEND_MACHINE_ID,
-                    patch_kind="experiment_loop",
-                    control_node_id=request.control_node_id,
-                    control_revision=request.control_revision,
-                    control_episode_id=str(uuid.uuid4()),
-                    control_invocation=request.control_invocation,
-                    control_invocation_ceiling=request.control_invocation_ceiling,
-                ),
-                status="stopped",
-                created_at=watcher_now,
-            )
-        ]
-    )
+        )
+    execution.store.cancel_watchers(["cancelled-current-agent"], by="agent")
     launcher = ScriptedLauncher(
         [
             {
                 "patch.json": agent_patch_json(patch),
-                "watch.json": json.dumps(
+                "watchers/job.json": json.dumps(
                     {
-                        "external": [
+                        "purpose": "job finishes",
+                        "checks": [
                             {
-                                "purpose": "job finishes",
                                 "check_command": "false",
                                 "log_path": "/tmp/bounded-loop.log",
                                 "cwd": "/tmp",
                             }
                         ],
-                        "graph": [],
                     }
                 ),
             }
@@ -7550,25 +5746,19 @@ async def test_experiment_work_stamps_and_applies_the_bound_control_patch(
         "decision_drift",
         "completion_criteria",
         "delivered_watcher_ids",
-        "delivered_watcher_groups",
         "watcher_state_path",
     }
     assert control["phase"] == "initial_run"
     assert control["invocation"] == 1
     assert control["remaining_invocations"] == 1
-    assert control["delivered_watcher_groups"] == []
     watcher_state = json.loads(launcher.input_snapshots[0][watcher_name])
-    assert [item["watcher_id"] for item in watcher_state] == ["stopped-current-episode"]
+    assert [item["watcher_id"] for item in watcher_state] == ["open-current-agent"]
     assert "remaining_invocations" not in launcher.prompts[0]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "initial_watch, expected_calls",
-    [('{"external":[],"graph":[]}', 1), (None, 2)],
-)
 async def test_experiment_loop_accepts_empty_watch_only_with_explicit_exit(
-    manifest, tmp_path, initial_watch, expected_calls
+    manifest, tmp_path
 ) -> None:
     app, service = _experiment_project(manifest, tmp_path)
     patch = Patch(
@@ -7586,13 +5776,7 @@ async def test_experiment_loop_accepts_empty_watch_only_with_explicit_exit(
     )
     request = _experiment_request("Finish the bounded loop.")
     execution = _chat_task_execution(app, request, "experiment-empty-watch")
-    first = {"patch.json": agent_patch_json(patch)}
-    if initial_watch is not None:
-        first["watch.json"] = initial_watch
-    launcher = ScriptedLauncher(
-        [first, {"watch.json": '{"external":[],"graph":[]}'}],
-        message="Finished.",
-    )
+    launcher = ScriptedLauncher([{"patch.json": agent_patch_json(patch)}], message="Finished.")
 
     frames = [
         frame
@@ -7607,7 +5791,7 @@ async def test_experiment_loop_accepts_empty_watch_only_with_explicit_exit(
 
     assert not _error_texts(frames)
     assert _events(frames)[-1].event == "done"
-    assert launcher.calls == expected_calls
+    assert launcher.calls == 1
     assert service.history.state().nodes["exp/bounded-loop"].status == "completed"
     assert any(
         receipt.category == "experiment_loop_exit"
@@ -7671,7 +5855,6 @@ async def test_experiment_loop_patch_correction_rechecks_empty_watch_exit(
         [
             {
                 "patch.json": agent_patch_json(invalid_exit),
-                "watch.json": '{"external":[],"graph":[]}',
             },
             {"patch.json": removed_exit},
         ],
@@ -7743,7 +5926,6 @@ async def test_unreadable_loop_patch_correction_stays_a_correction(manifest, tmp
         [
             {
                 "patch.json": agent_patch_json(invalid_exit),
-                "watch.json": '{"external":[],"graph":[]}',
             }
         ],
         message="Finished.",
@@ -7791,17 +5973,10 @@ async def test_experiment_loop_keeps_one_watcher_when_graph_reflection_is_reject
     execution = _chat_task_execution(app, request, "experiment-rejected-reflection")
     handoff = {
         "patch.json": agent_patch_json(invalid),
-        "watch.json": json.dumps(
+        "watchers/job.json": json.dumps(
             {
-                "external": [
-                    {
-                        "purpose": "job finishes",
-                        "check_command": "false",
-                        "log_path": "/tmp/loop.log",
-                        "cwd": "/tmp",
-                    }
-                ],
-                "graph": [],
+                "purpose": "job finishes",
+                "checks": [{"check_command": "false", "log_path": "/tmp/loop.log", "cwd": "/tmp"}],
             }
         ),
     }
@@ -7821,7 +5996,7 @@ async def test_experiment_loop_keeps_one_watcher_when_graph_reflection_is_reject
     assert not _error_texts(frames)
     assert _events(frames)[-1].event == "done"
     assert _graph_update(frames)["status"] == "rejected"
-    assert len(execution.store.watchers(app.state.default_project_id)) == 1
+    assert len(execution.store.project_watchers(app.state.default_project_id)) == 1
     assert service.history.state().revision == 3
 
 
@@ -7854,17 +6029,16 @@ async def test_experiment_loop_retry_reuses_canonical_patch_and_watcher_handoff(
         [
             {
                 "patch.json": agent_patch_json(exit_patch),
-                "watch.json": json.dumps(
+                "watchers/job.json": json.dumps(
                     {
-                        "external": [
+                        "purpose": "job finishes",
+                        "checks": [
                             {
-                                "purpose": "job finishes",
                                 "check_command": "false",
                                 "log_path": "/tmp/recovered-loop.log",
                                 "cwd": "/tmp",
                             }
                         ],
-                        "graph": [],
                     }
                 ),
             }
@@ -7887,38 +6061,8 @@ async def test_experiment_loop_retry_reuses_canonical_patch_and_watcher_handoff(
     assert _graph_update(frames)["applied_revision"] == 4
     assert service.history.state().revision == 5
     assert len(service.history.load_patches()) == 5
-    watchers = execution.store.watchers(app.state.default_project_id)
+    watchers = execution.store.project_watchers(app.state.default_project_id)
     assert len(watchers) == 1
-    stored = watchers[0]
-    repeated = persist_experiment_watchers_idempotently(
-        execution,
-        [
-            AgentWatchSpec(
-                purpose="job finishes",
-                check_command=stored.check_command,
-                log_path=stored.log_path,
-                cwd=stored.cwd,
-            )
-        ],
-        [
-            WatcherCheckResult(
-                state="active",
-                checked_at=stored.last_checked_at or stored.created_at,
-                exit_code=1,
-            )
-        ],
-        WatcherBinding(
-            project_id=stored.project_id,
-            origin_operation_id=stored.origin_operation_id,
-            origin_task_kind=stored.origin_task_kind,
-            chat_id=stored.chat_id,
-            node_id=stored.node_id,
-            machine_id=stored.machine_id,
-            continuation=stored.continuation,
-        ),
-    )
-    assert repeated[0].watcher_id == stored.watcher_id
-    assert len(execution.store.watchers(app.state.default_project_id)) == 1
     assert any(
         receipt.category == "experiment_loop_exit"
         for receipt in execution.store.agent_task_receipts(operation_id)
@@ -7934,32 +6078,31 @@ async def test_readable_watch_value_error_gets_same_session_correction(
     execution = _chat_task_execution(app, request, "watch-readable-value-error")
     watch = json.dumps(
         {
-            "external": [
+            "purpose": "job finishes",
+            "checks": [
                 {
-                    "purpose": "job finishes",
                     "check_command": "false",
                     "log_path": str(tmp_path / "fixture.log"),
                     "cwd": str(tmp_path),
                 }
             ],
-            "graph": [],
         }
     )
     launcher = ScriptedLauncher(
-        [{"watch.json": watch}, {"watch.json": json.dumps(json.loads(watch), indent=2)}],
+        [{"watchers/job.json": watch}],
         message="The fixture was launched once.",
     )
-    original_read = work_module._read_watch_request
+    original_read = work_module.read_watcher_folder
     read_calls = 0
 
     def flaky_read(*args, **kwargs):
         nonlocal read_calls
         read_calls += 1
         if read_calls == 1:
-            raise ValueError("watch.json is not a direct regular file")
+            raise ValueError("watcher files must be directly inside watchers/")
         return original_read(*args, **kwargs)
 
-    monkeypatch.setattr(work_module, "_read_watch_request", flaky_read)
+    monkeypatch.setattr(work_module, "read_watcher_folder", flaky_read)
 
     frames = [
         frame
@@ -7975,7 +6118,7 @@ async def test_readable_watch_value_error_gets_same_session_correction(
     assert not _error_texts(frames)
     assert launcher.calls == 2
     assert launcher.resumed_sessions == [None, launcher.native_session_id]
-    assert len(execution.store.watchers(app.state.default_project_id)) == 1
+    assert len(execution.store.project_watchers(app.state.default_project_id)) == 1
 
 
 @pytest.mark.asyncio
@@ -7997,21 +6140,28 @@ async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
         mode="work",
     )
     execution = _chat_task_execution(app, request, "watch-origin")
-    common = {
-        "purpose": "job finishes",
-        "log_path": str(tmp_path / "fixture.log"),
-        "cwd": str(tmp_path),
-    }
-    graph = [
+    common = {"log_path": str(tmp_path / "fixture.log"), "cwd": str(tmp_path)}
+    graph = json.dumps(
         {
-            "node_id": "hyp/replanning-restores-plasticity",
-            "proposal_resolved": True,
+            "purpose": "proposal resolves",
+            "graph": {"node_id": "hyp/replanning-restores-plasticity", "proposal_resolved": True},
         }
-    ]
-    invalid = json.dumps({"external": [{**common, "check_command": "exit 2"}], "graph": graph})
-    corrected = json.dumps({"external": [{**common, "check_command": "exit 1"}], "graph": graph})
+    )
+
+    def job(command: str) -> str:
+        return json.dumps(
+            {"purpose": "job finishes", "checks": [{**common, "check_command": command}]}
+        )
+
     launcher = ScriptedLauncher(
-        [{"watch.json": invalid}, {"watch.json": corrected, "outcome.json": '{"status":"done"}'}],
+        [
+            {"watchers/job.json": job("exit 2"), "watchers/proposal.json": graph},
+            {
+                "watchers/job.json": job("exit 1"),
+                "watchers/proposal.json": graph,
+                "outcome.json": '{"status":"done"}',
+            },
+        ],
         outcome=None,
         message="The fixture was launched once.",
     )
@@ -8037,23 +6187,32 @@ async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
     ]
     assert launcher.launch_kwargs[1]["read_dirs"] == launcher.launch_kwargs[0]["read_dirs"]
     assert launcher.launch_kwargs[1]["write_dirs"] == launcher.launch_kwargs[0]["write_dirs"]
-    armed = store.watchers(app.state.default_project_id)
+    armed = store.project_watchers(app.state.default_project_id)
     assert len(armed) == 2
-    assert {type(record) for record in armed} == {WatcherRecord, GraphWatcherRecord}
-    assert all(record.status == "active" for record in armed)
-    assert all(record.origin_operation_id == "watch-origin" for record in armed)
-    assert all(record.continuation.patch_kind == "work" for record in armed)
+    assert sorted(check.definition for record in armed for check in record.checks) == [
+        "external",
+        "graph",
+    ]
+    assert all(record.state != "cancelled" for record in armed)
+    assert all(record.origin_turn_id == "watch-origin" for record in armed)
+    assert all(record.agent_id == chat_id for record in armed)
     assert any(
         receipt.category == "watchers_armed"
         for receipt in store.agent_task_receipts("watch-origin")
     )
 
     store.complete_agent_task("watch-origin", applied_revision=None, result={"messages": []})
-    external = next(record for record in armed if isinstance(record, WatcherRecord))
+    external = next(record for record in armed if record.checks[0].definition == "external")
     app.state.catalog.store.update_space_machine(
         card.machine_id, access_hint="Use /scratch/at-wake"
     )
-    wake = _generic_watcher_delivery_request([external])
+    wake = request.model_copy(
+        update={
+            "message": watcher_wake_message([external]),
+            "trigger": "watcher",
+            "watcher_ids": [external.watcher_id],
+        }
+    )
     wake_execution = _chat_task_execution(app, wake, "watch-wake")
     wake_launcher = ScriptedLauncher([{}], message="The watched fixture completed cleanly.")
     wake_frames = [
@@ -8078,9 +6237,7 @@ async def test_watch_handoff_correction_arms_once_and_wake_is_not_a_user_turn(
     )
     wake_contract = Path(wake_launcher.prompts[0].splitlines()[1]).read_text(encoding="utf-8")
     assert "Use /scratch/at-wake" in wake_contract
-    persisted = store.watchers(app.state.default_project_id)
-    assert len(persisted) == 2
-    assert any(isinstance(record, GraphWatcherRecord) for record in persisted)
+    assert len(store.project_watchers(app.state.default_project_id)) == 2
 
 
 def _stuck_experiment_patch() -> Patch:
@@ -8170,87 +6327,6 @@ def test_a_human_may_release_an_attempt_without_it_gating_the_loop(app) -> None:
     assert "no open attempt" in again.json()["detail"]
 
 
-def test_seed_stages_its_selected_skills_and_records_what_it_ran(app, monkeypatch) -> None:
-    """S64: the selection is structured task metadata, not text the agent parses."""
-
-    project_id = app.state.default_project_id
-    service = app.state.catalog.open(project_id)
-    _persist_skill_defaults(
-        service,
-        SkillDefaults(workflow_ids=["research-graph-audit"], skill_ids=[]),
-    )
-    observed: dict[str, object] = {}
-
-    class InspectingLauncher(ScriptedLauncher):
-        async def stream(self, provider, prompt, *, browser_grant=None, **kwargs):
-            """A succeeded run reclaims its scratch folder, so the bundle is read in place."""
-            bundle = next((Path(kwargs["cwd"]) / "inputs").glob("rcp-skills-*"))
-            observed["contract"] = _local_task_contract(prompt)
-            observed["prompt"] = prompt
-            observed["staged"] = sorted(
-                str(item.relative_to(bundle)) for item in bundle.rglob("*.md")
-            )
-            async for event in super().stream(
-                provider, prompt, browser_grant=browser_grant, **kwargs
-            ):
-                yield event
-
-    launcher = InspectingLauncher([{"patch.json": agent_patch_json(seed_patch())}])
-    monkeypatch.setattr(app.state.catalog.launcher, "stream", launcher.stream)
-    client = signed_in_client(app)
-
-    started = client.post(
-        f"/api/projects/{project_id}/tasks/seed",
-        json={
-            "run_truth_scope": ["repo-a"],
-            "invoked_workflow_ids": ["research-graph-audit", "research-graph-audit"],
-        },
-    )
-    operation_id = started.json()["operation_id"]
-    completed = _wait_for_run(client, project_id, operation_id)
-
-    assert completed["status"] == "succeeded"
-    assert [
-        (item["kind"], item["id"], item["version"])
-        for item in completed["request"]["resolved_skill_packages"]
-    ] == [
-        (item.kind, item.id, item.version)
-        for item in official_registry()
-        .resolve(workflow_ids=["research-graph-audit"])
-        .resolved_skill_packages
-    ]
-    assert observed["staged"] == [
-        "skill/evidence-triage/SKILL.md",
-        "skill/evidence-triage/references/worked-examples.md",
-        "skill/experiment-causality/SKILL.md",
-        "skill/experiment-causality/references/worked-examples.md",
-        "skill/graph-audit/SKILL.md",
-        "skill/graph-audit/references/structures.md",
-        "workflow/research-graph-audit/WORKFLOW.md",
-    ]
-    from rcp.agents.prompts import _invoked_package_section
-
-    metadata = app.state.background_tasks.store.agent_task_contract(
-        operation_id, "session_master_values"
-    )
-    assert metadata is not None
-    values = json.loads(metadata)
-    invoked = next(item for item in values["skills"] if item["kind"] == "workflow")
-    invocation = _invoked_package_section([invoked]).strip()
-    assert invocation in observed["prompt"]
-    assert invocation not in observed["contract"]
-    assert Path(invoked["path"]).name == "research-graph-audit"
-    assert invoked["description"]
-    assert completed["request"]["invoked_workflow_ids"] == ["research-graph-audit"]
-    contract = observed["contract"]
-    from rcp.skills.staging import skill_bundle_label
-
-    assert skill_bundle_label(service.resolve_skill_selection(RunRequest())) in contract
-    research_dir = service.manifest.research_dir
-    assert not list(research_dir.rglob("*SKILL.md"))
-    assert not list(research_dir.rglob("*WORKFLOW.md"))
-
-
 def test_an_upgraded_package_never_makes_a_stored_task_un_retryable(app, tmp_path) -> None:
     """S64: the registry is authoritative; a recorded version is a receipt, not a pin."""
 
@@ -8263,49 +6339,10 @@ def test_an_upgraded_package_never_makes_a_stored_task_un_retryable(app, tmp_pat
         "resolved_skill_packages": [{"id": "graph-audit", "kind": "skill", "version": "0.0.1"}],
     }
 
-    _request, selection = _validate_stored_task_request(service, "seed", stored_request)
+    _request, selection = _validate_stored_task_request(service, "project_chat", stored_request)
 
     assert [(item.id, item.version) for item in selection.resolved_skill_packages] == [
         ("graph-audit", official_registry().package("skill", "graph-audit").version)
-    ]
-
-
-def test_retrying_a_failed_seed_records_the_selection_it_will_stage(app, monkeypatch) -> None:
-    project_id = app.state.default_project_id
-    service = app.state.catalog.open(project_id)
-    _persist_skill_defaults(
-        service,
-        SkillDefaults(workflow_ids=["research-graph-audit"], skill_ids=[]),
-    )
-
-    async def failing_stream(*_args, **_kwargs):
-        yield _event_frame(AgentEvent(event="error", text="Provider exited before writing."))
-
-    ordinary_stream = app.state.background_tasks.stream
-    app.state.background_tasks.stream = failing_stream
-    client = signed_in_client(app)
-    started = client.post(
-        f"/api/projects/{project_id}/tasks/seed",
-        json={"run_truth_scope": ["repo-a"]},
-    )
-    operation_id = started.json()["operation_id"]
-    assert _wait_for_run(client, project_id, operation_id)["status"] == "failed"
-
-    launcher = ScriptedLauncher([{"patch.json": agent_patch_json(seed_patch())}])
-    monkeypatch.setattr(app.state.catalog.launcher, "stream", launcher.stream)
-    app.state.background_tasks.stream = ordinary_stream
-    retried = client.post(f"/api/projects/{project_id}/tasks/{operation_id}/retry", json={})
-
-    assert retried.status_code == 202
-    child = _wait_for_run(client, project_id, retried.json()["operation_id"])
-    assert child["status"] == "succeeded"
-    assert [
-        (item["id"], item["version"]) for item in child["request"]["resolved_skill_packages"]
-    ] == [
-        (item.id, item.version)
-        for item in official_registry()
-        .resolve(workflow_ids=["research-graph-audit"])
-        .resolved_skill_packages
     ]
 
 
@@ -8368,192 +6405,6 @@ def test_a_succeeding_chat_turn_records_the_usage_its_result_reported(app, tmp_p
     assert len(counted) == 1
     assert counted[0]["processed_input_tokens"] == 11
     assert counted[0]["generated_tokens"] == 7
-
-
-def test_a_recorded_correction_that_kept_the_inherited_patch_applies_nothing(app, tmp_path) -> None:
-    """A correction settles against its own launch's baseline, as it would live.
-
-    The primary pass ran, and its correction launched over the Patch it had left.
-    """
-
-    import dataclasses
-
-    from rcp.runs.tasks.graph import finalize_recorded_graph_result
-
-    from .test_work_agent_io import _recorded_pass
-
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    store = app.state.background_tasks.store
-    execution = _agent_task_execution(store, "refresh-correction-unchanged")
-    request = RunRequest(provider="codex", run_truth_scope=["repo-a"], run_on=BACKEND_MACHINE_ID)
-
-    class LinkLost:
-        async def stream(self, *_args, **_kwargs):
-            yield AgentEvent(event="error", text="link lost")
-
-    async def events(stream) -> list[AgentEvent]:
-        return [
-            AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
-            async for frame in stream
-        ]
-
-    asyncio.run(
-        events(
-            stream_graph_run(
-                service, LinkLost(), "refresh", request, tmp_path / "data", execution=execution
-            )
-        )
-    )
-    patch_text = agent_patch_json(refresh_patch())
-    store.begin_remote_provider_pass(
-        execution.operation_id, "host", "/stage", "/stage/primary.pid", supervised=True
-    )
-    store.finish_remote_provider_pass(execution.operation_id, "/stage/primary.pid")
-    store.record_agent_task_receipt(
-        execution.operation_id,
-        "graph_pass_baseline",
-        {
-            "pre_launch_patch_digest": hashlib.sha256(patch_text.encode("utf-8")).hexdigest(),
-            "requires_new_patch": True,
-        },
-    )
-    store.begin_remote_provider_pass(
-        execution.operation_id, "host", "/stage", "/stage/correction.pid", supervised=True
-    )
-    recorded = dataclasses.replace(
-        _recorded_pass(patch_text, "Kept it."), pid_file="/stage/correction.pid"
-    )
-    settled = asyncio.run(
-        events(
-            finalize_recorded_graph_result(
-                service, ScriptedLauncher([{}]), request, tmp_path / "data", execution, recorded
-            )
-        )
-    )
-
-    assert settled[-1].event == "error"
-    assert "rq/transfer-after-shift" not in service.history.state().nodes
-
-
-def test_a_refresh_that_outlives_its_link_settles_from_its_recorded_pass(
-    app, tmp_path, monkeypatch
-) -> None:
-    """A dropped link leaves the pass to its host; the recorded pass then applies.
-
-    A relaunch serves the recorded pass's Patch checks and graph reads from what the launch saved.
-    Losing the state host while applying is an outage the pass waits out, even when only the
-    commit's acknowledgement was lost.
-    """
-
-    from rcp.agents.command_protocol import GraphDiffCommandRequest
-    from rcp.runs.remote_finalization import recorded_finalizer, resume_recorded_command_mailbox
-    from rcp.runs.tasks import graph as graph_module
-    from rcp.runs.tasks.graph import finalize_recorded_graph_result
-
-    from .test_work_agent_io import _recorded_pass
-
-    service = app.state.service
-    append_fixture_patch(service, seed_patch())
-    store = app.state.background_tasks.store
-    execution = _agent_task_execution(store, "refresh-link-lost")
-    request = RunRequest(provider="codex", run_truth_scope=["repo-a"], run_on=BACKEND_MACHINE_ID)
-
-    class LinkLost:
-        async def stream(self, *_args, **_kwargs):
-            yield AgentEvent(event="session", session_id="recorded-thread")
-            yield AgentEvent(event="error", text="link lost")
-
-    async def events(stream) -> list[AgentEvent]:
-        return [
-            AgentEvent.model_validate_json(frame.removeprefix("data: ").strip())
-            async for frame in stream
-        ]
-
-    saved = {}
-    start = graph_module.start_work_validator_mailbox
-
-    def record_the_mailbox(staged, **kwargs):
-        saved.update(kwargs["resume_context"])
-        return start(staged, **kwargs)
-
-    monkeypatch.setattr(graph_module, "start_work_validator_mailbox", record_the_mailbox)
-    asyncio.run(
-        events(
-            stream_graph_run(
-                service, LinkLost(), "refresh", request, tmp_path / "data", execution=execution
-            )
-        )
-    )
-    assert recorded_finalizer(store, execution.operation_id) is finalize_recorded_graph_result
-
-    restored = {}
-    monkeypatch.setattr(graph_module, "load_work_mailbox_context", lambda _execution: saved)
-    monkeypatch.setattr(
-        graph_module,
-        "restore_work_validator_mailbox",
-        lambda _execution, **kwargs: restored.update(kwargs),
-    )
-    resume_recorded_command_mailbox(lambda: service, execution)
-    assert restored["validate"](agent_patch_json(refresh_patch())).status == "valid"
-    assert (
-        restored["command_handler"](
-            GraphDiffCommandRequest.model_validate(
-                {
-                    "mailbox_id": "0" * 32,
-                    "request_id": uuid.uuid4().hex,
-                    "credential": "0" * 64,
-                    "verb": "graph_diff",
-                    "arguments": {"from": "main@0", "to": "main@head"},
-                }
-            ),
-            None,
-        ).status
-        == "ok"
-    )
-
-    launcher = ScriptedLauncher([{}], message="must not launch")
-    recorded = _recorded_pass(agent_patch_json(refresh_patch()), "Refreshed offline.")
-    from rcp.transport.state import BatchPublishFailed
-
-    append = service.history.append
-    with monkeypatch.context() as outage:
-
-        def lost_acknowledgement(*args, **kwargs):
-            append(*args, **kwargs)
-            raise BatchPublishFailed("ssh exited 255", commit_status="unknown")
-
-        outage.setattr(service.history, "append", lost_acknowledgement)
-        asyncio.run(
-            events(
-                finalize_recorded_graph_result(
-                    service, launcher, request, tmp_path / "data", execution, recorded
-                )
-            )
-        )
-    assert execution.stage_unreachable
-    settled = asyncio.run(
-        events(
-            finalize_recorded_graph_result(
-                service, launcher, request, tmp_path / "data", execution, recorded
-            )
-        )
-    )
-
-    assert [event.text for event in settled if event.event == "answer"] == ["Refreshed offline."]
-    assert settled[-1].event == "done"
-    assert "rq/transfer-after-shift" in service.history.state().nodes
-    assert (
-        len(
-            [
-                item
-                for item in service.history.load_patches()
-                if item.source_operation_id == execution.operation_id
-            ]
-        )
-        == 1
-    )
-    assert launcher.calls == 0
 
 
 @pytest.mark.parametrize("removed", [False, True])

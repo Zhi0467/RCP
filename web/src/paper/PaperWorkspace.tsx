@@ -54,7 +54,7 @@ import { PaperTurnDiff } from "./PaperTurn";
 import { PaperHistory } from "./PaperHistory";
 import { previewSourceSpot, type PreviewSourceSpot } from "./previewComments";
 import { usePaperComments } from "./PaperComments";
-import type { SendThreads } from "../comments/react/useComments";
+import type { DockThreads } from "../comments/react/useComments";
 
 /** Route snapshots retain where the member was; IndexedDB owns all document content. */
 export interface PaperEditorState {
@@ -157,12 +157,9 @@ export function PaperWorkspace({
     retry: () => Promise<void>;
   } | null>(null);
   const previewPane = useRef<HTMLDivElement>(null);
-  /** The Coach composer's sender, which Paper threads ride; the coach sets it while mounted. */
-  const coachThreads = useRef<SendThreads | null>(null);
-  const sendThreads = useCallback<SendThreads>((ids, key) => {
-    const send = coachThreads.current;
-    return send ? send(ids, key) : Promise.reject(new Error("The coach is not ready."));
-  }, []);
+  /** The Coach composer's dock, which Paper threads join; the coach sets it while mounted. */
+  const coachThreads = useRef<DockThreads | null>(null);
+  const dockThreads = useCallback<DockThreads>((threads) => coachThreads.current?.(threads), []);
   const refresh = useCallback(
     () => store.invalidate(resourceKeyId(paperProfile(project.id).key)),
     [store, project.id],
@@ -423,7 +420,7 @@ export function PaperWorkspace({
     previewVisible: previewActive,
     showSource: () => switchView("write"),
     showPreview: () => switchView("preview"),
-    send: sendThreads,
+    dock: dockThreads,
     canPost: true,
   });
   // Mounted on first view, then kept while hidden so its PDF and position survive.
@@ -627,7 +624,7 @@ export function PaperWorkspace({
             chatId={turnDiff.chatId}
             operationId={turnDiff.operationId}
             path={turnDiff.path}
-            send={sendThreads}
+            dock={dockThreads}
             canPost
             onClose={() => setCoachDiff(null)}
           />

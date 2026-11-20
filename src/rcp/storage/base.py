@@ -169,6 +169,7 @@ class AppStoreBase:
         (90, "plan_card_receipt_index_v1"),
         (91, "bulletin_deltas_v1"),
         (92, "episode_mailbox_v1"),
+        (93, "agents_and_watcher_checks_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -1202,11 +1203,26 @@ class AppStoreBase:
             name="episode_mailbox_v1",
             migration=self._migrate_episode_mailbox,
         )
+        self._run_storage_schema_migration(
+            connection,
+            version=93,
+            name="agents_and_watcher_checks_v1",
+            migration=self._migrate_agents_and_watcher_checks,
+        )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
         if not schema_template:
             self._validate_storage_schema(connection)
         return bootstrap_code
+
+    @staticmethod
+    def _migrate_agents_and_watcher_checks(connection: sqlite3.Connection) -> None:
+        from rcp.storage.agent_tasks import SESSION_TASK_KINDS
+        from rcp.storage.agents import migrate_agents
+        from rcp.storage.watchers import migrate_watcher_checks
+
+        migrate_agents(connection, SESSION_TASK_KINDS)
+        migrate_watcher_checks(connection)
 
     @staticmethod
     def _migrate_paper_live(connection: sqlite3.Connection) -> None:

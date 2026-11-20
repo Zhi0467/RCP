@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from rcp.agents.agent_profile import OFFER, PRIVATE_PROJECT, SINGLE_ENTRY, resolve_agent_profile
 from tests.helpers import create_named_app, signed_in_client
 
 
@@ -17,7 +18,10 @@ def test_threads_created_once_with_names_browser_and_owner_controls(manifest, tm
         assert [row["agent_name"] for row in rows] == ["Pip", "Puck"]
         assert [row["latest_operation_id"] for row in rows] == [None, None]
         assert all(row["browser_requested"] for row in rows)
-        assert rows[0]["capabilities"] and rows[0]["capabilities"] != rows[1]["capabilities"]
+        assert [row["capabilities"] for row in rows] == [
+            resolve_agent_profile(placement, None, OFFER).welcome()
+            for placement in (SINGLE_ENTRY, PRIVATE_PROJECT)
+        ]
         assert client.get("/api/agent-threads").json()["threads"] == rows
         for row in rows:
             base = "/api/agent-threads/" + row["thread_id"]
@@ -561,6 +565,33 @@ def test_space_retry_and_resume_honour_the_request_key(manifest, tmp_path, monke
         assert again.json()["operation_id"] == first.json()["operation_id"]
 
 
+@pytest.mark.parametrize("action", ["retry", "resume"])
+def test_space_retry_and_resume_validate_the_stored_request(
+    manifest, tmp_path, monkeypatch, action
+):
+    from rcp.skill_registry import SkillDefaults, official_registry
+    from tests.helpers import fake_launch_admitted
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    tasks = app.state.background_tasks
+    fake_launch_admitted(monkeypatch, tasks)
+    started: list[str] = []
+    monkeypatch.setattr(tasks, action, lambda *args, **kwargs: started.append(action))
+    with signed_in_client(app) as client:
+        thread = client.get("/api/agent-threads").json()["threads"][0]
+        base = "/api/agent-threads/" + thread["thread_id"]
+        skill_id = client.get("/api/skills").json()["skill_defaults"]["skill_ids"][0]
+        sent = client.post(base + "/turns", json={"message": "go", "invoked_skill_ids": [skill_id]})
+        assert sent.status_code == 202, sent.text
+        operation_id = sent.json()["operation_id"]
+        tasks.store.fail_agent_task(operation_id, "try again")
+        nothing_enabled = official_registry().resolve(SkillDefaults(workflow_ids=[], skill_ids=[]))
+        monkeypatch.setattr("rcp.runs.space_chat.space_skill_selection", lambda: nothing_enabled)
+        refused = client.post(f"{base}/tasks/{operation_id}/{action}", json={})
+        assert refused.status_code == 409, refused.text
+        assert started == []
+
+
 def test_space_steer_refusal_is_durable_and_idempotent(manifest, tmp_path, monkeypatch):
     import uuid
 
@@ -587,6 +618,40 @@ def test_space_steer_refusal_is_durable_and_idempotent(manifest, tmp_path, monke
         assert second.json() == first.json()
         transcript = client.get(base + "/transcript").json()
         assert [message["text"] for message in transcript["messages"]] == ["hello", "new direction"]
+
+
+def test_space_steer_carries_comment_threads_and_a_refusal_keeps_them_open(
+    manifest, tmp_path, monkeypatch
+):
+    import uuid
+
+    from tests.helpers import fake_launch_admitted
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    fake_launch_admitted(monkeypatch, app.state.background_tasks)
+    with signed_in_client(app) as client:
+        threads = client.get("/api/agent-threads").json()["threads"]
+        thread_id = next(item for item in threads if item["kind"] == "space")["thread_id"]
+        base = "/api/agent-threads/" + thread_id
+        operation_id = client.post(base + "/turns", json={"message": "hello"}).json()[
+            "operation_id"
+        ]
+        comment = _space_comment(client, thread_id, "reply", operation_id, "Which baseline?")
+        steered = client.post(
+            f"{base}/tasks/{operation_id}/steer",
+            json={
+                "message_id": str(uuid.uuid4()),
+                "attempt": 1,
+                "expected_turn_id": "not-running",
+                "message": "Also this.",
+                "comment_thread_ids": [comment["thread_id"]],
+            },
+        )
+        assert steered.status_code == 200, steered.text
+        assert steered.json()["steering"]["status"] == "refused"
+        assert "Which baseline?" in steered.json()["text"]
+        kept = client.get(f"{base}/comment-threads/{comment['thread_id']}").json()["thread"]
+        assert kept["state"] == "open" and kept["sent_operation_id"] is None
 
 
 def _space_turn_artifact(app, thread_id: str):
@@ -621,15 +686,24 @@ def _space_turn_artifact(app, thread_id: str):
     return task, artifact
 
 
-def _text_comment(operation_id: str, artifact_id: str) -> dict[str, object]:
-    return {
-        "operation_id": operation_id,
-        "artifact_id": artifact_id,
-        "selections": [{"kind": "text", "text": "Saved comparison", "comment": "Bigger"}],
-    }
+def _space_comment(client, thread_id: str, kind: str, target_id: str, text: str = "Bigger"):
+    """A saved comment thread on this Space thread's artifact or reply."""
+    anchor = (
+        {"kind": "text", "text": "Saved comparison", "comment": ""}
+        if kind == "artifact"
+        else {"kind": "whole", "comment": ""}
+    )
+    response = client.post(
+        f"/api/agent-threads/{thread_id}/comment-threads",
+        json={"target": {"kind": kind, "id": target_id}, "anchor": anchor, "text": text},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["thread"]
 
 
 def test_space_turn_admits_a_comment_on_its_own_artifact(manifest, tmp_path, monkeypatch):
+    import uuid
+
     from tests.helpers import fake_launch_admitted
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -638,10 +712,12 @@ def test_space_turn_admits_a_comment_on_its_own_artifact(manifest, tmp_path, mon
     with signed_in_client(app) as client:
         thread_id = client.get("/api/agent-threads").json()["threads"][0]["thread_id"]
         task, artifact = _space_turn_artifact(app, thread_id)
-        context = _text_comment(task.operation_id, artifact.artifact_id)
+        comment = _space_comment(client, thread_id, "artifact", artifact.artifact_id)
+        assert comment["can_send"] and comment["chat_id"] == thread_id
         response = client.post(
             f"/api/agent-threads/{thread_id}/turns",
-            json={"message": "", "artifact_context": context},
+            headers={"Idempotency-Key": str(uuid.uuid4())},
+            json={"message": "", "comment_thread_ids": [comment["thread_id"]]},
         )
         assert response.status_code == 202, response.text
         stored = store.agent_task(response.json()["operation_id"])
@@ -651,8 +727,10 @@ def test_space_turn_admits_a_comment_on_its_own_artifact(manifest, tmp_path, mon
             stored.request["artifact_context"]["base_version"]
             == store.artifact(artifact.artifact_id).current_version
         )
-        assert stored.request["artifact_context"]["selections"][0]["comment"] == "Bigger"
+        assert "Bigger" in stored.request["artifact_context"]["selections"][0]["comment"]
         assert "Comment 1" in stored.request["message"]
+        sent = client.get(f"/api/agent-threads/{thread_id}/comment-threads/{comment['thread_id']}")
+        assert sent.json()["thread"]["sent_operation_id"] == stored.operation_id
     from types import SimpleNamespace
 
     from rcp.runs.space_chat import _artifact_comment_part
@@ -666,7 +744,7 @@ def test_space_turn_admits_a_comment_on_its_own_artifact(manifest, tmp_path, mon
             artifact_edit_paths={artifact.artifact_id: str(commented)},
         )
     )
-    assert str(commented) in part and '"comment": "Bigger"' in part
+    assert str(commented) in part and 'Bigger"' in part
 
 
 def test_space_comment_request_key_keeps_its_frozen_base_after_publication(
@@ -683,13 +761,8 @@ def test_space_comment_request_key_keeps_its_frozen_base_after_publication(
         thread_id = client.get("/api/agent-threads").json()["threads"][0]["thread_id"]
         task, descriptor = _space_turn_artifact(app, thread_id)
         artifact = store.artifact(descriptor.artifact_id)
-        body = {
-            "message": "Revise the comparison.",
-            "artifact_context": {
-                **_text_comment(task.operation_id, artifact.artifact_id),
-                "base_version": artifact.current_version,
-            },
-        }
+        comment = _space_comment(client, thread_id, "artifact", artifact.artifact_id)
+        body = {"message": "Revise the comparison.", "comment_thread_ids": [comment["thread_id"]]}
         headers = {"Idempotency-Key": str(uuid.uuid4())}
         url = f"/api/agent-threads/{thread_id}/turns"
         first = client.post(url, headers=headers, json=body)
@@ -704,11 +777,11 @@ def test_space_comment_request_key_keeps_its_frozen_base_after_publication(
         assert repeated.status_code == 202 and repeated.json() == first.json(), repeated.text
 
 
-@pytest.mark.parametrize("pinned", [False, True])
 def test_space_comment_blocks_publication_until_its_task_is_recorded(
-    manifest, tmp_path, monkeypatch, pinned
+    manifest, tmp_path, monkeypatch
 ):
     import threading
+    import uuid
     from concurrent.futures import ThreadPoolExecutor
 
     from rcp.storage.artifacts import _lock
@@ -722,9 +795,7 @@ def test_space_comment_blocks_publication_until_its_task_is_recorded(
         thread_id = client.get("/api/agent-threads").json()["threads"][0]["thread_id"]
         origin, descriptor = _space_turn_artifact(app, thread_id)
         artifact = store.artifact(descriptor.artifact_id)
-        context = _text_comment(origin.operation_id, artifact.artifact_id)
-        if pinned:
-            context["base_version"] = artifact.current_version
+        comment = _space_comment(client, thread_id, "artifact", artifact.artifact_id)
         attempted = threading.Event()
         publications = []
 
@@ -757,7 +828,11 @@ def test_space_comment_blocks_publication_until_its_task_is_recorded(
         monkeypatch.setattr(tasks, "start", start_with_publisher)
         response = client.post(
             f"/api/agent-threads/{thread_id}/turns",
-            json={"message": "Revise this comparison.", "artifact_context": context},
+            headers={"Idempotency-Key": str(uuid.uuid4())},
+            json={
+                "message": "Revise this comparison.",
+                "comment_thread_ids": [comment["thread_id"]],
+            },
         )
         assert response.status_code == 202, response.text
         blocked, admitted, version = publications[0].result(timeout=5)
@@ -767,32 +842,64 @@ def test_space_comment_blocks_publication_until_its_task_is_recorded(
         assert store.artifact(artifact.artifact_id).current_version == version.version_id
 
 
-def test_space_turn_refuses_a_comment_outside_its_thread(manifest, tmp_path, monkeypatch):
+def test_space_comments_belong_to_their_thread_and_its_owner(manifest, tmp_path, monkeypatch):
     import uuid
 
     from tests.helpers import fake_launch_admitted
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     fake_launch_admitted(monkeypatch, app.state.background_tasks)
+    store = app.state.background_tasks.store
     with signed_in_client(app) as client:
-        thread_id = client.get("/api/agent-threads").json()["threads"][0]["thread_id"]
-        task, artifact = _space_turn_artifact(app, str(uuid.uuid4()))
-        own, own_artifact = _space_turn_artifact(app, thread_id)
-        for context in (
-            _text_comment(task.operation_id, artifact.artifact_id),
-            _text_comment(own.operation_id, "0" * 24),
+        threads = client.get("/api/agent-threads").json()["threads"]
+        thread_id = next(item for item in threads if item["kind"] == "space")["thread_id"]
+        other, other_artifact = _space_turn_artifact(app, str(uuid.uuid4()))
+        own, _ = _space_turn_artifact(app, thread_id)
+        url = f"/api/agent-threads/{thread_id}/comment-threads"
+        for kind, target in (
+            ("artifact", other_artifact.artifact_id),
+            ("reply", other.operation_id),
         ):
-            response = client.post(
-                f"/api/agent-threads/{thread_id}/turns",
-                json={"message": "fix", "artifact_context": context},
+            refused = client.post(
+                url,
+                json={
+                    "target": {"kind": kind, "id": target},
+                    "anchor": {"kind": "whole", "comment": ""},
+                    "text": "Elsewhere",
+                },
             )
-            assert response.status_code == 422, response.text
-        empty = {**_text_comment(own.operation_id, own_artifact.artifact_id), "selections": []}
+            assert refused.status_code == 404, refused.text
+        reply = _space_comment(client, thread_id, "reply", own.operation_id, "Which baseline?")
+        listed = client.get(url, params={"target_kind": "reply", "chat_id": thread_id})
+        assert [item["thread_id"] for item in listed.json()["threads"]] == [reply["thread_id"]]
+        answered = client.post(f"{url}/{reply['thread_id']}/posts", json={"text": "The tuned one."})
+        assert [post["text"] for post in answered.json()["thread"]["posts"]] == [
+            "Which baseline?",
+            "The tuned one.",
+        ]
         response = client.post(
             f"/api/agent-threads/{thread_id}/turns",
-            json={"message": " ", "artifact_context": empty},
+            headers={"Idempotency-Key": str(uuid.uuid4())},
+            json={"message": "Answer it.", "comment_thread_ids": [reply["thread_id"]]},
         )
-        assert response.status_code == 422, response.text
+        assert response.status_code == 202, response.text
+        stored = store.agent_task(response.json()["operation_id"])
+        assert stored is not None and "The tuned one." in stored.request["message"]
+        assert stored.request.get("artifact_context") is None
+        resolved = client.get(f"{url}/{reply['thread_id']}").json()["thread"]
+        assert resolved["state"] == "resolved"
+        assert resolved["sent_operation_id"] == stored.operation_id
+        reopened = client.post(f"{url}/{reply['thread_id']}/reopen", json={})
+        assert reopened.status_code == 200, reopened.text
+        assert reopened.json()["thread"]["state"] == "open"
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE agent_threads SET user_id='someone-else' WHERE thread_id=?", (thread_id,)
+            )
+        assert (
+            client.get(url, params={"target_kind": "reply", "chat_id": thread_id}).status_code
+            == 404
+        )
 
 
 def test_space_inline_viewer_enables_selection(manifest, tmp_path):
@@ -878,17 +985,6 @@ def test_space_artifact_state_and_viewers_pin_retained_versions(manifest, tmp_pa
         base = first["viewer_url"].split("?", 1)[0].removesuffix("viewer")
         for action in ("content", "viewer"):
             assert client.get(base + action, params={"version_id": "unknown"}).status_code == 410
-        stale = client.post(
-            f"/api/agent-threads/{thread_id}/turns",
-            json={
-                "message": "Revise this old selection.",
-                "artifact_context": {
-                    **_text_comment(task.operation_id, artifact_id),
-                    "base_version": first["current_version"],
-                },
-            },
-        )
-        assert stale.status_code == 422, stale.text
         store.undo_artifact(artifact_id)
         assert client.get(state_url).json() == first
         assert "Updated comparison" in pinned_content(latest["viewer_url"])
@@ -1195,8 +1291,8 @@ def test_queue_routes_store_list_start_and_remove_member_messages(manifest, tmp_
 
         _busy_thread_turn(store, actor, thread)
         space_queue = f"/api/agent-threads/{space['thread_id']}/queue"
-        assert client.get(space_queue).status_code == 404
-        assert post("x", url=space_queue).status_code == 404
+        assert client.get(space_queue).status_code == 200
+        assert post("x", url=space_queue).status_code == 202
         assert client.post(base, json={"message": "No key"}).status_code == 422
         assert post("").status_code == 422
         assert post("x" * (AGENT_THREAD_QUEUE_MAX_CHARS + 1)).status_code == 422

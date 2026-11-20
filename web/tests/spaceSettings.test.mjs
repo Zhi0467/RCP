@@ -260,10 +260,7 @@ function settingsProject() {
       },
     ],
     agent_profiles: Object.fromEntries(
-      ["seed", "refresh", "node_chat", "project_chat", "paper_coach", "orchestrator"].map((id) => [
-        id,
-        profile,
-      ]),
+      ["node_chat", "project_chat", "paper_coach", "orchestrator"].map((id) => [id, profile]),
     ),
     providers: {},
     provider_readiness: {},

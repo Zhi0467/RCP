@@ -316,17 +316,24 @@ def test_a_live_watcher_holds_its_chat_session(store, status, held):
         store,
         "watchers",
         watcher_id="w",
+        agent_id="chat",
         project_id="p",
-        origin_operation_id="old",
-        origin_task_kind="project_chat",
-        chat_id="chat",
-        machine_id="backend",
+        purpose="Job",
+        origin_turn_id="old",
+        created_at=OLD,
+    )
+    _insert(
+        store,
+        "watcher_checks",
+        check_id="w",
+        watcher_id="w",
+        definition="external",
         check_command="true",
         log_path="/log",
         cwd="/stage",
-        continuation_json="{}",
-        status=status,
         created_at=OLD,
+        completed_at=OLD if status == "completed" else None,
+        consecutive_error_count=1 if status == "degraded" else 0,
     )
     assert (_eligible(store) == []) is held
 

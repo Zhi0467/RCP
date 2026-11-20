@@ -6,10 +6,57 @@ import pytest
 
 from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.service import RunRequest, resolve_dispatch_authority
-from rcp.storage import AppStore
+from rcp.storage import AgentTaskRecord, AppStore
 from rcp.storage.question_models import QuestionOrigin
 from tests.test_auto_research_children_storage import _identity, _project
-from tests.test_watchers import _completed_chat_turn, _task
+
+
+def _task(store: AppStore, operation_id: str, watcher_ids: list[str]) -> AgentTaskRecord:
+    now = store.now()
+    return AgentTaskRecord(
+        operation_id=operation_id,
+        project_id="project",
+        kind="node_chat",
+        status="queued",
+        request={
+            "chat_id": "chat",
+            "node_id": "exp-one",
+            "provider": "codex",
+            "model": "gpt-5",
+            "reasoning": "medium",
+            "run_on": "backend",
+            "run_truth_scope": ["state"],
+            "mode": "work",
+            "trigger": "watcher",
+            "patch_kind": "work",
+            "control_node_id": None,
+            "workflow_ids": [],
+            "skill_ids": [],
+            "invoked_workflow_ids": [],
+            "invoked_skill_ids": [],
+            "resolved_skill_packages": [],
+            "watcher_ids": watcher_ids,
+        },
+        created_at=now,
+        updated_at=now,
+        status_message="Queued watcher wake.",
+    )
+
+
+def _completed_chat_turn(store, operation_id, session_id, *, request_updates=None):
+    task = _task(store, operation_id, [])
+    task.request.update({"trigger": "human", **(request_updates or {})})
+    task = AgentTaskRecord.model_validate(task.model_dump(exclude={"runtime_id"}))
+    store.create_agent_task(task)
+    store.mark_agent_task_running(operation_id)
+    store.checkpoint_agent_task(
+        operation_id,
+        native_session_id=session_id,
+        stage_machine_id="",
+        stage_root=str(store.path.parent / "chat-stage"),
+    )
+    store.complete_agent_task(operation_id, applied_revision=None, result={})
+    return store.agent_task(operation_id)
 
 
 def _answered(store, *, mode="work"):

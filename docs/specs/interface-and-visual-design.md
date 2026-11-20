@@ -116,7 +116,8 @@ the menu's flow rather than floating off its scroll box. When the row is still s
 branch name truncates before the tab strip narrows below one tab and +.
 No wordmark, logo, or revision label sits beside the project name.
 The labelled Sync control sits beside Auto-research.
-Group the icon-only History and Refresh controls together.
+Group the icon-only History and Refresh controls together. Refresh rereads the
+current panel and project settings. Its icon spins while the reads are pending.
 Agent tasks are icon-only and accessible. Inbox carries a colored count.
 The DAG is under Research. Research has no page heading.
 View switches between the drill-down and the DAG and sets which records show.
@@ -187,7 +188,7 @@ Collapsed cards have no muted recommendation or report commentary. Expanded
 Auto-research detail shows the parent recommendation described by the
 [Runs projection](api-web-and-desktop-projections.md#runs).
 Backend controls select the current Experiment episode, its section, and its health.
-Older episodes remain in History. Seed, Refresh, chat, and coaching are not Runs rows.
+Older episodes remain in History. Chat and coaching are not Runs rows.
 Blockers stay in Inbox.
 
 Run opens episode detail in Runs. Stop loop is the loop action.
@@ -297,9 +298,10 @@ shrink columns. Fit preserves pins. Returning restores zoom, scroll, and offsets
 
 ## Agent browser controls
 
-Chat Options holds Browser use beside Work in a worktree. Its unlabelled sliders
-chip counts enabled options. On phones, the menu spans the screen-height composer.
-An outside click, Escape, or a chat change closes it.
+The agent header's ⋯ menu holds the Browser use switch. The composer's + menu
+holds Work in a worktree below its file items, and + shows a count of enabled
+options. On phones, the + menu spans the screen-height composer. An outside
+click, Escape, or a chat change closes either menu.
 Browser use starts off in new chats. A failed save returns to the server value,
 outlines the control in red, and offers one icon-only retry with the error on
 hover. The Coach's Browser use sits at the bottom of its agent picker, starts on,
@@ -324,10 +326,10 @@ Failure leaves Check again. Readiness meanings and continuation grants follow
 
 Chat, the Coach included, is forest. The composer has no mode control.
 Each human turn keeps its recorded label; a historical Discuss turn reads Discuss
-in plum. The Agents header has a title, a picker for provider,
-model, and effort, a context ring, an active-watcher count toggle when watchers
-exist, and one menu. The menu holds Rename, Archive,
-New session, and Branch this chat. The worktree repository choice sits in Chat Options.
+in plum. The Agents header is the one agent header described under
+[agent view](#agent-view). Its menu holds Rename, Archive, New session,
+and Branch this chat before the shared rows. The worktree repository choice sits
+in the + menu.
 Runtime information stays in the inspector. The list has search and fold controls
 and a hairline divider. It has no title band or row for metadata or mode.
 
@@ -353,8 +355,9 @@ spinner.
 Failures and recovery stay explicit. The composer is a contained writing surface:
 one card in every theme, with Add, the message, and the send actions on one row.
 The message has no box of its own, starts one line tall, and eases taller with
-its text. A second row holds the caller's own tools, such as
-Options, only when it has any.
+its text. A second row holds the caller's own tools, such as worktree
+integration, only when it has any. Docked comments show as one count above the
+row.
 The list groups appear in this order: New reply, Failed, Stopped, Working, and Done.
 New reply contains unread successes. Stopped contains paused or interrupted turns.
 Done contains read successes, unsent drafts, or unloaded turns.
@@ -391,7 +394,8 @@ Working chats cannot be archived.
 Touch scrolls the board. Menus provide the archive action.
 The layout has two columns at <=920px and one at <=560px.
 
-At <=560px, the header is one row of picker, ring, and menu without chat name.
+At <=560px, the header stays one row: the chat name truncates beside its chips
+and menu.
 More → Agents follows the same entry rule. Wider layouts retain
 resizable-list preferences independently of viewport changes. Only code, tables,
 and display math scroll sideways. Paths and URLs wrap.
@@ -411,8 +415,7 @@ the package menu is open, they move the caret or the highlight as before.
 `/` selects packages. Arrow keys highlight a package, Enter chooses it,
 and Escape dismisses the picker. Selections are per turn.
 Settings supplies fresh-chat defaults. Sessions retain their profile.
-Seed and Refresh have launch controls. Raw truth inputs choose the context.
-The + menu holds Upload file and From RCP.
+The + menu holds Upload file and From RCP, then the turn's options.
 Start episode's picker takes an optional starting message.
 
 Machine tiles show the name, host, provider status, writable-path count, and
@@ -488,31 +491,39 @@ the rail is the list, and a chosen thread fills the screen.
 Inside a project, Agents opens the member's own project thread, which leads the
 conversation list and counts in its filters. Its mark leads its meta line, where
 team rows show their provider, so every title starts in one column. The team's
-board conversations stay in that list. The thread header holds a Wakes
-button, present only when schedules or watchers that will wake the thread exist, that
-counts the schedules that will run without the member plus those watchers and
-opens a popover of them. The backend marks each watcher `wakes_chat`, by the same
-rule the agent's own watcher list uses, so an Experiment loop's watcher, which
-wakes its episode, stays in Runs. Every row has the same shape: what wakes the agent,
-then when. A watcher names its node by title, or its job by the agent's stated
-purpose (an older one by its check script, else its log file). It says which
-states or event wake the agent, or a job's current check error, and can be
-stopped there. Tapping a watcher opens when it was set and checked, and for a
-job its check command, log, folder, and machine. The popover is sized to the viewport and
-scrolling past it, the context ring, and a ⋯ menu with Rename, the browser switch, and the agent pick. Space and project
-threads share that pick: one `provider · model · effort` row that opens the
-shared fields in the menu. Opening the menu reads provider readiness again, so a
-sign-in from Settings appears without a reload. A pick is stored on the thread
-at once and every later turn runs it, retries and wakes included. Until the
-member picks, the row shows the project's Settings profile, or for the Space
-thread the backend machine's first signed-in provider, else its first registered
-provider. When the browser was
-unavailable on the latest turn, the browser item carries a warning icon and the
-fix on hover; turns carry no browser notice. The composer holds the voice
-button. Once a thread's transcript has loaded empty, a centered welcome lists
-what the agent can do under the header that names it, rendered from the
-capability lines the backend gives each verb the thread kind's turns are
-granted, above four starters. A starter fills the composer without sending, and the first turn removes the welcome.
+board conversations stay in that list.
+
+Every agent placement renders one agent view: board and node chats, the
+Auto-research root, the Paper chat, Experiment chats, project threads and the
+Space thread. It has one header, one composer and one running-turn display.
+What differs comes from the data the view is given: a member thread loads its
+own transcript and turns through the thread routes, whose Space or project path
+the API module chooses. Every agent shows its queue.
+
+Every agent view, the floating node chat included, uses one header row: the
+title on the left, then icon chips that each carry a count, in this order:
+schedules, compactions, the context ring (`141k / 258k`), watchers, and
+comments. A chip shows only when it has something. A ⋯ menu ends the row. The
+menu starts with Rename wherever the agent's name can be stored: a thread, or
+a project chat with history whose host does not title it. The host's actions
+and New session follow, then Browser use, and last a
+collapsible `provider · model · effort` row that opens the provider, model and
+effort selects. The agent pick is never a header button. A thread's pick is
+stored on the thread at once, and every later turn runs it, retries and wakes
+included; opening the menu reads provider readiness again, so a sign-in from
+Settings appears without a reload. Until the member picks, the row shows the
+project's Settings profile, or for the Space thread the backend machine's first
+signed-in provider, else its first registered provider. The schedules chip
+counts the schedules that will run without the member and opens a popover of
+them. The watcher chip opens the chat watcher bar, which lists the live
+watchers that wake the conversation. Work in a worktree sits in the composer's
++ menu and needs a project.
+Browser loss shows on its turn. The composer holds the voice button where the
+Space voice agent is available, else dictation. Once a thread's transcript has
+loaded empty, a centered welcome lists what the agent can do under the header
+that names it, rendered from the capability lines the backend gives each verb
+the thread kind's turns are granted, above four starters. A starter fills the
+composer without sending, and the first turn removes the welcome.
 A failed turn shows its error once, in the message column, with Continue. A
 turn that paused by itself shows the same row. A member's Stop reads Stopped
 with no button, on one rounded row shaped like the failed turn's, and Send
@@ -523,18 +534,19 @@ control beside the running status, including when a retry or resume shares its
 parent's prompt. They send the draft when that attempt confirms
 a member pause, while ordinary Send still steers the turn. With rows already waiting it stays
 Stop, so a new message never jumps the queue. Continue
-continues its turn, so the member's message shows once. In a
-project thread, what waits for the next turn shows as one-line rows above the
+continues its turn, so the member's message shows once. Where the backend
+queues sends, what waits for the next turn shows as one-line rows above the
 composer, oldest first: a ready handoff with its chip and Space agent, each
 queued message with Edit and Remove, and a refused one with its reason and Dismiss,
 which, like Edit, puts its text back in the draft. Rows grow in and collapse out. While a
 running turn can be steered and nothing is staged, Enter steers and Queue sits
 beside it; with an active turn or waiting rows otherwise, Enter queues, so a new
 message never jumps the line. A message with files queues because a steer
-carries text only. A Space thread keeps steer-or-wait. The
-thread's reading column is a step wider than a board chat's, and the composer
-matches it. A provider pick moves to that provider's first model; a provider
-that declares its models lists them before any probe.
+carries text only. A refused queue send keeps its text and retries under the
+same key. Without a queue the composer keeps steer-or-wait. A provider pick
+moves to that provider's first model; a provider that declares its models lists
+them before any probe. A send whose start failed keeps its Resend line when the
+member leaves and comes back.
 Switching threads shows each thread's last loaded view while it reloads. Each
 schedule row shows its note (in full on hover), its time and zone, the next run
 of a recurring one, and since when a due wake waits. The reason a waiting wake
@@ -549,24 +561,23 @@ commands in order, open, above the spinner. When the turn settles, the reply
 shows and the same list folds under one line that counts its messages and
 commands; settling never reorders it. A handoff result is one row with its Handoff
 chip, the agent that ran it, and how it ended; the answer stays in that agent's thread.
-Board chats and threads
-share the agent window transcript, scrolling, artifact rendering, comments, and
-composer parts. Project threads support node references, saved artifacts, and
+Project threads support node references, saved artifacts, and
 artifact-selection comments. Space threads render their own turn artifacts and
-accept files, answer comments, and inline artifact-selection comments, which
-open in comment mode like a project thread's. A Space comment travels with the
-next message as numbered selections on that turn file, and the agent writes a
-revision at its original tracked path. Space turns synchronize earlier files and
+accept files and the same shared comments on replies and inline artifacts, which
+open in comment mode like a project thread's. A Space artifact comment travels
+with the next message as numbered selections on that turn file, and the agent
+writes a revision at its original tracked path. Space turns synchronize earlier files and
 publish changes as the same artifact's next version, just as project turns do.
 Space has no Keep, node references, version controls or comment panel in its
 opened viewer. Both open artifacts in the shared in-app viewer,
 including on desktop. Voice and handoff source icons sit inside the human message
-bubble. Answer comments join the next message only in Space threads. In a
-project chat, selected reply text starts a
+bubble. In every chat and thread, selected reply text starts a
 [shared comment thread](paper-artifacts-and-result-views.md#shared-comments): a pin
-just past the quote's end opens it, the header count lists the chat's reply and
-inline-artifact threads, and Send
-to agent carries threads through the composer's own send, a steer while a turn runs.
+in the answer's right margin, level with the quote's last line, opens it, the header count lists the chat's reply and
+inline-artifact threads, and saved threads dock at the composer, whose next send
+carries them, a steer while a turn runs. A thread with docked comments refuses
+Queue. A project thread offers Work in a worktree in its + menu like a project
+chat.
 A pending Experiment or Auto-research plan card sits in the chat's dock, in
 threads, shared chats and node chats alike; once settled it stays inside its
 raising turn's answer. Both share one body. An Experiment plan shows the node,
@@ -627,7 +638,7 @@ leaves the dock at the next change, and an asked card's result then shows in its
 turn. Both docks hide when empty. Docked cards
 stay reachable where inline ones would scroll away. Every question and approval
 card shows when it was asked: the clock time, with the date when not today.
-Left of Wakes, the Space thread header holds a Running button, present only
+In the space home, the Space thread header holds a Running button, present only
 while something runs, that reads needs-you over total. Its popover lists the
 rows that need the member, a divider, then the rest. Each row shows its title,
 project and kind, state and time, and only opens its run or thread.
@@ -756,12 +767,22 @@ reading opaque HTML. Selection alone sends or stages nothing.
 
 The [comment](paper-artifacts-and-result-views.md#shared-comments) rail sits
 beside the artifact, the Paper source, and the Paper preview. Each thread card
-shows a checkbox, avatar, author, time, and quote, with replies in one flat
-column under thin rules. Its reply box offers Reply and Send to agent, then
-Resolve; Send to agent on an empty reply sends the thread as it stands. Ticking
-a thread shows Send N to agent in the footer. Open threads show red numbered
-pins at the end of their anchors, and a selected card highlights its pin. The
-composer is a popover at the selection with Comment and Send to agent; `@` opens
-the picker with the agent row first. At 390px the rail is a bottom sheet.
+shows an avatar, author, time, and quote, with replies in one flat column under
+thin rules. Its reply box keeps one action row: Resolve or Reopen on the left,
+Reply on the right. Open threads show red numbered pins. A quote's pin sits in
+the right margin of the text that holds it, level with the quote's last line,
+never over text and on screen at 390px; a box or page anchor's pin sits at its
+top-right corner. Quoted text shows a soft red highlight, stronger for the
+selected thread, and a selected card highlights its pin. A text selection offers
+a small Comment chip above it. Clicking the chip opens the composer beside the
+selection, never as a bottom sheet: its top-left aligns with the chip just
+below the selection's end, or it opens above when there is no room below. The
+selected text stays highlighted while it is open. The composer has one row:
+Cancel on the left, Comment on the right. Enter saves, Shift+Enter starts a new
+line, and Enter while the `@` member picker shows picks its first member. A
+press outside the composer or Escape closes it. At 390px the rail is a bottom
+sheet. A saved comment docks at
+the chat composer as an "N comments" count above the field
+([sending](paper-artifacts-and-result-views.md#sending-threads-to-an-agent)).
 Runs preserves server order, with the report first, and labels kind, time, and worker.
 Timeline popovers filter to the exact operation.

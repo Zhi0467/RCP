@@ -367,23 +367,24 @@ class AcceptanceAgentLauncher(AgentLauncher):
             _write_state(resolved_cwd, state)
             # Deliberately invalid. Production orchestration must retain this
             # native session and request exactly one watcher-only correction.
-            _write_json(resolved_cwd / "watch.json", {"invalid": "correction required"})
+            _write_json(
+                resolved_cwd / "watchers" / "invalid.json", {"invalid": "correction required"}
+            )
             answer = "Started two deterministic CPU-only fixture jobs."
         elif action == "watch_correction":
             specs = _watch_specs(resolved_cwd)
             watcher_count = len(specs)
-            _write_json(
-                resolved_cwd / "watch.json",
-                {"external": specs, "graph": []},
-            )
+            for index, spec in enumerate(specs):
+                purpose = spec.pop("purpose")
+                _write_json(
+                    resolved_cwd / "watchers" / f"{operation_id}-{index}.json",
+                    {"purpose": purpose, "checks": [spec]},
+                )
             state["watch_corrected"] = True
             _write_state(resolved_cwd, state)
             answer = "Corrected the watcher handoff without resubmitting either fixture job."
         else:
-            if not (
-                _fixture_jobs_complete(resolved_cwd)
-                or _reauthorized_fixture_jobs_complete(contract)
-            ):
+            if not _fixture_jobs_complete(resolved_cwd):
                 yield AgentEvent(
                     event="error",
                     text="Acceptance fixture watcher woke before both detached jobs completed.",
@@ -401,10 +402,6 @@ class AcceptanceAgentLauncher(AgentLauncher):
                     contract,
                     state,
                     focused_experiment_id,
-                )
-                _write_json(
-                    resolved_cwd / "watch.json",
-                    {"external": [], "graph": []},
                 )
                 _write_json(
                     resolved_cwd / "patch.json",
@@ -589,11 +586,12 @@ def _space_handoff_argv(
     """
 
     client = _space_command_client(contract)
+    prefix = f"- `{client} handoff "
     usage = next(
         (
-            line.split("`")[1].partition(" (")[0]
+            line.removeprefix(f"- `{client} ").partition("`")[0].partition(" (")[0]
             for line in contract.splitlines()
-            if line.startswith("- `handoff ")
+            if line.startswith(prefix)
         ),
         None,
     )
@@ -1474,29 +1472,6 @@ def _watch_specs(cwd: Path) -> list[dict[str, str]]:
 def _fixture_jobs_complete(cwd: Path) -> bool:
     jobs = cwd / _JOBS_DIRECTORY
     return all((jobs / f"{name}.done").is_file() for name in ("job-one", "job-two"))
-
-
-def _reauthorized_fixture_jobs_complete(contract: str) -> bool:
-    """Inspect delivered watcher evidence when a human Run starts in a fresh chat stage."""
-
-    path = _experiment_pointer(
-        contract, "- Current watcher state for this Experiment: `", "paths.watcher_state"
-    )
-    if path is None:
-        return False
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"Acceptance Experiment watcher state is unreadable: {exc}") from exc
-    if not isinstance(value, list) or not value:
-        return False
-    delivered = [item for item in value if isinstance(item, dict) and item.get("notified")]
-    return bool(delivered) and all(
-        item.get("status") == "completed"
-        and isinstance(item.get("log_path"), str)
-        and Path(item["log_path"]).is_file()
-        for item in delivered
-    )
 
 
 def _completion_patch(

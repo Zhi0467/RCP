@@ -19,7 +19,7 @@ from rcp.providers import profile_for
 from rcp.providers.browser_grant import BrowserGrant
 from rcp.storage.models import SpaceMachineRecord
 
-CAPABILITIES = ("discuss", "work_auto", "orchestrate", "scratch_patch")
+CAPABILITIES = ("discuss", "work_auto", "orchestrate")
 
 
 def _scope(home: str = "/home/research") -> HiddenReadScope:

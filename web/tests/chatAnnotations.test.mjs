@@ -1,50 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  chatAnnotationTextControlSelection,
-  boundChatAnnotationWhere,
-  chatAnnotationViewportMetrics,
-  parseStagedChatAnnotations,
-  stagedChatAnnotationsAreComplete,
-} from "../src/chat/chatInput.ts";
-
-test("the read-only selection control reports exactly the selected text", () => {
-  const value = "The baseline improved by 12%, but variance was not reported.";
-  const selectedText = "variance was not reported";
-  const selectionStart = value.indexOf(selectedText);
-  const control = {
-    value,
-    selectionStart,
-    selectionEnd: selectionStart + selectedText.length,
-  };
-  assert.equal(chatAnnotationTextControlSelection(control), selectedText);
-  assert.equal(
-    chatAnnotationTextControlSelection({ ...control, selectionEnd: selectionStart }),
-    "",
-  );
-});
-
-test("a comment edited blank survives a switch away and back and still blocks send", () => {
-  const persisted = JSON.stringify([
-    {
-      id: "annotation-1",
-      selectedText: "The reported result.",
-      comment: "",
-    },
-  ]);
-
-  const restoredAfterChatSwitch = parseStagedChatAnnotations(persisted);
-
-  assert.deepEqual(restoredAfterChatSwitch, [
-    {
-      id: "annotation-1",
-      selectedText: "The reported result.",
-      comment: "",
-    },
-  ]);
-  assert.equal(stagedChatAnnotationsAreComplete(restoredAfterChatSwitch), false);
-});
+import { chatAnnotationViewportMetrics } from "../src/chat/chatInput.ts";
 
 test("the composer follows the soft-keyboard viewport at every layout width", () => {
   assert.deepEqual(
@@ -69,13 +26,4 @@ test("the composer follows the soft-keyboard viewport at every layout width", ()
     right: 0,
     bottom: 0,
   });
-});
-
-test("a long location loses whole trailing parts, never part of a number", () => {
-  const path = `chapters/${"x".repeat(150)}.tex`;
-  const where = `${path}, page 3, area 10-40% across and 20-60% down, near sections/a.tex line 412`;
-  assert.equal(boundChatAnnotationWhere(where), `${path}, page 3`);
-  assert.equal(boundChatAnnotationWhere("notes.md, line 4"), "notes.md, line 4");
-  const long = "y".repeat(300);
-  assert.equal(boundChatAnnotationWhere(`${long}, line 4`), `${long.slice(0, 199)}…`);
 });

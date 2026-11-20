@@ -206,7 +206,7 @@ def _stage_chat_patch_inputs(
     validator_command = validator_staged.client_command("validate", patch_path)
     return _ChatPatchInputs(
         patch_path=patch_path,
-        watch_path=str(workspace / "watch.json"),
+        watch_path=str(workspace / "watchers"),
         schema_path=schema_path,
         validator_command=validator_command,
         validator_mailbox_id=validator_staged.credential.mailbox_id,
@@ -222,7 +222,6 @@ def chat_prompt_values(
     repositories: list[dict[str, object]],
     compute_profiles: list[dict[str, str]],
     skill_pointers: list[dict[str, object]],
-    experiment_watcher_resources: list[dict[str, object]],
     workspace: str,
     patch: Mapping[str, object] | None = None,
     work: Mapping[str, object] | None = None,
@@ -251,7 +250,6 @@ def chat_prompt_values(
             "research_path": context.research_md_path,
             "focused_node_id": str(context.node["id"]) if context.node else None,
             "paper_path": context.paper_path,
-            "experiment_watcher_resources": experiment_watcher_resources,
         },
         "repositories": repositories,
         "compute": {"active": compute_profiles},
@@ -1273,16 +1271,6 @@ def _read_chat_patch(workspace: Path, remote_stage: RemoteRunStage | None) -> st
             return None
         return remote_stage.read_text(remote_stage.workspace / "patch.json")
     return _read_local_workspace_file(workspace / "patch.json")
-
-
-def _read_watch_request(workspace: Path, remote_stage: RemoteRunStage | None) -> str | None:
-    """Read the exact optional watcher deliverable without searching scratch output."""
-
-    if remote_stage is not None:
-        if "watch.json" not in remote_stage.list_workspace_files():
-            return None
-        return remote_stage.read_text(remote_stage.workspace / "watch.json")
-    return _read_local_workspace_file(workspace / "watch.json")
 
 
 def _read_turn_outcome(workspace: Path, remote_stage: RemoteRunStage | None) -> str | None:
