@@ -233,16 +233,9 @@ class HiddenReadScope(BaseModel):
     os_account: str = Field(min_length=1, max_length=HIDDEN_READ_IDENTITY_MAX_LENGTH)
     # Canonical execution-account home; it locates the staged tool wrapper.
     account_home: HiddenReadPath | None = None
-    hidden_directories: tuple[HiddenReadPath, ...] = Field(
-        default=(), max_length=HIDDEN_READ_PATH_MAX_COUNT
-    )
-    # Confirmed keys join the default files, so both budgets fit.
-    hidden_files: tuple[HiddenReadPath, ...] = Field(
-        default=(), max_length=HIDDEN_READ_PATH_MAX_COUNT + HIDDEN_READ_KEY_MAX_COUNT
-    )
-    hidden_globs: tuple[HiddenReadPath, ...] = Field(
-        default=(), max_length=HIDDEN_READ_PATH_MAX_COUNT
-    )
+    hidden_directories: tuple[HiddenReadPath, ...] = ()
+    hidden_files: tuple[HiddenReadPath, ...] = ()
+    hidden_globs: tuple[HiddenReadPath, ...] = ()
     env_deny_list: tuple[
         Annotated[
             str,
@@ -259,17 +252,9 @@ class HiddenReadScope(BaseModel):
     key_evidence: tuple[HiddenReadKeyEvidence, ...] = Field(
         default=(), max_length=HIDDEN_READ_KEY_MAX_COUNT
     )
-    # Hidden entries with nothing behind them on the execution host when this
-    # launch resolved: a missing literal path, or a glob whose folder is missing.
-    # A launch-time fact, not policy, so the fingerprint leaves it out.
-    absent_entries: tuple[HiddenReadPath, ...] = Field(
-        default=(), max_length=3 * HIDDEN_READ_PATH_MAX_COUNT + HIDDEN_READ_KEY_MAX_COUNT
-    )
     fingerprint: str = Field(default="", pattern=r"^[0-9a-f]{64}$")
 
-    @field_validator(
-        "hidden_directories", "hidden_files", "hidden_globs", "env_deny_list", "absent_entries"
-    )
+    @field_validator("hidden_directories", "hidden_files", "hidden_globs", "env_deny_list")
     @classmethod
     def canonical_entries(cls, values: tuple[str, ...]) -> tuple[str, ...]:
         if len(values) != len(set(values)):
@@ -301,9 +286,7 @@ class HiddenReadScope(BaseModel):
         paths = (*self.hidden_directories, *self.hidden_files, *self.hidden_globs)
         if len(paths) != len(set(paths)):
             raise ValueError("a hidden path must occur in only one path category")
-        if not set(self.absent_entries).issubset(paths):
-            raise ValueError("an absent entry must be one of the hidden entries")
-        payload = self.model_dump(mode="json", exclude={"fingerprint", "absent_entries"})
+        payload = self.model_dump(mode="json", exclude={"fingerprint"})
         expected = hashlib.sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode(
                 "utf-8"

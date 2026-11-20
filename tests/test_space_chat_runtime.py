@@ -435,8 +435,6 @@ def test_space_runtime_real_storage_and_partial_apply(
             str(locator), seat_member=human.user_id, identity_action="created"
         )
     unavailable_id = min(store.member_project_ids(human.user_id), default=None)
-    if broken == "hidden":
-        project_count -= 1
     if broken in {"unavailable", "missing", "remote"}:
         from rcp.transport import StateUnavailable
 
@@ -665,7 +663,7 @@ def test_space_runtime_real_storage_and_partial_apply(
     else:
         assert execution.write_scope_fingerprint is None
         assert execution.turn_outcome.status == "done"
-    if broken in {"unavailable", "missing", "remote", "hidden"}:
+    if broken in {"unavailable", "missing", "remote"}:
         scope, git_access = launched[0]
         assert unavailable_id not in {item.project_id for item in scope.projects}
         assert unavailable_id not in {repository for repository, _ in git_access.checkouts}

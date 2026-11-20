@@ -17,7 +17,7 @@ def _fake_app_server(
     tmp_path: Path,
     *,
     request_approval: bool = False,
-    permission_profile: str | None = "rcp_discuss",
+    sandbox: str = "dangerFullAccess",
 ) -> tuple[Path, Path]:
     executable = tmp_path / "fake-codex"
     capture = tmp_path / "app-server-capture.json"
@@ -58,10 +58,8 @@ for line in sys.stdin:
         result = {{
             "thread": {{"id": thread_id}},
             "approvalPolicy": \"never\",
-            "sandbox": {{"type": \"readOnly\"}},
+            "sandbox": {{"type": {sandbox!r}}},
         }}
-        if {permission_profile is not None!r}:
-            result[\"activePermissionProfile\"] = {{"id": {permission_profile!r}}}
         send({{"jsonrpc": \"2.0\", "id": request_id, "result": result}})
     elif method == \"turn/start\":
         send({{
@@ -172,8 +170,7 @@ for line in sys.stdin:
             "result": {{
                 "thread": {{"id": "app-thread"}},
                 "approvalPolicy": "never",
-                "sandbox": {{"type": "readOnly"}},
-                "activePermissionProfile": {{"id": "rcp_discuss"}},
+                "sandbox": {{"type": "dangerFullAccess"}},
             }},
         }})
     elif method == "turn/start":
@@ -235,15 +232,8 @@ def _work_scope(stage: Path) -> ProjectWriteScope:
 
 
 @pytest.mark.asyncio
-async def test_app_server_work_turn_carries_the_exact_project_permission_profile(
-    tmp_path: Path,
-) -> None:
-    """A Work-like app-server turn is contained by the profile, not by a sandbox.
-
-    The profile is the whole containment; a sandbox would silently narrow it.
-    """
-
-    executable, capture = _fake_app_server(tmp_path, permission_profile="rcp_project")
+async def test_app_server_work_turn_runs_unsandboxed(tmp_path: Path) -> None:
+    executable, capture = _fake_app_server(tmp_path)
     launcher = AgentLauncher()
     launcher.readiness = lambda login, binary=None: _ready(executable)
     stage = tmp_path / "stage"
@@ -267,29 +257,24 @@ async def test_app_server_work_turn_carries_the_exact_project_permission_profile
     assert [event.text for event in events if event.event == "answer"] == ["APP_SERVER_OK"]
     assert events[-1].event == "done", [(event.event, event.text) for event in events]
     transcript = json.loads(capture.read_text(encoding="utf-8"))
-    assert 'default_permissions="rcp_project"' in transcript["argv"]
-    assert any(
-        item.startswith("permissions={rcp_project=")
-        and str(stage) in item
-        and '".git"="write"' in item
-        for item in transcript["argv"]
-    ), transcript["argv"]
+    assert 'sandbox_mode="danger-full-access"' in transcript["argv"]
+    assert not any(item.startswith("permissions=") for item in transcript["argv"])
     thread_start = next(
         item for item in transcript["messages"] if item.get("method") == "thread/start"
     )
-    assert thread_start["params"]["permissions"] == "rcp_project"
-    assert "sandbox" not in thread_start["params"]
+    assert thread_start["params"]["sandbox"] == "danger-full-access"
+    assert "permissions" not in thread_start["params"]
     turn_start = next(item for item in transcript["messages"] if item.get("method") == "turn/start")
-    assert "sandboxPolicy" not in turn_start["params"]
+    assert turn_start["params"]["sandboxPolicy"] == {"type": "dangerFullAccess"}
 
 
 @pytest.mark.asyncio
-async def test_app_server_work_turn_stops_when_the_permission_profile_is_not_active(
+async def test_app_server_work_turn_stops_when_codex_keeps_its_sandbox(
     tmp_path: Path,
 ) -> None:
-    """Codex answering without RCP's exact profile must not reach the prompt."""
+    """A sandboxed shell fails every command, so the prompt must not reach it."""
 
-    executable, capture = _fake_app_server(tmp_path, permission_profile="workspace")
+    executable, capture = _fake_app_server(tmp_path, sandbox="workspaceWrite")
     launcher = AgentLauncher()
     launcher.readiness = lambda login, binary=None: _ready(executable)
     stage = tmp_path / "stage"
@@ -313,7 +298,6 @@ async def test_app_server_work_turn_stops_when_the_permission_profile_is_not_act
     assert all(event.event != "answer" for event in events)
     fallbacks = [json.loads(event.text) for event in events if event.event == "runtime_fallback"]
     assert [item["runtime_id"] for item in fallbacks] == ["codex.app-server-stdio.v1"]
-    assert "exact project permission profile" in fallbacks[0]["detail"]
     transcript = json.loads(capture.read_text(encoding="utf-8"))
     assert all(item.get("method") != "turn/start" for item in transcript["messages"])
 
@@ -496,8 +480,7 @@ def _accounting_turn(tmp_path: Path, *, resumed: bool):
             "result": {
                 "thread": {"id": "accounting-thread"},
                 "approvalPolicy": "never",
-                "sandbox": {"type": "readOnly"},
-                "activePermissionProfile": {"id": "rcp_discuss"},
+                "sandbox": {"type": "dangerFullAccess"},
             },
         },
     ):
@@ -919,8 +902,7 @@ for line in sys.stdin:
             "result": {{
                 "thread": {{"id": "app-thread"}},
                 "approvalPolicy": "never",
-                "sandbox": {{"type": "readOnly"}},
-                "activePermissionProfile": {{"id": "rcp_discuss"}},
+                "sandbox": {{"type": "dangerFullAccess"}},
             }},
         }})
     elif method == "turn/start":

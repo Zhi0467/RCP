@@ -113,9 +113,8 @@ spec, and executable test, not this registry.
 4. **Agent capability is fixed in code.** Configuration cannot widen it. Discuss has no
    graph authority. Every team launch carries its repositories' Git transport
    ([why](docs/specs/providers-and-containment.md#login-state-and-failure)). Work names
-   exact write roots to provider enforcement, which bounds every file-editing tool and
-   bounds the shell only where a provider can do so without disabling compute
-   ([why](docs/specs/providers-and-containment.md#claude)). Ingestion writes only
+   exact write roots to providers that enforce them without blocking runs; Codex runs
+   unsandboxed ([why](docs/specs/providers-and-containment.md#codex)). Ingestion writes only
    scratch. A Paper-focused chat also writes the Paper folder. The per-chat
    browser grant is human consent to a code-defined tool; a member's agent threads start
    with it on. Each project's memory folder is a code-defined write root, never a grant.

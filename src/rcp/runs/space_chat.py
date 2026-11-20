@@ -21,11 +21,7 @@ from rcp.config import AgentExecutionProfile, AgentSurfaceConfig
 from rcp.core.authority import render_agent_graph_authority_contract
 from rcp.core.models import HiddenReadReason, HiddenReadScope, HiddenReadStatus
 from rcp.keyed_locks import KeyedLocks
-from rcp.limits import (
-    HIDDEN_READ_PATH_MAX_COUNT,
-    PATCH_SELF_CHECK_TIMEOUT_SECONDS,
-    TURN_OUTCOME_REASON_MAX_CHARS,
-)
+from rcp.limits import PATCH_SELF_CHECK_TIMEOUT_SECONDS, TURN_OUTCOME_REASON_MAX_CHARS
 from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.projects import ProjectCatalog
 from rcp.providers import ProviderId
@@ -50,24 +46,13 @@ if TYPE_CHECKING:
 
 
 def merge_space_hidden_read_scopes(scopes: list[HiddenReadScope]) -> HiddenReadScope:
-    """Conservatively union local policies before a Space provider can start."""
+    """Union the local account policy with each writer's before a Space provider starts."""
     if not scopes:
         raise ValueError("Space hidden-read policy requires the local account policy")
     first = scopes[0]
-    if (
-        any(
-            (scope.machine_id, scope.os_account, scope.account_home)
-            != (first.machine_id, first.os_account, first.account_home)
-            for scope in scopes
-        )
-        or first.machine_id != BACKEND_MACHINE_ID
-    ):
-        raise ValueError("Space hidden-read policies must belong to one local account")
     directories = tuple(sorted({path for scope in scopes for path in scope.hidden_directories}))
     files = tuple(sorted({path for scope in scopes for path in scope.hidden_files}))
     globs = tuple(sorted({path for scope in scopes for path in scope.hidden_globs}))
-    if len(set((*directories, *files, *globs))) > HIDDEN_READ_PATH_MAX_COUNT:
-        raise ValueError("too_many_hidden_folders")
     reasons: tuple[HiddenReadReason, ...] = tuple(
         sorted({reason for scope in scopes for reason in scope.enforcement.reasons})
     )
@@ -82,9 +67,6 @@ def merge_space_hidden_read_scopes(scopes: list[HiddenReadScope]) -> HiddenReadS
         env_deny_list=tuple(sorted({item for scope in scopes for item in scope.env_deny_list})),
         enforcement=HiddenReadStatus(status="unhidden" if reasons else "enforced", reasons=reasons),
         key_evidence=tuple(evidence.values()),
-        absent_entries=tuple(
-            sorted(set.intersection(*(set(scope.absent_entries) for scope in scopes)))
-        ),
     )
 
 
@@ -531,7 +513,7 @@ async def _open_space_turn(
     found = prepare_space_projects(owner, request, execution, stage, inventory)
     accesses = _resolve_space_git(owner, found, project_git_access)
     policies = await _prepare_space_policies(
-        owner, request, data_dir, execution, stage, found, accesses, inventory
+        request, data_dir, execution, stage, found, accesses, inventory
     )
     member_memory_root, _index_bytes = prepare_member_memory(owner.store, owner.thread.user_id)
     scope = replace(
@@ -601,7 +583,6 @@ def _union_git_access(
 
 
 async def _prepare_space_policies(
-    owner: SpaceThreadOwner,
     request: RunRequest,
     data_dir: Path,
     execution: AgentTaskExecution,
@@ -610,54 +591,31 @@ async def _prepare_space_policies(
     accesses: dict[str, ProviderGitAccess],
     inventory: list[RegisteredRepositoryRoot],
 ) -> dict[str, HiddenReadScope]:
-    """Each writer's read-hiding policy; one project's failure leaves that project out.
+    """Each writer's read-hiding policy, prepared with only its own Git transport.
 
-    A project's policy is prepared with only its own Git transport. Shared
-    preparation answers most failures with the unhidden fallback; that, or a policy
-    that cannot join the others, excludes the project instead of widening the turn.
+    Preparation answers every failure with the unhidden fallback, so hiding never
+    costs a project its write access.
     """
-    from rcp.agents.hidden_read import HiddenFolderRejected
     from rcp.runs.shared import _prepare_hidden_read_scope
-    from rcp.transport import StateUnavailable
 
-    base = default_space_hidden_read_scope(owner, request, stage, execution, inventory)
     policies: dict[str, HiddenReadScope] = {}
     try:
         for project in list(found.writers):
             execution.git_access = accesses.get(project.project_id)
-            try:
-                policy = await _prepare_hidden_read_scope(
-                    project.service,
-                    request.model_copy(update={"run_on": project.scope.machine_id}),
-                    workspace=stage,
-                    remote_stage=None,
-                    execution=execution,
-                    capability="work_auto",
-                    data_dir=data_dir,
-                    local_stage=stage,
-                    repository_inventory=inventory,
-                )
-            except (HiddenFolderRejected, OSError, StateUnavailable) as exc:
-                found.exclude(project.project_id, "hidden_read_failed", exc)
-                continue
-            if _fell_back_unhidden(policy, base):
-                found.exclude(project.project_id, "hidden_read_failed", "wrapper_unavailable")
-                continue
-            try:
-                merge_space_hidden_read_scopes([base, *policies.values(), policy])
-            except ValueError as exc:
-                found.exclude(project.project_id, "policy_conflict", exc)
-                continue
-            policies[project.project_id] = policy
+            policies[project.project_id] = await _prepare_hidden_read_scope(
+                project.service,
+                request.model_copy(update={"run_on": project.scope.machine_id}),
+                workspace=stage,
+                remote_stage=None,
+                execution=execution,
+                capability="work_auto",
+                data_dir=data_dir,
+                local_stage=stage,
+                repository_inventory=inventory,
+            )
     finally:
         execution.git_access = None
     return policies
-
-
-def _fell_back_unhidden(policy: HiddenReadScope, base: HiddenReadScope) -> bool:
-    """Whether preparation returned the unhidden fallback the account policy did not."""
-    fallback = "wrapper_unavailable"
-    return fallback in policy.enforcement.reasons and fallback not in base.enforcement.reasons
 
 
 def _space_seed(request: RunRequest, prior: ChatTranscript | None) -> str:
@@ -1153,27 +1111,37 @@ def default_space_hidden_read_scope(
     execution: AgentTaskExecution,
     inventory: list[RegisteredRepositoryRoot],
 ) -> HiddenReadScope:
-    """Resolve ordinary local account policy independently of project write admission."""
+    """Resolve ordinary local account policy, or run unhidden when it cannot be resolved."""
+    import logging
+
     from rcp.agents.hidden_read import resolve_machine_hidden_read_scope
-    from rcp.agents.provider_environment import local_hidden_read_key_evidence
+    from rcp.agents.provider_environment import (
+        local_hidden_read_key_evidence,
+        unhidden_read_scope,
+    )
 
     card = owner.store.backend_space_machine()
     assert request.provider is not None
-    return resolve_machine_hidden_read_scope(
-        machine=card,
-        provider=request.provider,
-        capability="work_auto",
-        stage_root=str(stage),
-        workspace_root=str(stage),
-        app_data_dir=owner.catalog.data_dir,
-        remote_stage=None,
-        repository_inventory=inventory,
-        machine_hidden_folders=list(card.hidden_folders),
-        machine_provider_paths=list(card.provider_paths.values()),
-        key_evidence=local_hidden_read_key_evidence(owner.catalog.data_dir, execution.git_access),
-        browser_enabled=request.browser_requested,
-        thread_owner=owner.thread.user_id,
-    )
+    try:
+        return resolve_machine_hidden_read_scope(
+            machine=card,
+            provider=request.provider,
+            capability="work_auto",
+            stage_root=str(stage),
+            workspace_root=str(stage),
+            app_data_dir=owner.catalog.data_dir,
+            remote_stage=None,
+            repository_inventory=inventory,
+            machine_hidden_folders=list(card.hidden_folders),
+            machine_provider_paths=list(card.provider_paths.values()),
+            key_evidence=local_hidden_read_key_evidence(
+                owner.catalog.data_dir, execution.git_access
+            ),
+            browser_enabled=request.browser_requested,
+        )
+    except Exception:
+        logging.getLogger(__name__).exception("Space hidden-read policy failed; running unhidden")
+        return unhidden_read_scope(machine_id=card.machine_id, os_account=card.os_account)
 
 
 def install_space_hidden_read_scope(scope: HiddenReadScope) -> None:
@@ -1181,6 +1149,8 @@ def install_space_hidden_read_scope(scope: HiddenReadScope) -> None:
     from rcp.agents.hidden_read import staged_hidden_read_source
     from rcp.agents.staged_hidden_read import install
 
+    if scope.account_home is None:
+        return
     path = Path(scope.wrapper_path())
     install(
         str(path.parent),

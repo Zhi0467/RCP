@@ -47,16 +47,16 @@ def test_summary_resume_has_no_write_grants(tmp_path, provider, runtime, fork):
         for index, arg in enumerate(turn.command):
             if arg == "--config":
                 config.update(tomllib.loads(turn.command[index + 1]))
-        assert config["default_permissions"] == "rcp_summary"
-        policy = config["permissions"]["rcp_summary"]
-        assert policy["filesystem"] == {":root": "read", "/private/other": "deny"}
-        assert policy["network"] == {"enabled": False}
+        assert config["sandbox_mode"] == "danger-full-access"
+        assert config["web_search"] == "disabled"
+        assert turn.command[
+            turn.command.index("shell_tool") - 1 : turn.command.index("shell_tool") + 1
+        ] == ["--disable", "shell_tool"]
         if runtime.endswith("stdio.v1"):
             turn.receive_line(json.dumps({"id": 1, "result": {}}))
             step = turn.receive_line(json.dumps({"id": 2, "result": {"config": {}}}))
             message = json.loads(step.outgoing[0])
             assert message["method"] == ("thread/fork" if fork else "thread/resume")
-            assert message["params"]["permissions"] == "rcp_summary"
             assert message["params"]["config"]["agents"]["enabled"] is False
             step = turn.receive_line(
                 json.dumps(
@@ -65,7 +65,7 @@ def test_summary_resume_has_no_write_grants(tmp_path, provider, runtime, fork):
                         "result": {
                             "thread": {"id": "summary-fork" if fork else "old-session"},
                             "approvalPolicy": "never",
-                            "activePermissionProfile": {"id": "rcp_summary"},
+                            "sandbox": {"type": "dangerFullAccess"},
                         },
                     }
                 )

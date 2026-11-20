@@ -84,7 +84,6 @@ def _render(provider, request):
             step = turn.receive_line(json.dumps({"id": 2, "result": {"config": {}}}))
             thread = json.loads(step.outgoing[0])
             result["thread"] = thread
-            permission = thread["params"]["permissions"]
             step = turn.receive_line(
                 json.dumps(
                     {
@@ -92,7 +91,7 @@ def _render(provider, request):
                         "result": {
                             "thread": {"id": "test-thread"},
                             "approvalPolicy": "never",
-                            "activePermissionProfile": {"id": permission},
+                            "sandbox": {"type": "dangerFullAccess"},
                         },
                     }
                 )
@@ -123,10 +122,6 @@ def _remove_only_added_denies(provider, rendered, empty, populated):
             assert read.pop(path.lstrip("/")) == "deny"
     else:
         for config in rendered["configs"]:
-            if "permissions" in config:
-                for permission in config["permissions"].values():
-                    for path in paths:
-                        assert permission["filesystem"].pop(path) == "deny"
             if "shell_environment_policy" in config:
                 policy = config["shell_environment_policy"]
                 assert policy["exclude"] == list(populated.env_deny_list)
@@ -145,7 +140,7 @@ def test_hidden_read_only_adds_denies(provider, capability, browser_enabled, tmp
     populated scope may filter tool environments. Full structural equality catches removed tools,
     write grants, Git access, sandbox changes, and altered browser permissions or flags.
     """
-    environment = {**os.environ, "TEST_PRIVATE_TOKEN": "secret", "LAB_DATA_ROOT": "/data"}
+    environment = {**os.environ, "CLAUDE_CODE_OAUTH_TOKEN": "secret", "LAB_DATA_ROOT": "/data"}
     identity = {
         "machine_id": BACKEND_MACHINE_ID,
         "os_account": "research",
@@ -169,7 +164,7 @@ def test_hidden_read_only_adds_denies(provider, capability, browser_enabled, tmp
         )
     }
     assert "LAB_DATA_ROOT" in clean_environment(populated.model_dump(), environment)
-    assert "TEST_PRIVATE_TOKEN" not in clean_environment(populated.model_dump(), environment)
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in clean_environment(populated.model_dump(), environment)
     write_scope = None
     if capability in {"work_auto", "orchestrate"}:
         write_scope = ProjectWriteScope.create(

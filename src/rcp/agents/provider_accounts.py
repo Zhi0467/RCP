@@ -392,10 +392,14 @@ class ProviderAccounts:
             ), None
         if lineage_login is not None:
             state = self.store.provider_login_state(lineage_login, connection=connection)
-            if usable(state) and state.member_id in (None, member_id):
+            if usable(state):
                 return lineage_login, None
 
-        allowed = self._allowed_logins(connection, provider, machine_id, member_id, sources)
+        allowed = self._allowed_logins(connection, provider, machine_id, member_id, sources) or [
+            row
+            for row in self.store.provider_logins(provider, machine_id, connection=connection)
+            if not row.draining_since and usable(row)
+        ]
 
         def key_for(row: ProviderLoginStateRecord) -> LoginKey:
             return LoginKey(provider, machine_id, row.login_id)
@@ -422,12 +426,15 @@ class ProviderAccounts:
             return key_for(previous_row), None
         candidates = free or allowed
         chosen = None
-        for source in sources:
-            group = [
+        groups = [
+            [
                 row
                 for row in candidates
                 if (row.member_id == member_id if source == "own" else row.member_id is None)
             ]
+            for source in sources
+        ]
+        for group in [*groups, candidates]:
             if group:
                 chosen = (
                     previous_row
@@ -436,9 +443,9 @@ class ProviderAccounts:
                 )
                 break
         if chosen is None:
-            label = "your sign-in" if sources[0] == "own" else "the shared sign-ins"
             return LoginRefusal(
-                sources[0], f"No usable login in {label}. Open Settings, Sign-ins."
+                sources[0],
+                f"No usable {profile_for(provider).label} login. Open Settings, Sign-ins.",
             ), None
         selected = key_for(chosen)
         if previous_login is None or selected == previous_login:

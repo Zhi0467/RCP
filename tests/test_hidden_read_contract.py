@@ -142,10 +142,10 @@ def test_path_validation_refuses_noncanonical_paths(path: str) -> None:
 
 
 def test_policy_bounds() -> None:
+    folders = [f"/folder/{i}" for i in range(HIDDEN_READ_PATH_MAX_COUNT + 1)]
+    assert len(_scope(hidden_directories=tuple(folders)).hidden_directories) == len(folders)
     invalid = {
-        "hidden_directories": tuple(f"/folder/{i}" for i in range(HIDDEN_READ_PATH_MAX_COUNT + 1)),
         "hidden_files": ("/" + "x" * HIDDEN_READ_PATH_MAX_LENGTH,),
-        "hidden_globs": tuple(f"/glob/{i}*" for i in range(HIDDEN_READ_PATH_MAX_COUNT + 1)),
         "env_deny_list": tuple(f"ENV_{i}" for i in range(HIDDEN_READ_ENV_MAX_COUNT + 1)),
         "key_evidence": tuple(_key(f"/key/{i}") for i in range(HIDDEN_READ_KEY_MAX_COUNT + 1)),
         "machine_id": "x" * (HIDDEN_READ_IDENTITY_MAX_LENGTH + 1),
@@ -157,7 +157,7 @@ def test_policy_bounds() -> None:
     with pytest.raises(ValidationError):
         _scope(env_deny_list=("X" * (HIDDEN_READ_ENV_NAME_MAX_LENGTH + 1),))
     with pytest.raises(ValidationError):
-        _machine(hidden_folders=list(invalid["hidden_directories"]))
+        _machine(hidden_folders=folders)
     with pytest.raises(ValidationError):
         HiddenReadStatus(
             status="unhidden", reasons=("wrapper_unavailable",) * (HIDDEN_READ_REASON_MAX_COUNT + 1)

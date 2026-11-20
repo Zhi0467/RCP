@@ -3,8 +3,9 @@
 Context, graph target, and write scope are distinct: a repository pointer or
 graph context in the prompt grants no filesystem authority, and the scope is
 built only from the repositories the run admitted. Unadmitted repositories,
-canonical `.research` state, and stage inputs stay read-only
-(`tests/test_write_scope.py`, `tests/test_dispatch_authority.py`).
+admitted ones overlapping another registered repository, canonical `.research`
+state, and stage inputs stay read-only (`tests/test_write_scope.py`,
+`tests/test_dispatch_authority.py`).
 """
 
 from __future__ import annotations
@@ -91,11 +92,6 @@ class ProjectWriteScope(BaseModel):
     # The subset of protected paths present only because a grant covers RCP's
     # own storage; kept apart so a pre-grant fingerprint can be derived.
     granted_protected_paths: list[str] = Field(default_factory=list)
-    # Protected paths with nothing behind them on the execution host when this
-    # launch resolved. A launch-time fact, not scope identity: it is in neither
-    # the fingerprint nor any serialized copy, so a retained scope contract stays
-    # identical across re-entries and across the release that added this field.
-    absent_protected_paths: list[str] = Field(default_factory=list, exclude=True)
     episode_worktree: EpisodeWorktreeFact | None = None
     fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
 
@@ -140,10 +136,6 @@ class ProjectWriteScope(BaseModel):
             raise ValueError("protected write paths must be sorted and unique")
         if any(not PurePosixPath(item).is_absolute() for item in self.protected_write_paths):
             raise ValueError("protected write paths must be absolute")
-        if self.absent_protected_paths != sorted(set(self.absent_protected_paths)):
-            raise ValueError("absent protected paths must be sorted and unique")
-        if not set(self.absent_protected_paths).issubset(self.protected_write_paths):
-            raise ValueError("absent protected paths must be protected write paths")
         expected = _scope_fingerprint(self._fingerprint_payload())
         if self.fingerprint != expected:
             raise ValueError("write-scope fingerprint does not match its canonical roots")
@@ -166,7 +158,6 @@ class ProjectWriteScope(BaseModel):
         git_metadata_roots: list[str] | None = None,
         granted_roots: list[str] | None = None,
         granted_protected_paths: list[str] | None = None,
-        absent_protected_paths: list[str] | None = None,
         episode_worktree: EpisodeWorktreeFact | None = None,
     ) -> ProjectWriteScope:
         payload: dict[str, object] = {
@@ -203,7 +194,6 @@ class ProjectWriteScope(BaseModel):
         return cls.model_validate(
             {
                 **payload,
-                "absent_protected_paths": sorted(set(absent_protected_paths or [])),
                 "fingerprint": _scope_fingerprint(_without_grants(payload)),
             }
         )
@@ -230,7 +220,7 @@ class ProjectWriteScope(BaseModel):
     def _fingerprint_payload(self) -> dict[str, object]:
         # Retain every existing unbound scope fingerprint across this additive
         # field: only worktree scopes carry Git metadata outside their checkout.
-        excluded = {"fingerprint", "absent_protected_paths"}
+        excluded = {"fingerprint"}
         if not self.memory_roots:
             excluded.add("memory_roots")
         if self.member_memory_root is None:
@@ -347,10 +337,6 @@ class CompositeWriteScope:
     def paper_root(self) -> None:
         return None
 
-    @property
-    def absent_protected_paths(self) -> list[str]:
-        return sorted({root for scope in self.projects for root in scope.absent_protected_paths})
-
 
 ProviderWriteScope = ProjectWriteScope | CompositeWriteScope
 
@@ -380,10 +366,11 @@ def resolve_project_write_scope(
     """Resolve and verify one exact Work-like scope on its execution machine's card.
 
     A scope that writes repositories also receives the execution machine's
-    space-level writable paths and the default temporary roots. RCP's own
-    storage inside any of them stays read-only. Episode worktrees refuse explicit
-    grants overlapping the shared checkout and omit implicit temporary grants
-    covering it, while retaining the exact writable Git common directory.
+    space-level writable paths and the default temporary roots. A grant that is
+    missing, unwritable, inside RCP's own storage, or overlapping an episode's
+    shared checkout is dropped; RCP's storage inside a kept grant stays read-only.
+    Episode worktrees retain the exact writable Git common directory. Only the
+    run's own stage, workspace, and repositories must be usable.
     """
 
     if capability not in {"work_auto", "orchestrate"}:
@@ -458,8 +445,8 @@ def resolve_project_write_scope(
         declared_paths.extend([repository.path, pointer.path])
     if binding is not None:
         declared_paths.extend([binding.shared_path, binding.worktree_path, binding.git_common_dir])
-    # Grants join the one canonicalization round trip. Only a scope that writes
-    # repositories receives them.
+    # Only a scope that writes repositories receives grants. They join the one
+    # canonicalization round trip; only when it fails are they resolved apart.
     declared_grants = (
         [
             *(machine_writable_paths or []),
@@ -468,23 +455,31 @@ def resolve_project_write_scope(
         if eligible
         else []
     )
-    declared_paths.extend(declared_grants)
-
-    canonical, account_home = _canonical_directories(
-        declared_paths,
-        remote_stage=remote_stage,
-        require_writable=True,
-    )
+    try:
+        canonical, account_home = _canonical_directories(
+            [*declared_paths, *declared_grants],
+            remote_stage=remote_stage,
+            require_writable=True,
+        )
+        canonical_grants = {grant: canonical[grant] for grant in declared_grants}
+    except (OSError, ValueError):
+        if not declared_grants:
+            raise
+        canonical, account_home = _canonical_directories(
+            declared_paths,
+            remote_stage=remote_stage,
+            require_writable=True,
+        )
+        canonical_grants = _available_directories(
+            declared_grants, remote_stage=remote_stage, require_writable=True
+        )
     if isinstance(binding, EpisodeWorktreeBinding):
         shared_root = canonical[binding.shared_path]
-        for grant in machine_writable_paths or []:
-            if path_semantics.overlaps(canonical[grant], shared_root):
-                raise ValueError("episode machine writable grant overlaps the shared checkout")
-        declared_grants = [
-            grant
-            for grant in declared_grants
-            if not path_semantics.overlaps(canonical[grant], shared_root)
-        ]
+        canonical_grants = {
+            grant: resolved
+            for grant, resolved in canonical_grants.items()
+            if not path_semantics.overlaps(resolved, shared_root)
+        }
     canonical_stage = canonical[stage_root]
     canonical_workspace = canonical[workspace_root]
     if remote_stage is not None:
@@ -498,7 +493,7 @@ def resolve_project_write_scope(
         item for item in repository_inventory if item.machine == machine.machine_id
     ]
     inventory_paths = [item.path for item in execution_inventory]
-    canonical_inventory, _inventory_home = _canonical_directories(
+    canonical_inventory = _available_directories(
         inventory_paths,
         remote_stage=remote_stage,
         require_writable=False,
@@ -538,7 +533,7 @@ def resolve_project_write_scope(
             raise ValueError(
                 f"repository {repository.alias!r} is missing from the canonical project inventory"
             )
-        if canonical_inventory[ownership[0].path] != registered_root:
+        if canonical_inventory.get(ownership[0].path) != registered_root:
             raise ValueError(
                 f"repository {repository.alias!r} changed while its ownership was verified"
             )
@@ -556,23 +551,21 @@ def resolve_project_write_scope(
                 app_data_dir=app_data_dir if remote_stage is None else None,
                 path_semantics=path_semantics,
             )
-            _reject_repository_ownership_overlap(
-                repository=repository,
-                project_id=project_id,
-                admitted_owners={
-                    (project_id, item.alias, item.machine, item.path) for item in eligible
-                },
-                registered_root=root,
+        admitted_owners = {(project_id, item.alias, item.machine, item.path) for item in eligible}
+        repository_roots.extend(
+            WritableRepositoryRoot(alias=repository.alias, machine=repository.machine, path=root)
+            for root in dict.fromkeys(roots)
+            if not _overlaps_another_owner(
+                declared_root=repository.path,
+                root=root,
+                admitted_owners=admitted_owners,
                 inventory=execution_inventory,
                 canonical_inventory=canonical_inventory,
                 path_semantics=path_semantics,
             )
-        repository_roots.extend(
-            WritableRepositoryRoot(alias=repository.alias, machine=repository.machine, path=root)
-            for root in roots
         )
 
-    granted_input = sorted({canonical[path] for path in declared_grants})
+    granted_input = sorted(set(canonical_grants.values()))
     legacy_stages = [
         root
         for root in (
@@ -597,7 +590,7 @@ def resolve_project_write_scope(
                         {
                             path
                             for item in execution_inventory
-                            for path in (item.path, canonical_inventory[item.path])
+                            for path in (item.path, canonical_inventory.get(item.path, item.path))
                         }
                     ),
                     remote_stage=remote_stage,
@@ -631,7 +624,6 @@ def resolve_project_write_scope(
     )
     granted_protected = sorted(set(rcp_protected) - set(base_protected))
     protected = sorted({*base_protected, *granted_protected})
-    absent = _absent_paths(protected, remote_stage=remote_stage)
 
     return ProjectWriteScope.create(
         project_id=project_id,
@@ -647,7 +639,6 @@ def resolve_project_write_scope(
         granted_roots=granted,
         protected_write_paths=protected,
         granted_protected_paths=granted_protected,
-        absent_protected_paths=absent,
         episode_worktree=(
             EpisodeWorktreeFact(
                 repository_alias=binding.repository_alias,
@@ -701,26 +692,10 @@ def protected_repository_paths(
     declared.append(str(PurePosixPath(state_repository.path) / ".research"))
     protected = [*declared, *(additional_paths or [])]
     unique = list(dict.fromkeys(declared))
-    # One call, not one per repository: with a remote stage each call is an SSH
-    # exec, so a project with several repositories otherwise pays a round trip
-    # per repository on every launch.
-    try:
-        canonical, _home = _canonical_directories(
-            unique, remote_stage=remote_stage, require_writable=False
-        )
-        protected.extend(canonical[path] for path in unique)
-    except (OSError, ValueError):
-        # One unavailable state directory must not discard the others, so fall
-        # back to resolving each on its own. An unresolved path keeps its
-        # lexical write deny.
-        for path in unique:
-            try:
-                resolved, _home = _canonical_directories(
-                    [path], remote_stage=remote_stage, require_writable=False
-                )
-            except (OSError, ValueError):
-                continue
-            protected.append(resolved[path])
+    # An unresolved path keeps its lexical write deny.
+    protected.extend(
+        _available_directories(unique, remote_stage=remote_stage, require_writable=False).values()
+    )
     return sorted(set(protected))
 
 
@@ -803,7 +778,7 @@ def _granted_roots(
     owned: list[str],
     path_semantics: _ExecutionPathSemantics,
 ) -> tuple[list[str], list[str]]:
-    """Refuse grants inside protected storage; return the protected paths they cover.
+    """Drop grants inside protected storage; return the rest and the protected paths they cover.
 
     Locally, identity is filesystem identity: resolved forms are compared too,
     and `samefile` catches case-insensitive and symlinked aliases.
@@ -816,12 +791,17 @@ def _granted_roots(
         candidates = list(
             dict.fromkeys([*candidates, *(str(Path(path).resolve()) for path in candidates)])
         )
-    for grant in grants:
-        for path in candidates:
-            if path_semantics.equal(grant, path) or any(
-                path_semantics.equal(parent, path) for parent in PurePosixPath(grant).parents
-            ):
-                raise ValueError(f"writable path {grant} is inside protected storage at {path}")
+    grants = [
+        grant
+        for grant in grants
+        if not any(
+            path_semantics.equal(grant, path)
+            or any(
+                path_semantics.equal(str(parent), path) for parent in PurePosixPath(grant).parents
+            )
+            for path in candidates
+        )
+    ]
     covered = sorted(
         {
             path
@@ -867,13 +847,36 @@ def registered_repository_roots(
     )
 
 
-def _absent_paths(paths: list[str], *, remote_stage: RemoteRunStage | None) -> list[str]:
-    """The paths with nothing behind them, asked on the execution account."""
-    if remote_stage is not None:
-        return remote_stage.absent_paths(paths)
-    from rcp.agents.staged_hidden_read import absent_paths
+def _available_directories(
+    paths: list[str],
+    *,
+    remote_stage: RemoteRunStage | None,
+    require_writable: bool,
+) -> dict[str, str]:
+    """Canonical forms of the usable paths; an unusable one is left out.
 
-    return absent_paths(paths)
+    One call first, since with a remote stage each call is an SSH exec; only a
+    failed batch resolves each path on its own.
+    """
+    declared = list(dict.fromkeys(paths))
+    if not declared:
+        return {}
+    try:
+        return _canonical_directories(
+            declared, remote_stage=remote_stage, require_writable=require_writable
+        )[0]
+    except (OSError, ValueError):
+        pass
+    available: dict[str, str] = {}
+    for path in declared:
+        try:
+            resolved, _home = _canonical_directories(
+                [path], remote_stage=remote_stage, require_writable=require_writable
+            )
+        except (OSError, ValueError):
+            continue
+        available[path] = resolved[path]
+    return available
 
 
 def _canonical_directories(
@@ -966,6 +969,29 @@ def _reject_broad_repository_root(
         raise ValueError("the RCP application data directory cannot be a repository write root")
 
 
+def _overlaps_another_owner(
+    *,
+    declared_root: str,
+    root: str,
+    admitted_owners: set[tuple[str, str, str, str]],
+    inventory: list[RegisteredRepositoryRoot],
+    canonical_inventory: dict[str, str],
+    path_semantics: _ExecutionPathSemantics,
+) -> bool:
+    """Whether a write root overlaps a registered repository this run did not admit."""
+    return any(
+        (owner.project_id, owner.alias, owner.machine, owner.path) not in admitted_owners
+        and (
+            path_semantics.overlaps(declared_root, owner.path)
+            or (
+                owner.path in canonical_inventory
+                and path_semantics.overlaps(root, canonical_inventory[owner.path])
+            )
+        )
+        for owner in inventory
+    )
+
+
 def _reject_repository_ownership_overlap(
     *,
     repository: RepositoryConfig,
@@ -976,28 +1002,17 @@ def _reject_repository_ownership_overlap(
     canonical_inventory: dict[str, str],
     path_semantics: _ExecutionPathSemantics,
 ) -> None:
-    alias = repository.alias
-    declared_root = repository.path
-    for owner in inventory:
-        is_admitted_owner = (
-            owner.project_id,
-            owner.alias,
-            owner.machine,
-            owner.path,
-        ) in admitted_owners
-        if is_admitted_owner:
-            continue
-        if not (
-            path_semantics.overlaps(declared_root, owner.path)
-            or path_semantics.overlaps(registered_root, canonical_inventory[owner.path])
-        ):
-            continue
-        relation = (
-            "another project" if owner.project_id != project_id else "an unadmitted repository"
-        )
+    if _overlaps_another_owner(
+        declared_root=repository.path,
+        root=registered_root,
+        admitted_owners=admitted_owners,
+        inventory=inventory,
+        canonical_inventory=canonical_inventory,
+        path_semantics=path_semantics,
+    ):
         raise ValueError(
-            f"repository {alias!r} overlaps {relation} on this execution machine: "
-            f"{owner.project_id}/{owner.alias}"
+            f"repository {repository.alias!r} of {project_id} overlaps another registered "
+            "repository on this execution machine"
         )
 
 

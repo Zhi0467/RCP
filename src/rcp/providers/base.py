@@ -713,10 +713,9 @@ def _require_provider_version(
     minimum: tuple[int, int, int],
 ) -> None:
     parsed = tuple(int(item) for item in re.findall(r"\d+", actual or "")[:3])
-    if len(parsed) != 3 or parsed < minimum:
+    if len(parsed) == 3 and parsed < minimum:
         required = ".".join(str(item) for item in minimum)
-        reported = actual or "unknown"
         raise ValueError(
-            f"{provider} {reported} cannot enforce the declared project write roots; "
+            f"{provider} {actual} cannot enforce the declared project write roots; "
             f"RCP requires {required} or newer"
         )

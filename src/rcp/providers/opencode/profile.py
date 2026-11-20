@@ -437,19 +437,19 @@ def _permission(
             **dict.fromkeys((path.lstrip("/") for path in patterns), "deny"),
         }
 
+    edit: dict[str, str]
     if scope is not None:
-        allowed, denied = scope.writable_roots, scope.protected_write_paths
+        # Work edits anywhere but protected storage, then again each grant
+        # inside it, such as a stage in RCP storage.
+        edit = {"*": "allow"}
+        denied = scope.protected_write_paths
+        edit.update({_root_pattern(path): "deny" for path in denied})
+        for path in scope.writable_roots:
+            if any(PurePosixPath(item) in PurePosixPath(path).parents for item in denied):
+                edit[_root_pattern(path)] = "allow"
     else:
-        allowed, denied = [str(cwd), *(str(item) for item in write_dirs)], []
-    # Grants, then protected storage, then again each grant inside it, such as
-    # a stage in RCP storage.
-    edit: dict[str, str] = {"*": "deny"}
-    edit.update({_root_pattern(path): "allow" for path in allowed})
-    edit.update({_root_pattern(path): "deny" for path in denied})
-    for path in allowed:
-        if any(PurePosixPath(item) in PurePosixPath(path).parents for item in denied):
-            edit.pop(_root_pattern(path))
-            edit[_root_pattern(path)] = "allow"
+        edit = {"*": "deny"}
+        edit.update({_root_pattern(path): "allow" for path in [str(cwd), *map(str, write_dirs)]})
     if hidden_read_scope is not None and hidden_read_scope.account_home is not None:
         # Last match wins: a granted root may contain the wrapper's home.
         wrapper_root = str(PurePosixPath(hidden_read_scope.wrapper_path()).parent)

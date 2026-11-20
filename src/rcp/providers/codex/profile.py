@@ -8,7 +8,6 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from rcp.limits import CODEX_DENY_GLOB_SCAN_MAX_DEPTH
 from rcp.providers.base import (
     AgentCapability,
     AgentStatusDelta,
@@ -39,6 +38,13 @@ if TYPE_CHECKING:
     from rcp.agents.write_scope import ProviderWriteScope
     from rcp.core.models import HiddenReadScope
     from rcp.provider_auth import ProviderAuthentication
+
+_UNSANDBOXED = (
+    "--config",
+    'approval_policy="never"',
+    "--config",
+    'sandbox_mode="danger-full-access"',
+)
 
 # Every Codex launch, exec and app-server alike, runs with these features off;
 # the skill probe starts app-server with the same flags so the menu lists only
@@ -111,6 +117,7 @@ class CodexProfile(ProviderProfile):
         ProviderRuntimeChoice(id="app-server", label="Codex app server"),
     )
     work_like_minimum_version = (0, 138, 0)
+    hidden_read_gaps = ("shell_wrapper",)
 
     def runtime(self, runtime_id: str) -> ProviderRuntime:
         if runtime_id == self.legacy_runtime_id:
@@ -286,10 +293,10 @@ class CodexProfile(ProviderProfile):
         return f"${name}"
 
     def project_write_enforcement_mode(self) -> str:
-        return "codex.permission-profile.v1"
+        return "codex.unsandboxed.v1"
 
     def canonical_state_boundary(self) -> str:
-        return "provider_enforced"
+        return "none"
 
     def canonical_autocompact(self, value: str) -> str:
         value = value.strip()
@@ -320,71 +327,28 @@ class CodexProfile(ProviderProfile):
         continued_session = fork_session_id or session_id
         command = [binary, "exec"]
         if continued_session:
-            # `codex exec resume` has no --sandbox or --cd; it takes the process
-            # working directory and, left alone, codex's own default sandbox --
-            # which is read-only. A resumed run must be able to write its patch
-            # file, so the mode is set through --config.
             command.append("fork" if fork_session_id else "resume")
         command.extend(
             ["--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules"]
         )
         command.extend(_DISABLED_FEATURES)
-        # Live retrieval is a provider tool, independent of whether command
-        # execution is read-only or has workspace-write network access.
         command.extend(["--config", 'web_search="live"'])
         command.extend(_codex_environment_config(hidden_read_scope))
         command.extend(_codex_autocompact_config(autocompact))
+        command.extend(_UNSANDBOXED)
         if capability in {"work_auto", "orchestrate"}:
-            scope = _require_project_write_scope(
+            _require_project_write_scope(
                 write_scope,
                 capability=capability,
                 write_dirs=write_dirs,
             )
             self.validate_readiness_version(provider_version, capability=capability)
-            command.extend(
-                [
-                    "--config",
-                    'default_permissions="rcp_project"',
-                    "--config",
-                    _codex_permission_profile(scope, hidden_read_scope),
-                ]
-            )
         elif capability == "session_summary":
             if write_scope is not None or write_dirs:
                 raise ValueError("Session summaries cannot carry write grants")
-            command.extend(_codex_summary_config(hidden_read_scope))
-        else:
-            if write_scope is not None:
-                raise ValueError(f"capability {capability!r} cannot carry a project write scope")
-            command.extend(["--config", 'approval_policy="never"'])
-            if capability == "discuss":
-                command.extend(
-                    [
-                        "--config",
-                        'default_permissions="rcp_discuss"',
-                        "--config",
-                        _codex_discuss_permission_profile(
-                            cwd, hidden_read_scope, write_dirs=write_dirs
-                        ),
-                    ]
-                )
-            if capability != "discuss" and hidden_read_scope is not None:
-                command.extend(
-                    [
-                        "--config",
-                        'default_permissions="rcp_stage"',
-                        "--config",
-                        _codex_stage_permission_profile(cwd, hidden_read_scope),
-                    ]
-                )
-            sandbox = "workspace-write"
-            if capability != "discuss" and hidden_read_scope is None:
-                if continued_session:
-                    command.extend(["--config", f'sandbox_mode="{sandbox}"'])
-                else:
-                    command.extend(["--sandbox", sandbox])
-            if capability != "discuss" and hidden_read_scope is None:
-                command.extend(["--config", "sandbox_workspace_write.network_access=true"])
+            command.extend(_CODEX_SUMMARY_TOOLS)
+        elif write_scope is not None:
+            raise ValueError(f"capability {capability!r} cannot carry a project write scope")
         if not continued_session:
             command.extend(["--cd", str(cwd)])
         if model:
@@ -453,54 +417,6 @@ class CodexProfile(ProviderProfile):
         )
 
 
-def _codex_permission_profile(
-    scope: ProviderWriteScope, hidden_read_scope: HiddenReadScope | None = None
-) -> str:
-    roots = ",".join(
-        f"{json.dumps(path, ensure_ascii=False)}=true" for path in scope.writable_roots
-    )
-    # Every path named here exists: on Linux, Codex makes a stand-in file for a
-    # missing path inside a writable root, and a killed command leaves it behind
-    # to block every later sandbox. Protected paths are "read", never "deny":
-    # Codex reads `deny` as no access at all, which would also revoke the
-    # canonical run context. Invariant 4 protects that state from *writes*.
-    protected = ",".join(
-        f'{json.dumps(path, ensure_ascii=False)}="read"'
-        for path in scope.protected_write_paths
-        if path not in scope.absent_protected_paths
-    )
-    denials = _codex_read_denials(hidden_read_scope)
-    # Codex protects `.git` separately, so the writable root alone does not let
-    # Work run ordinary Git commands such as fetch or pull.
-    return (
-        "permissions={rcp_project={workspace_roots={"
-        + roots
-        + '},filesystem={":root"="read",":workspace_roots"={"."="write",".git"="write"}'
-        + ("," + protected if protected else "")
-        + ("," + denials if denials else "")
-        + "},network={enabled=true}}}"
-    )
-
-
-def _codex_read_denials(hidden_read_scope: HiddenReadScope | None = None) -> str:
-    if hidden_read_scope is None:
-        from rcp.agents.hidden_read import WEBKIT_READ_DENY_PATHS
-
-        return ",".join(f'{json.dumps(path)}="deny"' for path in WEBKIT_READ_DENY_PATHS)
-    paths = (
-        *hidden_read_scope.hidden_directories,
-        *hidden_read_scope.hidden_files,
-        *hidden_read_scope.hidden_globs,
-    )
-    # A missing path has nothing to hide, and naming one would make Codex
-    # create a stand-in for it (see `_codex_permission_profile`).
-    present = [path for path in paths if path not in hidden_read_scope.absent_entries]
-    denials = [f'{json.dumps(path)}="deny"' for path in present]
-    if any("**" in path for path in present):
-        denials.append(f"glob_scan_max_depth={CODEX_DENY_GLOB_SCAN_MAX_DEPTH}")
-    return ",".join(denials)
-
-
 def _codex_shell_environment_policy(scope: HiddenReadScope | None) -> dict[str, object]:
     from rcp.agents.hidden_read import HIDDEN_READ_ENV_DENY_LIST
 
@@ -534,57 +450,14 @@ def _codex_environment_config(scope: HiddenReadScope | None) -> list[str]:
     ]
 
 
-def _codex_summary_config(hidden_read_scope: HiddenReadScope | None) -> list[str]:
-    """Resume history without granting a scratch, temporary or repository write root."""
-    denials = _codex_read_denials(hidden_read_scope)
-    return [
-        "--disable",
-        "shell_tool",
-        "--disable",
-        "multi_agent",
-        "--config",
-        'web_search="disabled"',
-        "--config",
-        'approval_policy="never"',
-        "--config",
-        'default_permissions="rcp_summary"',
-        "--config",
-        'permissions={rcp_summary={filesystem={":root"="read"'
-        + ("," + denials if denials else "")
-        + "},network={enabled=false}}}",
-    ]
-
-
-def _codex_stage_permission_profile(cwd: Path, hidden_read_scope: HiddenReadScope) -> str:
-    filesystem = (
-        '":root"="read",":workspace_roots"={"."="write"},":tmpdir"="write",":slash_tmp"="write"'
-    )
-    denials = _codex_read_denials(hidden_read_scope)
-    if denials:
-        filesystem += "," + denials
-    return (
-        "permissions={rcp_stage={workspace_roots={"
-        + json.dumps(str(cwd))
-        + "=true},filesystem={"
-        + filesystem
-        + "},network={enabled=true}}}"
-    )
-
-
-def _codex_discuss_permission_profile(
-    cwd: Path,
-    hidden_read_scope: HiddenReadScope | None = None,
-    *,
-    write_dirs: list[Path] | None = None,
-) -> str:
-    denials = _codex_read_denials(hidden_read_scope)
-    roots = ",".join(f"{json.dumps(str(path))}=true" for path in [cwd, *(write_dirs or [])])
-    return (
-        "permissions={rcp_discuss={workspace_roots={" + roots + '},filesystem={":root"="read",'
-        '":workspace_roots"={"."="write"},":tmpdir"="write",":slash_tmp"="write"'
-        + ("," + denials if denials else "")
-        + "},network={enabled=true}}}"
-    )
+_CODEX_SUMMARY_TOOLS = (
+    "--disable",
+    "shell_tool",
+    "--disable",
+    "multi_agent",
+    "--config",
+    'web_search="disabled"',
+)
 
 
 class _CodexExecRuntime(_JsonlProviderRuntime):
@@ -642,13 +515,3 @@ class _CodexExecTurn(_JsonlProviderTurn):
             events.insert(0, ProviderStreamEvent(event="answer", text=self._held_answer))
             self._held_answer = None
         return replace(step, events=tuple(events))
-
-
-def __getattr__(name: str) -> object:
-    # Compatibility for callers of the previous provider-owned defaults. A
-    # deferred alias avoids cycling through the policy resolver's registry import.
-    if name == "CODEX_READ_DENY_PATHS":
-        from rcp.agents.hidden_read import WEBKIT_READ_DENY_PATHS
-
-        return WEBKIT_READ_DENY_PATHS
-    raise AttributeError(name)

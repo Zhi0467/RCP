@@ -5,7 +5,6 @@ import pytest
 from rcp.agents.launcher import AgentProcessControl
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
-from rcp.runs.provider_login import ProviderSignedOut
 from rcp.service import RunRequest
 from rcp.storage import AppStore
 from rcp.storage.models import MACHINE_LOGIN_ID
@@ -23,10 +22,6 @@ def test_admission_resolves_member_before_allocation(tmp_path):
     store.set_provider_login_setting(human.user_id, "codex", BACKEND_MACHINE_ID, "own")
     tasks = BackgroundAgentTasks(store, _unused_stream)
     request = RunRequest(provider="codex")
-    with pytest.raises(ProviderSignedOut):
-        tasks.admit_provider_task(
-            "project", request, authorized_by=human, machine_id=BACKEND_MACHINE_ID
-        )
     own = store.add_provider_login(
         "codex", BACKEND_MACHINE_ID, member_id=human.user_id, added_by=human.user_id
     )

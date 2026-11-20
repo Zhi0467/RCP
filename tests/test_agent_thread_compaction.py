@@ -28,7 +28,6 @@ from tests.test_storage import _task_record
         "same",
         "stop",
         "runtime_fallback",
-        "unhidden",
         "missing_session",
         "wrong_session",
         "signed_out",
@@ -115,7 +114,7 @@ def test_provider_switch_seed(manifest, tmp_path, monkeypatch, kind, result):
         machine_id=machine_id,
         os_account="test",
         hidden_directories=(str(tmp_path / "other-member"),),
-        enforcement=HiddenReadStatus(status="enforced"),
+        enforcement=HiddenReadStatus(status="unhidden", reasons=("wrapper_unavailable",)),
     )
     if result == "signed_out":
         from rcp.machine_cards import LoginKey
@@ -131,17 +130,7 @@ def test_provider_switch_seed(manifest, tmp_path, monkeypatch, kind, result):
     async def prepare(old_request, source):
         preparations.append((old_request.provider, source.operation_id))
         assert old_request.browser_requested is False
-        return (
-            policy.model_copy(
-                update={
-                    "enforcement": HiddenReadStatus(
-                        status="unhidden", reasons=("wrapper_unavailable",)
-                    )
-                }
-            )
-            if result == "unhidden"
-            else policy
-        )
+        return policy
 
     async def provider(provider, prompt, **kwargs):
         launches.append((provider, kwargs))
@@ -283,9 +272,7 @@ def test_provider_switch_seed(manifest, tmp_path, monkeypatch, kind, result):
         else "provider_switch_tail"
     )
     assert len(preparations) == (0 if result in {"same", "signed_out", "source_missing"} else 1)
-    assert len(launches) == (
-        0 if result in {"same", "signed_out", "source_missing", "unhidden"} else 1
-    )
+    assert len(launches) == (0 if result in {"same", "signed_out", "source_missing"} else 1)
     assert store.agent_task(task.operation_id).native_session_id == task.native_session_id
     usage = store.agent_usage(task.project_id)
     assert len(usage) == (
@@ -295,7 +282,6 @@ def test_provider_switch_seed(manifest, tmp_path, monkeypatch, kind, result):
             "same",
             "signed_out",
             "source_missing",
-            "unhidden",
             "wrong_session",
             "missing_transcript",
         }

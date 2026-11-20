@@ -124,7 +124,7 @@ def _policy(
     return {
         "agentMode": "",
         "toolPermission": "request-review",
-        "allowNonWorkspaceAccess": False,
+        "allowNonWorkspaceAccess": capability in _WORK,
         "enableTerminalSandbox": False,
         "queuedMessages": "queue",
         "artifactReviewPolicy": "always-proceed",

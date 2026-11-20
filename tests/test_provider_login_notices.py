@@ -57,13 +57,6 @@ def test_notices_follow_viewer_setting_not_another_owners_session_login(manifest
     rows = ProjectService.provider_logins_for(manifest, launcher, "project", viewer_id="viewer")
     codex = {row["login_id"]: row for row in rows if row["provider"] == "codex"}
     assert set(codex) == {""}
-    owner_rows = ProjectService.provider_logins_for(
-        manifest, launcher, "project", viewer_id="owner"
-    )
-    assert (
-        next(row for row in owner_rows if row["login_id"] == key.login_id)["detail"]
-        == accounts.account_state(key).detail
-    )
 
 
 def test_new_launch_notices_resolve_own_instead_of_machine(manifest, tmp_path):
@@ -119,9 +112,6 @@ def test_readiness_follows_the_viewer_login(manifest, tmp_path, monkeypatch):
         {"id": own.login_id}
     ]
     assert probed == [("codex", own.login_id, True)]
-    other = ProjectService.viewer_readiness(cached, manifest, launcher, "other")
-    assert other["provider_readiness"][BACKEND_MACHINE_ID]["codex"]["authenticated"] is False
-    assert len(probed) == 1
 
 
 def test_report_admission_uses_episode_authorizer_login(tmp_path):
@@ -133,6 +123,9 @@ def test_report_admission_uses_episode_authorizer_login(tmp_path):
     own = store.add_provider_login("codex", BACKEND_MACHINE_ID, member_id=member, added_by=member)
     key = LoginKey("codex", BACKEND_MACHINE_ID, own.login_id)
     store.set_provider_login_setting(member, "codex", BACKEND_MACHINE_ID, "own")
+    store.mark_provider_login_signed_out(
+        LoginKey("codex", BACKEND_MACHINE_ID, ""), member_id=None, source="sign_out", detail="out"
+    )
     _begin_report(store, episode, root, ending="completed")
     episode = store.episode(episode.episode_id)
     assert episode is not None
@@ -176,6 +169,9 @@ def test_project_response_refreshes_viewer_logins_without_rewriting_shared_cache
 def test_missing_own_login_notice_has_no_fabricated_login(manifest, tmp_path, existing):
     store = AppStore(tmp_path / "app.sqlite3", space_kind="team")
     accounts = ProviderAccounts.for_store(store)
+    store.mark_provider_login_signed_out(
+        LoginKey("codex", BACKEND_MACHINE_ID, ""), member_id=None, source="sign_out", detail="out"
+    )
     own = (
         store.add_provider_login(
             "codex", BACKEND_MACHINE_ID, member_id="new-member", added_by="new-member"

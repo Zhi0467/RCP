@@ -537,7 +537,7 @@ async def _summarize_thread_session(
     if request.provider == "opencode":
         raise _SessionSummaryUnavailable("provider_error")
     scope = await prepare_scope(request, source)
-    if scope.enforcement.status != "enforced" or scope.machine_id != machine_id:
+    if scope.machine_id != machine_id:
         raise _SessionSummaryUnavailable("provider_error")
     workspace = _source_workspace(execution.store, source)
     if not host and (not workspace.is_dir() or workspace.is_symlink()):

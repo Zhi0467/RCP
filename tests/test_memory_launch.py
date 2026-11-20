@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -33,17 +32,6 @@ def test_memory_roots_survive_scope_serialization_and_change_identity(tmp_path: 
         plain.fingerprint
         == ProjectWriteScope.model_validate_json(plain.model_dump_json()).fingerprint
     )
-
-
-def test_discuss_codex_permissions_include_only_supplied_memory(tmp_path: Path) -> None:
-    from rcp.providers.codex.profile import _codex_discuss_permission_profile
-
-    root = tmp_path / "memory" / "project" / "shared"
-    profile = _codex_discuss_permission_profile(tmp_path / "stage", write_dirs=[root])
-    assert tomllib.loads(profile)["permissions"]["rcp_discuss"]["workspace_roots"] == {
-        str(tmp_path / "stage"): True,
-        str(root): True,
-    }
 
 
 def test_memory_pointer_uses_shared_index_without_staging_snapshot(

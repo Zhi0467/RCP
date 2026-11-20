@@ -68,21 +68,13 @@ def probe_hidden_read_wrapper(*, timeout=PROBE_TIMEOUT_SECONDS) -> WrapperReadin
     return result
 
 
-def absent_paths(paths=()):
-    """The declared paths with nothing at their resolved location on this account."""
-    return [
-        path for path in paths if not os.path.lexists(os.path.realpath(os.path.expanduser(path)))
-    ]
-
-
 def host_facts(paths=()):
-    """Resolve on the actual account, including absent paths and login overrides."""
+    """Resolve on the actual account, including login overrides."""
     home = os.path.realpath(os.path.expanduser("~"))
     return {
         "home": home,
         "os_account": pwd.getpwuid(os.geteuid()).pw_name,
         "paths": {path: os.path.realpath(os.path.expanduser(path)) for path in paths},
-        "absent": absent_paths(paths),
         "provider_login_files": [
             os.path.realpath(home + "/.gemini/antigravity-cli/antigravity-oauth-token"),
             os.path.realpath(
@@ -259,12 +251,10 @@ def install(directory, files):
     # `~/.rcp` must not be writable by others; its two private levels are 0700.
     for path, open_bits in ((target.parent.parent, 0o022), (target.parent, 0o077), (target, 0o077)):
         info = path.lstat()
-        if (
-            not stat.S_ISDIR(info.st_mode)
-            or info.st_uid != os.geteuid()
-            or info.st_mode & open_bits
-        ):
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
             raise ValueError("hidden-read wrapper directory must be a private owned folder")
+        if info.st_mode & open_bits:
+            os.chmod(path, stat.S_IMODE(info.st_mode) & ~open_bits)
     for name, content in files.items():
         descriptor, temporary = tempfile.mkstemp(prefix="." + name + ".", dir=str(target))
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
@@ -289,7 +279,6 @@ def main(argv=None):
     parser.add_argument("--policy")
     parser.add_argument("--probe", action="store_true")
     parser.add_argument("--host-facts")
-    parser.add_argument("--absent-paths")
     parser.add_argument("--install")
     # argparse interprets -lc as clustered short flags unless normalized.
     arguments = ["-c" if value == "-lc" else value for value in arguments]
@@ -305,9 +294,6 @@ def main(argv=None):
     if args.host_facts is not None:
         print(json.dumps(host_facts(json.loads(args.host_facts))))
         return 0
-    if args.absent_paths is not None:
-        print(json.dumps(absent_paths(json.loads(args.absent_paths))))
-        return 0
     if args.install is not None:
         install(args.install, json.load(sys.stdin))
         return 0
@@ -319,22 +305,8 @@ def main(argv=None):
     with open(policy_path, encoding="utf-8") as stream:
         policy = json.load(stream)
     env = clean_environment(policy, os.environ)
-    readiness = probe_hidden_read_wrapper()
-    if not readiness["ready"]:
-        launch_reasons = set(policy.get("enforcement", {}).get("reasons", ()))
-        if launch_reasons & {"wrapper_unavailable", "userns_blocked"}:
-            # A known unhidden launch: Settings, doctor and the prompt carry the
-            # status, so the command runs without a per-call trace.
-            os.execve("/bin/bash", ["/bin/bash", "-c", args.command], env)
-        # Enforcement was available at launch and is gone: never run unhidden
-        # under a policy that still reports hiding.
-        print(
-            "RCP refused this command: secret hiding became unavailable ("
-            + (readiness["reason"] or "wrapper_unavailable")
-            + "). Start a new turn.",
-            file=sys.stderr,
-        )
-        return 126
+    if not probe_hidden_read_wrapper()["ready"]:
+        os.execve("/bin/bash", ["/bin/bash", "-c", args.command], env)
     if sys.platform == "darwin":
         # An inline profile leaves no per-command file; exec preserves streams,
         # cwd, signals and exit status.

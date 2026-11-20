@@ -61,23 +61,6 @@ def test_zero_project_scope_only_writes_its_stage(tmp_path):
     assert scope.repository_roots == []
 
 
-def test_hidden_union_refuses_over_budget(tmp_path, monkeypatch):
-    from rcp.core.models import HiddenReadScope, HiddenReadStatus
-    from rcp.runs.space_chat import merge_space_hidden_read_scopes
-
-    def scope(path):
-        return HiddenReadScope(
-            machine_id="backend",
-            os_account="user",
-            hidden_directories=(path,),
-            enforcement=HiddenReadStatus(status="enforced"),
-        )
-
-    monkeypatch.setattr("rcp.runs.space_chat.HIDDEN_READ_PATH_MAX_COUNT", 1)
-    with pytest.raises(ValueError, match="too_many_hidden_folders"):
-        merge_space_hidden_read_scopes([scope("/private/a"), scope("/private/b")])
-
-
 def test_composite_invocation_gate_keeps_each_mailbox_secret_out_of_argv():
     import json
 

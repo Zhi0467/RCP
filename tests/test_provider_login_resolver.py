@@ -245,7 +245,7 @@ def test_lineage_ignores_setting_and_drain_while_usable(accounts, provider):
     )
     assert (
         accounts.resolve_login(provider, BACKEND_MACHINE_ID, "member", lineage_login=other)[0]
-        == own
+        == other
     )
     accounts.store.finish_provider_login_removal(shared, member_id="member")
     assert (
@@ -254,7 +254,7 @@ def test_lineage_ignores_setting_and_drain_while_usable(accounts, provider):
     )
 
 
-def test_codex_session_on_signed_out_shared_login_continues_on_own_login(accounts):
+def test_codex_session_falls_back_to_another_members_login_when_member_has_none(accounts):
     machine = _login(accounts, "codex", machine=True)
     own = _login(accounts, "codex", own=True)
     other = _login(accounts, "codex", own=True, member="other")
@@ -273,11 +273,9 @@ def test_codex_session_on_signed_out_shared_login_continues_on_own_login(account
     accounts.store.mark_provider_login_signed_out(
         own, member_id="member", source="restore", detail="out"
     )
-    resolved, _ = accounts.resolve_launch_login(
+    assert accounts.resolve_launch_login(
         "codex", BACKEND_MACHINE_ID, "member", session_id="session"
-    )
-    assert isinstance(resolved, LoginRefusal)
-    assert accounts.refusal(other) is None
+    ) == (other, "unhealthy")
 
 
 def test_opencode_and_legacy_authorizer_use_machine(accounts):
