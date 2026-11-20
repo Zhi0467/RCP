@@ -1868,21 +1868,21 @@ test("Wakes shows each schedule's zone, next run and waiting state, with Cancel 
           .click(),
       ]);
       assert.equal(resume.method(), "POST");
-      const box = await popover.evaluate(async (element) => {
-        const measure = () => ({
-          scroll: element.scrollHeight > element.clientHeight,
-          right: element.getBoundingClientRect().right,
-          bottom: element.getBoundingClientRect().bottom,
-          frame: element.closest(".space-agent").getBoundingClientRect().bottom,
-        });
-        const until = performance.now() + 2000;
-        let measured = measure();
-        while (measured.bottom > measured.frame && performance.now() < until) {
-          await new Promise((resolve) => requestAnimationFrame(resolve));
-          measured = measure();
-        }
-        return measured;
-      });
+      await page
+        .waitForFunction(
+          (element) =>
+            element.getBoundingClientRect().bottom <=
+            element.closest(".space-agent").getBoundingClientRect().bottom,
+          await popover.elementHandle(),
+          { timeout: 2000 },
+        )
+        .catch(() => undefined);
+      const box = await popover.evaluate((element) => ({
+        scroll: element.scrollHeight > element.clientHeight,
+        right: element.getBoundingClientRect().right,
+        bottom: element.getBoundingClientRect().bottom,
+        frame: element.closest(".space-agent").getBoundingClientRect().bottom,
+      }));
       assert.ok(box.scroll, "a long list scrolls inside the popover");
       assert.ok(box.right <= width);
       assert.ok(box.bottom <= box.frame, "the popover ends inside the thread's frame");
