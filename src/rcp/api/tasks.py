@@ -70,6 +70,7 @@ from rcp.runs.chat import (
 )
 from rcp.runs.chat_admission import admit_fresh_chat_turn
 from rcp.runs.session_artifacts import artifact_edit_outcomes
+from rcp.runs.space_chat import SpaceThreadOwner
 from rcp.runs.steering import (
     begin_chat_steer,
     chat_steer_action_label,
@@ -1229,21 +1230,16 @@ def resume_task_as(
 ) -> AgentTaskRecord:
     """Resume one paused turn in its saved session, as Resume does; raises the HTTP refusal.
 
-    The caller holds the project's write admission.
+    The caller holds the owner's write admission.
     """
 
     store = background_tasks.store
-    operation_id = previous.operation_id
-    service = cast(ProjectService, task_owner(store, previous, catalog=catalog))
+    owner = task_owner(store, previous, catalog=catalog)
     try:
-        with _task_preparation_service(service) as reader:
-            experiment_admission.require_current(reader, previous.request)
-            validated, skills = _validate_stored_task_request(
-                reader, previous.kind, previous.request
-            )
-        with _chat_recovery_admission(service, store, previous):
+        skills = _admit_stored_request(owner, previous.kind, previous.request, experiment_admission)
+        with _chat_recovery_admission(owner, store, previous):
             return background_tasks.resume(
-                operation_id,
+                previous.operation_id,
                 skills=skills,
                 authorized_by=authorized_by,
             )
@@ -1251,6 +1247,74 @@ def resume_task_as(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def retry_task_as(
+    previous: AgentTaskRecord,
+    authorized_by: AuthorizedHuman,
+    overrides: dict[str, str],
+    *,
+    catalog: ProjectCatalog,
+    background_tasks: BackgroundAgentTasks,
+    experiment_admission: ExperimentAdmission,
+) -> AgentTaskRecord:
+    """Retry one stopped turn under its stored request, as Retry does; raises the HTTP refusal.
+
+    The caller holds the owner's write admission.
+    """
+
+    store = background_tasks.store
+    operation_id = previous.operation_id
+    owner = task_owner(store, previous, catalog=catalog)
+    try:
+        if previous.kind == "auto_research":
+            candidate = load_stored_request(
+                AutoResearchRunRequest,
+                {**previous.request, **overrides},
+                operation_id=operation_id,
+            )
+        else:
+            candidate = load_stored_request(
+                RunRequest,
+                {**previous.request, **overrides, "session_id": None},
+                operation_id=operation_id,
+            )
+        skills = _admit_stored_request(
+            owner, previous.kind, candidate.model_dump(mode="json"), experiment_admission
+        )
+        if previous.kind == "auto_research":
+            return background_tasks.retry_auto_research(
+                operation_id,
+                service=cast(ProjectService, owner),
+                skills=skills,
+                **overrides,
+            )
+        assert isinstance(candidate, RunRequest)
+        with _chat_recovery_admission(owner, store, previous, candidate):
+            return background_tasks.retry(
+                operation_id,
+                skills=skills,
+                authorized_by=authorized_by,
+                **overrides,
+            )
+    except (OSError, StateUnavailable) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _admit_stored_request(
+    owner: ProjectService | SpaceThreadOwner,
+    kind: AgentTaskKind,
+    body: dict[str, object],
+    experiment_admission: ExperimentAdmission,
+) -> SkillSelection | None:
+    """Run the stored-request checks every Retry and Resume shares, through the task's owner."""
+    if isinstance(owner, SpaceThreadOwner):
+        return owner.validate_stored_request(body)[1]
+    with _task_preparation_service(owner) as reader:
+        experiment_admission.require_current(reader, body)
+        return _validate_stored_task_request(reader, kind, body)[1]
 
 
 @router.post(
@@ -1388,49 +1452,14 @@ def retry_agent_task(
                 record = store.agent_task(existing.operation_id or "")
                 assert record is not None
                 return record.model_dump(mode="json")
-            service = cast(ProjectService, task_owner(store, previous, catalog=catalog))
-            try:
-                overrides = body.model_dump(exclude_none=True) if body is not None else {}
-                if previous.kind == "auto_research":
-                    candidate = load_stored_request(
-                        AutoResearchRunRequest,
-                        {**previous.request, **overrides},
-                        operation_id=previous.operation_id,
-                    )
-                else:
-                    candidate = load_stored_request(
-                        RunRequest,
-                        {**previous.request, **overrides, "session_id": None},
-                        operation_id=previous.operation_id,
-                    )
-                # A comment's retry is its chat turn's retry: it edits the current version.
-                with _task_preparation_service(service) as reader:
-                    candidate_payload = candidate.model_dump(mode="json")
-                    experiment_admission.require_current(reader, candidate_payload)
-                    validated, skills = _validate_stored_task_request(
-                        reader,
-                        previous.kind,
-                        candidate_payload,
-                    )
-                if previous.kind == "auto_research":
-                    return background_tasks.retry_auto_research(
-                        operation_id,
-                        service=service,
-                        skills=skills,
-                        **overrides,
-                    ).model_dump(mode="json")
-                assert isinstance(candidate, RunRequest)
-                with _chat_recovery_admission(service, store, previous, candidate):
-                    return background_tasks.retry(
-                        operation_id,
-                        skills=skills,
-                        authorized_by=authorized_by,
-                        **overrides,
-                    ).model_dump(mode="json")
-            except (OSError, StateUnavailable) as exc:
-                raise HTTPException(status_code=503, detail=str(exc)) from exc
-            except ValueError as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            return retry_task_as(
+                previous,
+                authorized_by,
+                body.model_dump(exclude_none=True) if body is not None else {},
+                catalog=catalog,
+                background_tasks=background_tasks,
+                experiment_admission=experiment_admission,
+            ).model_dump(mode="json")
     except ClientRequestConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -1448,7 +1477,7 @@ def _task_preparation_service(service: ProjectService) -> Iterator[ProjectServic
 
 
 def _chat_recovery_admission(
-    service: ProjectService,
+    service: ProjectService | SpaceThreadOwner,
     store: AppStore,
     previous: AgentTaskRecord,
     candidate: RunRequest | None = None,
@@ -1461,7 +1490,9 @@ def _chat_recovery_admission(
     assert isinstance(request, RunRequest)
     if request.artifact_edit is not None and request.artifact_edit.origin_bound:
         return nullcontext()
-    return conversation_worktree_recovery_admission(service, store, previous.project_id, request)
+    return conversation_worktree_recovery_admission(
+        cast(ProjectService, service), store, previous.project_id, request
+    )
 
 
 def _artifact_mutation_key(project_id: str, operation_id: str, artifact_id: str) -> str:

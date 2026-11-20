@@ -103,6 +103,20 @@ class SpaceThreadOwner:
             raise ValueError("Space thread is unavailable")
         return thread
 
+    def validate_stored_request(self, body: dict[str, object]) -> tuple[RunRequest, SkillSelection]:
+        """Admit one stored turn again, as its send was: open thread, enabled packages."""
+        _ = self.thread
+        request = RunRequest.model_validate(body)
+        workflows, skills = admit_space_invocations(
+            request.invoked_workflow_ids, request.invoked_skill_ids
+        )
+        return (
+            request.model_copy(
+                update={"invoked_workflow_ids": workflows, "invoked_skill_ids": skills}
+            ),
+            space_skill_selection(),
+        )
+
     def resolve_agent_profile(
         self,
         surface: AgentExecutionProfile = "project_chat",

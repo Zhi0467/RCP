@@ -561,6 +561,33 @@ def test_space_retry_and_resume_honour_the_request_key(manifest, tmp_path, monke
         assert again.json()["operation_id"] == first.json()["operation_id"]
 
 
+@pytest.mark.parametrize("action", ["retry", "resume"])
+def test_space_retry_and_resume_validate_the_stored_request(
+    manifest, tmp_path, monkeypatch, action
+):
+    from rcp.skill_registry import SkillDefaults, official_registry
+    from tests.helpers import fake_launch_admitted
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    tasks = app.state.background_tasks
+    fake_launch_admitted(monkeypatch, tasks)
+    started: list[str] = []
+    monkeypatch.setattr(tasks, action, lambda *args, **kwargs: started.append(action))
+    with signed_in_client(app) as client:
+        thread = client.get("/api/agent-threads").json()["threads"][0]
+        base = "/api/agent-threads/" + thread["thread_id"]
+        skill_id = client.get("/api/skills").json()["skill_defaults"]["skill_ids"][0]
+        sent = client.post(base + "/turns", json={"message": "go", "invoked_skill_ids": [skill_id]})
+        assert sent.status_code == 202, sent.text
+        operation_id = sent.json()["operation_id"]
+        tasks.store.fail_agent_task(operation_id, "try again")
+        nothing_enabled = official_registry().resolve(SkillDefaults(workflow_ids=[], skill_ids=[]))
+        monkeypatch.setattr("rcp.runs.space_chat.space_skill_selection", lambda: nothing_enabled)
+        refused = client.post(f"{base}/tasks/{operation_id}/{action}", json={})
+        assert refused.status_code == 409, refused.text
+        assert started == []
+
+
 def test_space_steer_refusal_is_durable_and_idempotent(manifest, tmp_path, monkeypatch):
     import uuid
 
