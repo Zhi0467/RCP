@@ -23,6 +23,7 @@ from rcp.providers import AgentCapability, ProviderTurnRequest
 from rcp.runs.experiment_loop import _experiment_watcher_output_names
 from rcp.runs.shared import _ProviderOutcome, _sse
 from rcp.transport import RemoteRunStage, StateUnavailable
+from rcp.transport.watcher_workspace import replace_watcher_folder
 
 if TYPE_CHECKING:
     from rcp.agents.write_scope import ProjectWriteScope
@@ -80,6 +81,11 @@ def write_recorded_patch(
     _restore(workspace, remote_stage, "patch.json", recorded.patch)
     if recorded.watch_snapshotted:
         _restore(workspace, remote_stage, "watch.json", recorded.watch)
+    if recorded.watcher_folder is not None:
+        if remote_stage is None:
+            replace_watcher_folder(workspace, recorded.watcher_folder)
+        else:
+            remote_stage.replace_watcher_folder(recorded.watcher_folder)
     if recorded.experiment_watch_snapshotted:
         # Experiment watcher maintenance is read by discovery, so restoring the
         # recorded files is not enough: the stage's set has to become the pass's

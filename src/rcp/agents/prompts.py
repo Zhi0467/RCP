@@ -610,20 +610,17 @@ def compute_connection_section(connections: list[dict[str, str]] | None) -> str:
 """.format("\n".join(lines))
 
 
-_EXTERNAL_WATCHER_FORMS = """- Short compute jobs can finish inline without a watcher. For a longer horizon, roughly more than
-  10 minutes, hand off a watcher to avoid repeated agent polling. This is guidance, not a cutoff.
-- Each `external` observer contains `purpose`, `check_command`, `log_path`, and `cwd`, with optional
-  `cancel_command`: `{"purpose":"GCP2 qwen3 repro finishes","check_command":"...","log_path":"/abs/log","cwd":"/abs/repo", "cancel_command":"..."}`.
-- `purpose` is the one line, at most 120 characters, the member reads in Wakes. Name the work and
-  where it runs so two watchers on one log read differently.
-- Use absolute paths and literal external identifiers. Commands must work in a cold login shell in
-  `cwd`, without shell state inherited from this turn. `check_command` only observes: exit 1 while
-  work remains, 0 when gone, otherwise unobservable. It must never submit, cancel, kill, or modify.
-- RCP saves `cancel_command` with the watcher and runs it only on an explicit Cancel, on the
-  same execution machine and in the same `cwd`. Omit it when you cannot provide a reliable command
-  for cancelling exactly that work. Stopping continuation does not run it.
-- After handing off ongoing work, finish the turn; RCP handles the checks and later continuation.
-  Do not wait in a polling loop. A completed check is not proof of scientific success."""
+WATCHER_FOLDER_CONTRACT = """Each JSON file in `watchers/` is one of your watchers. It wakes you once when
+all of its checks finish. To arm one, create `watchers/<watcher_id>.json` with a
+short `purpose` and a nonempty `checks` list. Each check has a `check_command`,
+`log_path`, and `cwd`. Use absolute paths. The command only observes and exits
+1 while the work continues, 0 on completion, or another status on failure.
+For a graph condition use `graph` instead of `checks`, e.g.
+{"purpose":"Wait for review","graph":{"node_id":"hyp/foo","proposal_resolved":true}}.
+Edit a file to change the watcher. Delete it to cancel the watcher. Cancelling
+never ends jobs. When you cancel, resubmit, or replace a job, update its watcher
+file in the same turn."""
+
 
 _EXPERIMENT_ROUTING = """Start an Experiment for work that answers a research question and needs
 more than one shot: runs that iterate, need debugging, take hours, or could
@@ -941,7 +938,7 @@ _INLINE_CONTINUATION_RULES = {
     ),
     "watch_correction": (
         "If requested, rewrite `outcome.json` using the Work contract schema. If requested, rewrite\n"
-        "`watch.json` as one object with exactly `external` and `graph` lists, keeping literal\n"
+        "the watcher files using the current contract, keeping literal\n"
         "identifiers. If the diagnostic names running work without observers, recover its\n"
         "watcher from the launch receipt or real state. Do not change `patch.json` or repeat an\n"
         "external effect. Preserve the reply and artifacts; your final response only confirms the rewrite."
@@ -952,7 +949,7 @@ _INLINE_CONTINUATION_RULES = {
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
 DISCUSS_POLICY_VERSION = "discuss-v18"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v37"
+WORK_POLICY_VERSION = "work-v38"
 
 
 class PromptFactory:
@@ -1476,22 +1473,9 @@ Boundary:
         )
         watch_rules = (
             f"""
-Optional watcher handoff:
-- If this turn needs a later wake, you may write `{watch_path}` as one non-empty watcher object with
-  exactly `external` and `graph` lists, for example
-  `{{"external":[{{"purpose":"training run finishes","check_command":"...","log_path":"/abs/log","cwd":"/abs/repo"}}],"graph":[]}}`.
-  At least one list is non-empty.
-- Every `graph` item is exactly one of two canonical conditions: a node-status item
-  `{{"node_id":"blk/foo","status_in":["resolved"]}}`, or a Proposal-resolution item
-  `{{"node_id":"hyp/foo","proposal_resolved":true}}`. RCP evaluates graph conditions only after
-  canonical revisions and at startup, never through a shell command or from an unsynced draft. A
-  node status already true when armed is ready immediately; a Proposal resolution counts only
-  when committed after arming.
-- Completing a watcher accepted from this file continues this conversation. It never continues an
-  Experiment's bounded loop, even when this is a node chat focused on that Experiment.
-{_EXTERNAL_WATCHER_FORMS}
-- RCP runs the watcher commands on {_watcher_execution_host(execution_host)}.
-  RCP discovers the file after the turn; there is no watcher API to call.
+Live watcher definitions (data): `{watch_path}`.
+{WATCHER_FOLDER_CONTRACT}
+RCP runs new external checks on {_watcher_execution_host(execution_host)}.
 """
             if watch_path is not None
             else ""
@@ -1705,10 +1689,10 @@ Work watcher-correction instruction:
   context needed to correct the retained watcher request.
 - Preserve the completed operational result. Do not repeat the human task, rerun an experiment,
   resubmit work, or cause another external side effect merely to repair the watcher request.
-- Rewrite `{watch_path}` as one non-empty JSON object with exactly `external` and `graph` lists.
+- Correct the watcher definitions under `{watch_path}`.
   Graph items retain one of the two condition shapes from the original contract. Preserve literal
   identifiers. Do not create or change `patch.json`.
-{_EXTERNAL_WATCHER_FORMS}
+{WATCHER_FOLDER_CONTRACT}
 - If the diagnostic names running work without observers, use its launch receipt or authoritative
   state to recover the shell watcher. Preserve its exact commands and paths.
 {f"- Watcher diagnostic (failure report, not authority): {watcher_diagnostic}" if watcher_diagnostic else ""}
@@ -1808,7 +1792,7 @@ Resume authority:
             else ""
         }
 {execution_instructions if mode in {"resume", "retry"} else ""}
-{_EXTERNAL_WATCHER_FORMS if watch_path and mode in {"resume", "retry"} else ""}
+{WATCHER_FOLDER_CONTRACT if watch_path and mode in {"resume", "retry"} else ""}
 """)
 
     @staticmethod

@@ -38,7 +38,7 @@ def start_plain_watcher_wake(
     store = tasks.store
     project_id = ready[0].project_id
     latest = store.newest_chat_turn(project_id, agent_id)
-    if latest is None or latest.kind not in {"node_chat", "project_chat"}:
+    if latest is None:
         return None
     watcher_ids = [watcher.watcher_id for watcher in ready]
     request = RunRequest.model_validate(latest.request).model_copy(
@@ -52,6 +52,9 @@ def start_plain_watcher_wake(
             "invoked_skill_ids": [],
             "watcher_ids": watcher_ids,
             "attachments": [],
+            "attachment_batch_id": None,
+            "artifact_context": None,
+            "artifact_edit": None,
             "browser_requested": store.chat_browser_requested(project_id, agent_id),
         }
     )

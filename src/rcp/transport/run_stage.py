@@ -1121,6 +1121,15 @@ finally:
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
             raise StateUnavailable("remote artifact listing was invalid") from exc
 
+    def replace_watcher_folder(self, files: dict[str, str]) -> None:
+        source = (Path(__file__).parent / "watcher_workspace.py").read_text(encoding="utf-8")
+        result = self._ssh_bytes(
+            ["python3", "-I", "-c", source, str(self.workspace)],
+            input_data=json.dumps(files).encode("utf-8"),
+        )
+        if result.returncode:
+            raise _ssh_failure(result, "could not stage the watcher folder")
+
     def read_workspace_directory(
         self,
         name: str,

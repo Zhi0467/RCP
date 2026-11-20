@@ -433,6 +433,41 @@ def test_a_finished_turn_snapshots_every_experiment_watcher_output(tmp_path) -> 
     assert snapshots.joinpath("experiment-watch-bbbb.json").read_text(encoding="utf-8") == second
 
 
+def test_recovery_restores_only_the_verified_watcher_folder(tmp_path):
+    from rcp.runs.recorded_settlement import write_recorded_patch
+    from rcp.runs.recorded_turn import recorded_provider_turn
+    from rcp.transport.remote_turn_journal import read_journal
+
+    stage = tmp_path / "stage"
+    stage.mkdir(mode=0o700)
+    workspace = stage / "workspace"
+    folder = workspace / "watchers"
+    folder.mkdir(parents=True)
+    (folder / "keep.json").write_text('{"purpose":"test"}')
+    completed, _ = _supervise(
+        tmp_path,
+        json.dumps(
+            {
+                "emit": [
+                    {"type": "thread.started", "thread_id": "t1"},
+                    {"type": "turn.completed", "usage": {"input_tokens": 1}},
+                ],
+                "exit": 0,
+            }
+        )
+        + "\n",
+    )
+    assert completed.returncode == 0, completed.stderr
+    pid_file = str(stage / "agent.pid")
+    record = recorded_provider_turn(pid_file, read_journal(pid_file, max_bytes=100000))
+    (folder / "keep.json").write_text("modified")
+    (folder / "late.json").write_text("added later")
+    write_recorded_patch(workspace, None, record)
+    assert {file.name: file.read_text() for file in folder.iterdir()} == {
+        "keep.json": '{"purpose":"test"}'
+    }
+
+
 def test_a_turn_that_maintained_no_experiment_watcher_says_so(tmp_path) -> None:
     """Snapshotting nothing is an answer; saying nothing at all is not."""
 

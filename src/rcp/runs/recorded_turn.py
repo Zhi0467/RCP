@@ -66,6 +66,7 @@ class RecordedProviderTurn:
     #: Whether the host snapshotted that set at all, told apart from a pass that
     #: wrote none, for the same reason `watch_snapshotted` is.
     experiment_watch_snapshotted: bool = False
+    watcher_folder: dict[str, str] | None = None
 
     @property
     def intact(self) -> bool:
@@ -148,9 +149,10 @@ def _verified_deliverable(
     return value
 
 
-def _verified_experiment_watch(
+def _verified_watcher_files(
     journal: dict[str, object],
     outcome: dict[str, object],
+    field: str,
 ) -> dict[str, str]:
     """Every per-resource watcher output the host snapshotted, each by its digest.
 
@@ -159,10 +161,10 @@ def _verified_experiment_watch(
     incomplete record rather than a turn that wrote less.
     """
 
-    digests = outcome.get("experiment_watch_sha256") or {}
+    digests = outcome.get(f"{field}_sha256") or {}
     if not isinstance(digests, dict):
         raise ValueError("The provider journal's Experiment watcher digests are not a mapping.")
-    contents = journal.get("experiment_watch") or {}
+    contents = journal.get(field) or {}
     if not isinstance(contents, dict):
         raise ValueError("The provider journal's Experiment watcher outputs are not a mapping.")
     verified: dict[str, str] = {}
@@ -197,7 +199,7 @@ def recorded_provider_turn(pid_file: str, journal: dict[str, object]) -> Recorde
         raise ValueError("The provider journal's events do not match the digest it recorded.")
     patch = _verified_deliverable(journal, outcome, "patch")
     watch = _verified_deliverable(journal, outcome, "watch")
-    experiment_watch = _verified_experiment_watch(journal, outcome)
+    experiment_watch = _verified_watcher_files(journal, outcome, "experiment_watch")
     marker = journal.get("accepted")
     if marker is not None and (
         not isinstance(marker, dict)
@@ -223,6 +225,11 @@ def recorded_provider_turn(pid_file: str, journal: dict[str, object]) -> Recorde
         patch=patch,
         watch=watch,
         watch_snapshotted="watch_present" in outcome,
+        watcher_folder=(
+            _verified_watcher_files(journal, outcome, "watcher_folder")
+            if outcome.get("watcher_folder_sha256") is not None
+            else None
+        ),
         experiment_watch=experiment_watch,
         experiment_watch_snapshotted=bool(outcome.get("experiment_watch_snapshotted")),
         accepted=accepted,
