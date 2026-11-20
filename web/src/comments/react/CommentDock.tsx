@@ -51,7 +51,8 @@ export function dockInScope(scope: string, threads: readonly DockedThread[]) {
 
 /** The threads one composer will send with its next message. */
 export function useCommentDock(scope: string) {
-  const items = useSyncExternalStore(subscribe, () => docks.get(scope) ?? NONE);
+  const snapshot = () => docks.get(scope) ?? NONE;
+  const items = useSyncExternalStore(subscribe, snapshot, snapshot);
   const [open, setOpen] = useState(false);
   useEffect(() => setOpen(false), [scope]);
   const dock = useCallback<DockThreads>(
