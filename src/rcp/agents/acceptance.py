@@ -586,11 +586,12 @@ def _space_handoff_argv(
     """
 
     client = _space_command_client(contract)
+    prefix = f"- `{client} handoff "
     usage = next(
         (
-            line.split("`")[1].partition(" (")[0]
+            line.removeprefix(f"- `{client} ").partition("`")[0].partition(" (")[0]
             for line in contract.splitlines()
-            if line.startswith("- `handoff ")
+            if line.startswith(prefix)
         ),
         None,
     )
