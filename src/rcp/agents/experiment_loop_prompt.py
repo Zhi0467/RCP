@@ -14,7 +14,6 @@ from rcp.agents.prompts import (
     PROVIDER_NATIVE_SUBAGENT_LIFETIME,
     REPLY_STYLE,
     REPOSITORIES_READ_RULE,
-    WATCHER_FOLDER_CONTRACT,
     _command_client_rule,
     _invoked_package_section,
     _patch_validator_rules,
@@ -25,6 +24,7 @@ from rcp.agents.prompts import (
     message_part,
     render_chat_read_context,
     selected_skill_section,
+    watcher_section,
     write_scope_section,
 )
 from rcp.agents.write_scope import ProjectWriteScope
@@ -33,7 +33,7 @@ from rcp.loop_status import LoopOverlap
 
 # Bumped by hand whenever the Experiment-loop policy prose in this module changes, so a live
 # session re-opens its master contract once instead of keeping the old policy.
-EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v24"
+EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v25"
 
 
 def experiment_loop_read_context(context: ChatContext, loops: LoopOverlap) -> str:
@@ -336,7 +336,7 @@ ExperimentAttempt reading and recording protocol:
 
 Watcher handoff protocol:
 {execution_instructions}
-{WATCHER_FOLDER_CONTRACT}
+{watcher_section(watch_path)}
 - Graph conditions are canonical and event-driven. RCP evaluates them after accepted graph
   revisions and at startup, never through the shell poller. A staged but unsynced draft cannot
   satisfy one. A node status already true when armed is ready immediately. A
