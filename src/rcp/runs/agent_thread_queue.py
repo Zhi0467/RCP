@@ -173,16 +173,27 @@ def _start_queued_turn(
 
     project_id = thread.project_id or store.space_id
     operation_id = queued_turn_operation_id(row.queue_id)
-    previous = latest_agent_turn(store, thread.agent_id)
+    previous = latest_agent_turn(store, thread.agent_id, ordinary=True)
     private_thread = store.agent_thread(thread.agent_id)
     if private_thread is not None:
         request = _thread_request(store, private_thread, row.message, wake=False)
         kind = "project_chat" if thread.project_id else "space_chat"
     elif previous is not None:
-        request = RunRequest.model_validate(previous.request)
+        last = RunRequest.model_validate(previous.request)
+        request = RunRequest(
+            chat_id=thread.agent_id,
+            chat_scope=last.chat_scope,
+            node_id=last.node_id,
+            mode="work",
+            provider=last.provider,
+            model=last.model,
+            reasoning=last.reasoning,
+            run_on=last.run_on,
+            browser_requested=store.chat_browser_requested(project_id, thread.agent_id),
+        )
         kind = previous.kind
     else:
-        raise ValueError("The agent has no admitted turn")
+        raise ValueError("The agent has no ordinary turn to continue")
     request = request.model_copy(
         update={
             "message": row.message,

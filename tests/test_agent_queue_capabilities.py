@@ -55,3 +55,69 @@ def test_agent_queue_starts_with_the_sending_members_authority(
         assert task.request["chat_id"] == agent_id
         assert task.request["message"] == "Next step"
         assert task.kind == kind
+
+
+def test_queued_message_starts_an_ordinary_turn_after_an_episode_turn(
+    manifest, tmp_path, monkeypatch
+):
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    tasks = app.state.background_tasks
+    store = tasks.store
+    fake_launch_admitted(monkeypatch, tasks)
+    project_id = app.state.default_project_id
+    agent_id = str(uuid4())
+    with signed_in_client(app) as client:
+        actor = authorized_human(store)
+        ordinary = RunRequest(chat_id=agent_id, chat_scope="project", mode="work")
+        store.create_agent_task(
+            _task_record(
+                store.now(),
+                operation_id="ordinary",
+                project_id=project_id,
+                kind="project_chat",
+                status="succeeded",
+                authorized_by=actor,
+                request=ordinary.model_dump(mode="json"),
+            )
+        )
+        store.create_agent_task(
+            _task_record(
+                store.now(),
+                operation_id="episode-turn",
+                project_id=project_id,
+                kind="project_chat",
+                status="running",
+                authorized_by=actor,
+                request=ordinary.model_dump(mode="json"),
+            )
+        )
+        episode_turn = ordinary.model_copy(
+            update={
+                "chat_scope": "node",
+                "node_id": "node",
+                "patch_kind": "experiment_loop",
+                "trigger": "experiment_run",
+                "control_episode_id": "episode",
+            }
+        )
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE graph_runs SET kind='node_chat', episode_id='episode', request_json=? "
+                "WHERE operation_id='episode-turn'",
+                (episode_turn.model_dump_json(),),
+            )
+        response = client.post(
+            f"/api/agent-threads/{agent_id}/queue",
+            json={"message": "Next step"},
+            headers={"Idempotency-Key": str(uuid4())},
+        )
+        assert response.status_code == 202, response.text
+        store.complete_agent_task("episode-turn", applied_revision=None, result={})
+        app.state.reconcile_thread_handoffs()
+        row = store.agent_thread_queue_item(response.json()["queue_id"])
+        task = store.agent_task(row.operation_id)
+        assert task.kind == "project_chat"
+        assert task.episode_id is None
+        assert task.request["patch_kind"] == "work"
+        assert task.request["control_episode_id"] is None
+        assert task.request["chat_scope"] == "project"

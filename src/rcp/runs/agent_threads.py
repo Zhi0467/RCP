@@ -654,12 +654,21 @@ async def _summarize_thread_session(
     return summary
 
 
-def latest_agent_turn(store, agent_id: str):
-    """The newest stored binding of an agent, independent of who sent that turn."""
+def latest_agent_turn(store, agent_id: str, *, ordinary: bool = False):
+    """The newest stored binding of an agent, whoever sent it.
+
+    An ordinary turn is a chat turn outside any episode, which a member's next
+    message continues.
+    """
+    ordinary_filter = (
+        " AND kind IN ('project_chat', 'node_chat', 'space_chat') AND episode_id IS NULL"
+        if ordinary
+        else ""
+    )
     with store.connection() as connection:
         row = connection.execute(
-            "SELECT * FROM graph_runs WHERE json_extract(request_json, '$.chat_id')=? "
-            "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            "SELECT * FROM graph_runs WHERE json_extract(request_json, '$.chat_id')=?"
+            f"{ordinary_filter} ORDER BY created_at DESC, rowid DESC LIMIT 1",
             (agent_id,),
         ).fetchone()
     return store._agent_task_record(row) if row is not None else None
