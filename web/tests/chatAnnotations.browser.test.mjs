@@ -172,6 +172,9 @@ test("a reply thread pins at its quote, opens from the pin and the header count,
     await page.goto(`http://127.0.0.1:${address.port}/tests/fixtures/chatAnnotationViewport.html`);
     const pin = page.getByRole("button", { name: "Comment 1" });
     await pin.waitFor();
+    await page.getByRole("button", { name: "Chat menu" }).click();
+    assert.equal(await page.getByRole("menuitem").first().textContent(), "Rename");
+    await page.keyboard.press("Escape");
     const layout = await page.evaluate(() => {
       const answer = document.querySelector(".chat-annotatable-answer");
       const text = answer.textContent;

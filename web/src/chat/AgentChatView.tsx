@@ -59,6 +59,7 @@ import {
   ApiError,
   loadServiceConnections,
   loadConnectionModels,
+  setChatTitle,
   transcribeAudio,
 } from "../core/api";
 import {
@@ -505,6 +506,8 @@ export function AgentChatView({
   } | null>(null);
   const [sendAfterStop, setSendAfterStop] = useState(false);
   const [renaming, setRenaming] = useState(false);
+  const [renamedTitle, setRenamedTitle] = useState<string | null>(null);
+  const dockRef = useRef<HTMLDivElement>(null);
   const dictationSpanRef = useRef<DictationSpan | null>(null);
   const dictationTimerRef = useRef<number | null>(null);
   const microphoneRef = useRef<{ sessionId: string; claim: MicrophoneClaim } | null>(null);
@@ -1456,6 +1459,12 @@ export function AgentChatView({
 
   const effectiveModel =
     profile && config.provider === profile.provider ? profile.effective_model : "";
+  const hasHistory = relatedTasks.length > 0 || Boolean(historyMessages?.length);
+  const renameTitle = feed
+    ? feed.rename
+    : header === undefined && project && !node && !fixedConversation && !readOnly && hasHistory
+      ? (title: string) => setChatTitle(apiBase, chatId, title).then(() => setRenamedTitle(title))
+      : null;
   const pickConfig = (next: AgentRunConfig) => {
     if (feed) reportFailure(() => feed.pickAgent(next));
     else setConfigOverride({ chatId, config: next });
@@ -1480,8 +1489,8 @@ export function AgentChatView({
     <ChatHeaderMenu
       link={feed || !project ? undefined : { projectId: project.id, chatId, graphTarget }}
       actions={[
+        ...(renameTitle ? [{ label: "Rename", onSelect: () => setRenaming(true) }] : []),
         ...headerActions,
-        ...(feed ? [{ label: "Rename", onSelect: () => setRenaming(true) }] : []),
         ...(!fixedConversation && !readOnly && onNewSession
           ? [{ label: "New session", onSelect: onNewSession }]
           : []),
@@ -1598,23 +1607,31 @@ export function AgentChatView({
       : null;
   const voiceHere = voice !== null && voice.phase !== "idle" && voice.thread?.thread_id === chatId;
   const voiceBusy = voice !== null && voice.phase !== "idle";
+  const shownTitle = feed ? feed.thread.agent_name : (renamedTitle ?? chatTitle);
   const heading =
     header ??
-    (feed &&
-      (renaming ? (
-        <AgentRename
-          title={feed.thread.agent_name}
-          onDone={(title) => {
-            setRenaming(false);
-            if (title && title !== feed.thread.agent_name) reportFailure(() => feed.rename(title));
-          }}
-        />
-      ) : (
-        <strong title={feed.thread.project_name ?? undefined}>{feed.thread.agent_name}</strong>
-      )));
+    (renaming && renameTitle ? (
+      <AgentRename
+        title={shownTitle}
+        onDone={(title) => {
+          const fromField = document.activeElement?.closest(".agent-row-rename");
+          setRenaming(false);
+          if (fromField)
+            requestAnimationFrame(() =>
+              dockRef.current
+                ?.querySelector<HTMLButtonElement>(".chat-header-menu > button")
+                ?.focus(),
+            );
+          if (title && title !== shownTitle) reportFailure(() => renameTitle(title));
+        }}
+      />
+    ) : (
+      <strong title={feed?.thread.project_name ?? undefined}>{shownTitle}</strong>
+    ));
 
   return (
     <div
+      ref={dockRef}
       className={`chat-dock ${presentation}`}
       role={presentation === "floating" ? "dialog" : "region"}
       aria-modal="false"
@@ -1628,7 +1645,7 @@ export function AgentChatView({
     >
       <AgentHeader
         leading={leading}
-        title={heading ?? <strong>{chatTitle}</strong>}
+        title={heading}
         chips={headerChips}
         menu={headerMenu}
         state={headerState}

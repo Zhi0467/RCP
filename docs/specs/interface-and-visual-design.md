@@ -502,7 +502,9 @@ Every agent view, the floating node chat included, uses one header row: the
 title on the left, then icon chips that each carry a count, in this order:
 schedules, compactions, the context ring (`141k / 258k`), watchers, and
 comments. A chip shows only when it has something. A ⋯ menu ends the row. The
-menu holds the host's actions, Rename for a thread, Browser use, and last a
+menu starts with Rename wherever the agent's name can be stored: a thread, or
+a project chat with history whose host does not title it. The host's actions
+and New session follow, then Browser use, and last a
 collapsible `provider · model · effort` row that opens the provider, model and
 effort selects. The agent pick is never a header button. A thread's pick is
 stored on the thread at once, and every later turn runs it, retries and wakes
