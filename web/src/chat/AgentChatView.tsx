@@ -18,8 +18,11 @@ import { isPlanCardQuestion, planCardAction, planGraphTarget } from "../agents/e
 import {
   AgentCardsUnavailable,
   ApprovalCardStack,
+  askedCardKey,
   dockStackCards,
+  proposalCardKey,
   useAgentCards,
+  type StackCard,
 } from "../agents/ApprovalCardStack";
 import { useComposerAttachments } from "./composerAttachments";
 import { referenceDraftKey } from "../core/projectReferences";
@@ -27,7 +30,21 @@ import { QuestionCard } from "./QuestionCard";
 import { useQuestions } from "./useQuestions";
 import { questionIsOpen } from "./questions";
 import { ExternalJobRow } from "../experiments/ExternalJobRow";
-import { LoaderCircle, MessageCircle, Mic, MicOff, RadioTower, Send, X } from "lucide-react";
+import {
+  CalendarClock,
+  GitPullRequestArrow,
+  ListPlus,
+  LoaderCircle,
+  MessageCircle,
+  Mic,
+  MicOff,
+  Play,
+  RadioTower,
+  RotateCcw,
+  Send,
+  Square,
+  X,
+} from "lucide-react";
 import {
   useEffect,
   useEffectEvent,
@@ -46,10 +63,25 @@ import {
 } from "../core/api";
 import {
   isActiveTask,
+  pausedTaskText,
   resolvedChatSessionId,
   relatedChatTasks,
   resumablePausedChatTask,
+  stoppedByMember,
 } from "../agents/agentTasks";
+import { handoffReport, localClock } from "../agents/agentThreadModel";
+import { useAgentThread } from "../agents/useAgentThread";
+import { AgentThreadWelcome } from "../agents/AgentThreadWelcome";
+import {
+  FreshSessionMarker,
+  HandoffResult,
+  SchedulesPopover,
+  ThreadQueue,
+  TurnProgress,
+  type QueuedMessage,
+} from "./agentViewPieces";
+import { AgentRename } from "./AgentRename";
+import type { VoiceAgent } from "../voice/useVoiceAgent";
 import {
   chatDraftStorageKey,
   chatIdForTask,
@@ -67,6 +99,7 @@ import { chatDockScope, useCommentDock } from "../comments/react/CommentDock";
 import { sendKeys } from "../comments/react/threadModel";
 import { useInlineArtifactComments } from "./inlineArtifactComments";
 import type { DockThreads } from "../comments/react/useComments";
+import type { CommentScope } from "../comments/api.ts";
 import { createComposerDraft, useComposerDraft, type ComposerDraft } from "./composerDraft";
 import {
   chooseRecordingFormat,
@@ -109,7 +142,9 @@ import type {
   AgentQuestion,
   AgentRunConfig,
   AgentTask,
+  AgentThread,
   ChatMessage,
+  ProposalCardView,
   SteerRequest,
   GraphNode,
   GraphTargetRef,
@@ -128,15 +163,16 @@ import {
 import { useSkillPicker } from "../core/SkillPicker";
 import { useLayerDismiss } from "../core/useLayerDismiss";
 import { AgentStatusStrip } from "./AgentStatusStrip";
-import { ChatBrowserControl } from "../core/BrowserControls";
+import { BrowserToggle, ChatBrowserControl } from "../core/BrowserControls";
 import { WorktreeChooser, WorktreeControls, useConversationWorktree } from "./WorktreeControls";
 import { worktreeRepositoryChoices } from "./worktreeRepositories";
 
 interface Props {
-  project: ProjectSnapshot;
+  /** A shared chat's project; a member thread's own project when the host has it loaded. */
+  project?: ProjectSnapshot | null;
   /** The signed-in member whose persisted drafts this chat restores and saves. */
   actorId: string | null;
-  graphTarget: GraphTargetRef;
+  graphTarget?: GraphTargetRef;
   node?: GraphNode | null;
   nodes?: Readonly<Record<string, GraphNode>>;
   glossaryIndex?: GlossaryIndex;
@@ -148,7 +184,7 @@ interface Props {
   /** Controls the host adds to the header menu after its actions. */
   headerMenuItems?: ReactNode;
   headerState?: string;
-  tasks: AgentTask[];
+  tasks?: AgentTask[];
   watchers?: WatcherRecord[];
   historyMessages?: ChatMessage[];
   origin?: ChatOrigin | null;
@@ -166,17 +202,17 @@ interface Props {
   allowArtifactComments?: boolean;
   reviewPending?: boolean;
   graphChangesDisabled?: boolean;
-  onStartTask: StartConversationTask;
-  onInspectTask: (taskId: string) => void;
-  onOpenInbox: () => void;
-  onRepairGraphUpdate: (taskId: string, action?: GraphUpdateRecovery) => Promise<void>;
+  onStartTask?: StartConversationTask;
+  onInspectTask?: (taskId: string) => void;
+  onOpenInbox?: () => void;
+  onRepairGraphUpdate?: (taskId: string, action?: GraphUpdateRecovery) => Promise<void>;
   onOpenNode?: (nodeId: string) => void;
   onStopWatcher?: (watcherId: string) => void;
-  onNewSession: () => void;
-  onClose: () => void;
-  onResumeTask: (task: AgentTask) => void;
-  onRetryTask: (task: AgentTask) => void;
-  onRefreshTask: (taskId: string) => Promise<AgentTask>;
+  onNewSession?: () => void;
+  onClose?: () => void;
+  onResumeTask?: (task: AgentTask) => void;
+  onRetryTask?: (task: AgentTask) => void;
+  onRefreshTask?: (taskId: string) => Promise<AgentTask>;
   composerRetry?: AgentTask | null;
   onComposerRetryTaken?: () => void;
   /** The Settings profile a turn starts from; a chat's own surface by default. */
@@ -185,6 +221,19 @@ interface Props {
   turnTrail?: (taskId: string) => ReactNode;
   /** Set to this composer's thread sender, which the host's own comment threads ride. */
   threadSender?: RefObject<DockThreads | null>;
+  /** A member's own agent thread, which loads its own transcript and turns. */
+  thread?: AgentThread | null;
+  /** The member's threads, which name the agent a handoff came from. */
+  threads?: readonly AgentThread[];
+  /** The member's agent-thread watermark; a change reloads the thread. */
+  revision?: string | null;
+  onThreadChanged?: (thread: AgentThread) => void;
+  /** The rail's fold or the phone's back control, at the header's start. */
+  leading?: ReactNode;
+  /** Controls the host adds before the header's own. */
+  headerTools?: ReactNode;
+  /** The space voice agent; it takes the mic in place of dictation. */
+  voice?: VoiceAgent | null;
 }
 
 export { pendingTurnShownByHistory } from "../agentWindow/useAgentWindowLines";
@@ -196,6 +245,10 @@ interface PendingChatTurn extends PendingAgentWindowTurn {
   draft: string;
   submission: ConversationTurnSubmission;
   submittedOverride: { chatId: string; config: AgentRunConfig } | null;
+  /** Waits in the thread's queue instead of starting; it never shows as a transcript line. */
+  queue?: true;
+  /** The queued request's content, which a retry after a refusal sends under the same key. */
+  queued?: string;
 }
 
 /** What a Send addresses: the exact running attempt it steers, a new turn with
@@ -214,6 +267,8 @@ interface NetworkDictation {
 }
 
 const EMPTY_WATCHERS: WatcherRecord[] = [];
+/** A turn whose start failed after its view closed, kept for that view's Resend. */
+const unsentTurns = new Map<string, PendingChatTurn>();
 const EMPTY_HISTORY: ChatMessage[] = [];
 const NO_HEADER_ACTIONS: readonly ChatHeaderAction[] = [];
 
@@ -227,10 +282,13 @@ const SYSTEM_DICTATION_ELSEWHERE =
 // One empty map, so a chat without graph nodes keeps its answers' parse memoized.
 const NO_NODES: Readonly<Record<string, GraphNode>> = {};
 
+const NO_TASKS: AgentTask[] = [];
+const BLANK_CONFIG: AgentRunConfig = { provider: "", model: "", reasoning: "", run_on: "" };
+
 export function AgentChatView({
-  project,
+  project: requestedProject = null,
   actorId,
-  graphTarget,
+  graphTarget = MAIN_GRAPH,
   node,
   nodes = NO_NODES,
   glossaryIndex,
@@ -239,8 +297,8 @@ export function AgentChatView({
   headerActions = NO_HEADER_ACTIONS,
   headerMenuItems,
   headerState,
-  tasks,
-  watchers = EMPTY_WATCHERS,
+  tasks = NO_TASKS,
+  watchers: hostWatchers = EMPTY_WATCHERS,
   historyMessages = EMPTY_HISTORY,
   origin,
   agentSetup,
@@ -260,31 +318,64 @@ export function AgentChatView({
   onOpenInbox,
   onRepairGraphUpdate,
   onOpenNode,
-  onStopWatcher,
+  onStopWatcher: hostStopWatcher,
   onNewSession,
   onClose,
-  onResumeTask,
-  onRetryTask,
-  onRefreshTask,
+  onResumeTask: hostResumeTask,
+  onRetryTask: hostRetryTask,
+  onRefreshTask: hostRefreshTask,
   composerRetry = null,
   onComposerRetryTaken,
   turnTrail,
   threadSender,
   profileName,
+  thread = null,
+  threads,
+  revision = null,
+  onThreadChanged,
+  leading,
+  headerTools,
+  voice = null,
 }: Props) {
+  const chatLinesRef = useRef<HTMLDivElement | null>(null);
+  const scroll = useRef<AgentWindowScroll>(null);
+  const feed = useAgentThread({
+    thread,
+    threads,
+    project: requestedProject,
+    actorId,
+    revision,
+    onThreadChanged,
+    linesRef: chatLinesRef,
+    scroll,
+  });
+  const project = feed ? feed.project : requestedProject;
   const readOnly = archived || requestedReadOnly;
   const allowArtifactComments = !archived && requestedArtifactComments;
   const surface = node ? "node_chat" : "project_chat";
   const relatedTasks = useMemo(
-    () => relatedChatTasks(tasks, surface, node?.id, chatId),
-    [chatId, node?.id, surface, tasks],
+    () => feed?.tasks ?? relatedChatTasks(tasks, surface, node?.id, chatId),
+    [feed?.tasks, chatId, node?.id, surface, tasks],
   );
-  const questionApiBase = `/api/projects/${encodeURIComponent(project.id)}`;
-  const questionState = useQuestions(
-    questionApiBase,
+  const projectId = project?.id ?? null;
+  const chatEndpoints = useMemo(
+    () => (projectId ? projectAgentWindowEndpoints(projectId, chatId) : null),
+    [projectId, chatId],
+  );
+  const endpoints = feed?.endpoints ?? chatEndpoints!;
+  const questionApiBase = endpoints.questionsApiBase;
+  const chatQuestions = useQuestions(
+    questionApiBase ?? "",
     questionEpisodeId ? "episode" : "chat",
-    questionEpisodeId ?? chatId,
+    feed ? undefined : (questionEpisodeId ?? chatId),
   );
+  const questionState = feed
+    ? {
+        questions: feed.questions,
+        error: null,
+        refresh: () => void feed.refresh(),
+      }
+    : chatQuestions;
   const [steeringMessages, setSteeringMessages] = useState<{
     chatId: string;
     messages: ChatMessage[];
@@ -292,44 +383,42 @@ export function AgentChatView({
   useEffect(() => {
     setSteeringMessages({ chatId, messages: [] });
   }, [chatId]);
+  const loadedMessages = feed ? (feed.messages ?? EMPTY_HISTORY) : historyMessages;
   const displayedMessages = useMemo(() => {
-    const messages = new Map(historyMessages.map((message) => [message.message_id, message]));
+    const messages = new Map(loadedMessages.map((message) => [message.message_id, message]));
     if (steeringMessages.chatId === chatId) {
       steeringMessages.messages.forEach((message) => messages.set(message.message_id, message));
     }
     return [...messages.values()];
-  }, [chatId, historyMessages, steeringMessages]);
-  const [pendingTurn, setPendingTurn] = useState<PendingChatTurn | null>(null);
-  const { transcript, statusTasks, compactionByLine, continuedTaskIds, latestGraphReceiptLineIds } =
-    useAgentWindowLines({ messages: displayedMessages, tasks: relatedTasks, pendingTurn });
-  const endpoints = useMemo(
-    () => projectAgentWindowEndpoints(project.id, chatId),
-    [project.id, chatId],
+  }, [chatId, loadedMessages, steeringMessages]);
+  const [pendingTurn, setPendingTurn] = useState<PendingChatTurn | null>(
+    () => unsentTurns.get(endpoints.scopeKey) ?? null,
   );
+  const { transcript, statusTasks, compactionByLine, continuedTaskIds, latestGraphReceiptLineIds } =
+    useAgentWindowLines({
+      messages: displayedMessages,
+      tasks: relatedTasks,
+      pendingTurn,
+      parents: feed?.parents,
+    });
+  const shownLines = useMemo(() => transcript.filter((line) => !line.running), [transcript]);
+  const profile = project?.agent_profiles[profileName ?? surface] ?? null;
   const derivedConfig = useMemo(
     () =>
-      latestPersistedChatConfig(
-        historyMessages,
-        relatedTasks,
-        originRunConfig(
-          origin,
-          profileRunConfig(project.agent_profiles[profileName ?? surface], project.run_on),
-        ),
-        agentSetup,
-      ),
-    [
-      agentSetup,
-      historyMessages,
-      origin,
-      project.agent_profiles,
-      project.run_on,
-      relatedTasks,
-      surface,
-      profileName,
-    ],
+      feed
+        ? (feed.config ?? BLANK_CONFIG)
+        : latestPersistedChatConfig(
+            historyMessages,
+            relatedTasks,
+            originRunConfig(
+              origin,
+              profile ? profileRunConfig(profile, project!.run_on) : BLANK_CONFIG,
+            ),
+            agentSetup,
+          ),
+    [feed, agentSetup, historyMessages, origin, profile, project, relatedTasks],
   );
-  // The human's pick for this chat's next turns. It is keyed by chat, so another
-  // chat starts from its own default; the machine always stays the derived one.
+  const configSource = feed ? (feed.picker?.source ?? null) : project;
   const [configOverride, setConfigOverride] = useState<{
     chatId: string;
     config: AgentRunConfig;
@@ -355,9 +444,7 @@ export function AgentChatView({
         : derivedConfig,
     [chatId, configOverride, derivedConfig],
   );
-  // A worktree checks out one writable repository on the turn's machine; the
-  // human picks it only when several qualify. A bound worktree keeps its own.
-  const worktreeRepositories = worktreeRepositoryChoices(project, config.run_on);
+  const worktreeRepositories = project ? worktreeRepositoryChoices(project, config.run_on) : [];
   const [worktreeRepositoryPick, setWorktreeRepositoryPick] = useState<{
     chatId: string;
     alias: string;
@@ -367,41 +454,39 @@ export function AgentChatView({
     worktreeRepositories.includes(worktreeRepositoryPick.alias)
       ? worktreeRepositoryPick.alias
       : (worktreeRepositories[0] ?? null);
+  const newestTask = relatedTasks.at(-1);
   const worktree = useConversationWorktree(
-    project.id,
+    project?.id ?? "",
     chatId,
     node ? "node" : "project",
     node?.id ?? null,
     config.run_on,
     worktreeRepository ? [worktreeRepository] : [],
-    relatedTasks.map((task) => `${task.operation_id}:${task.updated_at}`).join("\0"),
-    !readOnly,
-    // The conversation's own graph: an orchestrator card opened from main lives on its branch.
+    newestTask ? `${newestTask.operation_id}:${newestTask.updated_at}` : "",
+    Boolean(project && config.run_on && feed?.messages !== null) && !readOnly,
     graphTarget,
   );
-  const draftKey = chatDraftStorageKey(actorId, project.id, chatId);
+  const draftKey = feed ? feed.draftKey : chatDraftStorageKey(actorId, project!.id, chatId);
   const [draft] = useState(() => createComposerDraft(readStorage(draftKey) ?? ""));
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const chatLinesRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const canSendThreads = !readOnly || allowArtifactComments;
-  const commentDock = useCommentDock(chatDockScope(project.id, chatId));
+  const commentDock = useCommentDock(chatDockScope(project?.id ?? "space", chatId));
   const dockKeys = useRef(sendKeys());
   const [supersedes, setSupersedes] = useState<{ chatId: string; operationId: string } | null>(
     null,
   );
   const supersededId = supersedes?.chatId === chatId ? supersedes.operationId : null;
-  const [browserOn, setBrowserOn] = useState(false);
+  const [chatBrowserOn, setBrowserOn] = useState(false);
+  const browserOn = feed ? feed.thread.browser_requested : chatBrowserOn;
   const optionCount = Number(browserOn) + Number(worktree.chosen);
-  const referencesKey = referenceDraftKey(
-    actorId,
-    project.id,
-    project.graph_target ?? MAIN_GRAPH,
-    chatId,
-  );
+  const referencesKey = feed
+    ? feed.referencesKey
+    : referenceDraftKey(actorId, project!.id, project!.graph_target ?? MAIN_GRAPH, chatId);
   const composer = useComposerAttachments({
     project,
+    attachmentsUrl: endpoints.attachmentsUrl,
     scopeId: chatId,
     referencesKey,
     input: textareaRef,
@@ -432,21 +517,28 @@ export function AgentChatView({
   const [discardPrompt, setDiscardPrompt] = useState<"dictate" | "send" | null>(null);
   const [dictationDeadline, setDictationDeadline] = useState<number | null>(null);
   const [dictationClock, setDictationClock] = useState(() => Date.now());
-  // Send pressed while dictating: send once the final transcript is in the draft,
-  // to the target Send addressed when pressed (a steered attempt, or a new turn).
   const [sendAfterDictation, setSendAfterDictation] = useState<{
     target: string;
   } | null>(null);
+  const [sendAfterStop, setSendAfterStop] = useState(false);
+  const [renaming, setRenaming] = useState(false);
   const dictationSpanRef = useRef<DictationSpan | null>(null);
   const dictationTimerRef = useRef<number | null>(null);
   const microphoneRef = useRef<{ sessionId: string; claim: MicrophoneClaim } | null>(null);
   const networkDictationRef = useRef<NetworkDictation | null>(null);
-  const scroll = useRef<AgentWindowScroll>(null);
   const [repairingTaskId, setRepairingTaskId] = useState<string | null>(null);
   const [repairErrors, setRepairErrors] = useState<Map<string, string>>(() => new Map());
   const [watchersOpen, setWatchersOpen] = useState(false);
+  const steersNow = relatedTasks.some(
+    (task) => task.active && task.steer_visible && task.can_steer && task.steer_turn_id,
+  );
+  const [queueFailure, setQueueFailure] = useState<{
+    requestId: string;
+    request: string;
+    reason: string;
+  } | null>(null);
   const skills = useSkillPicker({
-    source: project,
+    source: steersNow ? null : feed ? feed.skillSource : project,
     target: config,
     message: draft,
     input: textareaRef,
@@ -454,22 +546,46 @@ export function AgentChatView({
   });
   const desktop = useMemo(() => isDesktopRuntime(), []);
   const relatedActive = relatedTasks.some(isActiveTask);
-  const cards = useAgentCards(questionEpisodeId ? null : { projectId: project.id, chatId }, null);
+  const cards = useAgentCards(
+    feed ? feed.cardSource : questionEpisodeId ? null : { projectId: project!.id, chatId },
+    feed ? revision : null,
+  );
   const cardsChanged = async () => {
     await cards.refetch();
     questionState.refresh();
   };
   const dockedPlans = new Set([
+    ...cards.asked.map((question) => question.question_id),
     ...cards.plans.map((question) => question.question_id),
     ...(cards.loading
       ? questionState.questions.flatMap((question) =>
-          isPlanCardQuestion(question) && question.state === "pending"
+          (question.card || isPlanCardQuestion(question)) && question.state === "pending"
             ? [question.question_id]
             : [],
         )
       : []),
   ]);
-  const dockCards = dockStackCards(cards.plans, cards.episodes, cards.questions);
+  const relayed = feed?.cardsRelayed ?? false;
+  const proposalStackCard = (view: ProposalCardView): StackCard => ({
+    kind: "proposal",
+    key: proposalCardKey(view),
+    view,
+    decided: cards.decisionOf(view),
+    showProject: relayed,
+  });
+  const askedStackCard = (question: AgentQuestion, projectName: string | null): StackCard => ({
+    kind: "asked",
+    key: askedCardKey(question),
+    question,
+    projectName,
+  });
+  const dockCards: StackCard[] = [
+    ...cards.proposals.filter((view) => !view.stale).map(proposalStackCard),
+    ...cards.asked.map((question) =>
+      askedStackCard(question, relayed ? question.project_name : null),
+    ),
+    ...dockStackCards(cards.plans, cards.episodes, cards.questions),
+  ];
   const renderPlanCard = (question: AgentQuestion) => {
     const action = planCardAction(question.card)!;
     const here =
@@ -487,23 +603,54 @@ export function AgentChatView({
       />
     );
   };
-  // While the watched turn can take live input, the ordinary composer addresses
-  // that exact attempt instead of starting a new turn. There is no separate
-  // steering control; a runtime without an input channel leaves the composer
-  // unavailable exactly as any other running turn does.
   const steeringTask = [...relatedTasks]
     .reverse()
     .find((task) => task.active && task.steer_visible && task.can_steer && task.steer_turn_id);
   const awaitingSteerReceipt = Boolean(steeringTask) && submitting;
-  const apiBase = `/api/projects/${encodeURIComponent(project.id)}`;
+  const queue = feed?.queue ?? null;
+  const queueable = Boolean(
+    queue &&
+    (relatedActive || queue.some((item) => item.kind === "handoff" || !item.refusal_reason)),
+  );
+  const apiBase = project ? `/api/projects/${encodeURIComponent(project.id)}` : "";
+  const watchers = feed ? feed.watchers : hostWatchers;
+  const onStopWatcher = feed
+    ? (watcherId: string) =>
+        void feed
+          .stopWatcher(watcherId)
+          .catch((error: unknown) => setSubmitError(errorMessage(error)))
+    : hostStopWatcher;
   const watcherRows = useMemo(
     () => visibleChatWatchers(watchers, chatId, node, graphTarget),
     [chatId, node, watchers, graphTarget],
   );
   const pausedAttempt = resumablePausedChatTask(relatedTasks);
   const sessionId = resolvedChatSessionId(relatedTasks);
-  const providerReady = launchProviderReady(project, config, true, Boolean(sessionId));
-  const chatTitle = node?.title || conversationTitle || project.name;
+  const providerReady =
+    feed || !project ? true : launchProviderReady(project, config, true, Boolean(sessionId));
+  const chatTitle = feed?.thread.agent_name ?? (node?.title || conversationTitle || project!.name);
+  const reportFailure = (run: () => Promise<unknown>) => {
+    setSubmitError(null);
+    run().catch((error: unknown) => setSubmitError(errorMessage(error)));
+  };
+  const onResumeTask = feed
+    ? (task: AgentTask) => reportFailure(() => feed.control("resume", task))
+    : hostResumeTask;
+  const onRetryTask = feed
+    ? (task: AgentTask) => reportFailure(() => feed.control("retry", task))
+    : hostRetryTask;
+  const onRefreshTask = async (taskId: string) => {
+    if (hostRefreshTask) return hostRefreshTask(taskId);
+    const task = await endpoints.loadTask(taskId);
+    void feed?.refresh();
+    return task;
+  };
+  const pauseTask = (task: AgentTask) =>
+    reportFailure(async () => {
+      if (feed) return feed.control("pause", task);
+      await endpoints.control(task.operation_id, "pause", crypto.randomUUID());
+      await onRefreshTask(task.operation_id);
+    });
   const attachDisabled = composer.full || composer.preparing || submitting || awaitingSteerReceipt;
   const attachmentsUnready = composer.unready;
   const dictating = dictationState !== "idle" && dictationState !== "error";
@@ -537,7 +684,7 @@ export function AgentChatView({
     skills.reset();
     // Settings supplies fresh conversation defaults; an open turn keeps its own.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reset only when the chat changes, not when the picker object does
-  }, [chatId, project.id]);
+  }, [chatId, projectId]);
 
   useEffect(() => {
     const persist = () => {
@@ -680,7 +827,7 @@ export function AgentChatView({
   };
 
   const retryTask = (task: AgentTask) => {
-    if (!retryRefillsComposer(task)) return onRetryTask(task);
+    if (!retryRefillsComposer(task)) return onRetryTask?.(task);
     if (dictating) stopDictation(true);
     updateMessage(typeof task.request.message === "string" ? task.request.message : "");
     setSupersedes({ chatId, operationId: task.operation_id });
@@ -1034,6 +1181,7 @@ export function AgentChatView({
       // the delivered draft is exactly what is consumed.
       draft.set((current) => (current === draftMessage ? "" : current));
       skills.reset();
+      void feed?.refresh();
       return true;
     } catch (error) {
       setSubmitError(
@@ -1059,11 +1207,13 @@ export function AgentChatView({
    *  while the turn takes one, else a new turn. Resolves whether it was sent. */
   const send = async (
     threads: { ids: readonly string[]; key: string } | null = null,
+    queueing = false,
   ): Promise<boolean> => {
     const refuse = (reason: string) => {
-      if (threads) setSubmitError(reason);
+      if (threads || queueing) setSubmitError(reason);
       return false;
     };
+    if (queueing && threads) return refuse("Comments wait until this thread is idle.");
     if (threads ? !canSendThreads : readOnly) return refuse("This chat cannot send comments.");
     if (dictating) {
       if (threads) return refuse("Finish dictating before sending comments.");
@@ -1071,12 +1221,12 @@ export function AgentChatView({
       if (dictationState !== "stopping" && dictationState !== "transcribing") stopDictation();
       return false;
     }
-    if (steeringTask) return steer(steeringTask, threads);
-    if (relatedActive || submitting || repairingTaskId || reviewPending) {
+    if (steeringTask && !queueing) return steer(steeringTask, threads);
+    if ((relatedActive && !queueing) || submitting || repairingTaskId || reviewPending) {
       if (threads) setSubmitError("Wait for the running turn to finish.");
       return false;
     }
-    if (worktree.chosen && !worktree.state?.can_choose) {
+    if (worktree.chosen && !queueing && !worktree.state?.can_choose) {
       setSubmitError(
         worktree.error ??
           worktree.state?.unavailable_reason ??
@@ -1091,8 +1241,10 @@ export function AgentChatView({
     // Enter reaches here without the button, so a new turn checks readiness itself.
     if (!providerReady) return refuse("The agent is not ready to start a turn.");
     if (!confirmDiscardKeptSpeech("send")) return refuse("Sending was cancelled.");
-    // A new send is a new request; only Resend reuses a failed turn's key.
-    const requestId = threads?.key ?? crypto.randomUUID();
+    const queued = queueing ? JSON.stringify([text, composer.turnFields()]) : null;
+    const requestId =
+      threads?.key ??
+      (queued && queueFailure?.request === queued ? queueFailure.requestId : crypto.randomUUID());
     draft.set("");
     composer.closeMenu();
     return submitTurn({
@@ -1114,13 +1266,23 @@ export function AgentChatView({
         attachments: composer.turnFields(),
         skills: skills.selection,
         providerSkillNames: skills.providerSkillNames,
-        worktree: worktree.chosen,
+        worktree: worktree.chosen && !queueing,
         worktreeRepository,
         ...(threads ? { commentThreadIds: threads.ids } : {}),
       },
       submittedOverride: configOverride,
+      ...(queued ? { queue: true as const, queued } : {}),
     });
   };
+
+  const startTurn = (
+    submission: ConversationTurnSubmission,
+    requestId: string = crypto.randomUUID(),
+    queueing = false,
+  ) =>
+    feed
+      ? feed.start(submission, requestId, queueing)
+      : startConversationTurn(onStartTask!, submission, requestId);
 
   /** Start a turn, or start it again after a failed send under the same key.
    *  Resolves whether it was admitted. */
@@ -1128,13 +1290,15 @@ export function AgentChatView({
     if (turn.submission.commentThreadIds ? !canSendThreads : readOnly) return false;
     const pending = { ...turn, error: undefined };
     scroll.current?.follow();
-    setPendingTurn(pending);
+    if (!turn.queue) setPendingTurn(pending);
     setSubmitError(null);
     setSubmitting(true);
     try {
-      await startConversationTurn(onStartTask, turn.submission, turn.requestId);
+      await startTurn(turn.submission, turn.requestId, Boolean(turn.queue));
       // The admitted turn now carries the pick, so the chat follows its history
       // again; a newer pick made while submitting stays.
+      unsentTurns.delete(endpoints.scopeKey);
+      setQueueFailure(null);
       setConfigOverride((current) => (current === turn.submittedOverride ? null : current));
       worktree.refresh();
       setPendingTurn((current) => (current?.clientId === turn.clientId ? null : current));
@@ -1165,25 +1329,24 @@ export function AgentChatView({
       const lost =
         error instanceof TypeError ||
         (error instanceof DOMException && error.name === "TimeoutError");
-      const reason = lost
-        ? "Not sent: the connection to RCP dropped."
-        : error instanceof Error
-          ? error.message
-          : String(error);
+      const reason = lost ? "Not sent: the connection to RCP dropped." : errorMessage(error);
+      if (turn.queued) setQueueFailure({ requestId: turn.requestId, request: turn.queued, reason });
+      else unsentTurns.set(endpoints.scopeKey, { ...pending, error: reason });
       setPendingTurn((current) =>
         current?.clientId === turn.clientId ? { ...pending, error: reason } : current,
       );
       draft.set((current) => (current ? current : turn.draft));
+      if (!readStorage(draftKey)) writeStorage(draftKey, turn.draft);
       return false;
     } finally {
       setSubmitting(false);
     }
   };
 
-  const sendMessage = async (): Promise<boolean> => {
+  const sendMessage = async (queueing = action === "Queue"): Promise<boolean> => {
     const ids = dictating ? [] : commentDock.items.map((item) => item.thread_id);
-    if (!ids.length) return send();
-    const sent = await send({ ids, key: dockKeys.current.key(ids) });
+    if (!ids.length) return send(null, queueing);
+    const sent = await send({ ids, key: dockKeys.current.key(ids) }, queueing);
     if (sent) {
       dockKeys.current.done();
       commentDock.clear(ids);
@@ -1219,10 +1382,11 @@ export function AgentChatView({
       if (sent) dockKeys.current.done();
     });
   };
-  const commentScope = useMemo(
-    () => ({ kind: "project" as const, projectId: project.id }),
-    [project.id],
+  const chatCommentScope = useMemo<CommentScope>(
+    () => ({ kind: "project", projectId: projectId ?? "" }),
+    [projectId],
   );
+  const commentScope = feed?.commentScope ?? chatCommentScope;
   const inlineArtifactComments = useInlineArtifactComments({
     scope: commentScope,
     canPost: canSendThreads,
@@ -1251,7 +1415,7 @@ export function AgentChatView({
     setSubmitting(true);
     setSubmitError(null);
     try {
-      await startConversationTurn(onStartTask, {
+      await startTurn({
         kind: surface,
         config,
         nodeId: node?.id ?? null,
@@ -1273,7 +1437,7 @@ export function AgentChatView({
     setRepairingTaskId(taskId);
     setRepairErrors((current) => withoutMapKey(current, taskId));
     try {
-      await onRepairGraphUpdate(taskId, action);
+      await onRepairGraphUpdate?.(taskId, action);
     } catch (error) {
       setRepairErrors((current) =>
         withMapValue(current, taskId, error instanceof Error ? error.message : String(error)),
@@ -1292,7 +1456,7 @@ export function AgentChatView({
     onRefreshTask,
     readOnly,
     allowArtifactComments,
-    repositories: project.repositories,
+    repositories: project?.repositories ?? [],
   });
 
   const watcherToggle = watcherRows.length > 0 && (
@@ -1307,33 +1471,49 @@ export function AgentChatView({
     </button>
   );
 
-  const profile = project.agent_profiles[profileName ?? surface];
-  const effectiveModel = config.provider === profile.provider ? profile.effective_model : "";
-  const agentSummary = (
+  const effectiveModel =
+    profile && config.provider === profile.provider ? profile.effective_model : "";
+  const agentSummary = configSource && (
     <AgentConfigChip
       ref={configChipRef}
-      project={project}
+      project={configSource}
       value={config}
       effectiveModel={effectiveModel}
       open={configOpen}
       disabled={readOnly || pendingFork}
       label="Chat agent"
       workLike
-      onToggle={() => setConfigOpen((open) => !open)}
+      onToggle={() => {
+        if (!configOpen) feed?.reloadPicker();
+        setConfigOpen((open) => !open);
+      }}
     />
   );
+  const pickConfig = (next: AgentRunConfig) => {
+    if (feed) reportFailure(() => feed.pickAgent(next));
+    else setConfigOverride({ chatId, config: next });
+  };
 
   const contextControls = (showProvider: boolean) => (
     <div className="chat-context-controls">
       {(showProvider || !readOnly) && agentSummary}
+      {headerTools}
+      {feed && (
+        <SchedulesPopover
+          threadId={feed.thread.thread_id}
+          schedules={feed.schedules}
+          onChanged={() => void feed.refreshUpcoming()}
+        />
+      )}
       <AgentStatusStrip tasks={statusTasks} />
       {presentation === "workspace" && watcherToggle}
       {replyComments.headerButton}
       <ChatHeaderMenu
-        link={{ projectId: project.id, chatId, graphTarget }}
+        link={feed || !project ? undefined : { projectId: project.id, chatId, graphTarget }}
         actions={[
           ...headerActions,
-          ...(!fixedConversation && !readOnly
+          ...(feed ? [{ label: "Rename", onSelect: () => setRenaming(true) }] : []),
+          ...(!fixedConversation && !readOnly && onNewSession
             ? [{ label: "New session", onSelect: onNewSession }]
             : []),
         ]}
@@ -1343,12 +1523,110 @@ export function AgentChatView({
     </div>
   );
 
+  const latest = relatedTasks.at(-1) ?? null;
+  const liveTask = [...relatedTasks].reverse().find(isActiveTask) ?? null;
+  const pausedTask = latest && !latest.active && latest.can_resume ? latest : null;
+  const failedTask =
+    latest && !latest.active && latest.can_retry && !latest.can_resume ? latest : null;
+  const stoppedTask =
+    failedTask &&
+    !transcript.some((line) => line.role === "error" && line.taskId === failedTask.operation_id)
+      ? failedTask
+      : null;
+  const dockedCount = commentDock.items.length;
+  const steerable = steeringTask && !(composer.staged && queue) ? steeringTask : null;
+  const action: "Steer" | "Queue" | "Send" = steerable ? "Steer" : queueable ? "Queue" : "Send";
+  const sendBlocked =
+    action === "Queue"
+      ? dockedCount > 0
+      : steerable
+        ? Boolean(composer.staged)
+        : attachmentsUnready ||
+          relatedActive ||
+          Boolean(repairingTaskId) ||
+          reviewPending ||
+          !providerReady;
+  const sendReason = submitting
+    ? "Sending"
+    : action === "Queue" && dockedCount > 0
+      ? "Comments wait until this thread is idle"
+      : sendBlocked
+        ? steerable
+          ? "Attachments wait until this turn ends"
+          : relatedActive
+            ? "Wait until this turn ends"
+            : attachmentsUnready
+              ? "Attachments are still uploading"
+              : undefined
+        : !(draftSendable || dictating || dockedCount)
+          ? "Write a message"
+          : undefined;
+  const sendDisabled = submitting || sendBlocked || !(draftSendable || dictating || dockedCount);
+  const stopSends =
+    !submitting &&
+    !(queue?.length ?? 0) &&
+    !attachmentsUnready &&
+    (draftSendable || dockedCount > 0);
+  const sendNow = useEffectEvent(() => void sendMessage(false));
+  const live = liveTask !== null;
+  useEffect(() => {
+    if (!sendAfterStop || live) return;
+    setSendAfterStop(false);
+    sendNow();
+  }, [sendAfterStop, live]);
+  const removeQueued = async (item: QueuedMessage, dismissed: boolean) => {
+    setSubmitError(null);
+    try {
+      await feed!.removeQueued(item);
+    } catch (error) {
+      setSubmitError(errorMessage(error));
+      throw error;
+    }
+    if (dismissed) draft.set((current) => [item.message, current].filter(Boolean).join("\n\n"));
+  };
+  const firstLineOfTurn = new Map<string, string>();
+  for (const line of shownLines)
+    if (!firstLineOfTurn.has(line.taskId)) firstLineOfTurn.set(line.taskId, line.lineId);
+  const firstTurnId = firstLineOfTurn.keys().next().value;
+  const welcome =
+    feed &&
+    feed.messages !== null &&
+    !feed.loadError &&
+    !transcript.length &&
+    !questionState.questions.length &&
+    !pendingTurn &&
+    !latest
+      ? feed.welcome
+      : null;
+  const voiceHere = voice !== null && voice.phase !== "idle" && voice.thread?.thread_id === chatId;
+  const voiceBusy = voice !== null && voice.phase !== "idle";
+  const heading =
+    header ??
+    (feed &&
+      (renaming ? (
+        <AgentRename
+          title={feed.thread.agent_name}
+          onDone={(title) => {
+            setRenaming(false);
+            if (title && title !== feed.thread.agent_name) reportFailure(() => feed.rename(title));
+          }}
+        />
+      ) : (
+        <strong title={feed.thread.project_name ?? undefined}>{feed.thread.agent_name}</strong>
+      )));
+
   return (
     <div
       className={`chat-dock ${presentation}`}
       role={presentation === "floating" ? "dialog" : "region"}
       aria-modal="false"
-      aria-label={node || conversationTitle ? `Chat about ${chatTitle}` : "Project chat"}
+      aria-label={
+        feed
+          ? feed.thread.agent_name
+          : node || conversationTitle
+            ? `Chat about ${chatTitle}`
+            : "Project chat"
+      }
     >
       {presentation === "floating" && (
         <header data-drag-handle="true">
@@ -1364,22 +1642,23 @@ export function AgentChatView({
           </button>
         </header>
       )}
-      {header ? (
+      {heading ? (
         <header className="conversation-header" data-state={headerState}>
-          <div className="conversation-heading">{header}</div>
+          {leading}
+          <div className="conversation-heading">{heading}</div>
           {contextControls(false)}
         </header>
       ) : (
         contextControls(true)
       )}
-      {configOpen && !readOnly && (
+      {configOpen && !readOnly && configSource && (
         <AgentConfigControls
           ref={configPanelRef}
-          project={project}
+          project={configSource}
           value={config}
-          onChange={(next) => setConfigOverride({ chatId, config: next })}
+          onChange={pickConfig}
           effectiveModel={effectiveModel}
-          workLikeCapable={profile.work_like_capable}
+          workLikeCapable={profile?.work_like_capable}
           compact
         />
       )}
@@ -1423,11 +1702,43 @@ export function AgentChatView({
         questions={questionState.questions}
         scroll={scroll}
       >
-        {origin && <ChatOriginLink projectId={project.id} origin={origin} />}
+        {feed && feed.messages === null && !feed.loadError && (
+          <div className="agent-chat-view-line meta" role="status">
+            <LoaderCircle className="spin" size={14} />
+          </div>
+        )}
+        {feed?.loadError && (
+          <div className="agent-chat-view-line error" role="alert">
+            {feed.loadError}
+            <button
+              type="button"
+              className="icon-button chat-error-retry"
+              aria-label="Retry"
+              title="Retry"
+              onClick={() => void feed.refresh()}
+            >
+              <RotateCcw size={14} />
+            </button>
+          </div>
+        )}
+        {welcome && (
+          <AgentThreadWelcome
+            welcome={welcome}
+            onPrompt={(text) => {
+              updateMessage(text);
+              textareaRef.current?.focus();
+            }}
+          />
+        )}
+        {origin && project && <ChatOriginLink projectId={project.id} origin={origin} />}
         <AgentWindowTranscript
-          transcript={transcript}
+          transcript={shownLines}
           replyLinkGraphTarget={
-            graphTarget.kind === "branch" ? `branch:${graphTarget.branch_id}` : "main"
+            feed
+              ? undefined
+              : graphTarget.kind === "branch"
+                ? `branch:${graphTarget.branch_id}`
+                : "main"
           }
           tasks={relatedTasks}
           questions={questionState.questions}
@@ -1440,15 +1751,83 @@ export function AgentChatView({
           compactionByLine={compactionByLine}
           continuedTaskIds={continuedTaskIds}
           latestGraphReceiptLineIds={latestGraphReceiptLineIds}
-          renderQuestion={(question) => (
-            <QuestionCard
-              question={question}
-              apiBase={questionApiBase}
-              onResolved={questionState.refresh}
-            />
-          )}
+          renderQuestion={(question) =>
+            questionApiBase ? (
+              <QuestionCard
+                question={question}
+                apiBase={questionApiBase}
+                onResolved={questionState.refresh}
+              />
+            ) : null
+          }
           renderPlanCard={renderPlanCard}
           shownElsewhere={dockedPlans}
+          renderCards={(entry) => (
+            <ApprovalCardStack
+              stackKey={`${chatId}:${entry.key}`}
+              cards={entry.asked.map((question) =>
+                askedStackCard(question, feed?.thread.project_name ?? null),
+              )}
+              onDecided={cards.markDecided}
+              onResolved={cards.markResolved}
+              onAnswered={cards.markAnswered}
+              onChanged={cardsChanged}
+            />
+          )}
+          lineClassName={(line) =>
+            line.trigger === "schedule" && line.role === "human" ? "agent schedule-wake" : line.role
+          }
+          humanBody={(line) => (line.trigger === "schedule" ? <></> : undefined)}
+          agentBody={(line) => {
+            const report = handoffReport(line);
+            if (!report) return undefined;
+            return (
+              <HandoffResult
+                report={report}
+                agentName={feed?.handoffAgentName(report.threadId) ?? "Project agent"}
+              />
+            );
+          }}
+          triggerChip={(line) =>
+            line.trigger !== "watcher" || handoffReport(line) ? null : (
+              <span className="chat-turn-trigger watcher">Watcher</span>
+            )
+          }
+          lineLead={(line) => (
+            <>
+              {firstLineOfTurn.get(line.taskId) === line.lineId && (
+                <FreshSessionMarker
+                  task={relatedTasks.find((task) => task.operation_id === line.taskId)}
+                  hasEarlierTurn={line.taskId !== firstTurnId}
+                />
+              )}
+              {line.trigger === "schedule" && line.role === "human" && (
+                <span className="chat-turn-trigger schedule" title={line.text}>
+                  <CalendarClock size={11} aria-hidden="true" />
+                  {localClock(new Date(line.timestamp))}
+                </span>
+              )}
+            </>
+          )}
+          humanLead={(line) => (
+            <>
+              {line.source === "voice" && (
+                <Mic className="chat-message-source" size={12} aria-label="Said by voice" />
+              )}
+              {line.source === "handoff" && (
+                <GitPullRequestArrow
+                  className="chat-message-source"
+                  size={12}
+                  aria-label="Handed over from your Space thread"
+                />
+              )}
+            </>
+          )}
+          agentProgress={(line, task) =>
+            task && line.role === "agent" && line.source !== "voice" && !task.active ? (
+              <TurnProgress task={task} />
+            ) : null
+          }
           nodes={nodes}
           glossaryIndex={glossaryIndex}
           onOpenNode={onOpenNode}
@@ -1466,8 +1845,44 @@ export function AgentChatView({
           onOpenInbox={onOpenInbox}
           onRepairGraphUpdate={repairGraphUpdate}
         />
-        {/* Open cards end the transcript and scroll with it, so they never
-            squeeze the conversation above the composer. */}
+        {liveTask && (
+          <div className="agent-chat-view-line agent">
+            <TurnProgress task={liveTask} live />
+            <span className="agent-turn-live" role="status">
+              <LoaderCircle className="spin" size={12} aria-hidden="true" />
+              {liveTask.status_message}
+              {liveTask.can_pause && !readOnly && (
+                <button
+                  type="button"
+                  className="button compact secondary"
+                  disabled={liveTask.pausing}
+                  onClick={() => {
+                    if (stopSends) setSendAfterStop(true);
+                    pauseTask(liveTask);
+                  }}
+                >
+                  <Square size={11} /> {stopSends ? "Stop and send" : "Stop"}
+                </button>
+              )}
+            </span>
+          </div>
+        )}
+        {(pausedTask || stoppedTask) && (
+          <div className="chat-task-inline paused" role="status">
+            <span>{pausedTask ? pausedTaskText(pausedTask) : stoppedTask!.status_message}</span>
+            {!readOnly && !(pausedTask && stoppedByMember(pausedTask)) && (
+              <button
+                type="button"
+                className="button compact primary"
+                onClick={() =>
+                  pausedTask ? onResumeTask?.(pausedTask) : onRetryTask?.(stoppedTask!)
+                }
+              >
+                <Play size={12} /> Continue
+              </button>
+            )}
+          </div>
+        )}
         {questionState.error && (
           <div className="agent-chat-view-line error" role="alert">
             {questionState.error}
@@ -1478,24 +1893,30 @@ export function AgentChatView({
             (question) =>
               questionIsOpen(question) && !question.card && !question.withdrawn_readonly,
           )
-          .map((question) => (
-            <QuestionCard
-              key={question.question_id}
-              question={question}
-              apiBase={questionApiBase}
-              onResolved={questionState.refresh}
-              continueChat={
-                !readOnly && !questionEpisodeId && question.state === "parked" && !relatedActive
-              }
-            />
-          ))}
-        {submitError && <div className="agent-chat-view-line error">{submitError}</div>}
+          .map((question) =>
+            questionApiBase ? (
+              <QuestionCard
+                key={question.question_id}
+                question={question}
+                apiBase={questionApiBase}
+                onResolved={questionState.refresh}
+                continueChat={
+                  !readOnly && !questionEpisodeId && question.state === "parked" && !relatedActive
+                }
+              />
+            ) : null,
+          )}
+        {submitError && (
+          <div className="agent-chat-view-line error" role="alert">
+            {submitError}
+          </div>
+        )}
       </AgentWindowLines>
       {(dockCards.length > 0 || cards.unavailable) && (
         <div className="approval-dock">
           {cards.unavailable && <AgentCardsUnavailable />}
           <ApprovalCardStack
-            stackKey={`${project.id}:${chatId}:dock`}
+            stackKey={`${chatId}:dock`}
             cards={dockCards}
             onDecided={cards.markDecided}
             onResolved={cards.markResolved}
@@ -1505,6 +1926,7 @@ export function AgentChatView({
           />
         </div>
       )}
+      {queue && <ThreadQueue items={queue} onRemove={removeQueued} />}
       {archived ? (
         <div className="chat-composer" role="status">
           <button className="button compact" type="button" onClick={onRestore}>
@@ -1517,12 +1939,15 @@ export function AgentChatView({
       {!readOnly && (
         <ChatComposer
           hint={
-            <ProviderSwitchHint
-              project={project}
-              config={config}
-              tasks={relatedTasks}
-              sessionId={sessionId}
-            />
+            !feed &&
+            project && (
+              <ProviderSwitchHint
+                project={project}
+                config={config}
+                tasks={relatedTasks}
+                sessionId={sessionId}
+              />
+            )
           }
           composer={composer}
           docked={commentDock}
@@ -1531,25 +1956,42 @@ export function AgentChatView({
           addOptionCount={optionCount}
           addOptions={
             <>
-              <ChatBrowserControl
-                key={`${project.id}:${chatId}`}
-                apiBase={questionApiBase}
-                chatId={chatId}
-                machine={config.run_on}
-                disabled={readOnly}
-                onRequestedChange={setBrowserOn}
-              />
-              <WorktreeChooser
-                state={worktree.state}
-                chosen={worktree.chosen}
-                disabled={Boolean(
-                  relatedActive || pausedAttempt || submitting || reviewPending || repairingTaskId,
-                )}
-                onChoose={worktree.choose}
-                repositories={worktreeRepositories}
-                repository={worktreeRepository}
-                onRepository={(alias) => setWorktreeRepositoryPick({ chatId, alias })}
-              />
+              {feed ? (
+                <div className="chat-browser-control">
+                  <BrowserToggle
+                    checked={browserOn}
+                    onChange={(value) => reportFailure(() => feed.setBrowser(value))}
+                  />
+                </div>
+              ) : (
+                project && (
+                  <ChatBrowserControl
+                    key={`${project.id}:${chatId}`}
+                    apiBase={apiBase}
+                    chatId={chatId}
+                    machine={config.run_on}
+                    disabled={readOnly}
+                    onRequestedChange={setBrowserOn}
+                  />
+                )
+              )}
+              {project && (
+                <WorktreeChooser
+                  state={worktree.state}
+                  chosen={worktree.chosen}
+                  disabled={Boolean(
+                    relatedActive ||
+                    pausedAttempt ||
+                    submitting ||
+                    reviewPending ||
+                    repairingTaskId,
+                  )}
+                  onChoose={worktree.choose}
+                  repositories={worktreeRepositories}
+                  repository={worktreeRepository}
+                  onRepository={(alias) => setWorktreeRepositoryPick({ chatId, alias })}
+                />
+              )}
             </>
           }
           field={
@@ -1567,15 +2009,15 @@ export function AgentChatView({
               onKeyDown={(event) => {
                 if (skills.handleKeyDown(event)) return;
                 if (arrowScrollsTranscript(event, chatLinesRef.current)) return;
-                if (returnSends(event)) {
+                if (returnSends(event) && !event.nativeEvent.isComposing) {
                   event.preventDefault();
-                  void sendMessage();
+                  if (!sendDisabled || dictating) void sendMessage();
                 }
               }}
             />
           }
           tools={
-            <>
+            project && (
               <WorktreeControls
                 key={`${project.id}:${chatId}`}
                 state={worktree.state}
@@ -1588,72 +2030,115 @@ export function AgentChatView({
                 onPreviewRemove={worktree.previewRemoval}
                 onRefresh={worktree.refresh}
               />
-            </>
+            )
           }
           actions={
             <>
-              <button
-                className={`icon-button chat-dictation-button${
-                  dictating && dictationState !== "transcribing" ? " recording" : ""
-                }${dictationMsLeft !== null ? " counting" : ""}${
-                  dictationSecondsLeft !== null ? " ending" : ""
-                }`}
-                style={
-                  dictationMsLeft !== null
-                    ? ({
-                        "--dictation-left": dictationMsLeft / DICTATION_SEGMENT_MS,
-                      } as React.CSSProperties)
-                    : undefined
-                }
-                type="button"
-                aria-label={dictating ? "Stop dictation" : "Start dictation"}
-                aria-pressed={dictating}
-                aria-disabled={dictationUnavailable ? true : undefined}
-                title={
-                  dictationUnavailable ||
-                  dictationError ||
-                  (dictating ? "Stop dictation" : "Dictate")
-                }
-                disabled={submitting || dictationState === "transcribing"}
-                // An unavailable microphone still rereads the choice, then points to Settings.
-                onClick={() => void toggleDictation()}
-              >
-                {dictationState === "transcribing" ? (
-                  <LoaderCircle className="spin" size={16} />
-                ) : dictating ? (
-                  <MicOff size={16} />
-                ) : (
-                  <Mic size={16} />
-                )}
-              </button>
+              {voice ? (
+                <button
+                  className={`icon-button chat-voice-button${voiceHere ? " active" : ""}`}
+                  type="button"
+                  aria-label={voiceBusy ? "End voice" : "Talk"}
+                  aria-pressed={voiceHere}
+                  title={
+                    voiceBusy && !voiceHere
+                      ? `End voice in ${voice.thread?.agent_name ?? "another thread"}`
+                      : voiceBusy
+                        ? "End voice"
+                        : "Talk"
+                  }
+                  onClick={() => (voiceBusy ? voice.end() : feed && void voice.open(feed.thread))}
+                >
+                  {voice.phase === "starting" && voiceHere ? (
+                    <LoaderCircle className="spin" size={16} />
+                  ) : voiceBusy ? (
+                    <MicOff size={16} />
+                  ) : (
+                    <Mic size={16} />
+                  )}
+                </button>
+              ) : (
+                <button
+                  className={`icon-button chat-dictation-button${
+                    dictating && dictationState !== "transcribing" ? " recording" : ""
+                  }${dictationMsLeft !== null ? " counting" : ""}${
+                    dictationSecondsLeft !== null ? " ending" : ""
+                  }`}
+                  style={
+                    dictationMsLeft !== null
+                      ? ({
+                          "--dictation-left": dictationMsLeft / DICTATION_SEGMENT_MS,
+                        } as React.CSSProperties)
+                      : undefined
+                  }
+                  type="button"
+                  aria-label={dictating ? "Stop dictation" : "Start dictation"}
+                  aria-pressed={dictating}
+                  aria-disabled={dictationUnavailable ? true : undefined}
+                  title={
+                    dictationUnavailable ||
+                    dictationError ||
+                    (dictating ? "Stop dictation" : "Dictate")
+                  }
+                  disabled={submitting || dictationState === "transcribing"}
+                  onClick={() => void toggleDictation()}
+                >
+                  {dictationState === "transcribing" ? (
+                    <LoaderCircle className="spin" size={16} />
+                  ) : dictating ? (
+                    <MicOff size={16} />
+                  ) : (
+                    <Mic size={16} />
+                  )}
+                </button>
+              )}
               {dictationSecondsLeft !== null && (
                 <span className="chat-dictation-countdown" aria-live="polite">
                   {dictationSecondsLeft}s
                 </span>
               )}
+              {queue && action === "Steer" && (
+                <button
+                  className="icon-button chat-queue-button"
+                  type="button"
+                  aria-label="Queue"
+                  title={
+                    dockedCount
+                      ? "Comments wait until this thread is idle"
+                      : !draftSendable
+                        ? "Write a message"
+                        : "Queue"
+                  }
+                  disabled={submitting || dockedCount > 0 || !draftSendable}
+                  onClick={() => void sendMessage(true)}
+                >
+                  <ListPlus size={16} />
+                </button>
+              )}
               <button
                 className="icon-button primary chat-send-button"
-                disabled={
-                  // While dictating, Send finishes the dictation and sends its transcript.
-                  !(draftSendable || dictating) ||
-                  submitting ||
-                  (steeringTask
-                    ? composer.staged
-                    : attachmentsUnready ||
-                      relatedActive ||
-                      Boolean(repairingTaskId) ||
-                      reviewPending ||
-                      !providerReady)
-                }
+                type="button"
+                disabled={sendDisabled}
+                title={sendReason ?? (action === "Send" ? undefined : action)}
                 onClick={() => void sendMessage()}
-                aria-label={steeringTask ? steeringTask.steer_action_label : "Send"}
+                aria-label={
+                  action === "Steer" ? (steeringTask?.steer_action_label ?? "Steer") : action
+                }
               >
-                <Send size={16} />
+                {submitting ? (
+                  <LoaderCircle className="spin" size={16} />
+                ) : action === "Queue" ? (
+                  <ListPlus size={16} />
+                ) : (
+                  <Send size={16} />
+                )}
               </button>
             </>
           }
           notice={
-            discardPrompt ? (
+            queueFailure ? (
+              <span role="alert">{queueFailure.reason}</span>
+            ) : discardPrompt ? (
               <span className="chat-dictation-error" role="alert">
                 Discard the kept dictation?
                 <button

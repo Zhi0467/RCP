@@ -487,31 +487,31 @@ the rail is the list, and a chosen thread fills the screen.
 Inside a project, Agents opens the member's own project thread, which leads the
 conversation list and counts in its filters. Its mark leads its meta line, where
 team rows show their provider, so every title starts in one column. The team's
-board conversations stay in that list. The thread header holds a Wakes
-button, present only when schedules or watchers that will wake the thread exist, that
-counts the schedules that will run without the member plus those watchers and
-opens a popover of them. The backend marks each watcher `wakes_chat`, by the same
-rule the agent's own watcher list uses, so an Experiment loop's watcher, which
-wakes its episode, stays in Runs. Every row has the same shape: what wakes the agent,
-then when. A watcher names its node by title, or its job by the agent's stated
-purpose (an older one by its check script, else its log file). It says which
-states or event wake the agent, or a job's current check error, and can be
-stopped there. Tapping a watcher opens when it was set and checked, and for a
-job its check command, log, folder, and machine. The popover is sized to the viewport and
-scrolling past it, the context ring, and a ⋯ menu with Rename, the browser switch, and the agent pick. Space and project
-threads share that pick: one `provider · model · effort` row that opens the
-shared fields in the menu. Opening the menu reads provider readiness again, so a
-sign-in from Settings appears without a reload. A pick is stored on the thread
-at once and every later turn runs it, retries and wakes included. Until the
-member picks, the row shows the project's Settings profile, or for the Space
-thread the backend machine's first signed-in provider, else its first registered
-provider. When the browser was
-unavailable on the latest turn, the browser item carries a warning icon and the
-fix on hover; turns carry no browser notice. The composer holds the voice
-button. Once a thread's transcript has loaded empty, a centered welcome lists
-what the agent can do under the header that names it, rendered from the
-capability lines the backend gives each verb the thread kind's turns are
-granted, above four starters. A starter fills the composer without sending, and the first turn removes the welcome.
+board conversations stay in that list.
+
+Every agent placement renders one agent view: board and node chats, the
+Auto-research root, the Paper chat, Experiment chats, project threads and the
+Space thread. It has one header, one composer and one running-turn display.
+What differs comes from the data the view is given: a member thread loads its
+own transcript and turns through the thread routes, whose Space or project path
+the API module chooses, and its row's `can_queue` turns the queue on. The
+header holds the `provider · model · effort` agent chip, the context ring and a
+⋯ menu. A thread's chip stores its pick on the thread at once, and every later
+turn runs it, retries and wakes included; opening the chip reads provider
+readiness again, so a sign-in from Settings appears without a reload. Until the
+member picks, the chip shows the project's Settings profile, or for the Space
+thread the backend machine's first signed-in provider, else its first
+registered provider. A thread's menu adds Rename. A thread with schedules shows
+a Wakes button that counts the schedules that will run without the member and
+opens a popover of them. The chat watcher bar lists the live watchers that wake
+the conversation, for threads and chats alike. Browser use and Work in a
+worktree sit in the composer's + menu; Work in a worktree needs a project.
+Browser loss shows on its turn. The composer holds the voice button where the
+Space voice agent is available, else dictation. Once a thread's transcript has
+loaded empty, a centered welcome lists what the agent can do under the header
+that names it, rendered from the capability lines the backend gives each verb
+the thread kind's turns are granted, above four starters. A starter fills the
+composer without sending, and the first turn removes the welcome.
 A failed turn shows its error once, in the message column, with Continue. A
 turn that paused by itself shows the same row. A member's Stop reads Stopped
 with no button, on one rounded row shaped like the failed turn's, and Send
@@ -519,18 +519,19 @@ stays on: the next message continues the session. While a turn runs and the
 composer holds a sendable message, Stop reads Stop and send: it stops the turn
 and sends that message as the next one. With rows already waiting it stays
 Stop, so a new message never jumps the queue. Continue
-continues its turn, so the member's message shows once. In a
-project thread, what waits for the next turn shows as one-line rows above the
+continues its turn, so the member's message shows once. Where the backend
+queues sends, what waits for the next turn shows as one-line rows above the
 composer, oldest first: a ready handoff with its chip and Space agent, each
 queued message with Edit and Remove, and a refused one with its reason and Dismiss,
 which, like Edit, puts its text back in the draft. Rows grow in and collapse out. While a
 running turn can be steered and nothing is staged, Enter steers and Queue sits
 beside it; with an active turn or waiting rows otherwise, Enter queues, so a new
 message never jumps the line. A message with files queues because a steer
-carries text only. A Space thread keeps steer-or-wait. The
-thread's reading column is a step wider than a board chat's, and the composer
-matches it. A provider pick moves to that provider's first model; a provider
-that declares its models lists them before any probe.
+carries text only. A refused queue send keeps its text and retries under the
+same key. Without a queue the composer keeps steer-or-wait. A provider pick
+moves to that provider's first model; a provider that declares its models lists
+them before any probe. A send whose start failed keeps its Resend line when the
+member leaves and comes back.
 Switching threads shows each thread's last loaded view while it reloads. Each
 schedule row shows its note (in full on hover), its time and zone, the next run
 of a recurring one, and since when a due wake waits. The reason a waiting wake
@@ -545,9 +546,7 @@ commands in order, open, above the spinner. When the turn settles, the reply
 shows and the same list folds under one line that counts its messages and
 commands; settling never reorders it. A handoff result is one row with its Handoff
 chip, the agent that ran it, and how it ended; the answer stays in that agent's thread.
-Board chats and threads
-share the agent window transcript, scrolling, artifact rendering, comments, and
-composer parts. Project threads support node references, saved artifacts, and
+Project threads support node references, saved artifacts, and
 artifact-selection comments. Space threads render their own turn artifacts and
 accept files and the same shared comments on replies and inline artifacts, which
 open in comment mode like a project thread's. A Space artifact comment travels
@@ -620,7 +619,7 @@ leaves the dock at the next change, and an asked card's result then shows in its
 turn. Both docks hide when empty. Docked cards
 stay reachable where inline ones would scroll away. Every question and approval
 card shows when it was asked: the clock time, with the date when not today.
-Left of Wakes, the Space thread header holds a Running button, present only
+In the space home, the Space thread header holds a Running button, present only
 while something runs, that reads needs-you over total. Its popover lists the
 rows that need the member, a divider, then the rest. Each row shows its title,
 project and kind, state and time, and only opens its run or thread.

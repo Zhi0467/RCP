@@ -34,11 +34,6 @@
       "count": 6
     }
   },
-  "src/agents/AgentThreadView.tsx": {
-    "rcp/no-comments": {
-      "count": 35
-    }
-  },
   "src/agents/ApprovalCard.tsx": {
     "rcp/no-comments": {
       "count": 2
@@ -141,7 +136,7 @@
   },
   "src/chat/AgentChatView.tsx": {
     "rcp/no-comments": {
-      "count": 63
+      "count": 47
     }
   },
   "src/chat/AgentRename.tsx": {

@@ -4100,6 +4100,8 @@ export interface AgentThread {
   agent: AgentRunConfig | null;
   /** What this kind's agent can do, one line per capability of its granted verbs. */
   capabilities: string[];
+  /** The backend queues this thread's sends behind a running turn. */
+  can_queue: boolean;
 }
 
 export interface AgentThreadList {

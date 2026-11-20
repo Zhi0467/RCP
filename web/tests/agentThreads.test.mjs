@@ -24,8 +24,6 @@ import {
   turnSteps,
   turnStepsSummary,
   upcomingSchedules,
-  watcherFacts,
-  watcherWake,
 } from "../src/agents/agentThreadModel.ts";
 import {
   decideProposalCard,
@@ -283,54 +281,6 @@ test("a project thread lists only the watchers that will wake it and stops them 
   ]);
 });
 
-test("a wake row names what the watcher waits for and when it fires", () => {
-  const graph = {
-    watcher_id: "w1",
-    condition: { node_id: "exp-1", status_in: ["completed", "abandoned", "superseded"] },
-  };
-  assert.deepEqual(watcherWake(graph, { "exp-1": { title: "Fine-tune π0.5" } }), {
-    what: "Fine-tune π0.5",
-    when: "When it's completed, abandoned or superseded",
-  });
-  assert.equal(watcherWake(graph, undefined).what, "exp-1");
-  assert.equal(
-    watcherWake({ watcher_id: "w2", condition: { node_id: "h2", proposal_resolved: true } }, {})
-      .when,
-    "When its Proposal is resolved",
-  );
-  assert.equal(
-    watcherWake({ watcher_id: "w3", check_command: "squeue -j 1", log_path: "/runs/s43/log" }, {})
-      .what,
-    "s43/log",
-  );
-});
-
-test("job wakes on one log read apart by purpose, else by check script, and open to what they run", () => {
-  const job = {
-    watcher_id: "w4",
-    check_command: "bash /repro/check_gcp2.sh",
-    log_path: "/repro/astra.25645.log",
-    cwd: "/repro",
-    machine_id: "m1",
-    created_at: "2026-11-09T03:32:00Z",
-    last_checked_at: "2026-11-09T08:42:00Z",
-    next_check_at: null,
-    last_error: null,
-  };
-  assert.equal(
-    watcherWake({ ...job, purpose: "GCP2 astra run finishes" }, {}).what,
-    "GCP2 astra run finishes",
-  );
-  assert.equal(watcherWake({ ...job, purpose: null }, {}).what, "check_gcp2.sh");
-  const failing = watcherWake({ ...job, purpose: null, last_error: "check timed out" }, {});
-  assert.equal(failing.when, "check timed out");
-  const facts = watcherFacts({ ...job, purpose: null }, (id) => (id === "m1" ? "GCP2" : id));
-  const values = facts.map((fact) => fact.value);
-  for (const value of [job.check_command, job.log_path, job.cwd, "GCP2"])
-    assert.ok(values.includes(value));
-  assert.equal(facts.filter((fact) => fact.code).length, 3);
-});
-
 test("a card is expired by its state or its time", () => {
   const card = { state: "pending", expires_at: "2026-11-01T12:00:00Z" };
   assert.equal(approvalCardExpired(card, Date.parse("2026-11-01T11:00:00Z")), false);
@@ -439,7 +389,7 @@ const renderServer = await createServer({
   server: { middlewareMode: true, hmr: false },
   optimizeDeps: { noDiscovery: true },
 });
-const { FreshSessionMarker } = await renderServer.ssrLoadModule("/src/agents/AgentThreadView.tsx");
+const { FreshSessionMarker } = await renderServer.ssrLoadModule("/src/chat/agentViewPieces.tsx");
 const { stackIndex, stackLater, stackOrder } = await renderServer.ssrLoadModule(
   "/src/agents/ApprovalCardStack.tsx",
 );

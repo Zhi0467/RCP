@@ -18,6 +18,7 @@ def test_threads_created_once_with_names_browser_and_owner_controls(manifest, tm
         assert [row["latest_operation_id"] for row in rows] == [None, None]
         assert all(row["browser_requested"] for row in rows)
         assert rows[0]["capabilities"] and rows[0]["capabilities"] != rows[1]["capabilities"]
+        assert [row["can_queue"] for row in rows] == [False, True]
         assert client.get("/api/agent-threads").json()["threads"] == rows
         for row in rows:
             base = "/api/agent-threads/" + row["thread_id"]

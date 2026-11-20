@@ -252,6 +252,7 @@ export async function mockApi(page, writes) {
     ...thread,
     agent: agents.get(thread.thread_id) ?? null,
     capabilities: capabilities[thread.kind],
+    can_queue: Boolean(thread.project_id),
   });
   /** Saved comment threads, as each scope's comment routes keep them. */
   const commentThreads = [];
@@ -379,7 +380,10 @@ export async function mockApi(page, writes) {
     if (path === "/api/agent-threads/space/turns") return json({ operation_id: "op-new" }, 202);
     if (/\/read$/.test(path)) {
       const id = path.split("/").at(-2);
-      return json({ ...threads.find((thread) => thread.thread_id === id), unread: false });
+      return json({
+        ...withAgent(threads.find((thread) => thread.thread_id === id)),
+        unread: false,
+      });
     }
     if (path === "/api/approval-cards/q1") return json({ outcome: "approved" });
     if (path.startsWith("/api/approval-cards/proposals/") && method === "POST")

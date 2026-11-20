@@ -118,3 +118,10 @@ export function spaceAgentWindowEndpoints(thread: AgentThread): AgentWindowEndpo
       ),
   };
 }
+
+/** A member agent thread's routes: its project's chat routes, or the Space thread's own. */
+export function threadAgentWindowEndpoints(thread: AgentThread): AgentWindowEndpoints {
+  return thread.project_id
+    ? projectAgentWindowEndpoints(thread.project_id, thread.thread_id)
+    : spaceAgentWindowEndpoints(thread);
+}

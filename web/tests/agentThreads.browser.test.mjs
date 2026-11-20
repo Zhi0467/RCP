@@ -661,6 +661,7 @@ test("thread windows share artifact rendering, comments, uploads, and in-place c
       0,
     );
     const commentOn = async (region, text) => {
+      await region.locator(".chat-annotatable-answer").first().waitFor();
       await region.evaluate((element) => {
         const answer = element.querySelector(".chat-annotatable-answer");
         const walker = document.createTreeWalker(answer, NodeFilter.SHOW_TEXT);
@@ -900,7 +901,7 @@ const codexReadiness = {
   models: [{ id: "gpt-6.1-sol", label: "gpt-6.1-sol", reasoning: ["low", "medium"] }],
 };
 
-test("Space and project threads pick their agent from one row in the thread menu", async () => {
+test("Space and project threads pick their agent from the header's agent chip", async () => {
   await withFixture(async (browser, base) => {
     for (const width of [1280, 390]) {
       const page = await browser.newPage({ viewport: { width, height: 844 } });
@@ -928,35 +929,34 @@ test("Space and project threads pick their agent from one row in the thread menu
         await page.goto(`${base}#/agent/${hash}`);
         const thread = page.getByRole("region", { name });
         await thread.getByRole("textbox", { name: "Message" }).waitFor();
-        // The composer carries no picker of its own, and no picker panel sits outside the menu.
+        // The composer carries no picker of its own, and the picker panel stays shut.
         assert.equal(await thread.locator(".chat-composer .agent-config-chip").count(), 0);
         assert.equal(await thread.locator(".agent-config").count(), 0);
-        await thread.getByRole("button", { name: "Thread menu" }).click();
-        const menu = page.getByRole("menu", { name: "Thread menu" });
-        const row = menu.getByRole("button", { name: new RegExp(`^${name} agent:`) });
+        const row = thread.getByRole("button", { name: /^Chat agent:/ });
         await row.waitFor();
         assert.equal(await row.getAttribute("aria-expanded"), "false");
         await row.click();
         assert.equal(await row.getAttribute("aria-expanded"), "true");
-        assert.equal((await menu.locator(".agent-config select").count()) >= 2, true);
+        const menu = thread.locator(".agent-config");
+        assert.equal((await menu.locator("select").count()) >= 2, true);
         await page.waitForTimeout(200);
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
         if (shots) await page.screenshot({ path: `${shots}/menu-picker-${hash}-${width}.png` });
         if (hash === "space") {
           // A provider chosen here is stored on the thread, survives a reload, and
           // goes with the next turn.
-          await menu.locator(".agent-config select").first().selectOption("codex");
-          assert.match(await row.textContent(), /Codex/);
+          await menu.locator("select").first().selectOption("codex");
+          await page.waitForFunction(() =>
+            /Codex/.test(document.querySelector(".agent-config-chip")?.textContent ?? ""),
+          );
           assert.equal(
             writes.find((write) => write.path === "/api/agent-threads/space/agent").body.provider,
             "codex",
           );
           await page.reload();
           await thread.getByRole("textbox", { name: "Message" }).waitFor();
-          await thread.getByRole("button", { name: "Thread menu" }).click();
           await row.waitFor();
           assert.match(await row.textContent(), /Codex/);
-          await page.keyboard.press("Escape");
           await thread.getByRole("textbox", { name: "Message" }).fill("Plan the sweep");
           await thread.getByRole("button", { name: "Send", exact: true }).click();
           await page.waitForFunction(
@@ -967,7 +967,7 @@ test("Space and project threads pick their agent from one row in the thread menu
         } else {
           // Unpicked, the next turn names exactly what the row shows: the Settings default.
           assert.match(await row.textContent(), /Claude · opus · high/);
-          await page.keyboard.press("Escape");
+          await row.click();
           await thread.getByRole("textbox", { name: "Message" }).fill("Next");
           await thread.getByRole("button", { name: "Send", exact: true }).click();
           await page.waitForFunction(() =>
@@ -979,7 +979,7 @@ test("Space and project threads pick their agent from one row in the thread menu
             ["claude", "opus", "high"],
           );
         }
-        assert.equal(await menu.count(), 0);
+        assert.equal(await thread.locator(".agent-config").count(), 0);
       }
       assert.deepEqual(errors, []);
       await page.close();
@@ -1153,7 +1153,7 @@ test("a retried turn shows its message once, and a stopped one sits in the colum
       assert.equal(await banner.getByRole("button", { name: "Continue" }).count(), 1);
       // The retry's own copy of the message goes once its lineage reaches the first attempt.
       await page.waitForFunction(
-        () => document.querySelectorAll(".agent-thread .agent-chat-view-line.human").length === 1,
+        () => document.querySelectorAll(".chat-dock .agent-chat-view-line.human").length === 1,
         undefined,
         { timeout: 5_000 },
       );
@@ -1262,17 +1262,17 @@ test("thread switches keep the last view, a failed load retries, and notices cle
         ? route.fulfill({ status: 500, contentType: "application/json", body: "{}" })
         : route.fulfill({ json: { browser_requested: false } });
     });
-    const menu = space.getByRole("button", { name: "Thread menu" });
-    const browserItem = page.getByRole("menuitem", { name: /browser/i });
-    await menu.click();
+    const menu = space.getByRole("button", { name: "Chat menu" });
+    const browserItem = space.getByRole("switch", { name: "Browser use" });
+    await space.getByRole("button", { name: "Add", exact: true }).click();
     await browserItem.click();
     const notice = space.locator(
       ".agent-chat-view-lines > .agent-chat-view-line.error[role=alert]",
     );
     await notice.waitFor();
-    await menu.click();
     await browserItem.click();
     await notice.waitFor({ state: "detached" });
+    await page.keyboard.press("Escape");
 
     // Escape keeps the name; Enter renames once.
     const name = space.getByRole("textbox", { name: "Agent name" });
@@ -1406,7 +1406,7 @@ test("Space and project replies link and embed repository files and saved artifa
   });
 });
 
-test("a provider signed in after mount is offered when the thread menu opens", async () => {
+test("a provider signed in after mount is offered when the agent chip opens", async () => {
   await withFixture(async (browser, base) => {
     const page = await browser.newPage({ viewport: { width: 1280, height: 844 } });
     await mockApi(page, []);
@@ -1429,20 +1429,19 @@ test("a provider signed in after mount is offered when the thread menu opens", a
     await page.goto(`${base}#/agent/space`);
     const thread = page.getByRole("region", { name: "Pip" });
     await thread.locator(".chat-progress").waitFor();
-    await thread.getByRole("button", { name: "Thread menu" }).click();
-    const menu = page.getByRole("menu", { name: "Thread menu" });
-    await menu.getByRole("button", { name: /^Pip agent:/ }).waitFor();
-    await page.keyboard.press("Escape");
+    const chip = thread.getByRole("button", { name: /^Chat agent:/ });
+    await chip.waitFor();
     // Codex is signed in from Settings while the thread stays open.
     signedIn = true;
-    await thread.getByRole("button", { name: "Thread menu" }).click();
-    await menu.getByRole("button", { name: /^Pip agent:/ }).click();
-    const provider = menu.locator(".agent-config select").first();
+    await chip.click();
+    const provider = thread.locator(".agent-config select").first();
     await page.waitForFunction(() =>
-      document.querySelector('[role=menu] .agent-config select option[value="codex"]'),
+      document.querySelector('.agent-config select option[value="codex"]'),
     );
     await provider.selectOption("codex");
-    assert.match(await menu.getByRole("button", { name: /^Pip agent:/ }).textContent(), /Codex/);
+    await page.waitForFunction(() =>
+      /Codex/.test(document.querySelector(".agent-config-chip")?.textContent ?? ""),
+    );
   });
 });
 
@@ -1469,16 +1468,12 @@ test("a pick stored by a send reads its default machine's readiness", async () =
     ]) {
       await page.goto(`${base}#/agent/${hash}`);
       const thread = page.getByRole("region", { name });
-      await thread.getByRole("button", { name: "Thread menu" }).click();
-      const row = page
-        .getByRole("menu", { name: "Thread menu" })
-        .getByRole("button", { name: new RegExp(`^${name} agent:`) });
+      const row = thread.getByRole("button", { name: /^Chat agent:/ });
       await row.waitFor();
       await page.waitForFunction(
         () => document.querySelector(".agent-config-chip")?.getAttribute("aria-busy") === "false",
       );
       assert.equal(await row.textContent(), "Claude · opus · high");
-      await page.keyboard.press("Escape");
     }
   });
 });
@@ -1549,12 +1544,10 @@ test("a provider switch picks that provider's first model, listed before any pro
     );
     await page.goto(`${base}#/agent/space`);
     const thread = page.getByRole("region", { name: "Pip" });
-    await thread.getByRole("button", { name: "Thread menu" }).click();
-    const menu = page.getByRole("menu", { name: "Thread menu" });
-    const row = menu.getByRole("button", { name: /^Pip agent:/ });
+    const row = thread.getByRole("button", { name: /^Chat agent:/ });
     await row.click();
     const [provider, model] = [0, 1].map((index) =>
-      menu.locator(".agent-config select").nth(index),
+      thread.locator(".agent-config select").nth(index),
     );
     const models = () => model.locator("option").evaluateAll((items) => items.map((i) => i.value));
     assert.match(await row.textContent(), /Codex · gpt-6\.1-sol/);
@@ -1588,7 +1581,7 @@ test("Snowbound gives Agent threads the same available height as other themes", 
             await new Promise(requestAnimationFrame);
             const panel = document.querySelector(".space-agent").getBoundingClientRect();
             const composer = document
-              .querySelector(".agent-thread .chat-composer")
+              .querySelector(".space-agent .chat-composer")
               .getBoundingClientRect();
             return { bottom: panel.bottom, height: panel.height, composerBottom: composer.bottom };
           }, theme);
@@ -1663,10 +1656,10 @@ test("both thread kinds show the context ring just left of the thread menu", asy
       ["moss", "Moss"],
     ]) {
       await page.goto(`${base}#/agent/${hash}`);
-      const header = page.getByRole("region", { name }).locator(".thread-header");
+      const header = page.getByRole("region", { name }).locator(".conversation-header");
       const ring = header.getByRole("button", { name: "Context" });
       await ring.waitFor();
-      const menu = await header.getByRole("button", { name: "Thread menu" }).boundingBox();
+      const menu = await header.getByRole("button", { name: "Chat menu" }).boundingBox();
       const box = await ring.boundingBox();
       assert.ok(box.x + box.width <= menu.x && menu.x - (box.x + box.width) < 16);
       if (shots) await page.screenshot({ path: `${shots}/context-ring-${hash}-1280.png` });
@@ -1674,7 +1667,7 @@ test("both thread kinds show the context ring just left of the thread menu", asy
   });
 });
 
-test("handoff results read as one row and browser loss shows once on the menu", async () => {
+test("handoff results read as one row and browser loss shows on its turn", async () => {
   await withFixture(async (browser, base) => {
     const page = await browser.newPage({ viewport: { width: 1280, height: 844 } });
     const errors = [];
@@ -1729,11 +1722,8 @@ test("handoff results read as one row and browser loss shows once on the menu", 
     await page.goto(`${base}#/agent/moss`);
     const moss = page.getByRole("region", { name: "Moss" });
     await moss.getByRole("button", { name: "Approve" }).waitFor();
-    assert.equal(await moss.locator("[data-browser-status]").count(), 0);
-    await moss.getByRole("button", { name: "Thread menu" }).click();
-    const item = page.getByRole("menuitem", { name: /browser/i });
-    const note = await item.getAttribute("title");
-    assert.ok(note && !note.includes("not_installed"));
+    const notices = moss.locator("[data-browser-status]");
+    assert.ok((await notices.count()) > 0);
     assert.deepEqual(errors, []);
   });
 });
@@ -2672,7 +2662,7 @@ test("Pip's Running button counts what needs the member and each row opens its r
       await button.waitFor();
       assert.equal((await button.textContent()).trim(), "2 / 5");
       const header = await pip
-        .locator(".thread-header-tools")
+        .locator(".chat-context-controls")
         .evaluate((tools) => [...tools.children].map((child) => child.getAttribute("title")));
       assert.ok(header.indexOf("Running") < header.indexOf("Wakes"));
       await button.click();
@@ -3149,7 +3139,7 @@ test("Stop with a typed message stops the turn and sends it as the next one", as
   });
 });
 
-test("job wakes on one log read apart and open to what they run, on a phone too", async () => {
+test("a thread's job watchers show in the chat watcher bar, on a phone too", async () => {
   await withFixture(async (browser, base) => {
     const job = (watcher_id, check, purpose, extra = {}) => ({
       watcher_id,
@@ -3180,19 +3170,10 @@ test("job wakes on one log read apart and open to what they run, on a phone too"
       await page.route("**/api/projects/p1/watchers", (route) => route.fulfill({ json: watchers }));
       await page.goto(`${base}#/agent/moss`);
       const thread = page.getByRole("region", { name: "Moss" });
-      await thread.getByRole("button", { name: /wakes$/ }).click();
-      const popover = page.getByRole("dialog", { name: "Wakes" });
-      const titles = await popover.locator(".upcoming-open strong").allTextContents();
-      assert.equal(new Set(titles).size, 3);
-      assert.ok(titles.includes("GCP2 astra run finishes"));
-      const second = popover.locator(".upcoming-row:has(.upcoming-open)").nth(1);
-      await second.getByRole("button", { name: titles[1] }).click();
-      const facts = second.locator(".upcoming-facts");
-      await facts.waitFor();
-      const text = await facts.textContent();
-      for (const value of [watchers[1].check_command, watchers[1].log_path, watchers[1].cwd])
-        assert.ok(text.includes(value));
-      assert.equal(await popover.locator(".upcoming-facts").count(), 1);
+      await thread.getByRole("button", { name: "3 active watchers" }).click();
+      const bar = thread.getByRole("region", { name: "Watchers" });
+      assert.equal(await bar.locator(".chat-watcher-row").count(), watchers.length);
+      assert.equal(await bar.getByRole("button", { name: "Stop watching" }).count(), 3);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
       await shoot(page, `wakes-open-${width}`);
       await page.close();

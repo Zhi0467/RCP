@@ -1,5 +1,4 @@
 import { AgentRename } from "./AgentRename";
-import { AgentThreadView } from "../agents/AgentThreadView";
 import {
   sinceLabel,
   threadIsLive,
@@ -1172,8 +1171,11 @@ export function ChatsWorkspace({
       </div>
       <div className="conversation-surface" id="conversation-surface-panel">
         {showingOwnThread && ownThread ? (
-          <AgentThreadView
+          <AgentChatView
+            key={ownThread.thread.thread_id}
             thread={ownThread.thread}
+            chatId={ownThread.thread.thread_id}
+            presentation="workspace"
             actorId={actorId}
             project={project}
             revision={ownThread.revision}

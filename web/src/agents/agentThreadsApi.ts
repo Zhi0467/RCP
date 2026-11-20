@@ -65,6 +65,35 @@ export function loadThreadTranscript(
   );
 }
 
+/** The fields a Space turn takes; it has no project references, worktree or provider skills. */
+function spaceTurn({
+  message,
+  provider,
+  model,
+  reasoning,
+  timezone,
+  attachment_set_id,
+  attachment_client_id,
+  comment_thread_ids,
+  invoked_workflow_ids,
+  invoked_skill_ids,
+}: AgentThreadTurnRequest): AgentThreadTurnRequest {
+  return Object.fromEntries(
+    Object.entries({
+      message,
+      provider,
+      model,
+      reasoning,
+      timezone,
+      attachment_set_id,
+      attachment_client_id,
+      comment_thread_ids,
+      invoked_workflow_ids,
+      invoked_skill_ids,
+    }).filter(([, value]) => value !== undefined),
+  ) as unknown as AgentThreadTurnRequest;
+}
+
 /** Starts one Work turn; the request id makes a resend safe. */
 export async function sendThreadTurn(
   thread: AgentThread,
@@ -78,7 +107,9 @@ export async function sendThreadTurn(
     headers: { "Idempotency-Key": requestId },
   });
   if (thread.kind === "space")
-    return request(`${threadPath(thread.thread_id)}/turns`, init(turn), { retryIdentity: false });
+    return request(`${threadPath(thread.thread_id)}/turns`, init(spaceTurn(turn)), {
+      retryIdentity: false,
+    });
   const task = await request<AgentTask>(
     `${threadProjectPath(thread)}/tasks/project_chat`,
     init({ chat_scope: "project", chat_id: thread.thread_id, mode: "work", ...turn }),

@@ -14,7 +14,8 @@ import type { AgentThread } from "../core/types";
 import { useAgentThreads } from "./useAgentThreads";
 import { useNarrowViewport } from "../ui/useNarrowViewport";
 import type { VoiceAgent } from "../voice/useVoiceAgent";
-import { AgentThreadView } from "./AgentThreadView";
+import { AgentChatView } from "../chat/AgentChatView";
+import { RunningPopover } from "./RunningPopover";
 import {
   agentThreadHash,
   chosenThread,
@@ -165,13 +166,17 @@ export function AgentHome({
       </aside>
       {open && (
         <div className="conversation-surface">
-          <AgentThreadView
+          <AgentChatView
+            key={open.thread_id}
             thread={open}
+            chatId={open.thread_id}
+            presentation="workspace"
             threads={threads ?? undefined}
             actorId={actorId}
             revision={revision}
             voice={voice}
             onThreadChanged={patch}
+            headerTools={open.kind === "space" && <RunningPopover />}
             leading={
               narrow ? (
                 <button

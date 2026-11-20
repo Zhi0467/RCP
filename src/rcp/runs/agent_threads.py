@@ -180,6 +180,7 @@ def thread_projections(
                 "agent": thread.agent,
                 # What this kind's agent can do, from its granted verbs; an empty thread shows it.
                 "capabilities": thread_capabilities(thread.kind),
+                "can_queue": thread.project_id is not None,
             }
         )
     return rows

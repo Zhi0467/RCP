@@ -145,70 +145,8 @@
   margin: 4px 6px 10px;
 }
 
-/* ---------- Thread header ---------- */
-.thread-header {
-  align-items: center;
-  display: flex;
-  gap: 8px;
-  min-height: 52px;
-}
-.thread-header .conversation-heading strong {
-  font-size: var(--type-lg);
-  font-weight: 650;
-}
-.thread-header-tools {
-  align-items: center;
-  display: flex;
-  gap: 6px;
-  margin-left: auto;
-  position: relative;
-}
 .thread-back {
   margin-left: -8px;
-}
-/* The agent pick is the menu's last row; it opens the shared fields beneath it. */
-.thread-menu-list {
-  width: min(300px, calc(100vw - 24px));
-}
-.thread-agent-picker {
-  border-top: 1px solid var(--line);
-  display: grid;
-  margin-top: 4px;
-  padding-top: 4px;
-}
-.thread-agent-picker .agent-config-chip {
-  font-weight: inherit;
-  min-width: 0;
-  width: 100%;
-}
-.thread-agent-picker .agent-config-chip-text {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.thread-agent-picker .agent-config-chip > svg {
-  color: var(--muted);
-  flex: none;
-  transition: transform 0.16s ease;
-}
-.thread-agent-picker .agent-config-chip[aria-expanded="true"] > svg {
-  transform: rotate(180deg);
-}
-.thread-agent-picker .agent-config.compact {
-  animation: agent-pop-in 0.14s ease-out;
-  background: transparent;
-  border: 0;
-  padding: 2px 10px 6px;
-}
-/* Each select names its own value; the field captions stay for screen readers. */
-.thread-agent-picker .agent-config-fields label > span {
-  clip-path: inset(50%);
-  height: 1px;
-  overflow: hidden;
-  position: absolute;
-  width: 1px;
 }
 .upcoming-button {
   align-items: center;
@@ -313,63 +251,9 @@
   height: 28px;
   width: 28px;
 }
-.upcoming-open {
-  align-items: center;
-  background: none;
-  border: 0;
-  color: inherit;
-  cursor: pointer;
-  display: flex;
-  gap: 4px;
-  grid-column: 1;
-  margin-left: -4px;
-  min-width: 0;
-  padding: 0;
-  text-align: left;
-}
-.upcoming-open svg {
-  color: var(--faint);
-  flex: none;
-  transition: transform 0.15s ease;
-}
-.upcoming-open[aria-expanded="true"] svg {
-  transform: rotate(90deg);
-}
-.upcoming-open[aria-expanded="true"] strong {
-  overflow-wrap: anywhere;
-  white-space: normal;
-}
-.upcoming-row[data-state="degraded"] .upcoming-when {
-  color: var(--coral);
-}
-.upcoming-facts {
-  animation: agent-pop-in 0.14s ease-out;
-  display: grid;
-  gap: 4px;
-  grid-column: 1;
-  margin: 6px 0 2px;
-}
-.upcoming-facts > div {
-  display: grid;
-  gap: 8px;
-  grid-template-columns: 76px minmax(0, 1fr);
-}
-.upcoming-facts dt {
-  color: var(--faint);
-  font-size: var(--type-2xs);
-}
-.upcoming-facts dd {
-  font-size: var(--type-2xs);
-  margin: 0;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.upcoming-facts code {
-  font: var(--type-2xs) var(--mono);
-}
 /* A pause, or a stop with no error row, sits in the message column shaped like
    the failed-turn row: one rounded line with its actions at the end. */
-.agent-thread .agent-chat-view-lines > .chat-task-inline.paused {
+.agent-chat-view-lines > .chat-task-inline.paused {
   border: 0;
   border-radius: 8px;
   display: flex;
@@ -377,10 +261,10 @@
   font-size: var(--type-md);
   gap: 8px;
   margin: 0 auto 24px;
-  max-width: var(--thread-column);
+  max-width: var(--thread-column, 820px);
   padding: 10px 12px;
 }
-.agent-thread .agent-chat-view-lines > .chat-task-inline.paused > span {
+.agent-chat-view-lines > .chat-task-inline.paused > span {
   flex: 1 1 auto;
   min-width: 0;
 }
@@ -447,32 +331,32 @@
   padding: 2px 4px;
 }
 
-/* ---------- Thread lines ---------- */
-/* One reading column, a step wider than a project chat's, shared by every turn,
-   card and the composer; its gutter matches the composer's. */
-.agent-thread {
+/* ---------- Agent view lines ---------- */
+/* One reading column shared by every turn, card and the composer; its gutter
+   matches the composer's. */
+.chat-dock.workspace {
   --thread-column: 920px;
 }
-.agent-thread .agent-chat-view-lines {
+.chat-dock.workspace .agent-chat-view-lines {
   padding: 24px 18px clamp(20px, 4vw, 42px);
 }
-.agent-thread .agent-chat-view-line,
-.agent-thread .agent-chat-view-lines > .question-card,
-.agent-thread .approval-card,
-.agent-thread .approval-stack,
-.agent-thread .approval-quiet {
+.chat-dock.workspace .agent-chat-view-line,
+.chat-dock.workspace .agent-chat-view-lines > .question-card,
+.chat-dock.workspace .approval-card,
+.chat-dock.workspace .approval-stack,
+.chat-dock.workspace .approval-quiet {
   max-width: var(--thread-column);
 }
-.agent-thread .chat-composer {
+.chat-dock.workspace .chat-composer {
   width: min(var(--thread-column), calc(100% - 36px));
 }
-.agent-thread .agent-chat-view-lines > * {
+.chat-dock.workspace .agent-chat-view-lines > * {
   white-space: normal;
 }
-.agent-thread .agent-chat-view-line.human .agent-chat-view-text {
+.chat-dock.workspace .agent-chat-view-line.human .agent-chat-view-text {
   white-space: pre-wrap;
 }
-.agent-thread .chat-answer-annotation-button:not(:focus-visible) {
+.chat-dock.workspace .chat-answer-annotation-button:not(:focus-visible) {
   clip-path: inset(50%);
   height: 1px;
   margin: 0;
@@ -482,10 +366,10 @@
   white-space: nowrap;
   width: 1px;
 }
-.agent-thread .agent-chat-view-line.agent .chat-markdown p {
+.chat-dock.workspace .agent-chat-view-line.agent .chat-markdown p {
   margin: 0 0 10px;
 }
-.agent-thread .agent-chat-view-line.agent .chat-markdown p:last-child {
+.chat-dock.workspace .agent-chat-view-line.agent .chat-markdown p:last-child {
   margin-bottom: 0;
 }
 
@@ -549,7 +433,7 @@
   padding: 4px 8px;
 }
 /* A schedule's wake line holds only its chip, which then leads the answer below. */
-.agent-thread .agent-chat-view-line.schedule-wake {
+.agent-chat-view-line.schedule-wake {
   display: flex;
   margin-bottom: 0;
 }
@@ -666,7 +550,7 @@
 }
 
 /* App links in a reply read as chips; they open only when the member clicks. */
-.agent-thread .chat-markdown a[href^="#/"],
+.chat-markdown a[href^="#/"],
 .entity-chip {
   align-items: center;
   background: color-mix(in srgb, var(--cobalt) 8%, var(--sheet));
@@ -683,7 +567,7 @@
   vertical-align: 0.5px;
   white-space: nowrap;
 }
-.agent-thread .chat-markdown a[href^="#/"]:hover,
+.chat-markdown a[href^="#/"]:hover,
 .entity-chip:hover {
   background: color-mix(in srgb, var(--cobalt) 14%, var(--sheet));
 }
@@ -1232,9 +1116,6 @@
 }
 
 /* ---------- Composer: one composer with the picker and the mic ---------- */
-.agent-thread .chat-composer {
-  position: relative;
-}
 .chat-voice-button.icon-button {
   color: var(--ink);
 }
@@ -1281,8 +1162,7 @@
   .upcoming-popover,
   .approval-card,
   .approval-quiet,
-  .thread-welcome,
-  .thread-agent-picker .agent-config.compact {
+  .thread-welcome {
     animation: none;
   }
   .approval-dock > .approval-card:not([data-state="pending"], [data-state="failed"]) {
@@ -1366,14 +1246,10 @@
   .show-thread .space-agent {
     border-top: 0;
   }
-  .thread-header {
-    flex-wrap: nowrap;
-    padding: 6px 10px;
-  }
-  .agent-thread .agent-chat-view-lines {
+  .chat-dock.workspace .agent-chat-view-lines {
     padding: 18px 16px 12px;
   }
-  .agent-thread .chat-composer {
+  .chat-dock.workspace .chat-composer {
     margin: 0 16px 8px;
     width: calc(100% - 32px);
   }
@@ -1453,16 +1329,6 @@
     min-width: 44px;
     justify-content: center;
   }
-  .thread-agent-picker .agent-config-chip,
-  .thread-agent-picker .agent-config-fields select {
-    min-height: 44px;
-  }
-  /* The selects keep iOS's 16px zoom guard, so every menu item reads at the same size. */
-  .thread-menu-list button,
-  .thread-agent-picker .agent-config-fields select {
-    font-size: 16px;
-    font-weight: 400;
-  }
   .approval-actions .button {
     flex: 1 1 0;
     min-height: 44px;
@@ -1520,7 +1386,4 @@
   .chat-line-time {
     transition: none;
   }
-}
-.upcoming-row:has(.upcoming-facts) .upcoming-actions {
-  align-self: start;
 }
