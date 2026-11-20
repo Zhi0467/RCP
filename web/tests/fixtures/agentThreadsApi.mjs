@@ -338,6 +338,7 @@ export async function mockApi(page, writes) {
         questions: [],
       });
     if (path === "/api/agent-threads/running") return json({ rows: [], needs: 0, total: 0 });
+    if (/^\/api\/agent-threads\/[^/]+\/watchers$/.test(path)) return json([]);
     if (/^\/api\/agent-threads\/[^/]+\/queue$/.test(path) && method === "GET")
       return json({ items: [] });
     if (/^\/api\/agent-threads\/[^/]+\/agent$/.test(path) && method === "POST") {
