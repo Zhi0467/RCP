@@ -791,7 +791,7 @@ test("long human chat messages render a bounded preview control", () => {
   assert.equal(html.match(/chat-human-message collapsed/g)?.length, 1);
 });
 
-test("active chat task detail starts folded behind a quiet Activity row", () => {
+test("a running chat turn streams its messages and current step in its own agent row", () => {
   const now = "2026-09-02T16:00:00Z";
   const activeTask = {
     operation_id: "task-active-chat",
@@ -829,6 +829,9 @@ test("active chat task detail starts folded behind a quiet Activity row", () => 
     settled: false,
     finished: false,
     status_label: "Running",
+    agent_status: {
+      messages: [{ text: "Found a problem: 992 turns failed. Checking why.", at: now }],
+    },
   };
   const html = renderMarkup(
     React.createElement(AgentChatView, {
@@ -847,19 +850,20 @@ test("active chat task detail starts folded behind a quiet Activity row", () => 
     }),
   );
 
-  assert.match(html, /<details class="chat-task-activity">/);
-
-  assert.match(html, /Reading the project graph\./);
+  const agentRow = html.slice(html.indexOf('class="agent-chat-view-line agent"'));
+  assert.ok(html.indexOf("Inspect the current evidence.") < html.indexOf(agentRow));
+  assert.match(agentRow, /class="chat-progress live"/);
+  assert.match(agentRow, /Found a problem: 992 turns failed\. Checking why\./);
+  assert.match(agentRow, /class="agent-turn-live"[^]*Reading the project graph\./);
   assert.match(
-    html,
+    agentRow,
     /<span class="chat-task-live" role="status" aria-live="polite" aria-atomic="true">/,
   );
-  assert.ok(html.indexOf("chat-task-live") < html.indexOf('<details class="chat-task-activity">'));
-  assert.doesNotMatch(html, /<details class="chat-task-activity" open=/);
+  assert.doesNotMatch(html, /<details/);
   assert.doesNotMatch(html, /role="progressbar"/);
 });
 
-test("a running watcher wake or episode turn shows its Activity row before any answer", () => {
+test("a running watcher wake or episode turn shows its live row before any answer", () => {
   const now = "2026-09-02T16:00:00Z";
   for (const trigger of ["watcher", "experiment_run"]) {
     const running = {
@@ -910,7 +914,7 @@ test("a running watcher wake or episode turn shows its Activity row before any a
         onClose() {},
       }),
     );
-    assert.equal(html.split('<details class="chat-task-activity">').length - 1, 1, trigger);
+    assert.equal(html.split('class="agent-turn-live"').length - 1, 1, trigger);
     assert.match(html, /Reading the job output\./);
     // The automatic prompt is not shown as if the human had typed it.
     assert.doesNotMatch(html, /Automatic prompt/);

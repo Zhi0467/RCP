@@ -2039,7 +2039,11 @@ class ProjectService:
                 if machine_id in manifest.machines and isinstance(providers, dict)
                 else providers
             )
-        return {**snapshot, "provider_readiness": resolved}
+        return {
+            **snapshot,
+            "provider_readiness": resolved,
+            "providers": resolved.get(manifest.base_machine, snapshot.get("providers")),
+        }
 
     def paper_folder(self) -> str | None:
         """The project's Paper folder on its base machine, named read-only to every launch."""

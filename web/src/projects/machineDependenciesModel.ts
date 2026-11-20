@@ -46,6 +46,6 @@ export function dependencyLabel(view: DependencyView): string {
     case "not_checked":
       return "Not checked";
     case "ready":
-      return view.optional.length ? "Ready, some features off" : "Ready";
+      return view.optional.length ? "Optional programs missing" : "Ready";
   }
 }

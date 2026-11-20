@@ -1,6 +1,5 @@
 import {
   CalendarClock,
-  ChevronRight,
   Hourglass,
   Paperclip,
   Pause,
@@ -11,7 +10,6 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
-import { MarkdownAnswer } from "../core/chatMarkdown";
 import { errorMessage } from "../core/errors";
 import { useLayerDismiss } from "../core/useLayerDismiss";
 import type { AgentSchedule, AgentTask, AgentThreadQueueItem } from "../core/types";
@@ -22,8 +20,6 @@ import {
   scheduleInstant,
   scheduleLimits,
   scheduleWhen,
-  turnSteps,
-  turnStepsSummary,
   upcomingSchedules,
 } from "../agents/agentThreadModel";
 import {
@@ -197,38 +193,6 @@ export function FreshSessionMarker({
       <RotateCcw size={11} aria-hidden="true" />
       Fresh start
     </span>
-  );
-}
-
-/** A turn's steps: open while it runs, folded under one line once it settles. */
-export function TurnProgress({ task, live = false }: { task: AgentTask; live?: boolean }) {
-  const steps = turnSteps(task);
-  if (!steps.length) return null;
-  const list = (
-    <ol>
-      {steps.map((step) =>
-        step.kind === "message" ? (
-          <li key={step.id} className="turn-message">
-            <MarkdownAnswer text={step.text} />
-          </li>
-        ) : (
-          <li key={step.id}>
-            {step.text}
-            {step.seconds !== null && <span>{step.seconds}s</span>}
-          </li>
-        ),
-      )}
-    </ol>
-  );
-  if (live) return <div className="chat-progress live">{list}</div>;
-  return (
-    <details className="chat-progress">
-      <summary>
-        <ChevronRight className="chev" size={12} aria-hidden="true" />
-        {turnStepsSummary(steps)}
-      </summary>
-      {list}
-    </details>
   );
 }
 

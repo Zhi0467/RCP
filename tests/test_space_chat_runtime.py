@@ -68,7 +68,7 @@ def test_served_space_skill_discovery_and_turn_invocation(manifest, tmp_path, mo
     store_test_claude_token(store)
     with store.connection() as connection:
         connection.execute("DELETE FROM project_members")
-    monkeypatch.setattr("rcp.runs.space_chat.install_space_hidden_read_scope", lambda scope: None)
+    monkeypatch.setattr("rcp.runs.space_chat.install_space_hidden_read_scope", lambda scope: scope)
     observed = []
 
     async def provider(_provider, prompt, **kwargs):
@@ -138,7 +138,7 @@ def test_served_space_refreshes_machine_grants_in_the_same_session(
     if not has_projects:
         with store.connection() as connection:
             connection.execute("DELETE FROM project_members")
-    monkeypatch.setattr("rcp.runs.space_chat.install_space_hidden_read_scope", lambda scope: None)
+    monkeypatch.setattr("rcp.runs.space_chat.install_space_hidden_read_scope", lambda scope: scope)
     grant = tmp_path / "shared"
     grant.mkdir()
     declared = tmp_path / "shared-link"
@@ -241,7 +241,7 @@ def test_served_space_artifact_edits_keep_identity_and_follow_undo(
     store_test_claude_token(store)
     with store.connection() as connection:
         connection.execute("DELETE FROM project_members")
-    monkeypatch.setattr("rcp.runs.space_chat.install_space_hidden_read_scope", lambda scope: None)
+    monkeypatch.setattr("rcp.runs.space_chat.install_space_hidden_read_scope", lambda scope: scope)
     paths = []
     first = (
         "<p>First observation.</p>" if name.endswith("html") else "# Notes\nFirst observation.\n"
@@ -331,7 +331,7 @@ def test_served_space_fresh_comment_restores_published_bytes_but_retry_keeps_dir
     store_test_claude_token(store)
     with store.connection() as connection:
         connection.execute("DELETE FROM project_members")
-    monkeypatch.setattr("rcp.runs.space_chat.install_space_hidden_read_scope", lambda scope: None)
+    monkeypatch.setattr("rcp.runs.space_chat.install_space_hidden_read_scope", lambda scope: scope)
     paths = []
     operations = []
     published = "# Notes\nPublished observation.\n"
@@ -449,8 +449,6 @@ def test_space_runtime_real_storage_and_partial_apply(
             str(locator), seat_member=human.user_id, identity_action="created"
         )
     unavailable_id = min(store.member_project_ids(human.user_id), default=None)
-    if broken == "hidden":
-        project_count -= 1
     if broken in {"unavailable", "missing", "remote"}:
         from rcp.transport import StateUnavailable
 
@@ -513,7 +511,8 @@ def test_space_runtime_real_storage_and_partial_apply(
     execution = AgentTaskExecution(task.operation_id, store, AgentProcessControl())
     installed = []
     monkeypatch.setattr(
-        "rcp.runs.space_chat.install_space_hidden_read_scope", lambda scope: installed.append(scope)
+        "rcp.runs.space_chat.install_space_hidden_read_scope",
+        lambda scope: installed.append(scope) or scope,
     )
 
     async def prepare_policy(service, *args, **kwargs):
@@ -679,7 +678,7 @@ def test_space_runtime_real_storage_and_partial_apply(
     else:
         assert execution.write_scope_fingerprint is None
         assert execution.turn_outcome.status == "done"
-    if broken in {"unavailable", "missing", "remote", "hidden"}:
+    if broken in {"unavailable", "missing", "remote"}:
         scope, git_access = launched[0]
         assert unavailable_id not in {item.project_id for item in scope.projects}
         assert unavailable_id not in {repository for repository, _ in git_access.checkouts}

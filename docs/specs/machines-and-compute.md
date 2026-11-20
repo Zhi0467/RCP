@@ -68,10 +68,11 @@ must place the work outside RCP's cgroup. A remote cgroup cannot prove
 separation from the local service. Proving survival after provider exit or
 service restart requires a live journey.
 
-systemd first probes `PrivateUsers=yes`, `ProtectSystem=strict`, a read-only
-home and exact writable roots. If only cooperative containment succeeds, the
-probe reports that limitation. Mirrored launches preserve the resolved roots and
-exclusions. These are cooperative write guards. They do not isolate reads or
+systemd first probes `ReadOnlyPaths` for the protected paths with
+`ReadWritePaths` reopening the writable roots inside them. If only cooperative
+containment succeeds, the probe reports that limitation. Mirrored launches keep
+only these protected-path guards, so a job may write anywhere else the account
+can; the system and home are not made read-only. These are cooperative write guards. They do not isolate reads or
 network access. Helper jobs require linger so the user manager survives logout.
 Failure points to **Allow background processes**. Installation enables and
 verifies service-account linger. Updates retain the existing choices.

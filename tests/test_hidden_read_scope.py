@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import fnmatch
-import glob
 import os
 from pathlib import Path
 
@@ -19,7 +18,6 @@ from rcp.agents.staged_hidden_read import clean_environment
 from rcp.config import Manifest
 from rcp.core.models import HiddenReadKeyEvidence
 from rcp.limits import (
-    HIDDEN_READ_KEY_MAX_COUNT,
     HIDDEN_READ_MACHINE_FOLDER_MAX_COUNT,
     HIDDEN_READ_PATH_MAX_LENGTH,
 )
@@ -95,7 +93,7 @@ def test_defaults_hide_owned_secrets_without_operational_paths() -> None:
         )
     }
     kept = clean_environment({"env_deny_list": HIDDEN_READ_ENV_DENY_LIST}, environment)
-    assert set(kept) == set(list(environment)[:10])
+    assert set(kept) == set(environment) - {"CLAUDE_CODE_OAUTH_TOKEN"}
 
 
 @pytest.mark.parametrize("folder", ["/protected", "/protected/child", "/"])
@@ -159,7 +157,6 @@ def _resolve(manifest, tmp_path, monkeypatch, *, readiness=None, **changes):
             "os_account": "research",
             "provider_login_files": [str(tmp_path / "home/.codex/auth.json")],
             "paths": {path: os.path.realpath(path) for path in paths},
-            "absent": [path for path in paths if not os.path.lexists(os.path.realpath(path))],
             "runtime_paths": ["/opt/python/bin"],
             "readiness": readiness or {"ready": True, "platform": "linux", "reason": None},
         }
@@ -209,34 +206,16 @@ def test_adding_folder_changes_fingerprint(manifest: Manifest, tmp_path: Path, m
     assert second.enforcement.status == "enforced"
 
 
-def test_entries_missing_on_the_execution_host_are_recorded_absent(
-    manifest, tmp_path, monkeypatch
-) -> None:
-    """Codex is never told about these, since its Linux sandbox would make a stand-in."""
-    providers = tmp_path / "data/providers/claude"
-    providers.mkdir(parents=True)
-    scope = _resolve(manifest, tmp_path, monkeypatch)
-    assert str(providers) not in scope.absent_entries
-    assert str(tmp_path / "home/.config/rcp/claude-setup-token") in scope.absent_entries
-    assert str(tmp_path / "data/providers/codex") in scope.absent_entries
-    assert glob.escape(str(tmp_path / "data")) + "/rcp.sqlite3*" not in scope.absent_entries
-    assert glob.escape(str(tmp_path / "data/run-stage")) + "/backup-*" in scope.absent_entries
-
-
 @pytest.mark.parametrize("provider", ["codex", "claude", "opencode"])
 def test_login_homes_are_readable_only_to_their_provider(
     manifest, tmp_path, monkeypatch, provider
 ) -> None:
-    """Covers a sign-in added after the launch resolved. Codex starts its sandbox helper from inside
-    its own home, and a capped `**` scan keeps Codex's Linux glob warning out of turn errors.
-    """
-    import json
+    """Covers a sign-in added after the launch resolved."""
     import re
     from uuid import uuid4
 
     from rcp.agents.provider_environment import ProviderCredentialStore
     from rcp.agents.staged_hidden_read import glob_path_regex
-    from rcp.providers.codex.profile import _codex_read_denials
 
     credentials = ProviderCredentialStore.for_data_dir(tmp_path / "data")
     local = credentials.login_home("codex", str(uuid4()))
@@ -263,13 +242,7 @@ def test_login_homes_are_readable_only_to_their_provider(
     assert hidden(tmp_path / "home/.rcp/provider-homes/agy" / str(uuid4()) / agy_token)
     if provider == "codex":
         assert not any(hidden(home / "tmp/arg0-linux") for home in (local, remote, later))
-        homes = [item for item in scope.hidden_globs if "/provider-homes/" in item]
-        denials = _codex_read_denials(scope)
-        assert len(homes) == 2
-        assert all(json.dumps(item) + '="deny"' in denials for item in homes)
-        import tomllib
-
-        assert tomllib.loads("f={" + denials + "}")["f"]["glob_scan_max_depth"] >= 1
+        assert len([item for item in scope.hidden_globs if "/provider-homes/" in item]) == 2
     else:
         assert str(tmp_path / "data/provider-homes") in scope.hidden_directories
         assert str(tmp_path / "home/.rcp/provider-homes") in scope.hidden_directories
@@ -343,7 +316,7 @@ def test_every_confirmed_key_is_hidden_alongside_the_defaults(manifest, tmp_path
             visibility="hidden",
             public_key_fingerprint="SHA256:" + "A" * 43,
         )
-        for n in range(HIDDEN_READ_KEY_MAX_COUNT)
+        for n in range(300)
     )
     scope = _resolve(manifest, tmp_path, monkeypatch, key_evidence=keys)
     assert {key.path for key in keys} < set(scope.hidden_files)
@@ -373,7 +346,6 @@ def test_remote_canonicalization_uses_shipped_source(manifest, tmp_path, monkeyp
                     "runtime_paths": ["/usr/bin"],
                     "readiness": {"ready": True, "platform": "linux", "reason": None},
                     "paths": {path: path.replace("/alias", "/remote/private") for path in paths},
-                    "absent": [],
                 }
             ),
             "",
@@ -422,25 +394,16 @@ def test_installed_copies_and_native_tool_gap(manifest, tmp_path, monkeypatch):
     assert "provider_native_tools_uncovered" in scope.enforcement.reasons
 
 
-def test_private_transcripts_are_hidden_for_every_launch(manifest, tmp_path, monkeypatch):
-    from rcp.agents.write_scope import RegisteredRepositoryRoot
-
-    other = str(tmp_path / "other-project")
+def test_invalid_and_duplicate_saved_folders_are_dropped_at_launch(manifest, tmp_path, monkeypatch):
+    private = str(tmp_path / "private")
     scope = _resolve(
         manifest,
         tmp_path,
         monkeypatch,
-        repository_inventory=[
-            RegisteredRepositoryRoot(
-                project_id="other", alias="repo", machine=BACKEND_MACHINE_ID, path=other
-            )
-        ],
+        machine_hidden_folders=["relative", "/a/../b", private, private],
     )
-    assert str(tmp_path / "data" / "agent-threads") in scope.hidden_directories
-    assert (
-        glob.escape(str(manifest.research_dir / "chat")) + "/private-*.jsonl" in scope.hidden_globs
-    )
-    assert glob.escape(other + "/.research/chat") + "/private-*.jsonl" in scope.hidden_globs
+    assert private in scope.hidden_directories
+    assert not any("relative" in path or ".." in path for path in scope.hidden_directories)
 
 
 def test_profile_gaps_mark_scope_unhidden_and_hide_login_folders(manifest, tmp_path, monkeypatch):

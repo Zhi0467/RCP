@@ -52,6 +52,7 @@ async def _drain(launcher: AgentLauncher, tmp_path: Path) -> list:
             host="",
             capability="discuss",
             operation_id="op-journal",
+            runtime_id="exec",
         )
     ]
 
@@ -118,6 +119,7 @@ async def test_a_paused_provider_exit_is_logged_at_info(
             host="",
             capability="discuss",
             operation_id="op-pause",
+            runtime_id="exec",
             control=control,
         ):
             if event.event == "session":

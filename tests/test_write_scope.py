@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -125,10 +124,6 @@ def test_local_scope_contains_only_exact_admitted_roots_and_protects_research(
     assert {str(Path(repo_a) / ".research"), str(Path(repo_b) / ".research")} <= set(
         scope.protected_write_paths
     )
-    assert scope.absent_protected_paths == [
-        path for path in scope.protected_write_paths if not os.path.lexists(path)
-    ]
-    assert str(Path(repo_a) / ".research") not in scope.absent_protected_paths
 
 
 def test_machine_grants_join_repository_scopes_and_keep_rcp_data_read_only(
@@ -194,17 +189,23 @@ def test_a_grant_keeps_unadmitted_repositories_research_read_only(
     assert str((tmp_path / "stage" / "inputs").resolve()) in scope.protected_write_paths
 
 
-def test_a_grant_inside_rcp_data_is_refused(manifest: Manifest, tmp_path: Path) -> None:
+def test_unusable_grants_are_dropped_and_the_launch_resolves(
+    manifest: Manifest, tmp_path: Path
+) -> None:
     app_data = tmp_path / "app-data"
     (app_data / "cache").mkdir(parents=True)
+    kept = tmp_path / "kept"
+    kept.mkdir()
 
-    with pytest.raises(ValueError, match="inside protected storage"):
-        _resolve_local(
-            manifest,
-            tmp_path,
-            app_data_dir=app_data,
-            machine_writable_paths=[str(app_data / "cache")],
-        )
+    scope = _resolve_local(
+        manifest,
+        tmp_path,
+        app_data_dir=app_data,
+        machine_writable_paths=[str(app_data / "cache"), str(tmp_path / "missing"), str(kept)],
+    )
+
+    assert str(kept.resolve()) in scope.granted_roots
+    assert not any("cache" in root or "missing" in root for root in scope.granted_roots)
 
 
 def test_a_scope_without_repositories_gets_no_grants(manifest: Manifest, tmp_path: Path) -> None:
@@ -242,22 +243,6 @@ def test_state_research_is_protected_when_state_repository_is_not_admitted(
     assert str(Path(manifest.repository_map["repo-b"].path).resolve() / ".research") in (
         scope.protected_write_paths
     )
-
-
-def test_a_retained_scope_contract_ignores_which_paths_were_absent(
-    manifest: Manifest, tmp_path: Path
-) -> None:
-    """Episode reports and branch merges retain this JSON as an immutable contract, re-
-    recorded on every re-entry, including older releases'.
-    """
-    resolved = _resolve_local(manifest, tmp_path, aliases=["repo-a", "repo-b"])
-    scope = resolved.model_copy(
-        update={"absent_protected_paths": resolved.protected_write_paths[:1]}
-    )
-    other = resolved.model_copy(update={"absent_protected_paths": []})
-    assert scope.model_dump_json() == other.model_dump_json()
-    assert "absent_protected_paths" not in json.loads(scope.model_dump_json())
-    assert ProjectWriteScope.model_validate_json(scope.model_dump_json()) == other
 
 
 def test_scope_fingerprint_is_deterministic_and_binds_material_scope_fields(
@@ -411,13 +396,10 @@ def test_catalog_inventory_uses_canonical_scope_after_bootstrap_diverges(
             repository_inventory=catalog.repository_ownership_inventory(),
         )
 
-    if other_project_owns_root:
-        with pytest.raises(ValueError, match="another project"):
-            resolve()
-    else:
-        scope = resolve()
-        assert scope.repository_roots == [str(added_root.resolve())]
-        assert str(added_root / ".research") in scope.protected_write_paths
+    scope = resolve()
+    expected = [] if other_project_owns_root else [str(added_root.resolve())]
+    assert scope.repository_roots == expected
+    assert str(added_root / ".research") in scope.protected_write_paths
 
 
 @pytest.mark.parametrize("opened", [False, True])
@@ -474,14 +456,14 @@ def test_remote_inventory_resolves_relative_local_roots_from_registered_project(
         for root in inventory
         if root.project_id == "remote-project" and root.alias == expected_alias
     ) == str(expected_root)
-    with pytest.raises(ValueError, match="another project"):
-        _resolve_local(
-            manifest,
-            tmp_path,
-            aliases=["repo-b"],
-            project_id="local-project",
-            repository_inventory=inventory,
-        )
+    scope = _resolve_local(
+        manifest,
+        tmp_path,
+        aliases=["repo-b"],
+        project_id="local-project",
+        repository_inventory=inventory,
+    )
+    assert scope.repository_roots == []
 
 
 @pytest.mark.parametrize("malformed", [False, True])
@@ -730,7 +712,7 @@ def test_scope_rejects_repository_overlapping_app_data(manifest: Manifest, tmp_p
 
 
 @pytest.mark.parametrize("relation", ["equal", "ancestor", "descendant"])
-def test_scope_rejects_overlap_with_same_project_unadmitted_repository(
+def test_scope_keeps_repository_overlapping_unadmitted_repository_read_only(
     manifest: Manifest,
     tmp_path: Path,
     relation: str,
@@ -746,12 +728,11 @@ def test_scope_rejects_overlap_with_same_project_unadmitted_repository(
         unadmitted.mkdir()
     changed.repository_map["repo-b"].path = str(unadmitted)
 
-    with pytest.raises(ValueError, match="overlaps an unadmitted repository"):
-        _resolve_local(changed, tmp_path, aliases=["repo-a"])
+    assert _resolve_local(changed, tmp_path, aliases=["repo-a"]).repository_roots == []
 
 
 @pytest.mark.parametrize("relation", ["equal", "ancestor", "descendant"])
-def test_scope_rejects_overlap_with_repository_owned_by_another_project(
+def test_scope_keeps_repository_overlapping_another_project_read_only(
     manifest: Manifest,
     tmp_path: Path,
     relation: str,
@@ -774,16 +755,34 @@ def test_scope_rejects_overlap_with_repository_owned_by_another_project(
         )
     )
 
-    with pytest.raises(ValueError, match="overlaps another project"):
-        _resolve_local(
-            manifest,
-            tmp_path,
-            aliases=["repo-a"],
-            repository_inventory=inventory,
+    scope = _resolve_local(
+        manifest,
+        tmp_path,
+        aliases=["repo-a"],
+        repository_inventory=inventory,
+    )
+    assert scope.repository_roots == []
+
+
+def test_a_missing_registered_repository_does_not_block_the_launch(
+    manifest: Manifest, tmp_path: Path
+) -> None:
+    inventory = registered_repository_roots(manifest, project_id="project")
+    inventory.append(
+        RegisteredRepositoryRoot(
+            project_id="other-project",
+            alias="gone",
+            machine=BACKEND_MACHINE_ID,
+            path=str(tmp_path / "gone"),
         )
+    )
+
+    scope = _resolve_local(manifest, tmp_path, aliases=["repo-a"], repository_inventory=inventory)
+
+    assert len(scope.repository_roots) == 1
 
 
-def test_scope_rejects_canonical_symlink_overlap_hidden_by_distinct_lexical_roots(
+def test_scope_sees_canonical_symlink_overlap_hidden_by_distinct_lexical_roots(
     manifest: Manifest,
     tmp_path: Path,
 ) -> None:
@@ -802,13 +801,13 @@ def test_scope_rejects_canonical_symlink_overlap_hidden_by_distinct_lexical_root
         )
     )
 
-    with pytest.raises(ValueError, match="overlaps another project"):
-        _resolve_local(
-            manifest,
-            tmp_path,
-            aliases=["repo-a"],
-            repository_inventory=inventory,
-        )
+    scope = _resolve_local(
+        manifest,
+        tmp_path,
+        aliases=["repo-a"],
+        repository_inventory=inventory,
+    )
+    assert scope.repository_roots == []
 
 
 def test_scope_rejects_workspace_outside_exact_stage(manifest: Manifest, tmp_path: Path) -> None:
@@ -907,9 +906,6 @@ class _RemoteScopeStage:
         return ({path: self.overrides.get(path, path) for path in paths}, "/home/worker")
 
     def legacy_stage_roots(self) -> list[str]:
-        return []
-
-    def absent_paths(self, paths: list[str]) -> list[str]:
         return []
 
     def write_workspace_text(self, name: str, content: str) -> None:
@@ -1122,7 +1118,7 @@ def test_remote_scope_compares_only_the_exact_execution_host_identity(
     assert scope.repository_roots == ["/srv/repo-a"]
 
 
-def test_remote_scope_rejects_overlap_on_same_execution_host_identity(
+def test_remote_scope_sees_overlap_on_same_execution_host_identity(
     manifest: Manifest,
 ) -> None:
     remote = _remote_manifest(manifest)
@@ -1141,8 +1137,8 @@ def test_remote_scope_rejects_overlap_on_same_execution_host_identity(
         }
     )
 
-    with pytest.raises(ValueError, match="overlaps another project"):
-        _resolve_remote(remote, stage, repository_inventory=[*current, foreign])
+    scope = _resolve_remote(remote, stage, repository_inventory=[*current, foreign])
+    assert scope.repository_roots == []
 
 
 def test_remote_stage_canonical_directory_probe_validates_response(monkeypatch) -> None:

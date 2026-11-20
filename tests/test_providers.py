@@ -980,19 +980,6 @@ def _granted_scope():
     )
 
 
-def test_codex_profile_writes_grants_and_reads_covered_rcp_storage():
-    """Precedence was probed with the real sandbox (codex-cli 0.157.0): a workspace root
-    inside a "read" entry stays writable.
-    """
-    from rcp.providers.codex.profile import _codex_permission_profile
-
-    profile = _codex_permission_profile(_granted_scope())
-    for root in ("/home/rcp", "/tmp", "/home/rcp/data/stages/s/workspace"):
-        assert f'"{root}"=true' in profile
-    assert '"/home/rcp/data"="read"' in profile
-    assert '"/home/rcp/.rcp"="read"' in profile
-
-
 def test_claude_leaves_the_protected_parent_of_its_own_stage_undenied():
     from rcp.providers.claude.profile import _claude_write_settings
 
@@ -1029,46 +1016,13 @@ def test_probe_error_preserves_unicode_line_separators(profile):
     assert json.loads(evidence) == payload
 
 
-def test_codex_profiles_deny_desktop_web_storage_for_both_builds(tmp_path):
-    import tomllib
-
-    from rcp.agents.hidden_read import WEBKIT_READ_DENY_PATHS
-    from rcp.core.models import HiddenReadScope, HiddenReadStatus
-    from rcp.providers.codex.profile import (
-        _codex_discuss_permission_profile,
-        _codex_permission_profile,
-    )
-
-    paths = tuple(path.replace("~", "/home/rcp", 1) for path in WEBKIT_READ_DENY_PATHS)
-    scope = HiddenReadScope(
-        machine_id=BACKEND_MACHINE_ID,
-        os_account="rcp",
-        hidden_directories=paths,
-        enforcement=HiddenReadStatus(status="enforced"),
-    )
-    for rendered in (
-        _codex_permission_profile(_granted_scope(), scope),
-        _codex_discuss_permission_profile(tmp_path, scope),
-    ):
-        profile = next(iter(tomllib.loads(rendered)["permissions"].values()))
-        filesystem = profile["filesystem"]
-        assert all(filesystem[path] == "deny" for path in paths)
-        for config in ("tauri.conf.json", "tauri.dev-bundle.conf.json"):
-            identifier = json.loads((Path("web/src-tauri") / config).read_text())["identifier"]
-            assert filesystem[f"/home/rcp/Library/WebKit/{identifier}"] == "deny"
-        assert filesystem[":root"] == "read"
-
-
 @pytest.mark.parametrize("capability", ["discuss", "work_auto", "orchestrate"])
 @pytest.mark.parametrize("runtime", ["codex.exec-json.v1", "codex.app-server-stdio.v1"])
 @pytest.mark.parametrize("session_id", [None, "resumed-session"])
 @pytest.mark.parametrize("unhidden", [False, True])
-def test_codex_hidden_read_scope_covers_every_capability(
+def test_codex_runs_unsandboxed_on_every_capability(
     tmp_path, capability, runtime, session_id, unhidden
 ):
-    """Legacy sandboxPolicy would replace the verified profile and remove the selected-
-    secret denies.
-    """
     import tomllib
 
     from rcp.core.models import HiddenReadScope, HiddenReadStatus
@@ -1111,12 +1065,9 @@ def test_codex_hidden_read_scope_covers_every_capability(
     for index, argument in enumerate(turn.command):
         if argument == "--config":
             config.update(tomllib.loads(turn.command[index + 1]))
-    profile = config["permissions"][config["default_permissions"]]
-    assert all(
-        profile["filesystem"][path] == "deny"
-        for path in (*scope.hidden_directories, *scope.hidden_files, *scope.hidden_globs)
-    )
-    assert profile["network"]["enabled"] is True
+    assert config["sandbox_mode"] == "danger-full-access"
+    assert config["approval_policy"] == "never"
+    assert "permissions" not in config and "default_permissions" not in config
     policy = config["shell_environment_policy"]
     assert policy["inherit"] == "all"
     assert policy["exclude"] == list(scope.env_deny_list)
@@ -1126,7 +1077,8 @@ def test_codex_hidden_read_scope_covers_every_capability(
         turn.receive_line(json.dumps({"id": 1, "result": {}}))
         thread = turn.receive_line(json.dumps({"id": 2, "result": {"config": {}}}))
         params = json.loads(thread.outgoing[0])["params"]
-        assert params["permissions"] == config["default_permissions"]
+        assert params["sandbox"] == "danger-full-access"
+        assert "permissions" not in params
         assert params["config"]["shell_environment_policy"] == policy
         started = turn.receive_line(
             json.dumps(
@@ -1134,13 +1086,15 @@ def test_codex_hidden_read_scope_covers_every_capability(
                     "id": 3,
                     "result": {
                         "approvalPolicy": "never",
-                        "activePermissionProfile": {"id": params["permissions"]},
+                        "sandbox": {"type": "dangerFullAccess"},
                         "thread": {"id": session_id or "fresh"},
                     },
                 }
             )
         )
-        assert "sandboxPolicy" not in json.loads(started.outgoing[0])["params"]
+        assert json.loads(started.outgoing[0])["params"]["sandboxPolicy"] == {
+            "type": "dangerFullAccess"
+        }
 
 
 @pytest.mark.parametrize("provider", PROVIDER_IDS)

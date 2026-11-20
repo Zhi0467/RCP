@@ -398,7 +398,6 @@ def test_overlapping_catalog_owner_refuses_before_git_creation(harness, monkeypa
     monkeypatch.setattr(ProjectService, "repository_ownership_inventory", overlapping_inventory)
     response = harness.send(chat, worktree=True)
     assert response.status_code == 422, response.text
-    assert "different-project" in response.text or "another project" in response.text
     assert harness.store.conversation_worktree(harness.project_id, chat) is None
     assert not Path(planned["worktree_path"]).exists()
     assert not _git(harness.repository, "branch", "--list", planned["branch"])

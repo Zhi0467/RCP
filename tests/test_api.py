@@ -3722,12 +3722,12 @@ def test_work_launch_receipt_names_the_canonical_state_boundary(
     repository_root = str(Path(manifest.repository_map["repo-a"].path).resolve())
     assert (
         launch["payload"]["canonical_state_boundary"]
-        == {"codex": "provider_enforced", "claude": "file_tools_only"}[provider]
+        == {"codex": "none", "claude": "file_tools_only"}[provider]
     )
     assert (
         launch["payload"]["provider_enforcement_mode"]
         == {
-            "codex": "codex.permission-profile.v1",
+            "codex": "codex.unsandboxed.v1",
             "claude": "claude.permission-allowlist.v1",
         }[provider]
     )

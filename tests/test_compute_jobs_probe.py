@@ -60,8 +60,8 @@ class ProbeRunner:
             self.root = Path(command[-1]).parent
             self.polls = 0
         elif "systemd-run" in command:
-            if self.reject_mirrored and "PrivateUsers=yes" in command:
-                return subprocess.CompletedProcess(command, 1, "", "Unsupported PrivateUsers")
+            if self.reject_mirrored and any(item.startswith("ReadWritePaths=") for item in command):
+                return subprocess.CompletedProcess(command, 1, "", "Unsupported ReadWritePaths")
             self.root = Path(command[-1]).parent
             self.polls = 0
         elif (
@@ -269,7 +269,7 @@ def test_systemd_probe_records_explicit_cooperative_fallback(tmp_path, monkeypat
     result = probe_compute_backend(_machine(), "helper", runner, data_dir=tmp_path)
     assert result.ready
     assert result.containment == "cooperative"
-    assert "Unsupported PrivateUsers" in result.diagnostic
+    assert "Unsupported ReadWritePaths" in result.diagnostic
     assert result.cgroup_isolated is True
 
 

@@ -43,8 +43,10 @@ version reloads the thread list and the open thread's transcript, questions,
 and schedules. While the open thread's turn
 runs, only that task is read, every 2 s while the page shows, one read at a time.
 Earlier turns load their task detail once, when their row nears the view.
-Only a task's detail carries its live status `messages`; task list rows and
-the transcript's joined `agent_status` send them empty.
+A task list row carries its live status `messages` only while the task is
+active, so a project chat shows a running turn's messages from the list it
+already reads. Settled rows and the transcript's joined `agent_status` send
+them empty; the task detail always carries them.
 Space artifact state uses that same member counter. Global interests stay out of
 the request's project set. Like project observations, global observations carry
 a ticket captured before dispatch: a response issued before view entry cannot
@@ -1770,24 +1772,16 @@ Connect without proof. These fields describe RCP-managed provisioning, not
 discovery of a personal checkout's Git remotes.
 
 Each machine card's **Sign-ins** fold shows one raised panel per provider. Inside
-it, two sunken trays, "Yours" and "Shared on <machine>", hold raised sign-in
-cards; left to right is the order the member's work tries them, and at phone
-width they stack top to bottom. Each tray header has a switch and a round swap
-button sits between the trays; each change writes the setting at once:
-
-| Stored value | Trays in order | Yours switch | Shared switch | Swap |
-| --- | --- | --- | --- | --- |
-| `own_then_shared` | Yours, Shared | on | on | stores `shared_then_own` |
-| `shared_then_own` | Shared, Yours | on | on | stores `own_then_shared` |
-| `own` | Yours, Shared | on, locked | off | disabled |
-| `shared` | Shared, Yours | off | on, locked | disabled |
-
-Turning the other group back on stores "the tray that is on, then the other". An
-off tray stays visible, faded. A ＋ slot ends the Shared tray, and the Yours tray
-while the member has no own login; adding starts a device sign-in at once or
-opens token entry on the new card. The machine's card is named "Machine sign-in";
-an added shared card is named by who added it, with the date on hover; the
-viewer's own card is unnamed, and a Members card is named by its owner. A card shows, first match wins, Being removed,
+it, two sunken trays, "Personal sign-ins" and "Shared on <machine>", hold raised sign-in
+cards. The personal tray title explains on hover, "Only you can use these sign-ins."
+The first tray is the member's preferred group. If that group has no
+usable login, work tries the other group. At phone width the trays stack in
+the same order. The swap button between them reverses the order and saves it
+immediately. A ＋ slot ends the Shared tray, and the personal tray offers a ＋
+while the member has no own login. Adding starts the provider's sign-in flow
+or opens token entry on the new card. The built-in card is named "Shared sign-in".
+An added shared card shows who added it, with the date on hover. The viewer's
+own card is unnamed, and a Members card is named by its owner. A card shows, first match wins, Being removed,
 signing in (device code and link only to the starter; others see who), Signed out
 (flat and dashed, with no label; a Sign in button on the viewer's own and shared
 cards), Usage limit (amber edge; a limited login is still used

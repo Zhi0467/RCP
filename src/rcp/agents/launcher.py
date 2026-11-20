@@ -164,15 +164,14 @@ def work_like_launch_problem(readiness: object) -> str | None:
     Launch, `rcp server provider check`, and Auto-research Retry admission all
     consult this, so a host whose CLI will not accept RCP's enforced settings is
     refused before a task is allocated rather than after its stream begins.
-    `None` means launch may proceed; an unchecked probe is not a refusal.
+    `None` means launch may proceed; only a probe known to fail refuses.
     """
 
     if getattr(readiness, "work_like_available", None) is False:
         return getattr(readiness, "work_like_reason", None) or (
             "Provider Work readiness is unavailable."
         )
-    reason = getattr(readiness, "work_like_reason", None)
-    return reason or None
+    return None
 
 
 class ProviderExecutionAccount(BaseModel):

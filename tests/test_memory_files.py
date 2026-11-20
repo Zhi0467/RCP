@@ -387,8 +387,7 @@ def test_remote_memory_failure_leaves_delete_pending(tmp_path, monkeypatch):
     monkeypatch.setattr(RemoteRunStage, "_ssh_bytes", offline)
     catalog = ProjectCatalog(tmp_path, store, AgentLauncher())
     catalog.delete("project")
-    with pytest.raises(ValueError, match="deletion remains pending"):
-        prepare_project_memory(store, "project", RemoteRunStage("base"))
+    assert prepare_project_memory(store, "project", RemoteRunStage("base")) == (None, None)
     with store.connection() as connection:
         assert connection.execute("SELECT count(*) FROM memory_deletions").fetchone()[0] == 1
     monkeypatch.setattr(
@@ -399,7 +398,7 @@ def test_remote_memory_failure_leaves_delete_pending(tmp_path, monkeypatch):
         assert connection.execute("SELECT count(*) FROM memory_deletions").fetchone()[0] == 0
 
 
-def test_a_deletion_owed_on_another_base_does_not_block_launch(tmp_path):
+def test_only_a_deletion_owed_on_this_base_withholds_project_memory(tmp_path):
     from rcp.storage.models import ProjectRecord
 
     store = AppStore(tmp_path / "rcp.sqlite3")
@@ -424,8 +423,7 @@ def test_a_deletion_owed_on_another_base_does_not_block_launch(tmp_path):
             "UPDATE memory_deletions SET state_machine_id=?, state_path=?",
             (project.state_machine_id, project.state_path),
         )
-    with pytest.raises(ValueError, match="deletion remains pending"):
-        prepare_project_memory(store, "project")
+    assert prepare_project_memory(store, "project") == (None, None)
 
 
 @pytest.mark.parametrize("lost_response", [False, True])

@@ -349,7 +349,9 @@ Use the shipped provider logos, with Claude in orange and others in monochrome.
 Use labels when a logo is unavailable.
 
 Human requests are quiet paper cards in one readable column.
-Assistant prose is unboxed. Progress folds behind Activity.
+Assistant prose is unboxed. A running turn streams in its own agent row: its
+in-between messages and RCP commands in order, then its current step beside a
+spinner.
 Failures and recovery stay explicit. The composer is a contained writing surface:
 one card in every theme, with Add, the message, and the send actions on one row.
 The message has no box of its own, starts one line tall, and eases taller with
@@ -527,7 +529,10 @@ turn that paused by itself shows the same row. A member's Stop reads Stopped
 with no button, on one rounded row shaped like the failed turn's, and Send
 stays on: the next message continues the session. While a turn runs and the
 composer holds a sendable message, Stop reads Stop and send: it stops the turn
-and sends that message as the next one. With rows already waiting it stays
+and sends that message as the next one. Shared node and project chats offer the same
+control beside the running status, including when a retry or resume shares its
+parent's prompt. They send the draft when that attempt confirms
+a member pause, while ordinary Send still steers the turn. With rows already waiting it stays
 Stop, so a new message never jumps the queue. Continue
 continues its turn, so the member's message shows once. Where the backend
 queues sends, what waits for the next turn shows as one-line rows above the

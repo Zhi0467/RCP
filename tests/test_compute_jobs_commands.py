@@ -253,8 +253,8 @@ async def test_slow_remote_launch_returns_pending_then_replays_one_launch(comman
             root = Path(argv[-1]).parent
             if root.name.startswith("probe-"):
                 probe_roots["rcp-job-" + root.name] = (root, 0)
-                if "PrivateUsers=yes" in argv:
-                    code, error = 1, "Unsupported PrivateUsers"
+                if any(item.startswith("ReadWritePaths=") for item in argv):
+                    code, error = 1, "Unsupported ReadWritePaths"
             else:
                 launches.append(root)
                 (root / "log").write_text("launched exactly once\n")
@@ -319,7 +319,6 @@ async def test_slow_remote_launch_returns_pending_then_replays_one_launch(comman
         remote_stage=SimpleNamespace(
             canonical_directories=canonical_directories,
             legacy_stage_roots=lambda: [],
-            absent_paths=lambda paths: [],
         ),
     )
     monkeypatch.setattr(

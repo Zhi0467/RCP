@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from rcp.providers.base import (
@@ -21,14 +20,12 @@ from rcp.providers.base import (
     _require_provider_version,
 )
 from rcp.providers.codex.profile import (
+    _CODEX_SUMMARY_TOOLS,
     _DISABLED_FEATURES,
+    _UNSANDBOXED,
     _codex_autocompact_config,
-    _codex_discuss_permission_profile,
     _codex_environment_config,
-    _codex_permission_profile,
     _codex_shell_environment_policy,
-    _codex_stage_permission_profile,
-    _codex_summary_config,
 )
 from rcp.providers.codex.profile import _codex_error_text as _error_text
 
@@ -85,7 +82,6 @@ class _CodexAppServerTurn(ProviderTurn):
         self._steers: dict[str, tuple[str, str]] = {}
         self._held_commentary: str | None = None
         self._answered = False
-        self._work_like = request.capability in {"work_auto", "orchestrate"}
         self.command = self._command(request)
 
     @staticmethod
@@ -100,67 +96,19 @@ class _CodexAppServerTurn(ProviderTurn):
         ]
         command.extend(_codex_environment_config(request.hidden_read_scope))
         command.extend(_codex_autocompact_config(request.autocompact))
+        command.extend(_UNSANDBOXED)
         if request.capability in {"work_auto", "orchestrate"}:
-            scope = _require_project_write_scope(
+            _require_project_write_scope(
                 request.write_scope,
                 capability=request.capability,
                 write_dirs=request.write_dirs,
             )
-            command.extend(
-                [
-                    "--config",
-                    'default_permissions="rcp_project"',
-                    "--config",
-                    _codex_permission_profile(scope, request.hidden_read_scope),
-                ]
-            )
         elif request.capability == "session_summary":
-            command.extend(_codex_summary_config(request.hidden_read_scope))
-        elif request.capability == "discuss":
-            if request.write_scope is not None:
-                raise ValueError("Discuss cannot carry a project write scope")
-            command.extend(
-                [
-                    "--config",
-                    'approval_policy="never"',
-                    "--config",
-                    'default_permissions="rcp_discuss"',
-                    "--config",
-                    _codex_discuss_permission_profile(
-                        request.cwd, request.hidden_read_scope, write_dirs=request.write_dirs
-                    ),
-                ]
+            command.extend(_CODEX_SUMMARY_TOOLS)
+        elif request.write_scope is not None:
+            raise ValueError(
+                f"capability {request.capability!r} cannot carry a project write scope"
             )
-        else:
-            if request.write_scope is not None:
-                raise ValueError(
-                    f"capability {request.capability!r} cannot carry a project write scope"
-                )
-            if request.hidden_read_scope is not None:
-                command.extend(
-                    [
-                        "--config",
-                        'approval_policy="never"',
-                        "--config",
-                        'default_permissions="rcp_stage"',
-                        "--config",
-                        _codex_stage_permission_profile(
-                            request.cwd,
-                            request.hidden_read_scope,
-                        ),
-                    ]
-                )
-                return command
-            sandbox = "workspace-write"
-            command.extend(
-                [
-                    "--config",
-                    'approval_policy="never"',
-                    "--config",
-                    f'sandbox_mode="{sandbox}"',
-                ]
-            )
-            command.extend(["--config", "sandbox_workspace_write.network_access=true"])
         return command
 
     def initial_input(self) -> bytes:
@@ -362,6 +310,7 @@ class _CodexAppServerTurn(ProviderTurn):
             "cwd": str(self._request.cwd),
             "developerInstructions": "",
             "model": self._request.model,
+            "sandbox": "danger-full-access",
             "serviceName": "rcp",
             "threadSource": "rcp",
         }
@@ -375,61 +324,24 @@ class _CodexAppServerTurn(ProviderTurn):
             params["ephemeral"] = False
         if self._request.fork_session_id:
             params.pop("serviceName")
-        if self._work_like:
-            params["permissions"] = "rcp_project"
-        elif self._request.capability == "session_summary":
-            params["permissions"] = "rcp_summary"
-        elif self._request.capability == "discuss":
-            params["permissions"] = "rcp_discuss"
-        elif self._request.hidden_read_scope is not None:
-            params["permissions"] = "rcp_stage"
-        else:
-            params["sandbox"] = "workspace-write"
         return params
 
     def _turn_params(self, thread_id: str) -> dict[str, object]:
-        params: dict[str, object] = {
+        return {
             "approvalPolicy": "never",
             "cwd": str(self._request.cwd),
             "effort": self._request.reasoning,
             "input": [{"type": "text", "text": self._request.prompt}],
             "model": self._request.model,
+            "sandboxPolicy": {"type": "dangerFullAccess"},
             "threadId": thread_id,
         }
-        if (
-            not self._work_like
-            and self._request.capability not in {"discuss", "session_summary"}
-            and self._request.hidden_read_scope is None
-        ):
-            params["sandboxPolicy"] = _sandbox_policy(
-                self._request.cwd,
-            )
-        return params
 
     def _enforcement_problem(self, result: dict[str, object]) -> str | None:
         if result.get("approvalPolicy") != "never":
             return "Codex app-server did not apply RCP's noninteractive approval policy."
-        if (
-            self._work_like
-            or self._request.capability in {"discuss", "session_summary"}
-            or self._request.hidden_read_scope is not None
-        ):
-            expected = (
-                "rcp_project"
-                if self._work_like
-                else "rcp_summary"
-                if self._request.capability == "session_summary"
-                else "rcp_discuss"
-                if self._request.capability == "discuss"
-                else "rcp_stage"
-            )
-            profile = result.get("activePermissionProfile")
-            if not isinstance(profile, dict) or profile.get("id") != expected:
-                return "Codex app-server did not activate RCP's exact project permission profile."
-            return None
         sandbox = result.get("sandbox")
-        expected = "workspaceWrite"
-        if not isinstance(sandbox, dict) or sandbox.get("type") != expected:
+        if not isinstance(sandbox, dict) or sandbox.get("type") != "dangerFullAccess":
             return "Codex app-server did not apply RCP's requested sandbox."
         return None
 
@@ -678,14 +590,6 @@ def _disabled_hooks(configured: object) -> dict[str, object]:
             if isinstance(event, str) and isinstance(entries, list):
                 hooks[event] = []
     return hooks
-
-
-def _sandbox_policy(cwd: Path) -> dict[str, object]:
-    return {
-        "type": "workspaceWrite",
-        "writableRoots": [str(cwd)],
-        "networkAccess": True,
-    }
 
 
 def _usage_event(

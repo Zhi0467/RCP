@@ -141,6 +141,11 @@ test("a never-run chat keeps fast typing and shows one line per send", async () 
     await page.evaluate(() => window.failHeldStart());
     await lines.getByRole("button", { name: "Resend", exact: true }).waitFor();
     assert.equal(await lines.locator(".agent-chat-view-line.human").count(), 1);
+    assert.equal(
+      await lines.locator(".agent-chat-view-line.human.unsent button[aria-label=Resend]").count(),
+      1,
+    );
+    assert.equal(await lines.locator(".agent-turn-live").count(), 0);
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();

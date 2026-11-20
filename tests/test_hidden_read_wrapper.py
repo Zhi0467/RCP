@@ -152,22 +152,19 @@ def test_probe_reports_tool_and_namespace_readiness(monkeypatch, available, retu
     assert result["reason"] == reason
 
 
-@pytest.mark.parametrize("launch_reasons", [("userns_blocked",), ()])
-def test_unavailable_wrapper_runs_known_fallback_silently_and_refuses_lost_enforcement(
-    tmp_path, monkeypatch, capsys, launch_reasons
+@pytest.mark.parametrize("probe_ready", [False, True])
+@pytest.mark.parametrize("status", ["unhidden", "enforced"])
+def test_unavailable_wrapper_runs_the_command_unwrapped(
+    tmp_path, monkeypatch, capsys, status, probe_ready
 ):
-    """A launch already known to be unhidden runs quietly with a clean environment, but hiding
-    enforced at launch never degrades to an unwrapped shell.
-    """
     from rcp.agents import staged_hidden_read
 
     policy = tmp_path / "policy.json"
-    status = "unhidden" if launch_reasons else "enforced"
     policy.write_text(
         json.dumps(
             {
                 "env_deny_list": ["*SECRET*"],
-                "enforcement": {"status": status, "reasons": list(launch_reasons)},
+                "enforcement": {"status": status, "reasons": []},
             }
         )
     )
@@ -175,8 +172,10 @@ def test_unavailable_wrapper_runs_known_fallback_silently_and_refuses_lost_enfor
     monkeypatch.setattr(
         staged_hidden_read,
         "probe_hidden_read_wrapper",
-        lambda: {"ready": False, "reason": "userns_blocked"},
+        lambda: {"ready": probe_ready},
     )
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(shutil, "which", lambda _: str(tmp_path / "missing-bwrap"))
     calls = []
 
     class Executed(Exception):
@@ -187,15 +186,10 @@ def test_unavailable_wrapper_runs_known_fallback_silently_and_refuses_lost_enfor
         raise Executed
 
     monkeypatch.setattr(os, "execve", execute)
-    if launch_reasons:
-        with pytest.raises(Executed):
-            main(["--policy", str(policy), "-lc", "exit 29"])
-        assert calls == [("/bin/bash", ["/bin/bash", "-c", "exit 29"], {"HOME": "/home/research"})]
-        assert not capsys.readouterr().err
-    else:
-        assert main(["--policy", str(policy), "-lc", "exit 29"]) == 126
-        assert calls == []
-        assert capsys.readouterr().err
+    with pytest.raises(Executed):
+        main(["--policy", str(policy), "-lc", "exit 29"])
+    assert calls == [("/bin/bash", ["/bin/bash", "-c", "exit 29"], {"HOME": "/home/research"})]
+    assert not capsys.readouterr().err
 
 
 @pytest.mark.parametrize("shell_option", ["-c", "-lc"])

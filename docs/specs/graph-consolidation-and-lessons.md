@@ -269,9 +269,9 @@ the move. Project deletion atomically queues memory cleanup with removal of its
 records, including any old alias folders. The browser lifecycle cleanup owner
 attempts deletion after commit and retries failures at later turn boundaries.
 An unreachable base never rolls back project deletion. A pending deletion on
-the same state card and path refuses the launch until cleanup succeeds, including when
-the same project is registered again there. A deletion owed on another base never
-blocks a launch.
+the same state card and path leaves the launch without project memory until cleanup
+succeeds, including when the same project is registered again there, so it cannot
+remove new notes. A deletion owed on another base is ignored.
 Restore keeps a project's migration marker only when the archive brought back its
 local memory folder; a remote base's marker is always dropped, and the next launch
 re-runs the create-if-absent migration.

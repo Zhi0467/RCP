@@ -3673,8 +3673,8 @@ export interface ProviderLoginState {
   changed_by: string | null;
 }
 
-/** Which groups a member's work tries, and in what order. "Both off" has no value. */
-export type ProviderLoginSettingValue = "own" | "own_then_shared" | "shared_then_own" | "shared";
+/** The order a member's work tries their own and shared sign-ins. */
+export type ProviderLoginSettingValue = "own_then_shared" | "shared_then_own";
 
 /** The caller's effective setting for one `(provider, machine_id)`. */
 export interface ProviderLoginSetting {

@@ -53,8 +53,6 @@ SPACE_EXCLUSIONS = {
     "not_admitted": "it could not be admitted for writing this turn",
     "binding_changed": "its write binding changed within this turn",
     "git_unavailable": "its Git transport could not be prepared",
-    "hidden_read_failed": "its read-hiding policy could not be prepared",
-    "policy_conflict": "its read-hiding policy cannot join this turn's",
     "added_after_start": "it joined after this turn started; write it next turn",
 }
 

@@ -1146,10 +1146,6 @@
   margin-top: 8px;
   width: 100%;
 }
-.chat-task-inline.running {
-  color: color-mix(in srgb, white 78%, var(--cobalt));
-  font-size: var(--type-3xs);
-}
 .chat-task-inline.paused {
   background: var(--amber-soft);
   border: 1px solid color-mix(in srgb, var(--mustard) 55%, var(--rule));
@@ -1160,25 +1156,6 @@
 }
 .chat-task-inline.paused > span {
   flex: 1 1 100%;
-}
-.chat-task-activity {
-  color: var(--muted);
-  margin-top: 9px;
-}
-.chat-task-activity > summary {
-  align-items: center;
-  cursor: pointer;
-  display: inline-flex;
-  font: 700 var(--type-2xs)/1.2 var(--mono);
-  gap: 6px;
-  list-style: none;
-}
-.chat-task-activity > summary::-webkit-details-marker {
-  display: none;
-}
-.chat-task-activity .chat-task-inline.running {
-  color: var(--muted);
-  padding-left: 18px;
 }
 .thinking {
   align-items: center;

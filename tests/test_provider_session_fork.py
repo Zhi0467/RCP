@@ -76,8 +76,7 @@ def test_app_server_forks_without_history_payload_and_requires_new_identity(
                 "result": {
                     "thread": {"id": returned_session},
                     "approvalPolicy": "never",
-                    "sandbox": {"type": "readOnly"},
-                    "activePermissionProfile": {"id": "rcp_discuss"},
+                    "sandbox": {"type": "dangerFullAccess"},
                 },
             }
         )

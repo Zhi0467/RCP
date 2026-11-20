@@ -233,28 +233,29 @@ def test_requested_recovery_waits_for_allowed_login(
         status="paused" if operation == "resume" else "failed",
     )
     store = accounts.store
-    if release == "verify":
-        store.mark_provider_login_signed_out(
-            usable, member_id=member.user_id, source="sign_out", detail="expired"
-        )
-    else:
-        store.set_provider_login_setting(
-            member.user_id,
-            provider,
-            BACKEND_MACHINE_ID,
-            "own" if direction == "personal_to_team" else "shared",
-        )
+    store.mark_provider_login_signed_out(
+        usable, member_id=member.user_id, source="sign_out", detail="expired"
+    )
+    store.set_provider_login_setting(
+        member.user_id,
+        provider,
+        BACKEND_MACHINE_ID,
+        "own_then_shared" if direction == "personal_to_team" else "shared_then_own",
+    )
     selected = []
     background = switch_background(store, stage, selected)
     child = getattr(background, operation)("previous", authorized_by=member)
     assert child.status == "queued"
     assert selected == []
+    store.mark_provider_login_verified(usable, member_id=member.user_id, detail="verified")
     if release == "verify":
-        store.mark_provider_login_verified(usable, member_id=member.user_id, detail="verified")
         resume_provider_account(background, usable)
     else:
         store.set_provider_login_setting(
-            member.user_id, provider, BACKEND_MACHINE_ID, "own_then_shared"
+            member.user_id,
+            provider,
+            BACKEND_MACHINE_ID,
+            "shared_then_own" if direction == "personal_to_team" else "own_then_shared",
         )
         provider_login_changed(
             background,

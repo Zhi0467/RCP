@@ -147,3 +147,111 @@ for (const [actionLabel, receiptLabel] of [
     }
   });
 }
+
+for (const [kind, width] of [
+  ["node_chat", 390],
+  ["project_chat", 1000],
+]) {
+  test(`${kind} stops the addressed turn before sending its draft`, async () => {
+    const server = await createServer({
+      root: new URL("..", import.meta.url).pathname,
+      logLevel: "silent",
+      server: { host: "127.0.0.1", port: 0 },
+    });
+    let browser;
+    try {
+      await server.listen();
+      browser = await chromium.launch();
+      const page = await browser.newPage({ viewport: { width, height: 800 } });
+      const starts = [];
+      const errors = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      let rejectPause = true;
+      await page.route("**/api/**", (route) =>
+        route.fulfill({
+          json: route.request().url().includes("/worktree")
+            ? { show_chooser: false, binding: null, integration_options: [] }
+            : [],
+        }),
+      );
+      await page.route("**/api/projects/project/tasks/task/pause", (route) =>
+        route.fulfill(
+          rejectPause
+            ? { status: 409, json: { detail: "Could not stop" } }
+            : { json: { operation_id: "task", active: true, pausing: true } },
+        ),
+      );
+      await page.route(`**/api/projects/project/tasks/${kind}`, (route) => {
+        starts.push(route.request().postDataJSON());
+        return route.fulfill({ json: { operation_id: "next" } });
+      });
+      const url = `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/liveSteering.html${kind === "node_chat" ? "?node" : ""}`;
+      await page.goto(url);
+      const composer = page.getByRole("textbox", { name: "Message" });
+      const stop = page.getByRole("button", { name: "Stop and send", exact: true });
+      const stopped = {
+        active: false,
+        paused: true,
+        can_pause: false,
+        can_steer: false,
+        status_message: "Provider process paused.",
+      };
+      await composer.fill("Tell me where you stopped");
+      await stop.click({ timeout: 5000 });
+      await page.getByText("Could not stop", { exact: true }).waitFor();
+      assert.equal(await composer.inputValue(), "Tell me where you stopped");
+      assert.equal(starts.length, 0);
+
+      rejectPause = false;
+      await stop.click();
+      assert.equal(starts.length, 0);
+      await page.evaluate(() => window.setSteeringFixture({ operation_id: "newer" }));
+      await page.evaluate((state) => window.setSteeringFixture(state), stopped);
+      await page.getByRole("button", { name: "Send", exact: true }).waitFor();
+      assert.equal(await composer.inputValue(), "Tell me where you stopped");
+      assert.equal(starts.length, 0);
+
+      await page.reload();
+      await composer.fill("Keep this draft when I switch chats");
+      await stop.click();
+      await page.evaluate(() => window.reopenSteeringFixture([]));
+      await page.evaluate((state) => window.setSteeringFixture(state), stopped);
+      await page.getByRole("button", { name: "Send", exact: true }).waitFor();
+      assert.equal(starts.length, 0);
+
+      await page.reload();
+      await page.evaluate(() => {
+        window.setSteeringFixture({ parent_operation_id: "parent" });
+        window.reopenSteeringFixture([
+          {
+            message_id: "original",
+            operation_id: "parent",
+            role: "user",
+            text: "Original prompt",
+            timestamp: "2026-09-05T11:59:00Z",
+            mode: "discuss",
+            trigger: "human",
+            attachments: [],
+          },
+        ]);
+      });
+      await composer.fill("Stop here and explain");
+      assert.equal(await page.getByText("Original prompt", { exact: true }).count(), 1);
+      assert.equal(await stop.count(), 1);
+      await stop.click();
+      await Promise.all([
+        page.waitForResponse((response) => response.url().endsWith("/tasks/" + kind)),
+        page.evaluate((state) => window.setSteeringFixture(state), stopped),
+      ]);
+      assert.equal(starts.length, 1);
+      assert.equal(starts[0].chat_id, "steering-chat");
+      assert.equal(starts[0].session_id, "native-session");
+      assert.equal(starts[0].message, "Stop here and explain");
+      assert.equal(starts[0].node_id, kind === "node_chat" ? "test-node" : null);
+      assert.deepEqual(errors, []);
+    } finally {
+      await browser?.close();
+      await server.close();
+    }
+  });
+}

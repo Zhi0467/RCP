@@ -1,4 +1,8 @@
-import { AgentWindowTranscript } from "../agentWindow/AgentWindowTranscript";
+import {
+  AgentWindowTranscript,
+  InlineTaskProgress,
+  TurnProgress,
+} from "../agentWindow/AgentWindowTranscript";
 import {
   useAgentWindowLines,
   type PendingAgentWindowTurn,
@@ -63,6 +67,7 @@ import {
   transcribeAudio,
 } from "../core/api";
 import {
+  type TaskTranscriptLine,
   isActiveTask,
   pausedTaskText,
   resolvedChatSessionId,
@@ -78,7 +83,6 @@ import {
   HandoffResult,
   SchedulesPopover,
   ThreadQueue,
-  TurnProgress,
   type QueuedMessage,
 } from "./agentViewPieces";
 import { AgentRename } from "./AgentRename";
@@ -397,6 +401,11 @@ export function AgentChatView({
       parents: feed?.parents,
     });
   const shownLines = useMemo(() => transcript.filter((line) => !line.running), [transcript]);
+  const liveLine = transcript.find((line) => line.running);
+  const watcherTrigger = (line: TaskTranscriptLine) =>
+    line.trigger !== "watcher" || handoffReport(line) ? null : (
+      <span className="chat-turn-trigger watcher">Watcher</span>
+    );
   const profile = project?.agent_profiles[profileName ?? surface] ?? null;
   const derivedConfig = useMemo(
     () =>
@@ -504,7 +513,15 @@ export function AgentChatView({
   const [sendAfterDictation, setSendAfterDictation] = useState<{
     target: string;
   } | null>(null);
-  const [sendAfterStop, setSendAfterStop] = useState(false);
+  const [stop, setStop] = useState<{
+    scope: string;
+    operationId: string;
+    attempt: number;
+    sends: boolean;
+    message: string;
+    sessionId: string | null;
+    result?: true | Error;
+  } | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [renamedTitle, setRenamedTitle] = useState<string | null>(null);
   const dockRef = useRef<HTMLDivElement>(null);
@@ -592,7 +609,7 @@ export function AgentChatView({
   const steeringTask = [...relatedTasks]
     .reverse()
     .find((task) => task.active && task.steer_visible && task.can_steer && task.steer_turn_id);
-  const awaitingSteerReceipt = Boolean(steeringTask) && submitting;
+  const awaitingSteerReceipt = (Boolean(steeringTask) && submitting) || Boolean(stop);
   const queue = feed?.queue ?? null;
   const queueable = Boolean(
     queue &&
@@ -631,12 +648,6 @@ export function AgentChatView({
     void feed?.refresh();
     return task;
   };
-  const pauseTask = (task: AgentTask) =>
-    reportFailure(async () => {
-      if (feed) return feed.control("pause", task);
-      await endpoints.control(task.operation_id, "pause", crypto.randomUUID());
-      await onRefreshTask(task.operation_id);
-    });
   const attachDisabled = composer.full || composer.preparing || submitting || awaitingSteerReceipt;
   const attachmentsUnready = composer.unready;
   const dictating = dictationState !== "idle" && dictationState !== "error";
@@ -1200,6 +1211,7 @@ export function AgentChatView({
       return false;
     };
     if (queueing && threads) return refuse("Comments wait until this thread is idle.");
+    if (stop) return refuse("The running turn is stopping.");
     if (threads ? !canSendThreads : readOnly) return refuse("This chat cannot send comments.");
     if (dictating) {
       if (threads) return refuse("Finish dictating before sending comments.");
@@ -1208,6 +1220,17 @@ export function AgentChatView({
       return false;
     }
     if (steeringTask && !queueing) return steer(steeringTask, threads);
+    return sendNewTurn(threads, queueing);
+  };
+
+  const sendNewTurn = async (
+    threads: { ids: readonly string[]; key: string } | null = null,
+    queueing = false,
+  ): Promise<boolean> => {
+    const refuse = (reason: string) => {
+      if (threads || queueing) setSubmitError(reason);
+      return false;
+    };
     if ((relatedActive && !queueing) || submitting || repairingTaskId || reviewPending) {
       if (threads) setSubmitError("Wait for the running turn to finish.");
       return false;
@@ -1329,10 +1352,10 @@ export function AgentChatView({
     }
   };
 
-  const sendMessage = async (queueing = action === "Queue"): Promise<boolean> => {
+  const sendMessage = async (queueing = action === "Queue", deliver = send): Promise<boolean> => {
     const ids = dictating ? [] : commentDock.items.map((item) => item.thread_id);
-    if (!ids.length) return send(null, queueing);
-    const sent = await send({ ids, key: dockKeys.current.key(ids) }, queueing);
+    if (!ids.length) return deliver(null, queueing);
+    const sent = await deliver({ ids, key: dockKeys.current.key(ids) }, queueing);
     if (sent) {
       dockKeys.current.done();
       commentDock.clear(ids);
@@ -1531,7 +1554,13 @@ export function AgentChatView({
   );
 
   const latest = relatedTasks.at(-1) ?? null;
-  const liveTask = [...relatedTasks].reverse().find(isActiveTask) ?? null;
+  const liveTask =
+    [...relatedTasks]
+      .reverse()
+      .find(
+        (task) =>
+          isActiveTask(task) && !(pendingTurn?.error && pendingTurn.clientId === task.operation_id),
+      ) ?? null;
   const pausedTask = latest && !latest.active && latest.can_resume ? latest : null;
   const failedTask =
     latest && !latest.active && latest.can_retry && !latest.can_resume ? latest : null;
@@ -1568,19 +1597,63 @@ export function AgentChatView({
         : !(draftSendable || dictating || dockedCount)
           ? "Write a message"
           : undefined;
-  const sendDisabled = submitting || sendBlocked || !(draftSendable || dictating || dockedCount);
+  const sendDisabled =
+    submitting || Boolean(stop) || sendBlocked || !(draftSendable || dictating || dockedCount);
   const stopSends =
     !submitting &&
     !(queue?.length ?? 0) &&
     !attachmentsUnready &&
+    providerReady &&
+    !dictating &&
+    !reviewPending &&
     (draftSendable || dockedCount > 0);
-  const sendNow = useEffectEvent(() => void sendMessage(false));
-  const live = liveTask !== null;
+  const stopTurn = async (task: AgentTask) => {
+    const request = {
+      scope: endpoints.scopeKey,
+      operationId: task.operation_id,
+      attempt: task.attempt,
+      sends: stopSends,
+      message: draft.get(),
+      sessionId,
+    };
+    setStop(request);
+    setSubmitError(null);
+    try {
+      if (feed) await feed.control("pause", task);
+      else {
+        await endpoints.control(task.operation_id, "pause", crypto.randomUUID());
+        await onRefreshTask(task.operation_id);
+      }
+      setStop((current) => (current === request ? { ...request, result: true } : current));
+    } catch (error) {
+      setStop((current) =>
+        current === request ? { ...request, result: new Error(errorMessage(error)) } : current,
+      );
+    }
+  };
+  const finishStop = useEffectEvent(() => {
+    if (!stop) return;
+    const same =
+      stop.scope === endpoints.scopeKey &&
+      stop.operationId === latest?.operation_id &&
+      stop.attempt === latest.attempt;
+    if (same && (!stop.result || (stop.result === true && latest.active))) return;
+    setStop(null);
+    if (same && stop.result instanceof Error) setSubmitError(stop.result.message);
+    if (
+      same &&
+      stop.result === true &&
+      latest.paused &&
+      (!stop.sessionId || stop.sessionId === sessionId) &&
+      !readOnly &&
+      stop.sends &&
+      draft.get() === stop.message
+    )
+      void sendMessage(false, sendNewTurn);
+  });
   useEffect(() => {
-    if (!sendAfterStop || live) return;
-    setSendAfterStop(false);
-    sendNow();
-  }, [sendAfterStop, live]);
+    finishStop();
+  }, [stop, latest, endpoints.scopeKey]);
   const removeQueued = async (item: QueuedMessage, dismissed: boolean) => {
     setSubmitError(null);
     try {
@@ -1789,11 +1862,7 @@ export function AgentChatView({
               />
             );
           }}
-          triggerChip={(line) =>
-            line.trigger !== "watcher" || handoffReport(line) ? null : (
-              <span className="chat-turn-trigger watcher">Watcher</span>
-            )
-          }
+          triggerChip={watcherTrigger}
           lineLead={(line) => (
             <>
               {firstLineOfTurn.get(line.taskId) === line.lineId && (
@@ -1848,24 +1917,23 @@ export function AgentChatView({
         />
         {liveTask && (
           <div className="agent-chat-view-line agent">
-            <TurnProgress task={liveTask} live />
-            <span className="agent-turn-live" role="status">
-              <LoaderCircle className="spin" size={12} aria-hidden="true" />
-              {liveTask.status_message}
-              {liveTask.can_pause && !readOnly && (
-                <button
-                  type="button"
-                  className="button compact secondary"
-                  disabled={liveTask.pausing}
-                  onClick={() => {
-                    if (stopSends) setSendAfterStop(true);
-                    pauseTask(liveTask);
-                  }}
-                >
-                  <Square size={11} /> {stopSends ? "Stop and send" : "Stop"}
-                </button>
-              )}
-            </span>
+            {!feed && liveLine && watcherTrigger(liveLine)}
+            <InlineTaskProgress
+              task={liveTask}
+              control={
+                liveTask.can_pause &&
+                !readOnly && (
+                  <button
+                    type="button"
+                    className="button compact secondary"
+                    disabled={submitting || Boolean(stop) || liveTask.pausing}
+                    onClick={() => void stopTurn(liveTask)}
+                  >
+                    <Square size={11} /> {stopSends ? "Stop and send" : "Stop"}
+                  </button>
+                )
+              }
+            />
           </div>
         )}
         {(pausedTask || stoppedTask) && (
@@ -2056,7 +2124,7 @@ export function AgentChatView({
                     dictationError ||
                     (dictating ? "Stop dictation" : "Dictate")
                   }
-                  disabled={submitting || dictationState === "transcribing"}
+                  disabled={submitting || Boolean(stop) || dictationState === "transcribing"}
                   onClick={() => void toggleDictation()}
                 >
                   {dictationState === "transcribing" ? (
