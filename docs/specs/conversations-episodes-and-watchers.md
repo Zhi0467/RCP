@@ -50,16 +50,18 @@ the default, and the project list and `handoff` always name it. Listing
 threads atomically. `agent_threads` is the
 privacy authority; filename prefixes are only read-hiding selectors. Existing
 board chats remain public. Every thread turn, wake and schedule fire is a
-captured Work turn on main, authorized by the owning member. A task counts as a
-thread's turn only when its chat, kind, scope and authorizing member all match
+captured Work turn authorized by the owning member. Private project agents may
+work on main or a graph branch; continuations retain their admitted graph target.
+A task counts as a thread's turn only when its chat, kind, scope and authorizing member all match
 the thread (`bound_thread` in `storage/agent_threads.py`); member memory, the
 `projects`, `schedule` and approval-card grants, Space controls and handoff
 claims all use it. Loss of membership closes that project thread; after rejoining,
 the next list or command reopens it. The browser loads and polls the thread list only while the Space
 Agent view, a project's Agents view, or a voice session is active.
-Private threads cannot be archived. Ensuring the thread list clears legacy
-archive flags along with reopening eligible threads. It takes the write lock only
-when a thread is missing, closed or archived.
+Private project threads may be archived and restored under the ordinary
+[conversation archive](#conversation-archive) rules. Listing threads preserves
+archive state, including when membership returns. It takes the write lock only
+when a default thread is missing or closed.
 
 **The Space thread owns no project lifecycle.** It reads across the member's
 projects. It writes files and Patches only for projects whose state and base
@@ -544,7 +546,9 @@ reuse them.
 A member can create a new conversation on a new graph branch forked at the
 source conversation's current target and head, or on an existing non-archived
 branch (including main when leaving a branch). The source conversation and its
-stage stay unchanged. Creation records the source chat, its latest operation,
+stage stay unchanged. The new conversation keeps the source's visibility and,
+for a private source, its owner; it is an additional private thread, never the
+member's default. Creation records the source chat, its latest operation,
 source graph target, title and launch profile; it launches no provider. An active,
 paused, imported or unusable latest session cannot seed a branch, and the client
 checks this before it creates a new graph branch for the chat. The request carries

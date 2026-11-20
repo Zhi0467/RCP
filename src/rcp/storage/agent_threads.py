@@ -243,16 +243,12 @@ class AgentThreadStoreMixin(StoreMixinBase):
         # The common call finds every thread open and shown; it takes no write lock.
         with self.connection() as connection:
             rows = connection.execute(
-                "SELECT t.*, d.archived_at AS display_archived_at FROM agent_threads t "
-                "LEFT JOIN chat_display d ON d.chat_id=t.thread_id AND d.project_id="
-                "coalesce(t.project_id, (SELECT space_id FROM space_identity WHERE singleton=1)) "
+                "SELECT t.* FROM agent_threads t "
                 "WHERE t.user_id=? ORDER BY t.kind DESC, t.project_id, t.is_default DESC, t.created_at",
                 (user_id,),
             ).fetchall()
         shown = {
-            row["project_id"]
-            for row in rows
-            if row["is_default"] and row["closed_at"] is None and row["display_archived_at"] is None
+            row["project_id"] for row in rows if row["is_default"] and row["closed_at"] is None
         }
         if {None, *project_ids} <= shown:
             return [AgentThreadRecord.model_validate(dict(row)) for row in rows]
@@ -280,11 +276,6 @@ class AgentThreadStoreMixin(StoreMixinBase):
                     connection.execute(
                         "UPDATE agent_threads SET closed_at=NULL, closed_reason=NULL WHERE thread_id=?",
                         (row[0],),
-                    )
-                    connection.execute(
-                        "UPDATE chat_display SET archived_at=NULL, archived_user_id=NULL "
-                        "WHERE project_id=? AND chat_id=?",
-                        (project_id or space_id, row[0]),
                     )
                     continue
                 name = _unused_name(names, used)
