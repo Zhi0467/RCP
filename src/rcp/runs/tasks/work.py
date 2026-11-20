@@ -397,6 +397,7 @@ def _work_execution_instructions(turn: WorkTurn, client: str | None = None) -> s
             ),
             approval_cards=approval_cards,
             turn_artifacts=WORK_TURN_ARTIFACTS,
+            patch_path=turn.patch_inputs.patch_path,
         )
     )
 

@@ -53,7 +53,7 @@ class _CompletingExperimentProvider:
             ),
             encoding="utf-8",
         )
-        validator = max(re.findall(r"`([^`]*\svalidate\s[^`]*)`", contract), key=len)
+        (validator,) = set(re.findall(r"`([^`]*\svalidate\s[^`]*)`", contract))
         client = re.search(r"^- Command client: `([^`]+)`$", contract, re.MULTILINE)[1]  # type: ignore[index]
         validator = validator.replace(COMMAND_CLIENT, client, 1)
         async with kwargs["invocation_gate"].serve_current_session():

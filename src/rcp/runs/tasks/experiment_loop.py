@@ -21,6 +21,7 @@ from rcp.agents import (
     validate_agent_patch_shape,
     validate_work_patch,
 )
+from rcp.agents.agent_profile import validate_command
 from rcp.agents.command_mailbox import (
     StagedCommandMailbox,
 )
@@ -41,7 +42,6 @@ from rcp.agents.experiment_loop_prompt import (
     experiment_loop_turn_message,
     experiment_loop_wake_message,
     experiment_loop_watcher_correction_contract,
-    experiment_validate_command,
 )
 from rcp.agents.graph_read_scope import GraphReadScope
 from rcp.agents.graph_rules import graph_rules
@@ -560,7 +560,7 @@ def _handoff_values(turn: WorkTurn) -> dict[str, dict[str, object]]:
             "watch": str(turn.workspace / "watchers"),
             "patch_schema": turn.patch_inputs.schema_path,
         },
-        "commands": {"validate": experiment_validate_command(turn.patch_inputs.patch_path)},
+        "commands": {"validate": validate_command(COMMAND_CLIENT, turn.patch_inputs.patch_path)},
         "patch": {"command_client": turn.patch_inputs.command_client},
     }
     if turn.write_scope is not None:

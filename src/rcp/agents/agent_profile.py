@@ -81,6 +81,7 @@ class UsageContext:
     ask_wait_seconds: float | None = None
     approval_cards: bool = False
     turn_artifacts: bool = False
+    patch_path: str = "patch.json"
 
 
 @dataclass(frozen=True)
@@ -262,8 +263,12 @@ def _ask_usage(profile: AgentProfile, context: UsageContext) -> str:
     return "\n\n".join(sections)
 
 
+def validate_command(client: str, patch_path: str) -> str:
+    return f"{client} validate {shlex.quote(patch_path)}"
+
+
 def _validate_usage(_profile: AgentProfile, context: UsageContext) -> str:
-    return _bullets(context, ("validate patch.json",))
+    return f"- `{validate_command(context.client, context.patch_path)}`"
 
 
 def _apply_usage(profile: AgentProfile, context: UsageContext) -> str:

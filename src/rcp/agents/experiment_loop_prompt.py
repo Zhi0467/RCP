@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import shlex
 from typing import Literal
 
+from rcp.agents.agent_profile import validate_command
 from rcp.agents.artifact_contract import artifact_contract
 from rcp.agents.context import ChatContext
 from rcp.agents.graph_rules import graph_rules
@@ -127,12 +127,6 @@ cause a new external side effect.
   finish the Experiment, pause for human authority, or use an existing durable question.
   Validate every Patch rewrite. Reply only that the handoff was repaired.
 """
-
-
-def experiment_validate_command(patch_path: str) -> str:
-    """The validator as the master states it, relative to its one command client."""
-
-    return f"{COMMAND_CLIENT} validate {shlex.quote(patch_path)}"
 
 
 def experiment_loop_task_contract(
@@ -377,7 +371,7 @@ Graph reflection and authority:
 
 {_command_client_rule(command_client)}
 
-{_patch_validator_rules(experiment_validate_command(patch_path))}
+{_patch_validator_rules(validate_command(COMMAND_CLIENT, patch_path))}
 {_EXPERIMENT_HANDOFF_CORRECTIONS}
 {REPLY_STYLE}
 
