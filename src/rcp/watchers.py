@@ -785,6 +785,44 @@ def run_watcher_check(
     )
 
 
+def cancel_watched_job(
+    store: AppStore,
+    project_id: str,
+    check_id: str,
+    requested_by: str,
+    *,
+    runner: Callable[[WatchSpec, str, float], str | None] | None = None,
+    timeout: float = WATCHER_CHECK_TIMEOUT_SECONDS,
+) -> WatcherRecord:
+    """Run a live check's saved Cancel command for a member, then end its watcher.
+
+    This is job control: the agent's own command stops the job. A Cancel that
+    fails leaves the watcher live, showing the error, and can be tried again.
+    """
+
+    watcher = store.watcher_of_check(check_id)
+    if watcher is None or watcher.project_id != project_id:
+        raise KeyError(check_id)
+    claimed = store.claim_job_cancel(check_id, requested_by)
+    if claimed is None:
+        raise ValueError("This job has no Cancel to run now.")
+    assert claimed.check_command and claimed.log_path and claimed.cwd
+    spec = WatchSpec(
+        check_command=claimed.check_command,
+        log_path=claimed.log_path,
+        cwd=claimed.cwd,
+        cancel_command=claimed.cancel_command,
+    )
+    try:
+        error = (runner or run_watcher_cancel)(spec, host_of(store, claimed.machine_id), timeout)
+    except Exception as exc:
+        error = _bounded_error(f"Cancel command failed: {exc}")
+    store.finish_job_cancel(claimed, error)
+    current = store.watcher(watcher.watcher_id)
+    assert current is not None
+    return current
+
+
 def run_watcher_cancel(
     spec: WatchSpec,
     host: str = "",
@@ -853,6 +891,7 @@ def external_check(
         check_command=spec.check_command,
         log_path=spec.log_path,
         cwd=spec.cwd,
+        cancel_command=spec.cancel_command,
         created_at=created_at,
         last_checked_at=result.checked_at,
         last_exit_code=result.exit_code,

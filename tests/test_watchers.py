@@ -168,6 +168,13 @@ def test_a_watcher_file_is_strict_and_has_exactly_one_definition() -> None:
         {"purpose": "job finishes", "checks": [check | {"cwd": "/work"}]}
     )
     assert parsed.checks[0].cwd == "/work"
+    cancellable = WatcherFile.model_validate(
+        {
+            "purpose": "job finishes",
+            "checks": [check | {"cwd": "/work", "cancel_command": "scancel 1"}],
+        }
+    )
+    assert cancellable.checks[0].cancel_command == "scancel 1"
     graph = WatcherFile.model_validate(
         {"purpose": "node resolves", "graph": {"node_id": "blk/waiting", "status_in": ["resolved"]}}
     )
@@ -179,7 +186,7 @@ def test_a_watcher_file_is_strict_and_has_exactly_one_definition() -> None:
         {"purpose": "job finishes", "checks": [check | {"cwd": "/work", "host": "bad"}]},
         {
             "purpose": "job finishes",
-            "checks": [check | {"cwd": "/work", "cancel_command": "scancel 1"}],
+            "checks": [check | {"cwd": "/work", "cancel_command": " "}],
         },
         {"purpose": " ", "checks": [check | {"cwd": "/work"}]},
         {

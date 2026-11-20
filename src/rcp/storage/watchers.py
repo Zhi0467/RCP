@@ -66,7 +66,11 @@ _WATCHER_TABLES = (
         completed_at TEXT,
         next_check_at TEXT,
         consecutive_error_count INTEGER NOT NULL DEFAULT 0,
-        removed_at TEXT
+        removed_at TEXT,
+        cancel_command TEXT,
+        cancel_requested_by TEXT,
+        cancel_requested_at TEXT,
+        cancel_error TEXT
     )""",
 )
 _WATCHER_INDEXES = (
@@ -210,8 +214,9 @@ def migrate_watcher_checks(connection: sqlite3.Connection) -> None:
                     check_id, watcher_id, machine_id, definition, check_command, log_path,
                     cwd, graph_condition_json, graph_target_json, armed_head, created_at,
                     last_checked_at, last_exit_code, last_error, completed_at, next_check_at,
-                    consecutive_error_count, removed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    consecutive_error_count, removed_at, cancel_command, cancel_requested_by,
+                    cancel_requested_at, cancel_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     member["watcher_id"],
@@ -234,6 +239,10 @@ def migrate_watcher_checks(connection: sqlite3.Connection) -> None:
                     else member["next_check_at"],
                     member["consecutive_error_count"],
                     removed_at,
+                    None if graph else member["cancel_command"],
+                    None if graph else member["cancel_requested_by"],
+                    None if graph else member["cancel_requested_at"],
+                    None if graph else member["cancel_error"],
                 ),
             )
     connection.execute("DROP TABLE _watchers_v1")
@@ -286,6 +295,15 @@ class WatcherStoreMixin(StoreMixinBase):
     def watcher(self, watcher_id: str) -> WatcherRecord | None:
         with self.connection() as connection:
             found = _watcher_records(connection, "w.watcher_id = ?", (watcher_id,))
+        return found[0] if found else None
+
+    def watcher_of_check(self, check_id: str) -> WatcherRecord | None:
+        with self.connection() as connection:
+            found = _watcher_records(
+                connection,
+                "w.watcher_id = (SELECT watcher_id FROM watcher_checks WHERE check_id = ?)",
+                (check_id,),
+            )
         return found[0] if found else None
 
     def agent_watchers(self, agent_id: str, *, open_only: bool = False) -> list[WatcherRecord]:
@@ -530,8 +548,8 @@ class WatcherStoreMixin(StoreMixinBase):
                 check_id, watcher_id, machine_id, definition, check_command, log_path, cwd,
                 graph_condition_json, graph_target_json, armed_head, created_at,
                 last_checked_at, last_exit_code, last_error, completed_at, next_check_at,
-                consecutive_error_count, removed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                consecutive_error_count, removed_at, cancel_command
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
             """,
             (
                 check.check_id,
@@ -551,6 +569,7 @@ class WatcherStoreMixin(StoreMixinBase):
                 check.completed_at,
                 next_check_at,
                 check.consecutive_error_count,
+                check.cancel_command,
             ),
         )
 
@@ -591,6 +610,45 @@ class WatcherStoreMixin(StoreMixinBase):
                 [watcher_id],
                 by="agent",
                 reason="Its last check was removed.",
+                connection=connection,
+            )
+
+    def claim_job_cancel(self, check_id: str, requested_by: str) -> WatcherCheckRecord | None:
+        """Claim one member's Cancel of a live check's job; a Cancel already running wins."""
+
+        now = self.now()
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            claimed = connection.execute(
+                f"""
+                UPDATE watcher_checks SET cancel_requested_by = ?, cancel_requested_at = ?,
+                    cancel_error = NULL
+                WHERE check_id = ? AND cancel_command IS NOT NULL AND removed_at IS NULL
+                  AND completed_at IS NULL
+                  AND (cancel_requested_at IS NULL OR cancel_error IS NOT NULL)
+                  AND watcher_id IN (SELECT w.watcher_id FROM watchers AS w WHERE {_OPEN})
+                RETURNING *
+                """,
+                (requested_by, now, check_id),
+            ).fetchone()
+        return _check_record(claimed) if claimed is not None else None
+
+    def finish_job_cancel(self, check: WatcherCheckRecord, error: str | None) -> None:
+        """An accepted Cancel ends the watcher too; a failed one stays offered with its error."""
+
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if error is not None:
+                connection.execute(
+                    "UPDATE watcher_checks SET cancel_error = ? "
+                    "WHERE check_id = ? AND cancel_requested_at = ?",
+                    (error, check.check_id, check.cancel_requested_at),
+                )
+                return
+            self.cancel_watchers(
+                [check.watcher_id],
+                by="human",
+                reason="A member cancelled the job.",
                 connection=connection,
             )
 

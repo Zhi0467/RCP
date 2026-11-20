@@ -122,3 +122,89 @@ def test_only_an_open_work_watcher_of_a_chat_turn_wakes_the_chat(manifest, tmp_p
     assert not wakes(loop)
     assert not wakes(work.model_copy(update={"delivery_closed_at": store.now()}))
     assert not wakes(work.model_copy(update={"cancelled_at": store.now(), "cancelled_by": "human"}))
+
+
+def test_a_member_cancels_the_job_and_that_ends_its_watcher(manifest, tmp_path) -> None:
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    _turn(store, project_id, "origin", chat_id="chat")
+    marker = tmp_path / "cancelled"
+    now = store.now()
+    store.arm_watcher(
+        WatcherRecord(
+            watcher_id="job",
+            agent_id="chat",
+            project_id=project_id,
+            purpose="Training job",
+            origin_turn_id="origin",
+            created_at=now,
+            checks=[
+                WatcherCheckRecord(
+                    check_id="job",
+                    watcher_id="job",
+                    machine_id=BACKEND_MACHINE_ID,
+                    definition="external",
+                    check_command="false",
+                    log_path=str(tmp_path / "job.log"),
+                    cwd=str(tmp_path),
+                    cancel_command=f"touch {marker}",
+                    created_at=now,
+                )
+            ],
+        )
+    )
+    client = signed_in_client(app)
+    (row,) = client.get(f"/api/projects/{project_id}/watchers").json()
+    assert row["can_cancel"] is True
+
+    response = client.post(f"/api/projects/{project_id}/watchers/job/cancel", json={})
+
+    assert response.status_code == 200, response.text
+    assert marker.exists()
+    watcher = store.watcher("job")
+    assert watcher.state == "cancelled" and watcher.cancelled_by == "human"
+    assert response.json()["can_cancel"] is False
+    again = client.post(f"/api/projects/{project_id}/watchers/job/cancel", json={})
+    assert again.status_code == 409
+
+
+def test_stop_watching_releases_a_live_observer_only_after_its_experiment_ended(
+    manifest, tmp_path, monkeypatch
+) -> None:
+    from types import SimpleNamespace
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id = app.state.default_project_id
+    store = app.state.background_tasks.store
+    _turn(store, project_id, "origin", chat_id="run-chat")
+    run_turn = store.agent_task("origin").model_copy(
+        update={
+            "request": {
+                "chat_id": "run-chat",
+                "patch_kind": "experiment_loop",
+                "control_episode_id": "episode",
+            }
+        }
+    )
+    monkeypatch.setattr(store, "agent_task", lambda _operation_id: run_turn)
+    monkeypatch.setattr(store, "agent_tasks_by_ids", lambda ids: {i: run_turn for i in ids})
+    _external(store, project_id, "observer", "origin")
+    endings: dict[str, str | None] = {"episode": None}
+    monkeypatch.setattr(
+        store, "episode", lambda episode_id: SimpleNamespace(ending=endings.get(episode_id))
+    )
+    client = signed_in_client(app)
+    (running,) = client.get(f"/api/projects/{project_id}/watchers").json()
+    assert running["can_stop_watching"] is False
+    stop = f"/api/projects/{project_id}/watchers/observer/stop"
+    assert client.post(stop, json={}).status_code == 409
+
+    endings["episode"] = "exhausted"
+    (ended,) = client.get(f"/api/projects/{project_id}/watchers").json()
+    assert ended["can_stop_watching"] is True
+    response = client.post(stop, json={})
+
+    assert response.status_code == 200, response.text
+    watcher = store.watcher("observer")
+    assert watcher.state == "cancelled" and watcher.cancelled_by == "human"

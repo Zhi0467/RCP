@@ -40,14 +40,14 @@ from rcp.watchers import (
 class FileCheck(WatchSpec):
     machine_id: str | None = None
 
-    @model_validator(mode="after")
-    def cannot_cancel_job(self) -> Self:
-        if self.cancel_command is not None:
-            raise ValueError("watcher files never cancel jobs")
-        return self
-
-    def identity(self, machine_id: str) -> tuple[str, str, str, str]:
-        return self.machine_id or machine_id, self.check_command, self.log_path, self.cwd
+    def identity(self, machine_id: str) -> tuple[str, str, str, str, str | None]:
+        return (
+            self.machine_id or machine_id,
+            self.check_command,
+            self.log_path,
+            self.cwd,
+            self.cancel_command,
+        )
 
 
 class WatcherFile(BaseModel):
@@ -72,7 +72,10 @@ def _file(record: WatcherRecord) -> WatcherFile:
         purpose=record.purpose,
         checks=[
             FileCheck.model_validate(
-                check.model_dump(include={"machine_id", "check_command", "log_path", "cwd"})
+                check.model_dump(
+                    include={"machine_id", "check_command", "log_path", "cwd", "cancel_command"},
+                    exclude_none=True,
+                )
             )
             for check in checks
         ],
@@ -154,9 +157,9 @@ def read_watcher_folder(workspace: Path, remote_stage: RemoteRunStage | None) ->
     return {name: data.decode("utf-8") for name, data in tree.files.items()}
 
 
-def _external_identity(check: WatcherCheckRecord) -> tuple[str, str, str, str]:
+def _external_identity(check: WatcherCheckRecord) -> tuple[str, str, str, str, str | None]:
     assert check.check_command is not None and check.log_path is not None and check.cwd is not None
-    return check.machine_id, check.check_command, check.log_path, check.cwd
+    return check.machine_id, check.check_command, check.log_path, check.cwd, check.cancel_command
 
 
 def _applied_folder(

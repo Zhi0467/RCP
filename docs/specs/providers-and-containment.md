@@ -329,7 +329,7 @@ exceptions are runtime storage, not general project write roots.
 Watcher check commands run as written in a fresh `bash -lic`
 as the execution account, locally or over SSH. They are outside provider sandbox
 and turn write scope, bounded only by timeout and process-group termination.
-Project deletion runs a helper job's saved cancel command with the same account reach.
+A member's Cancel and project deletion run a saved agent-authored `cancel_command` with the same account reach.
 
 **Why:** Watchers outlive provider turns and need the observed job's login
 environment, scheduler, network and sockets. A provider sandbox cannot supply

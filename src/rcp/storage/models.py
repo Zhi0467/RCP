@@ -3282,6 +3282,10 @@ class WatcherCheckRecord(BaseModel):
     next_check_at: str | None = None
     consecutive_error_count: int = Field(default=0, ge=0)
     removed_at: str | None = None
+    cancel_command: str | None = None
+    cancel_requested_by: str | None = None
+    cancel_requested_at: str | None = None
+    cancel_error: str | None = None
 
     @model_validator(mode="after")
     def definition_fields_agree(self) -> WatcherCheckRecord:
@@ -3289,7 +3293,12 @@ class WatcherCheckRecord(BaseModel):
         if self.definition == "external":
             if not all(external) or self.condition is not None:
                 raise ValueError("an external check needs its command, log path, and cwd")
-        elif any(external) or self.condition is None or self.graph_target is None:
+        elif (
+            any(external)
+            or self.cancel_command is not None
+            or self.condition is None
+            or self.graph_target is None
+        ):
             raise ValueError("a graph check needs exactly its condition and graph target")
         return self
 
