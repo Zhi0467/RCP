@@ -140,7 +140,7 @@ const turn = {
   authorized_by: { space_id: "space", user_id: "member", display_name: "Member" },
 };
 
-test("a preview selection starts a shared thread, which the rail sends through the coach", async (t) => {
+test("a preview selection starts a shared thread, which docks at the coach and sends with its next message", async (t) => {
   const { page, errors } = await open(t, {
     width: 1280,
     init: `window.paperCoachFixture = { tasks: [${JSON.stringify(turn)}], started: [] };`,
@@ -178,12 +178,17 @@ test("a preview selection starts a shared thread, which the rail sends through t
   assert.deepEqual(created.target_kind, "paper");
   assert.equal(created.anchor.kind, "text");
   assert.match(created.anchor.where, /\(preview\)$/);
-  await rail.getByRole("button", { name: "Send to agent" }).click();
+  await coach(page);
+  await page.locator(".chat-annotation-count").waitFor();
+  const field = page.locator(".paper-right-pane .chat-composer textarea").first();
+  await field.fill("Please address this.");
+  await field.press("Enter");
   await page.waitForFunction(() => window.paperCoachFixture.started.length === 1);
   const [started] = await page.evaluate(() => window.paperCoachFixture.started);
   assert.equal(started.request.focus, "paper");
   assert.deepEqual(started.request.comment_thread_ids, [created.thread_id]);
   assert.match(started.requestId, /^[0-9a-f-]{36}$/);
+  await page.getByRole("button", { name: "Preview", exact: true }).first().click();
   // A composer drawn on one file closes when another is shown.
   await select();
   await comment.fill("half written");

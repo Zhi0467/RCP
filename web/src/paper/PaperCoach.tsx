@@ -4,7 +4,7 @@ import { isActiveTask } from "../agents/agentTasks";
 import { AgentChatView } from "../chat/AgentChatView";
 import { chatResourceProfile, chatsResourceProfile } from "../chat/chatResources";
 import type { StartConversationTask } from "../chat/chatWorkspace";
-import type { SendThreads } from "../comments/react/useComments";
+import type { DockThreads } from "../comments/react/useComments";
 import { MAIN_GRAPH } from "../core/graphTarget";
 import type { AgentTask, GraphUpdateRecovery, ProjectSnapshot } from "../core/types";
 import { useLayerDismiss } from "../core/useLayerDismiss";
@@ -61,7 +61,7 @@ export function PaperCoach({
   /** Where History and New chat sit: the Paper view row, while the Coach shows. */
   toolbar: HTMLElement | null;
   /** Set to the chat composer's sender, which Paper's comment threads ride. */
-  threadSender: RefObject<SendThreads | null>;
+  threadSender: RefObject<DockThreads | null>;
   opening?: CoachOpening;
   onOpening: (opening: CoachOpening) => void;
   diff: CoachDiff | null;
@@ -123,11 +123,8 @@ export function PaperCoach({
       ),
     [onStartTask],
   );
-  const send = useCallback<SendThreads>(
-    (ids, key) => {
-      const sender = threadSender.current;
-      return sender ? sender(ids, key) : Promise.reject(new Error("The Coach is not ready."));
-    },
+  const dock = useCallback<DockThreads>(
+    (threads) => threadSender.current?.(threads),
     [threadSender],
   );
   const turnTrail = (taskId: string) => {
@@ -213,7 +210,7 @@ export function PaperCoach({
             chatId={chatId}
             operationId={diff.operationId}
             path={diff.path}
-            send={send}
+            dock={dock}
             canPost
             onClose={() => onDiff(null)}
           />

@@ -78,20 +78,15 @@ export function CommentPopover({
   );
 }
 
-/** The popover at a selection: its quote, a Comment field with `@`, and Send to agent. */
+/** The popover at a selection: its quote and a Comment field with `@`; saving docks the thread. */
 export function CommentComposer({
   offer,
   comments,
-  agentLabel,
-  canSend,
   onClose,
   onCreated,
 }: {
   offer: CommentOffer;
   comments: CommentsController;
-  agentLabel: string;
-  /** This target's agent can take a send from this member. */
-  canSend: boolean;
   onClose: () => void;
   onCreated?: (thread: CommentThread) => void;
 }) {
@@ -103,18 +98,20 @@ export function CommentComposer({
       <CommentEditor
         label="Comment"
         members={comments.members}
-        canSend={canSend && comments.canSend}
-        agentLabel={agentLabel}
         busy={comments.busy}
         initialText={offer.text}
         autoFocus
-        onSubmit={async (text, send) => {
+        secondary={
+          <button type="button" onClick={onClose}>
+            Cancel
+          </button>
+        }
+        onSubmit={async (text) => {
           const thread = await comments.create(
             offer.target,
             offer.anchor,
             text,
             offer.drawnVersion,
-            send,
           );
           if (!thread) return false;
           onCreated?.(thread);
@@ -127,11 +124,6 @@ export function CommentComposer({
           {comments.error}
         </div>
       )}
-      <div className="rcp-comment-actions">
-        <button type="button" onClick={onClose}>
-          Cancel
-        </button>
-      </div>
     </CommentPopover>
   );
 }

@@ -277,15 +277,15 @@ test("Escape closes the repository list before the menu; the agent picker and Ad
   const addMenu = page.locator(".chat-add-menu");
   await add.click();
   await page.keyboard.press("Escape");
-  await addMenu.waitFor({ state: "detached" });
+  await addMenu.waitFor({ state: "hidden" });
   assert.equal(await isFocused(add), true);
   await add.click();
   await page.mouse.click(5, 400);
-  await addMenu.waitFor({ state: "detached" });
+  await addMenu.waitFor({ state: "hidden" });
   await add.click();
   await page.getByRole("textbox", { name: "Message", exact: true }).fill("Send closes it");
   await page.keyboard.press("Enter");
-  await addMenu.waitFor({ state: "detached" });
+  await addMenu.waitFor({ state: "hidden" });
 });
 
 test("The chat menu and Branch this chat work by keyboard; the current branch is not a choice", async (t) => {

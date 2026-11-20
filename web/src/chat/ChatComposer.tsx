@@ -1,6 +1,7 @@
 import { useCallback, useLayoutEffect, useRef, type ComponentProps, type ReactNode } from "react";
 import { SkillPicker, type SkillPickerProps } from "../core/SkillPicker";
 import { StagedAnswerComments, type AnswerComments } from "./answerComments";
+import { DockedComments, type CommentDock } from "../comments/react/CommentDock";
 import {
   ComposerAddPicker,
   ComposerAttachmentChips,
@@ -17,8 +18,11 @@ export function ChatComposer({
   hint,
   composer,
   comments,
+  docked,
   skills,
   addDisabled = false,
+  addOptions,
+  addOptionCount,
   className,
   field,
   tools,
@@ -29,8 +33,13 @@ export function ChatComposer({
   hint?: ReactNode;
   composer?: ComposerAttachments;
   comments?: AnswerComments;
+  /** Saved comment threads the next message carries. */
+  docked?: CommentDock;
   skills?: SkillPickerProps;
   addDisabled?: boolean;
+  /** The next turn's settings, listed in the Add menu. */
+  addOptions?: ReactNode;
+  addOptionCount?: number;
   /** The caller's own state, such as a failure edge. */
   className?: string;
   /** The message field, which each caller keys and submits its own way. */
@@ -48,9 +57,17 @@ export function ChatComposer({
       {skills && <SkillPicker {...skills} />}
       {hint}
       {comments && <StagedAnswerComments comments={comments} />}
+      {docked && <DockedComments dock={docked} busy={false} />}
       {composer && <ComposerAttachmentChips composer={composer} />}
       <div className="chat-composer-row">
-        {composer && <ComposerAddPicker composer={composer} disabled={addDisabled} />}
+        {composer && (
+          <ComposerAddPicker
+            composer={composer}
+            disabled={addDisabled}
+            options={addOptions}
+            optionCount={addOptionCount}
+          />
+        )}
         {field}
         <div className="chat-send-actions">{actions}</div>
       </div>

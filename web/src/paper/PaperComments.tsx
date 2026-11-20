@@ -17,7 +17,7 @@ import {
   toRect,
 } from "../comments/react/domText.ts";
 import { MAX_QUOTE_CHARS, surroundingText } from "../comments/react/threadModel.ts";
-import { useComments, type SendThreads } from "../comments/react/useComments";
+import { useComments, type DockThreads } from "../comments/react/useComments";
 import {
   SelectionCommentButton,
   useSelectionComment,
@@ -133,7 +133,7 @@ export function usePaperComments({
   previewVisible,
   showSource,
   showPreview,
-  send,
+  dock,
   canPost,
 }: {
   projectId: string;
@@ -146,7 +146,7 @@ export function usePaperComments({
   previewVisible: boolean;
   showSource: () => void;
   showPreview: () => void;
-  send: SendThreads | null;
+  dock: DockThreads | null;
   canPost: boolean;
 }) {
   const fileId = file?.file_id ?? null;
@@ -159,7 +159,7 @@ export function usePaperComments({
     kind: "paper",
     ids,
     canPost,
-    send,
+    dock,
     picker: railOpen || Boolean(offer),
   });
   const [frameOffer, setFrameOffer] = useState<PreviewAnchor | null>(null);
@@ -364,7 +364,6 @@ export function usePaperComments({
         <CommentRail
           className="paper-comment-rail"
           comments={comments}
-          agentLabel="Coach"
           wholeLabel="Whole file"
           selected={selected}
           onLocate={locate}
@@ -411,8 +410,6 @@ export function usePaperComments({
         <CommentComposer
           offer={offer}
           comments={comments}
-          agentLabel="Coach"
-          canSend
           onClose={closeOffer}
           onCreated={(thread) => {
             setRailOpen(true);

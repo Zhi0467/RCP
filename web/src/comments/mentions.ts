@@ -8,13 +8,8 @@ import type { CommentMember } from "./types.ts";
 
 export function commentMentionCandidates(
   members: readonly CommentMember[],
-  canSend: boolean,
-  agentLabel = "Agent",
 ): BulletinMentionCandidate[] {
-  const candidates = bulletinMentionCandidates(members, []);
-  return canSend
-    ? [{ mention: { kind: "agent", id: "target" }, label: agentLabel, token: "" }, ...candidates]
-    : candidates;
+  return bulletinMentionCandidates(members, []);
 }
 
 export function encodeCommentMentions(

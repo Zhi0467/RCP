@@ -297,9 +297,9 @@ shrink columns. Fit preserves pins. Returning restores zoom, scroll, and offsets
 
 ## Agent browser controls
 
-Chat Options holds Browser use beside Work in a worktree. Its unlabelled sliders
-chip counts enabled options. On phones, the menu spans the screen-height composer.
-An outside click, Escape, or a chat change closes it.
+The composer's + menu holds Browser use and Work in a worktree below its file
+items, and + shows a count of enabled options. On phones, the menu spans the
+screen-height composer. An outside click, Escape, or a chat change closes it.
 Browser use starts off in new chats. A failed save returns to the server value,
 outlines the control in red, and offers one icon-only retry with the error on
 hover. The Coach's Browser use sits at the bottom of its agent picker, starts on,
@@ -327,7 +327,7 @@ Each human turn keeps its recorded label; a historical Discuss turn reads Discus
 in plum. The Agents header has a title, a picker for provider,
 model, and effort, a context ring, an active-watcher count toggle when watchers
 exist, and one menu. The menu holds Rename, Archive,
-New session, and Branch this chat. The worktree repository choice sits in Chat Options.
+New session, and Branch this chat. The worktree repository choice sits in the + menu.
 Runtime information stays in the inspector. The list has search and fold controls
 and a hairline divider. It has no title band or row for metadata or mode.
 
@@ -351,8 +351,9 @@ Assistant prose is unboxed. Progress folds behind Activity.
 Failures and recovery stay explicit. The composer is a contained writing surface:
 one card in every theme, with Add, the message, and the send actions on one row.
 The message has no box of its own, starts one line tall, and eases taller with
-its text. A second row holds the caller's own tools, such as
-Options, only when it has any.
+its text. A second row holds the caller's own tools, such as worktree
+integration, only when it has any. Docked comments show as one count above the
+row.
 The list groups appear in this order: New reply, Failed, Stopped, Working, and Done.
 New reply contains unread successes. Stopped contains paused or interrupted turns.
 Done contains read successes, unsent drafts, or unloaded turns.
@@ -410,7 +411,7 @@ the package menu is open, they move the caret or the highlight as before.
 and Escape dismisses the picker. Selections are per turn.
 Settings supplies fresh-chat defaults. Sessions retain their profile.
 Seed and Refresh have launch controls. Raw truth inputs choose the context.
-The + menu holds Upload file and From RCP.
+The + menu holds Upload file and From RCP, then the turn's options.
 Start episode's picker takes an optional starting message.
 
 Machine tiles show the name, host, provider status, writable-path count, and
@@ -747,12 +748,13 @@ reading opaque HTML. Selection alone sends or stages nothing.
 
 The [comment](paper-artifacts-and-result-views.md#shared-comments) rail sits
 beside the artifact, the Paper source, and the Paper preview. Each thread card
-shows a checkbox, avatar, author, time, and quote, with replies in one flat
-column under thin rules. Its reply box offers Reply and Send to agent, then
-Resolve; Send to agent on an empty reply sends the thread as it stands. Ticking
-a thread shows Send N to agent in the footer. Open threads show red numbered
-pins at the end of their anchors, and a selected card highlights its pin. The
-composer is a popover at the selection with Comment and Send to agent; `@` opens
-the picker with the agent row first. At 390px the rail is a bottom sheet.
+shows an avatar, author, time, and quote, with replies in one flat column under
+thin rules. Its reply box keeps one action row: Resolve or Reopen on the left,
+Reply on the right. Open threads show red numbered pins at the end of their
+anchors, and a selected card highlights its pin. The composer is a popover at
+the selection with one row: Cancel on the left, Comment on the right. `@` opens
+the member picker. At 390px the rail is a bottom sheet. A saved comment docks at
+the chat composer as an "N comments" count above the field
+([sending](paper-artifacts-and-result-views.md#sending-threads-to-an-agent)).
 Runs preserves server order, with the report first, and labels kind, time, and worker.
 Timeline popovers filter to the exact operation.

@@ -299,8 +299,8 @@ comment mode, or showing another file closes the comment window opened from the
 preview and keeps its text for the next selection; a new area or HTML selection
 carries it over. Escape or Cancel in the window discards it. A reload of the HTML
 frame keeps an open comment window, since its quote and place are already taken.
-Comment saves the thread. Send to agent sends it through the member's open Coach
-chat as message text, never as artifact context
+Comment saves the thread and docks it at the member's Coach composer, whose next
+message sends it as message text, never as artifact context
 ([sending](#sending-threads-to-an-agent)).
 
 The preview has no keyboard Comment button. Every Paper file takes whole-file
@@ -515,7 +515,7 @@ Paper's files as a coding agent edits a repository, in place, while members
 type. It shares chat's composer, transcript, attachments, steering, agent
 picker, Resume, Retry, recovery, and per-turn artifact folder. The Coach pane
 lists the member's Paper chats. History and New chat sit at the end of Paper's
-view-switch row without adding a phone row. Its composer sends ticked Paper
+view-switch row without adding a phone row. Its composer sends docked Paper
 comment threads with the next message ([sending](#sending-threads-to-an-agent)).
 
 A Paper chat's Work contract names the folder and says files change under the
@@ -784,14 +784,16 @@ and a click picks it. PDFs take page areas. Every viewable type takes whole-file
 comments; types available only for download take none. Comment saves a
 [shared thread](#shared-comments). Cancel or Escape discards the comment being
 written. Clicking elsewhere closes the window but retains the text for the next
-selection. The rail beside the artifact lists its threads, and Send N to agent
-sends the ticked open threads. Comments are never graph annotations.
+selection. The rail beside the artifact lists its threads. A saved comment or
+reply docks at the composer of the artifact's origin chat, which the viewer
+opens; that chat's next message sends it. Comments are never graph annotations.
 
-Viewer Send names thread ids, never client-built selections. A refused Send
-changes no thread. Success marks the threads sent and reports the operation.
-Send needs a readable, unexpired artifact context. Only a
-chat that refuses human turns can require a fresh session; the button then reads
-Send to agent in a new session. A later failure remains in `edit_failure` until replaced.
+When the origin chat takes no human turns, `origin_chat_id` in the viewer state
+is null and the viewer sends a saved thread at once. Viewer Send names thread
+ids, never client-built selections. A refused Send changes no thread. Success
+marks the threads sent and reports the operation. Send needs a readable,
+unexpired artifact context. Only a chat that refuses human turns can require a
+fresh session. A later failure remains in `edit_failure` until replaced.
 The theme follows the app or the standalone preference.
 
 `ArtifactContextRequest` in [service models](../../src/rcp/service.py) owns bounded
@@ -956,7 +958,12 @@ pin opens its thread. A notification or Inbox link runs the same path.
 
 ### Sending threads to an agent
 
-Send to agent sends whole threads with their quote and place. They ride the send
+Saving a comment or a reply on a thread the member may send (`can_send`) docks
+the thread at its chat's composer as an "N comments" count. The count opens a
+review list where each thread can be removed. The composer's next message,
+Enter or Send, carries the docked thread ids, and success clears the dock. A
+chat with no composer, such as a running orchestrator's, sends a saved artifact
+thread at once. Whole threads go with their quote and place. They ride the send
 path their target already uses:
 
 | Target | Entry point | Threads arrive as |
@@ -964,17 +971,14 @@ path their target already uses:
 | Chat reply or Paper file | the composer's new turn | message text |
 | Any, while a turn runs | the composer's steer | message text, without crops |
 | One artifact of this chat | the composer's new turn | artifact context selections |
-| Artifact in the viewer | the viewer's Send | artifact context selections |
-
-`@` in a post also offers the target's agent. Picking it saves the post and
-sends that thread.
+| Artifact in the viewer | the origin chat's composer, else the viewer's Send | artifact context selections |
 
 Each thread must be open and belong to the sending chat: its replies, its
 artifacts, or Paper for a Paper chat. Otherwise the send answers 409. A composer send carries threads of
 at most one artifact, which must belong to this chat. A send carries at most
 `ARTIFACT_CONTEXT_MAX_SELECTIONS` threads. The typed text plus every rendered
 thread must fit `STEERING_MESSAGE_MAX_CHARS`; otherwise the send answers 422.
-The rail checks the same total. Any refusal changes no thread.
+Any refusal changes no thread and keeps the dock.
 
 After admission, RCP resolves the threads with the send mark. A thread someone
 closed meanwhile stays as they left it. A reply posted while the send was in
@@ -985,7 +989,7 @@ renders the threads as they stood when sent and replays the original turn or
 steer.
 
 Sending needs project write access and a Patch-capable identity. Only the owner
-of a private chat sends to it. Other members see no agent row or Send and
+of a private chat sends to it. Other members' comments do not dock, and they
 mention the owner instead. If an admitted turn later fails, its threads stay
 resolved with the mark; the failure shows in the chat, and Reopen returns them.
 

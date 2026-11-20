@@ -2004,7 +2004,32 @@
 }
 .chat-add-menu {
   display: grid;
-  min-width: 180px;
+  min-width: min(280px, calc(100vw - 38px));
+}
+.chat-add-menu[hidden] {
+  display: none;
+}
+.chat-add-options {
+  border: 0;
+  border-top: 1px solid var(--line-strong);
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+.chat-add-file {
+  position: relative;
+}
+.chat-add-count {
+  background: var(--cobalt);
+  border-radius: 999px;
+  color: var(--surface);
+  font-size: var(--type-4xs);
+  line-height: 15px;
+  min-width: 15px;
+  padding: 0 3px;
+  position: absolute;
+  right: -4px;
+  top: -4px;
 }
 .chat-reference-picker {
   width: min(360px, calc(100vw - 38px));
@@ -2012,7 +2037,7 @@
 .chat-reference-picker.is-error {
   border-color: var(--red);
 }
-.chat-add-menu button,
+.chat-add-menu > button,
 .chat-reference-picker li button {
   align-items: center;
   background: none;
@@ -2027,12 +2052,12 @@
   text-align: left;
   width: 100%;
 }
-.chat-add-menu button:last-child,
+.chat-add-menu > button:last-of-type,
 .chat-reference-picker li:last-child button {
   border-bottom: 0;
 }
-.chat-add-menu button:hover:not(:disabled),
-.chat-add-menu button:focus-visible,
+.chat-add-menu > button:hover:not(:disabled),
+.chat-add-menu > button:focus-visible,
 .chat-reference-picker li button:hover:not(:disabled),
 .chat-reference-picker li button:focus-visible {
   background: var(--cobalt-soft);
@@ -2139,40 +2164,14 @@
   margin: 0;
   padding: 0;
 }
-.chat-options-menu {
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
-  bottom: 34px;
-  box-shadow: var(--shadow);
-  left: 0;
-  margin: 0;
-  min-width: min(300px, calc(100vw - 38px));
-  padding: 0;
-  position: absolute;
-  z-index: 16;
-}
-.chat-options-menu[hidden] {
-  display: none;
-}
-/* A phone has no room beside the chip; the menu spans the composer instead. */
-@media (max-width: 640px) {
-  .chat-options-picker {
-    position: static;
-  }
-  .chat-options-menu {
-    bottom: calc(100% + 6px);
-    min-width: 0;
-    right: 0;
-  }
-}
-.chat-options-menu > * {
+.chat-add-options > * {
   border-bottom: 1px solid var(--line);
   padding: 9px 10px;
 }
-.chat-options-menu > :last-child {
+.chat-add-options > :last-child {
   border-bottom: 0;
 }
-.chat-options-menu .browser-consent {
+.chat-add-options .browser-consent {
   font-size: var(--type-xs);
   gap: 3px;
 }

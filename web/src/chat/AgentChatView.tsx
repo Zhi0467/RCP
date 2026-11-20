@@ -27,17 +27,7 @@ import { QuestionCard } from "./QuestionCard";
 import { useQuestions } from "./useQuestions";
 import { questionIsOpen } from "./questions";
 import { ExternalJobRow } from "../experiments/ExternalJobRow";
-import {
-  ChevronUp,
-  LoaderCircle,
-  MessageCircle,
-  Mic,
-  MicOff,
-  RadioTower,
-  Send,
-  SlidersHorizontal,
-  X,
-} from "lucide-react";
+import { LoaderCircle, MessageCircle, Mic, MicOff, RadioTower, Send, X } from "lucide-react";
 import {
   useEffect,
   useEffectEvent,
@@ -73,8 +63,10 @@ import {
 import { arrowScrollsTranscript, returnSends } from "../ui/composerKeys";
 import { replaceTextSpan } from "./chatInput";
 import { useReplyComments } from "./ReplyComments";
+import { chatDockScope, useCommentDock } from "../comments/react/CommentDock";
+import { sendKeys } from "../comments/react/threadModel";
 import { useInlineArtifactComments } from "./inlineArtifactComments";
-import type { SendThreads } from "../comments/react/useComments";
+import type { DockThreads } from "../comments/react/useComments";
 import { createComposerDraft, useComposerDraft, type ComposerDraft } from "./composerDraft";
 import {
   chooseRecordingFormat,
@@ -192,7 +184,7 @@ interface Props {
   /** What follows a turn's last line, such as a Paper turn's changed files. */
   turnTrail?: (taskId: string) => ReactNode;
   /** Set to this composer's thread sender, which the host's own comment threads ride. */
-  threadSender?: RefObject<SendThreads | null>;
+  threadSender?: RefObject<DockThreads | null>;
 }
 
 export { pendingTurnShownByHistory } from "../agentWindow/useAgentWindowLines";
@@ -394,29 +386,14 @@ export function AgentChatView({
   const chatLinesRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const canSendThreads = !readOnly || allowArtifactComments;
+  const commentDock = useCommentDock(chatDockScope(project.id, chatId));
+  const dockKeys = useRef(sendKeys());
   const [supersedes, setSupersedes] = useState<{ chatId: string; operationId: string } | null>(
     null,
   );
   const supersededId = supersedes?.chatId === chatId ? supersedes.operationId : null;
-  const [optionsOpen, setOptionsOpen] = useState(false);
   const [browserOn, setBrowserOn] = useState(false);
   const optionCount = Number(browserOn) + Number(worktree.chosen);
-  const optionsRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!optionsOpen) return;
-    const closeOutside = (event: PointerEvent) => {
-      if (!optionsRef.current?.contains(event.target as Node)) setOptionsOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOptionsOpen(false);
-    };
-    document.addEventListener("pointerdown", closeOutside);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeOutside);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [optionsOpen]);
   const referencesKey = referenceDraftKey(
     actorId,
     project.id,
@@ -557,10 +534,6 @@ export function AgentChatView({
             ? "Dictating with Apple's server recognizer"
             : null;
   useEffect(() => {
-    setOptionsOpen(false);
-  }, [chatId, project.id]);
-
-  useEffect(() => {
     skills.reset();
     // Settings supplies fresh conversation defaults; an open turn keeps its own.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reset only when the chat changes, not when the picker object does
@@ -694,7 +667,7 @@ export function AgentChatView({
       );
       return;
     }
-    void send();
+    void sendMessage();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fires on dictation end only
   }, [sendAfterDictation, dictating]);
 
@@ -1207,8 +1180,15 @@ export function AgentChatView({
     }
   };
 
-  const sendThreads: SendThreads = async (threadIds, key) => {
-    if (!(await send({ ids: threadIds, key }))) throw new Error("Not sent; the chat shows why.");
+  const sendMessage = async (): Promise<boolean> => {
+    const ids = dictating ? [] : commentDock.items.map((item) => item.thread_id);
+    if (!ids.length) return send();
+    const sent = await send({ ids, key: dockKeys.current.key(ids) });
+    if (sent) {
+      dockKeys.current.done();
+      commentDock.clear(ids);
+    }
+    return sent;
   };
   const replyIds = useMemo(
     () => [
@@ -1221,7 +1201,7 @@ export function AgentChatView({
     [transcript],
   );
   useLayoutEffect(() => {
-    if (threadSender) threadSender.current = readOnly ? null : sendThreads;
+    if (threadSender) threadSender.current = readOnly ? null : commentDock.dock;
   });
   useLayoutEffect(
     () => () => {
@@ -1233,10 +1213,16 @@ export function AgentChatView({
     () => new Map(transcript.map((line) => [line.taskId, line.lineId])),
     [transcript],
   );
+  const sendSaved: DockThreads = (saved) => {
+    const ids = saved.map((thread) => thread.thread_id);
+    void send({ ids, key: dockKeys.current.key(ids) }).then((sent) => {
+      if (sent) dockKeys.current.done();
+    });
+  };
   const inlineArtifactComments = useInlineArtifactComments({
     projectId: project.id,
     canPost: canSendThreads,
-    send: canSendThreads ? sendThreads : null,
+    dock: readOnly ? (allowArtifactComments ? sendSaved : null) : commentDock.dock,
   });
   const replyComments = useReplyComments({
     projectId: project.id,
@@ -1244,7 +1230,7 @@ export function AgentChatView({
     replyIds,
     linesRef: chatLinesRef,
     canPost: !readOnly,
-    send: readOnly ? null : sendThreads,
+    dock: readOnly ? null : commentDock.dock,
     artifacts: inlineArtifactComments.artifacts,
   });
 
@@ -1535,8 +1521,33 @@ export function AgentChatView({
             />
           }
           composer={composer}
+          docked={commentDock}
           skills={skills.props}
           addDisabled={attachDisabled}
+          addOptionCount={optionCount}
+          addOptions={
+            <>
+              <ChatBrowserControl
+                key={`${project.id}:${chatId}`}
+                apiBase={questionApiBase}
+                chatId={chatId}
+                machine={config.run_on}
+                disabled={readOnly}
+                onRequestedChange={setBrowserOn}
+              />
+              <WorktreeChooser
+                state={worktree.state}
+                chosen={worktree.chosen}
+                disabled={Boolean(
+                  relatedActive || pausedAttempt || submitting || reviewPending || repairingTaskId,
+                )}
+                onChoose={worktree.choose}
+                repositories={worktreeRepositories}
+                repository={worktreeRepository}
+                onRepository={(alias) => setWorktreeRepositoryPick({ chatId, alias })}
+              />
+            </>
+          }
           field={
             <ComposerTextarea
               draft={draft}
@@ -1554,7 +1565,7 @@ export function AgentChatView({
                 if (arrowScrollsTranscript(event, chatLinesRef.current)) return;
                 if (returnSends(event)) {
                   event.preventDefault();
-                  void send();
+                  void sendMessage();
                 }
               }}
             />
@@ -1573,50 +1584,6 @@ export function AgentChatView({
                 onPreviewRemove={worktree.previewRemoval}
                 onRefresh={worktree.refresh}
               />
-              <div className="chat-compute-picker chat-options-picker" ref={optionsRef}>
-                <button
-                  className="chat-compute-trigger"
-                  type="button"
-                  aria-expanded={optionsOpen}
-                  aria-label="Options"
-                  title="Options"
-                  onClick={() => setOptionsOpen((open) => !open)}
-                >
-                  <SlidersHorizontal size={14} />
-                  {optionCount ? <strong>{optionCount}</strong> : null}
-                  <ChevronUp size={12} />
-                </button>
-                {/* Mounted while folded, so the count reflects the saved Browser choice. */}
-                <fieldset
-                  className="chat-options-menu"
-                  aria-label="Turn options"
-                  hidden={!optionsOpen}
-                >
-                  <ChatBrowserControl
-                    key={`${project.id}:${chatId}`}
-                    apiBase={questionApiBase}
-                    chatId={chatId}
-                    machine={config.run_on}
-                    disabled={readOnly}
-                    onRequestedChange={setBrowserOn}
-                  />
-                  <WorktreeChooser
-                    state={worktree.state}
-                    chosen={worktree.chosen}
-                    disabled={Boolean(
-                      relatedActive ||
-                      pausedAttempt ||
-                      submitting ||
-                      reviewPending ||
-                      repairingTaskId,
-                    )}
-                    onChoose={worktree.choose}
-                    repositories={worktreeRepositories}
-                    repository={worktreeRepository}
-                    onRepository={(alias) => setWorktreeRepositoryPick({ chatId, alias })}
-                  />
-                </fieldset>
-              </div>
             </>
           }
           actions={
@@ -1674,7 +1641,7 @@ export function AgentChatView({
                       reviewPending ||
                       !providerReady)
                 }
-                onClick={() => void send()}
+                onClick={() => void sendMessage()}
                 aria-label={steeringTask ? steeringTask.steer_action_label : "Send"}
               >
                 <Send size={16} />
@@ -1692,7 +1659,7 @@ export function AgentChatView({
                     const action = discardPrompt;
                     setDiscardPrompt(null);
                     setKeptSpeech(draftKey, null);
-                    void (action === "send" ? send() : toggleDictation());
+                    void (action === "send" ? sendMessage() : toggleDictation());
                   }}
                 >
                   Discard

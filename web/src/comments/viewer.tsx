@@ -10,7 +10,9 @@ import { selectionInput } from "./selectionInput.ts";
 import { CommentComposer, type CommentOffer } from "./react/CommentComposer";
 import { CommentPins } from "./react/CommentPins";
 import { CommentRail } from "./react/CommentRail";
-import { useCommentActions, type SendThreads } from "./react/useCommentActions";
+import { useCommentActions } from "./react/useCommentActions";
+import { dockedThread, type DockThreads } from "./react/CommentDock";
+import { sendKeys } from "./react/threadModel";
 import type { CommentAnchor, CommentMember, CommentRect, CommentThread } from "./types.ts";
 
 interface ViewerConfig {
@@ -23,6 +25,7 @@ interface ViewerConfig {
 }
 interface ViewerState {
   can_comment: boolean;
+  origin_chat_id: string | null;
   fresh_session_required: boolean;
   edit_failure?: string | null;
 }
@@ -283,8 +286,8 @@ function ViewerComments({ config }: { config: ViewerConfig }) {
   const reload = useCallback(() => {
     loadThreads().catch((cause: unknown) => failRef.current(cause));
   }, [loadThreads]);
-  const send = useCallback<SendThreads>(
-    async (threadIds, key) => {
+  const send = useCallback(
+    async (threadIds: string[], key: string) => {
       if (attempt.current?.key !== key)
         attempt.current = {
           key,
@@ -315,13 +318,39 @@ function ViewerComments({ config }: { config: ViewerConfig }) {
     },
     [client, config.artifactId],
   );
+  const keys = useRef(sendKeys());
+  const dock = useCallback<DockThreads>(
+    (saved) => {
+      if (stateRef.current?.origin_chat_id) {
+        window.parent.postMessage(
+          {
+            type: "rcp-artifact-comments-docked",
+            version: 1,
+            artifact_id: config.artifactId,
+            threads: saved.map(dockedThread),
+          },
+          location.origin,
+        );
+        return;
+      }
+      const ids = saved.map((thread) => thread.thread_id);
+      send(ids, keys.current.key(ids)).then(
+        () => keys.current.done(),
+        (cause: unknown) => {
+          keys.current.failed(cause);
+          failRef.current(cause);
+        },
+      );
+    },
+    [send, config.artifactId],
+  );
   const comments = useCommentActions({
     client,
     threads,
     loaded,
     members,
     canPost: canComment,
-    send: canComment ? send : null,
+    dock: canComment ? dock : null,
     reload,
   });
   failRef.current = comments.showError;
@@ -432,10 +461,8 @@ function ViewerComments({ config }: { config: ViewerConfig }) {
     <>
       <CommentRail
         comments={comments}
-        agentLabel="This artifact's agent"
         wholeLabel="Whole artifact"
         selected={selected}
-        maxSelections={config.maxSelections}
         onLocate={locate}
         note={(thread) =>
           thread.state === "open" && thread.anchor.kind !== "whole" && !position(thread)
@@ -455,8 +482,6 @@ function ViewerComments({ config }: { config: ViewerConfig }) {
           key={offer.key}
           offer={offer}
           comments={comments}
-          agentLabel="This artifact's agent"
-          canSend
           onClose={() => setOffer(null)}
           onCreated={(thread) => setSelected(thread.thread_id)}
         />

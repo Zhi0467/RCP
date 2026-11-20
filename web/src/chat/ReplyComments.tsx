@@ -22,7 +22,7 @@ import {
 import {
   useComments,
   type CommentsController,
-  type SendThreads,
+  type DockThreads,
 } from "../comments/react/useComments";
 import {
   SelectionCommentButton,
@@ -71,7 +71,7 @@ export function useReplyComments({
   replyIds,
   linesRef,
   canPost,
-  send,
+  dock,
   artifacts,
 }: {
   projectId: string;
@@ -80,7 +80,7 @@ export function useReplyComments({
   replyIds: readonly string[];
   linesRef: RefObject<HTMLElement | null>;
   canPost: boolean;
-  send: SendThreads | null;
+  dock: DockThreads | null;
   /** The threads on artifacts shown in this chat, listed after the replies'. */
   artifacts: { comments: CommentsController; locate: (thread: CommentThread) => void };
 }) {
@@ -93,7 +93,7 @@ export function useReplyComments({
     ids: replyIds,
     chatId,
     canPost,
-    send,
+    dock,
     picker: Boolean(offer || shown || listPoint),
   });
   const [selected, setSelected] = useState<string | null>(null);
@@ -221,8 +221,6 @@ export function useReplyComments({
         <CommentComposer
           offer={offer}
           comments={comments}
-          agentLabel="This chat"
-          canSend={Boolean(send)}
           onClose={() => setOffer(null)}
           onCreated={(thread) => setSelected(thread.thread_id)}
         />
@@ -232,7 +230,6 @@ export function useReplyComments({
           <CommentThreadCard
             thread={shownThread}
             comments={comments}
-            agentLabel="This chat"
             wholeLabel="Whole reply"
             selected={false}
             onLocate={() => locate(shownThread)}
@@ -251,7 +248,6 @@ export function useReplyComments({
         >
           <CommentList
             comments={comments}
-            agentLabel="This chat"
             wholeLabel="Whole reply"
             selected={selected}
             onLocate={locate}
@@ -260,7 +256,6 @@ export function useReplyComments({
           {artifacts.comments.threads.length > 0 && (
             <CommentList
               comments={artifacts.comments}
-              agentLabel="This chat"
               wholeLabel="Whole artifact"
               selected={selected}
               onLocate={artifacts.locate}

@@ -52,6 +52,7 @@ from rcp.runs.artifact_edit_admission import (
     admit_artifact_edit,
     artifact_edit_availability,
     artifact_send_chat_turn,
+    artifact_turn_chat,
     start_artifact_edit,
 )
 from rcp.service import RunRequest
@@ -483,6 +484,7 @@ class ArtifactViewerState(BaseModel):
     comment_unavailable_reason: str | None
     fresh_session_required: bool
     thread_href: str | None
+    origin_chat_id: str | None
     viewer_url: str | None
     download_url: str
     can_keep: bool
@@ -503,6 +505,15 @@ class RunArtifactEntry(BaseModel):
     origin_operation_id: str | None
     worker_label: str | None
     created_at: str
+
+
+def _origin_chat_id(store: AppStore, artifact: Artifact) -> str | None:
+    """The chat whose composer the viewer's saved comments dock at, if it takes turns."""
+    try:
+        chat = artifact_turn_chat(store, artifact)
+    except AgentTaskAdmissionConflict:
+        return None
+    return chat[2] if chat else None
 
 
 @router.get(
@@ -568,6 +579,7 @@ def stored_artifact_state(
         comment_unavailable_reason=availability.comment_unavailable_reason,
         fresh_session_required=availability.fresh_session_required,
         thread_href=_artifact_source_hrefs(catalog, store, project_id, [artifact]).get(artifact_id),
+        origin_chat_id=_origin_chat_id(store, artifact),
         viewer_url=f"{base}/viewer" if artifact_view(artifact.media_type) != "file" else None,
         download_url=f"{base}/download",
         can_keep=_temporary(store, artifact),

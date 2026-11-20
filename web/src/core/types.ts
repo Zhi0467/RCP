@@ -2408,6 +2408,8 @@ export interface ArtifactViewerState {
   fresh_session_required: boolean;
   /** App hash of the thread the reply goes to, or null when it cannot be opened. */
   thread_href: string | null;
+  /** The chat whose composer saved viewer comments dock at; null sends them straight away. */
+  origin_chat_id: string | null;
   /** Same-origin viewer shell for the current version; null for PDF and download-only. */
   viewer_url: string | null;
   download_url: string;

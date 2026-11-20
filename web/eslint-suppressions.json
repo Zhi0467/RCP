@@ -141,7 +141,7 @@
   },
   "src/chat/AgentChatView.tsx": {
     "rcp/no-comments": {
-      "count": 64
+      "count": 63
     }
   },
   "src/chat/AgentRename.tsx": {

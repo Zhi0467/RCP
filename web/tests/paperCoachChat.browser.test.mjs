@@ -78,7 +78,7 @@ function seed(fixture) {
 }
 
 for (const width of [1280, 390])
-  test(`a finished Coach turn folds its files; a row's diff line takes a comment the chat sends at ${width}px`, async (t) => {
+  test(`a finished Coach turn folds its files; a row's diff line takes a comment the chat's next message sends at ${width}px`, async (t) => {
     const { page, errors } = await openPaper(t, {
       browser,
       origin: server.origin,
@@ -104,24 +104,9 @@ for (const width of [1280, 390])
     const added = diff.getByRole("button", { name: "Comment on new line 20" });
     await added.click();
     await page.getByRole("textbox", { name: "Comment", exact: true }).fill("Keep the old wording.");
-    await page.getByRole("button", { name: "Send to agent" }).click();
-    await page.waitForFunction(() => window.paperCoachFixture.started.length === 1);
-    const [started] = await page.evaluate(() => window.paperCoachFixture.started);
-    assert.equal(started.request.focus, "paper");
-    assert.equal(started.request.reasoning, "high");
-    assert.equal(started.request.chat_id, "coach-1");
-    assert.deepEqual(started.request.comment_thread_ids, ["c1"]);
-
-    const thread = await page.evaluate(() =>
-      fetch("/api/projects/p/comment-threads?target_kind=reply&chat_id=coach-1")
-        .then((response) => response.json())
-        .then((page) => page.threads[0]),
-    );
-    const { kind, path, label, text } = thread.anchor;
-    assert.deepEqual(
-      [thread.target_kind, thread.target_id, kind, path, label, text],
-      ["reply", "turn-1", "element", "sections/method.md", "new line 20", "a link"],
-    );
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    const docked = page.locator(".chat-annotation-count");
+    await docked.waitFor({ state: "attached" });
 
     const dock = page.locator(".paper-coach-body > .chat-dock");
     const pane = await diff.boundingBox();
@@ -141,5 +126,26 @@ for (const width of [1280, 390])
     }
     await diff.waitFor({ state: "detached" });
     await dock.waitFor({ state: "visible" });
+    await docked.waitFor();
+    const field = dock.locator(".chat-composer textarea").first();
+    await field.fill("Please address this.");
+    await field.press("Enter");
+    await page.waitForFunction(() => window.paperCoachFixture.started.length === 1);
+    const [started] = await page.evaluate(() => window.paperCoachFixture.started);
+    assert.equal(started.request.focus, "paper");
+    assert.equal(started.request.reasoning, "high");
+    assert.equal(started.request.chat_id, "coach-1");
+    assert.deepEqual(started.request.comment_thread_ids, ["c1"]);
+
+    const thread = await page.evaluate(() =>
+      fetch("/api/projects/p/comment-threads?target_kind=reply&chat_id=coach-1")
+        .then((response) => response.json())
+        .then((page) => page.threads[0]),
+    );
+    const { kind, path, label, text } = thread.anchor;
+    assert.deepEqual(
+      [thread.target_kind, thread.target_id, kind, path, label, text],
+      ["reply", "turn-1", "element", "sections/method.md", "new line 20", "a link"],
+    );
     assert.deepEqual(errors, []);
   });

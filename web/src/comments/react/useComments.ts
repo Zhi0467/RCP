@@ -7,9 +7,10 @@ import { projectResourceKey, useProjectResource } from "../../projects/projectRe
 import { createCommentsClient } from "../api.ts";
 import type { CommentMember, CommentTarget, CommentThread } from "../types.ts";
 import { targetThreads } from "./threadModel.ts";
-import { useCommentActions, type CommentsController, type SendThreads } from "./useCommentActions";
+import { useCommentActions, type CommentsController } from "./useCommentActions";
+import type { DockThreads } from "./CommentDock.tsx";
 
-export type { CommentsController, SendThreads };
+export type { CommentsController, DockThreads };
 
 /** Every thread on these targets of one kind, or on every reply in `chatId` in one
  *  read. Any post or thread change moves the `comments` watermark, which re-reads it;
@@ -52,7 +53,7 @@ export function useComments({
   kind,
   ids,
   canPost,
-  send,
+  dock,
   picker,
   chatId = null,
 }: {
@@ -62,7 +63,7 @@ export function useComments({
   /** Reply threads: read the whole chat at once; `ids` still picks which show. */
   chatId?: string | null;
   canPost: boolean;
-  send: SendThreads | null;
+  dock: DockThreads | null;
   /** Whether an editor is on screen, so its `@` picker needs the members. */
   picker: boolean;
 }): CommentsController {
@@ -96,7 +97,7 @@ export function useComments({
     loaded: !profile || resource.value !== undefined,
     members,
     canPost,
-    send,
+    dock,
     reload,
   });
 }

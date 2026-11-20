@@ -162,6 +162,9 @@ test("a reply thread pins at its quote, opens from the pin and the header count,
       listed.push(new URL(route.request().url()).search);
       return route.fulfill({ json: { threads: [thread] } });
     });
+    await page.route("**/api/projects/*/comment-threads/c1/posts", (route) =>
+      route.fulfill({ json: { thread } }),
+    );
     await page.route("**/api/projects/*/members", (route) => route.fulfill({ json: [] }));
     await page.route("**/api/projects/*/chats/*/cards", (route) =>
       route.fulfill({ json: { next_expiry_at: null, proposal_cards: [], asked_cards: [] } }),
@@ -196,15 +199,21 @@ test("a reply thread pins at its quote, opens from the pin and the header count,
     await popover.waitFor({ state: "detached" });
     await page.getByRole("button", { name: "1 open comment" }).click();
     const list = page.getByRole("dialog", { name: "Comments" });
-    await list.getByRole("button", { name: "Send to agent" }).click();
+    const listBox = await list.boundingBox();
+    assert.ok(listBox.x >= 0 && listBox.x + listBox.width <= 390, JSON.stringify(listBox));
+    await list.getByRole("textbox", { name: "Reply" }).fill("Use the tuned one.");
+    await list.getByRole("button", { name: "Reply", exact: true }).click();
+    await page.getByRole("button", { name: "1 comment" }).waitFor();
+    await page.keyboard.press("Escape");
+    const field = page.locator(".chat-composer textarea").first();
+    await field.fill("Please address this.");
+    await field.press("Enter");
     await page.waitForFunction(() => window.started?.length === 1);
     const [started] = await page.evaluate(() => window.started);
     assert.equal(started.kind, "project_chat");
     assert.deepEqual(started.request.comment_thread_ids, ["c1"]);
     assert.equal(started.request.chat_id, "viewport-regression");
     assert.match(started.requestId, /^[0-9a-f-]{36}$/);
-    const listBox = await list.boundingBox();
-    assert.ok(listBox.x >= 0 && listBox.x + listBox.width <= 390, JSON.stringify(listBox));
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     assert.deepEqual(errors, []);
   } finally {

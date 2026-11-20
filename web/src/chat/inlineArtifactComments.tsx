@@ -7,17 +7,17 @@ import {
   type CommentOffer,
 } from "../comments/react/CommentComposer";
 import { CommentThreadCard } from "../comments/react/CommentThreadCard";
-import { useComments, type SendThreads } from "../comments/react/useComments";
+import { useComments, type DockThreads } from "../comments/react/useComments";
 import type { CommentThread } from "../comments/types.ts";
 
 export function useInlineArtifactComments({
   projectId,
   canPost,
-  send,
+  dock,
 }: {
   projectId: string;
   canPost: boolean;
-  send: SendThreads | null;
+  dock: DockThreads | null;
 }) {
   const [offer, setOffer] = useState<CommentOffer | null>(null);
   const [shown, setShown] = useState<{
@@ -52,7 +52,7 @@ export function useInlineArtifactComments({
     kind: "artifact",
     ids: artifactIds,
     canPost,
-    send,
+    dock,
     picker: Boolean(offer || shown),
   });
   const handlers: InlineComments = {
@@ -90,8 +90,6 @@ export function useInlineArtifactComments({
         <CommentComposer
           offer={offer}
           comments={comments}
-          agentLabel="This chat"
-          canSend={Boolean(send)}
           onClose={() => {
             offer.clear?.();
             setOffer(null);
@@ -103,7 +101,6 @@ export function useInlineArtifactComments({
           <CommentThreadCard
             thread={shownThread}
             comments={comments}
-            agentLabel="This chat"
             wholeLabel="Whole artifact"
             selected={false}
             onLocate={shown.locate}

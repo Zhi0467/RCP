@@ -156,11 +156,14 @@
   font: inherit;
 }
 .rcp-comment-actions {
+  align-items: center;
   display: flex;
   justify-content: flex-end;
-  flex-wrap: wrap;
   gap: 6px;
   margin-top: 7px;
+}
+.rcp-comment-actions > :first-child:not(:last-child) {
+  margin-right: auto;
 }
 .rcp-comments .rcp-comment-primary,
 .rcp-comment-composer .rcp-comment-primary {
