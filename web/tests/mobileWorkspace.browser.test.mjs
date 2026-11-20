@@ -54,7 +54,7 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       await page.route("**/api/projects/*/chats/*/cards", (route) =>
         route.fulfill({ json: { next_expiry_at: null, proposal_cards: [], asked_cards: [] } }),
       );
-      await page.route("**/api/projects/*/chats/*/browser", (route) =>
+      await page.route("**/api/agent-threads/*/browser?*", (route) =>
         route.fulfill({ json: { browser_requested: false } }),
       );
       await page.route("**/api/projects/*/chat-display", (route) =>
@@ -68,6 +68,15 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       );
       await page.route("**/api/projects/*/comment-threads?*", (route) =>
         route.fulfill({ json: { threads: [] } }),
+      );
+      await page.route("**/api/agent-threads/*/comment-threads?*", (route) =>
+        route.fulfill({ json: { threads: [] } }),
+      );
+      await page.route("**/api/agent-threads/*/queue", (route) =>
+        route.fulfill({ json: { items: [] } }),
+      );
+      await page.route("**/api/agent-threads/*/schedules", (route) =>
+        route.fulfill({ json: { schedules: [] } }),
       );
       await page.route("**/api/health", (route) =>
         route.fulfill({ json: { space_kind: "personal" } }),
@@ -89,7 +98,7 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       const menuBox = await menuButton.boundingBox();
       assert.ok(title.y < menuBox.y + menuBox.height && menuBox.y < title.y + title.height);
       const failing = (route) => route.fulfill({ status: 500, json: { detail: "Store offline" } });
-      await page.route("**/api/projects/*/chats/*/browser", failing);
+      await page.route("**/api/agent-threads/*/browser?*", failing);
       await menuButton.click();
       const browserRow = page.locator(".chat-header-menu-list .chat-browser-control");
       const retry = browserRow.getByRole("button", { name: "Retry browser preference" });
@@ -101,7 +110,7 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       const [rowBox, retryBox] = [await browserRow.boundingBox(), await retry.boundingBox()];
       assert.ok(retryBox.y >= rowBox.y && retryBox.y + retryBox.height <= rowBox.y + rowBox.height);
       assert.ok(rowBox.height <= 48, `The failed row stays one row, got ${rowBox.height}px`);
-      await page.unroute("**/api/projects/*/chats/*/browser", failing);
+      await page.unroute("**/api/agent-threads/*/browser?*", failing);
       errors.splice(0, errors.length, ...errors.filter((error) => !/status of 500/.test(error)));
       await retry.click();
       await retry.waitFor({ state: "detached" });

@@ -158,11 +158,11 @@ test("a reply thread pins at its quote, opens from the pin and the header count,
     };
     await page.route("**/api/projects/*/chats/*/questions", (route) => route.fulfill({ json: [] }));
     const listed = [];
-    await page.route("**/api/projects/*/comment-threads?*", (route) => {
+    await page.route("**/api/agent-threads/viewport-regression/comment-threads?*", (route) => {
       listed.push(new URL(route.request().url()).search);
       return route.fulfill({ json: { threads: [thread] } });
     });
-    await page.route("**/api/projects/*/comment-threads/c1/posts", (route) =>
+    await page.route("**/api/agent-threads/viewport-regression/comment-threads/c1/posts", (route) =>
       route.fulfill({ json: { thread } }),
     );
     await page.route("**/api/projects/*/members", (route) => route.fulfill({ json: [] }));

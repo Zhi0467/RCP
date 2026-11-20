@@ -185,7 +185,10 @@ export function createPaperFixture({ room = new PaperTestRoom() } = {}) {
       if (/\/chats\/[^/]+\/questions$/.test(path)) return { json: [] };
       if (/\/chats\/[^/]+\/cards$/.test(path))
         return { json: { next_expiry_at: null, proposal_cards: [], asked_cards: [] } };
-      if (/\/chats\/[^/]+\/browser$/.test(path)) return { json: { browser_requested: false } };
+      if (/^\/api\/agent-threads\/[^/]+\/browser$/.test(path))
+        return { json: { browser_requested: false } };
+      if (/^\/api\/agent-threads\/[^/]+\/queue$/.test(path)) return { json: { items: [] } };
+      if (/^\/api\/agent-threads\/[^/]+\/schedules$/.test(path)) return { json: { schedules: [] } };
       if (path === "/api/service-connections") return { json: { dictation: "", connections: [] } };
       if (/\/chats\/[^/]+\/worktree$/.test(path))
         return {
@@ -197,7 +200,7 @@ export function createPaperFixture({ room = new PaperTestRoom() } = {}) {
             can_remove: false,
           },
         };
-      const chat = chats.find((item) => path.endsWith(`/chats/${item.chat_id}`));
+      const chat = chats.find((item) => path === `/api/agent-threads/${item.chat_id}/transcript`);
       if (chat) return { json: { ...chat, messages: [] } };
       const turn = path.match(/\/paper\/turns\/([^/]+)(\/file)?$/);
       if (turn) {

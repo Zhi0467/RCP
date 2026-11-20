@@ -156,6 +156,7 @@ const project = {
   graph_head: changes.head,
   graph_changes: changes,
   graph,
+  run_on: "local",
   agent_profiles: { node_chat: profile, project_chat: profile },
   provider_readiness: {
     local: {

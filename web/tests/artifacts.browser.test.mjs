@@ -990,7 +990,7 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
     await page.getByRole("button", { name: "Close viewer", exact: true }).click();
     const created = [];
     let saved = null;
-    await page.route("**/api/projects/project/comment-threads*", (route) => {
+    await page.route("**/api/agent-threads/error-chat/comment-threads*", (route) => {
       if (route.request().method() === "GET")
         return route.fulfill({ json: { threads: saved ? [saved] : [] } });
       const body = route.request().postDataJSON();

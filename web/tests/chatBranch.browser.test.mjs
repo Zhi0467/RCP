@@ -116,7 +116,7 @@ for (const width of [1000, 390]) {
         };
         data = result;
       }
-      if (path.endsWith("/chats/forked")) data = result;
+      if (path === "/api/agent-threads/forked/transcript") data = result;
       if (path.endsWith("/questions")) data = [];
       if (path.endsWith("/browser")) data = { enabled: false };
       await route.fulfill({ contentType: "application/json", body: JSON.stringify(data) });

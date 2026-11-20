@@ -127,7 +127,7 @@ test("a repeated path passes only when a polled route template covers it", () =>
 });
 
 const BEAT = "POST /api/resource-watermarks";
-const LIVE = "GET /api/projects/p1/tasks/op-live";
+const LIVE = "GET /api/agent-threads/moss/tasks/op-live";
 
 test("an idle open thread only beats over ten seconds", async () => {
   await withFixture(async (browser, base) => {
@@ -145,11 +145,11 @@ test("an idle open thread only beats over ten seconds", async () => {
 test("a running thread polls only its task, and a hidden tab reads nothing", async () => {
   await withFixture(async (browser, base) => {
     const { page, all, errors, measure, setHidden } = await openPage(browser);
-    await page.route("**/api/projects/p1/chats/moss", (route) =>
+    await page.route("**/api/agent-threads/moss/transcript", (route) =>
       route.fulfill({ json: transcript("moss", [message("n1", "user", "Run it", "op-live")]) }),
     );
     const running = { ...settled("op-live"), active: true, settled: false };
-    await page.route("**/api/projects/p1/tasks/op-live", (route) =>
+    await page.route("**/api/agent-threads/moss/tasks/op-live", (route) =>
       route.fulfill({ json: running }),
     );
     await page.goto(`${base}?wire#/agent/moss`);

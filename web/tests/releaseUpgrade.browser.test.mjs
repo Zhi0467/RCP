@@ -166,7 +166,7 @@ test("a member browses the rehearsed copy across spaces without a failed read", 
     await reads(() => open("?view=attention"), `${project}/consolidation`);
     await reads(
       () => open(`?view=chats&chat=${seeded.chat_id}`),
-      `${project}/chats/${seeded.chat_id}`,
+      `/api/agent-threads/${seeded.chat_id}/transcript`,
     );
     await page.getByText("Drew the figure.").first().waitFor();
     await reads(() => open("?view=artifacts"), `${project}/artifacts`);
