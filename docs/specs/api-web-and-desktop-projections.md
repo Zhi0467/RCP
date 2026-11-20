@@ -2556,7 +2556,7 @@ that row's, `needs_you` is `run_section == "actionable"`, and `link` is
 rows come from the thread projection, only when `live_state` is `needs_you`,
 `running`, `queued`, `paused` or `failed`, or `watching` is above zero: `title`
 is `agent_name`, `label` is
-`live_label`, `at` is the latest turn's `updated_at`, `needs_you` holds for
+`live_label`, `at` is the thread's `last_activity_at`, `needs_you` holds for
 `needs_you`, `paused` and `failed`, and `link` is `#/agent/{thread_id}`.
 `watching` counts the row's own active or degraded watchers. Rows that need
 the member come first, each group newest `at` first. `needs` and `total` are
@@ -2565,11 +2565,13 @@ counted before the list is cut to `SPACE_RUNNING_MAX_ROWS`.
 Every per-agent action has one route under `/api/agent-threads/{thread_id}`:
 `turns`, `transcript`, `tasks/{operation_id}` with its `steer`, `pause`,
 `resume` and `retry`, `queue`, `attachments`, `title`, `read`, `browser`,
-`archive`, `branch`, `comment-threads`, `watchers`, `schedules`, `references`,
-`agent`, `artifacts/{artifact_id}/state`, `voice-entries`, and `memory`. Each handler resolves the agent once
+`archive`, `branch`, `comment-threads`, `references`, `agent`, and
+`artifacts/{artifact_id}/state`. Each of these handlers resolves the agent once
 ([`resolve_agent`](../../src/rcp/agents/agent_owner.py)); its placement picks
 the storage scope and write admission, and another member's private agent
-returns 404. A project agent that has no row yet takes a `project_id` query
+returns 404. `watchers` and `schedules` check access to the agent with
+`accessible_agent` and have their own rules (job Cancel above, schedules in
+their own section). `voice-entries` and `memory` serve only the thread's owner. A project agent that has no row yet takes a `project_id` query
 parameter, checked against membership; once the row exists, a different
 `project_id` returns 404. A project agent's `turns` body is the project chat
 send, and a `chat_id` naming another agent returns 422. `archive` and `branch`
