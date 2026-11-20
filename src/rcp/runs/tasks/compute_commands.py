@@ -167,7 +167,7 @@ class WorkComputeCommands:
             "A long-lived process such as a dashboard uses the ordinary launch and its watcher. "
             "For work that must outlive this agent turn, use the process launch helper: "
             f"`{launch_command}`. For running work, use the returned purpose to title the watcher "
-            "and copy check_command, log_path and cwd into its external check. The helper's "
+            "and copy check_command, log_path, cwd and cancel_command into its external check. The helper's "
             "check_command is for RCP's watcher and may not run "
             "inside your sandbox. The launch response's startup object reports the job a moment "
             "after start: running means RCP saw it alive, unknown means RCP could not check it "

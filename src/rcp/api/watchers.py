@@ -2,25 +2,30 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from rcp.api.dependencies import (
     get_catalog,
     get_graph_service,
+    get_identity_access,
     get_store,
     require_project_membership,
+    require_project_write_admission,
     require_registered_project,
 )
+from rcp.api.identity import IdentityAccess
 from rcp.core.transition_models import GraphTargetRef
 from rcp.projects import ProjectCatalog
 from rcp.storage import AppStore
 from rcp.storage.agent_tasks import SESSION_TASK_KINDS
 from rcp.storage.models import AgentTaskRecord, WatcherCheckRecord, WatcherRecord
+from rcp.watchers import cancel_watched_job
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
 
 CatalogDependency = Annotated[ProjectCatalog, Depends(get_catalog)]
 StoreDependency = Annotated[AppStore, Depends(get_store)]
+IdentityDependency = Annotated[IdentityAccess, Depends(get_identity_access)]
 
 _STOPPED_BY = {"agent": "agent", "rcp": "loop", "human": "human"}
 
@@ -52,6 +57,105 @@ def project_watchers(
     return watcher_check_views(store, watchers)
 
 
+@router.post(
+    "/api/projects/{project_id}/watchers/{watcher_id}/cancel",
+    dependencies=[Depends(require_project_write_admission)],
+)
+def cancel_job(
+    project_id: str,
+    watcher_id: str,
+    request: Request,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+) -> dict[str, object]:
+    """Run the job's saved Cancel command; an accepted Cancel ends its watcher too."""
+
+    human = identity_access.require_patch_capable_identity(request)
+    project_id = catalog.resolve_project_id(project_id)
+    try:
+        watcher = cancel_watched_job(store, project_id, watcher_id, human.user_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Watcher not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _single_view(store, watcher, watcher_id)
+
+
+@router.post("/api/projects/{project_id}/watchers/{watcher_id}/stop")
+def stop_watching(
+    project_id: str,
+    watcher_id: str,
+    *,
+    catalog: CatalogDependency,
+    store: StoreDependency,
+) -> dict[str, object]:
+    """Release a live observer whose Experiment already ended, leaving its job alone."""
+
+    require_registered_project(catalog, project_id)
+    project_id = catalog.resolve_project_id(project_id)
+    watcher = store.watcher_of_check(watcher_id)
+    if watcher is None or watcher.project_id != project_id:
+        raise HTTPException(status_code=404, detail="Watcher not found")
+    check = next(item for item in watcher.checks if item.check_id == watcher_id)
+    turn = store.agent_task(watcher.origin_turn_id)
+    if not _can_stop_watching(store, watcher, check, turn, {}):
+        raise HTTPException(
+            status_code=409,
+            detail="Only a live observer of an ended Experiment can stop watching.",
+        )
+    store.cancel_watchers(
+        [watcher.watcher_id],
+        by="human",
+        reason="A member stopped watching after the Experiment ended.",
+    )
+    current = store.watcher(watcher.watcher_id)
+    assert current is not None
+    return _single_view(store, current, watcher_id)
+
+
+def _single_view(store: AppStore, watcher: WatcherRecord, check_id: str) -> dict[str, object]:
+    return next(
+        view for view in watcher_check_views(store, [watcher]) if view["watcher_id"] == check_id
+    )
+
+
+def _armed_by_loop(turn: AgentTaskRecord | None) -> bool:
+    return turn is not None and turn.request.get("patch_kind") == "experiment_loop"
+
+
+def _can_stop_watching(
+    store: AppStore,
+    watcher: WatcherRecord,
+    check: WatcherCheckRecord,
+    turn: AgentTaskRecord | None,
+    ended: dict[str, bool],
+) -> bool:
+    """Only a live external observer of an Experiment that has already ended.
+
+    A running Experiment owns its watchers through Stop. An ended one cannot take
+    Stop, and its stale observer would otherwise block a fresh Run.
+    """
+
+    if (
+        turn is None
+        or not _armed_by_loop(turn)
+        or not watcher.open
+        or check.definition != "external"
+        or check.removed_at is not None
+        or check.completed_at is not None
+    ):
+        return False
+    episode_id = turn.request.get("control_episode_id")
+    if not isinstance(episode_id, str) or not episode_id:
+        return False
+    if episode_id not in ended:
+        episode = store.episode(episode_id)
+        ended[episode_id] = episode is not None and episode.ending is not None
+    return ended[episode_id]
+
+
 def watcher_check_views(store: AppStore, watchers: list[WatcherRecord]) -> list[dict[str, object]]:
     """One response object per check, in the shape the Web reads.
 
@@ -59,21 +163,30 @@ def watcher_check_views(store: AppStore, watchers: list[WatcherRecord]) -> list[
     """
 
     turns = store.agent_tasks_by_ids({watcher.origin_turn_id for watcher in watchers})
+    ended: dict[str, bool] = {}
     return [
-        _check_view(watcher, check, turns.get(watcher.origin_turn_id))
+        _check_view(
+            store,
+            watcher,
+            check,
+            turns.get(watcher.origin_turn_id),
+            _can_stop_watching(store, watcher, check, turns.get(watcher.origin_turn_id), ended),
+        )
         for watcher in watchers
         for check in watcher.checks
     ]
 
 
 def _check_view(
+    store: AppStore,
     watcher: WatcherRecord,
     check: WatcherCheckRecord,
     turn: AgentTaskRecord | None,
+    can_stop_watching: bool,
 ) -> dict[str, object]:
     request = turn.request if turn is not None else {}
     arming_target = turn.graph_target if turn is not None else GraphTargetRef()
-    loop = request.get("patch_kind") == "experiment_loop"
+    loop = _armed_by_loop(turn)
     removed = watcher.cancelled_at is None and check.removed_at is not None
     status = (
         "stopped"
@@ -113,7 +226,7 @@ def _check_view(
         "stopped_at": watcher.cancelled_at or check.removed_at,
         "stop_operation_id": None,
         "can_check_now": False,
-        "can_stop_watching": False,
+        "can_stop_watching": can_stop_watching,
         "wakes_chat": (
             turn is not None
             and turn.kind in SESSION_TASK_KINDS
@@ -131,17 +244,24 @@ def _check_view(
         )
         return view
     grouped = len(watcher.checks) > 1
+    requester = store.space_user(check.cancel_requested_by) if check.cancel_requested_by else None
     view.update(
         check_command=check.check_command,
         log_path=check.log_path,
         cwd=check.cwd,
         purpose=watcher.purpose,
-        cancel_command=None,
-        cancel_requested_by=None,
-        cancel_requested_by_name=None,
-        cancel_requested_at=None,
-        cancel_error=None,
-        can_cancel=False,
+        cancel_command=check.cancel_command,
+        cancel_requested_by=check.cancel_requested_by,
+        cancel_requested_by_name=requester.display_name if requester else None,
+        cancel_requested_at=check.cancel_requested_at,
+        cancel_error=check.cancel_error,
+        can_cancel=bool(
+            check.cancel_command
+            and watcher.open
+            and check.removed_at is None
+            and check.completed_at is None
+            and (check.cancel_requested_at is None or check.cancel_error is not None)
+        ),
         last_checked_at=check.last_checked_at,
         last_exit_code=check.last_exit_code,
         last_error=check.last_error,

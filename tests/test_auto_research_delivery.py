@@ -1928,3 +1928,72 @@ def test_newest_notices_and_messages_are_a_bounded_suffix_in_order(tmp_path):
     messages = store.auto_research_messages(episode.episode_id, newest=2)
     assert [message.message_id for message in messages] == ["message-1", "message-2"]
     assert len(store.auto_research_messages(episode.episode_id)) == 3
+
+
+@pytest.mark.asyncio
+async def test_an_orchestrator_arms_a_watcher_from_its_folder_and_the_wake_continues_it(
+    tmp_path,
+) -> None:
+    import json
+
+    from rcp.runs.tasks.auto_research_stream import (
+        _reconcile_orchestrator_watchers,
+        _stage_orchestrator_watchers,
+    )
+
+    store = _store(tmp_path)
+    stage_root = tmp_path / "auto_research-stage"
+    stage_root.mkdir()
+
+    async def stream(_project_id, _kind, request, execution):
+        if execution.continuation == "fresh":
+            execution.checkpoint_stage("execution-host", str(stage_root))
+        yield _sse(
+            AgentEvent(event="session", session_id=request.session_id or "orchestrator-session")
+        )
+        yield _sse(AgentEvent(event="done"))
+
+    tasks = BackgroundAgentTasks(store, stream)
+    auto_research, root = _start_auto_research(tasks)
+    workspace = stage_root / "workspace"
+    workspace.mkdir()
+    execution = SimpleNamespace(
+        store=store, operation_id=root.operation_id, armed_graph_watchers=False
+    )
+    turn = SimpleNamespace(
+        task=root,
+        request=SimpleNamespace(episode_id=auto_research.episode_id),
+        recovering_allocation=False,
+    )
+    stage = SimpleNamespace(
+        workspace=workspace, remote=None, machine=SimpleNamespace(machine_id=BACKEND_MACHINE_ID)
+    )
+    _stage_orchestrator_watchers(execution, turn, stage)
+    (tmp_path / "job.log").write_text("done\n")
+    (workspace / "watchers" / "job.json").write_text(
+        json.dumps(
+            {
+                "purpose": "Training job finishes",
+                "checks": [
+                    {
+                        "check_command": "true",
+                        "log_path": str(tmp_path / "job.log"),
+                        "cwd": str(tmp_path),
+                    }
+                ],
+            }
+        )
+    )
+
+    await _reconcile_orchestrator_watchers(SimpleNamespace(), execution, turn, stage)
+
+    (watcher,) = store.agent_watchers(auto_research.episode_id)
+    assert watcher.ready and watcher.origin_turn_id == root.operation_id
+    before = store.episode_budget_meter(auto_research.episode_id).invocations_used
+    wake_id = _deliver(tasks, watcher)
+    assert wake_id is not None
+    wake = wait_for_task(store, wake_id, expect="succeeded")
+    assert store.auto_research_invocation_role(wake.operation_id) == "orchestrator"
+    assert wake.request["actor_operation_id"] == root.operation_id
+    assert wake.native_session_id == root.native_session_id
+    assert store.episode_budget_meter(auto_research.episode_id).invocations_used == before + 1

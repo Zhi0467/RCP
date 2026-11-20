@@ -23,6 +23,7 @@ from rcp.agents.prompts import (
     protected_belief_names,
     selected_skill_section,
     skill_prompt_values,
+    watcher_section,
     write_scope_section,
 )
 from rcp.agents.write_scope import ProjectWriteScope
@@ -37,7 +38,7 @@ from rcp.limits import (
 )
 
 # Bumped when the stable policy prose of either Auto-research actor contract changes.
-AUTO_RESEARCH_POLICY_VERSION = "auto-research-v20"
+AUTO_RESEARCH_POLICY_VERSION = "auto-research-v22"
 
 
 def _repositories(repositories: list[dict[str, str]]) -> str:
@@ -477,6 +478,7 @@ def auto_research_orchestrator_task_contract(
     compute_profiles: list[dict[str, str]] | None = None,
     paper_path: str | None = None,
     parent_chat: bool = False,
+    watchers_path: str | None = None,
 ) -> str:
     """Build the immutable contract for the sole elevated Auto-research profile."""
     child_profiles = child_profiles or {}
@@ -538,6 +540,8 @@ Worker coordination:
   treating a Proposal as completed work or a route around human judgment.
 - There is no blocking primitive. Continue useful independent work or send a message, and let RCP
   wake the saved session. Do not poll or keep a turn open to wait.
+
+{watcher_section(watchers_path) if watchers_path else ""}
 
 {_packages(skill_pointers)}{_auto_research_commands(command_client, child_profiles, allowed_verbs)}
 {_orchestrator_ask_contract(allowed_verbs)}

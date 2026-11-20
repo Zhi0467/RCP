@@ -603,6 +603,8 @@ all of its checks finish. To arm one, create `watchers/<watcher_id>.json` with a
 short `purpose` and a nonempty `checks` list. Each check has a `check_command`,
 `log_path`, and `cwd`. Use absolute paths. The command only observes and exits
 1 while the work continues, 0 on completion, or another status on failure.
+A check may add `cancel_command` that ends exactly that job. Only a member's
+Cancel runs it, and that Cancel also ends the watcher.
 For a graph condition use `graph` instead of `checks`, e.g.
 {"purpose":"Wait for review","graph":{"node_id":"hyp/foo","proposal_resolved":true}}.
 Edit a file to change the watcher. Delete it to cancel the watcher. Cancelling
@@ -929,7 +931,7 @@ _INLINE_CONTINUATION_RULES = {
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
 DISCUSS_POLICY_VERSION = "discuss-v18"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v40"
+WORK_POLICY_VERSION = "work-v41"
 
 
 class PromptFactory:

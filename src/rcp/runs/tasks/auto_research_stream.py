@@ -177,6 +177,14 @@ from rcp.transport import (
     StateUnavailable,
 )
 from rcp.transport.run_stage import remote_stage_name
+from rcp.watcher_folder import (
+    WatcherFile,
+    read_watcher_folder,
+    reconcile_watcher_files,
+    stage_watcher_folder,
+    watcher_binding,
+)
+from rcp.watchers import WatcherBinding
 
 _SAME_ALLOCATION_RECOVERY = frozenset({"resume", "retry"})
 _HANDOFFS_CLEARED_RECEIPT = "auto_research_worker_handoffs_cleared"
@@ -352,6 +360,7 @@ async def stream_auto_research_orchestrator_run(
             command_dispatcher, service, turn.request, stage, graph_read_scope, allowed_verbs
         )
         _prepare_turn_handoffs(execution, turn, stage)
+        _stage_orchestrator_watchers(execution, turn, stage)
 
         messages_path = _stage_claimed_mail(execution, turn, stage)
         lifecycle_path = _stage_claimed_lifecycle(execution, turn, stage)
@@ -1450,6 +1459,77 @@ def _prepare_turn_handoffs(
     )
 
 
+def _orchestrator_watcher_binding(
+    execution: AgentTaskExecution,
+    turn: _CanonicalWorkerTurn | _CanonicalOrchestratorTurn,
+    stage: _WorkerStage,
+) -> WatcherBinding:
+    """The orchestrator's watchers belong to its chain's root episode, across continuations."""
+
+    return watcher_binding(
+        execution.store,
+        execution.operation_id,
+        execution.store.auto_research_chain_root(turn.task.project_id, turn.request.episode_id),
+        stage.machine.machine_id,
+    )
+
+
+def _stage_orchestrator_watchers(
+    execution: AgentTaskExecution,
+    turn: _CanonicalOrchestratorTurn,
+    stage: _WorkerStage,
+) -> None:
+    staged = execution.store.agent_task_contract(execution.operation_id, "watcher_folder:0")
+    if turn.recovering_allocation and staged is not None:
+        return
+    stage_watcher_folder(
+        execution.store,
+        _orchestrator_watcher_binding(execution, turn, stage),
+        stage.workspace,
+        stage.remote,
+    )
+
+
+async def _reconcile_orchestrator_watchers(
+    service: ProjectService,
+    execution: AgentTaskExecution,
+    turn: _CanonicalWorkerTurn | _CanonicalOrchestratorTurn,
+    stage: _WorkerStage,
+) -> None:
+    """Apply the orchestrator's watcher folder; a refusal is recorded and arms nothing."""
+
+    store = execution.store
+    try:
+        files = await asyncio.to_thread(read_watcher_folder, stage.workspace, stage.remote)
+        graphs = any(WatcherFile.model_validate_json(raw).graph for raw in files.values())
+        state = await asyncio.to_thread(service.history.state) if graphs else None
+        await asyncio.to_thread(
+            reconcile_watcher_files,
+            store,
+            _orchestrator_watcher_binding(execution, turn, stage),
+            json.loads(
+                store.agent_task_contract(execution.operation_id, "watcher_folder:0") or "{}"
+            ),
+            files,
+            state=state,
+        )
+    except (OSError, StateUnavailable, ValueError) as exc:
+        if not store.agent_task_has_receipt(execution.operation_id, "watcher_handoff_rejected"):
+            store.record_agent_task_receipt(
+                execution.operation_id,
+                "watcher_handoff_rejected",
+                {"problem": str(exc)[:1600], "correction_rounds": 0},
+                tier="diagnostic",
+            )
+            store.record_agent_task_event(
+                execution.operation_id,
+                f"Watcher handoff was not armed: {exc}",
+                level="warning",
+            )
+        return
+    execution.armed_graph_watchers |= graphs
+
+
 def _stage_claimed_mail(
     execution: AgentTaskExecution,
     turn: _CanonicalWorkerTurn | _CanonicalOrchestratorTurn,
@@ -1756,6 +1836,7 @@ def _orchestrator_prompt(
             compute_profiles=compute_profiles,
             paper_path=context.paper_path,
             parent_chat=parent_chat,
+            watchers_path=str(Path(patch_path).parent / "watchers"),
         )
 
     def start_contract() -> str:
@@ -2855,6 +2936,8 @@ async def _settle_actor_turn(
         yield frame
     if settlement.awaiting_remote_result:
         return
+    if orchestrator:
+        await _reconcile_orchestrator_watchers(service, execution, turn, stage)
     graph_update = settlement.graph_update
     if orchestrator:
         graph_updates = _ordered_orchestrator_graph_updates(execution)

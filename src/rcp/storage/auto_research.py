@@ -63,6 +63,12 @@ _LEGACY_AUTO_RESEARCH_TABLES: tuple[tuple[str, str], ...] = (
 class AutoResearchStoreMixin(StoreMixinBase):
     """Auto-research policy state attached to the generic episode ledger."""
 
+    def auto_research_chain_root(self, project_id: str, episode_id: str) -> str:
+        """The root episode of a continuation chain, which names its orchestrator agent."""
+
+        with self.connection() as connection:
+            return _chain_root(connection, project_id, episode_id)
+
     def create_auto_research_episode_with_root_task(
         self,
         episode: EpisodeRecord,

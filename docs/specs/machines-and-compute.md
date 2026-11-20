@@ -174,41 +174,17 @@ is no separate compute-job list API.
 
 A human request to
 `POST /api/projects/{project_id}/watchers/{watcher_id}/cancel` requires membership,
-write admission and actor attribution. Foreign ids return 404. For a generic
-shell watcher, a fresh saved check first observes already-ended work or records why cancellation
-cannot run. Otherwise, an atomic claim records the actor and time. The saved
-command then executes on its host, in its working directory, through the bounded
-shell.
-Concurrent requests share the claim.
+write admission and actor attribution. Foreign ids return 404. An atomic claim on
+the live check records the actor and time, so concurrent requests run the command
+once. The saved `cancel_command` then executes on the check's machine, in its working
+directory, through the bounded shell. Helper jobs carry the helper's own `cancel`
+command, so they take the same path.
 
-An exact registered helper watcher can also recover a lost job whose ordinary
-check lacks a valid exit receipt. Matching requires the project, machine id,
-origin, log, and complete helper command contract. The server claims the human
-action, and first reconciles any valid exit receipt from an absent owner,
-including a receipt that arrived after an earlier loss observation. Natural
-completion retains its exit status and timestamp without a cancellation
-acknowledgement or
-request attribution. The server otherwise uses the recorded OS owner outside
-the provider's containment, stops it
-idempotently, writes a new cancellation acknowledgement, and checks absence afresh.
-An exit receipt discovered during the stop is also preserved without a
-cancellation acknowledgement; that request retains its stop attribution. A retry that
-finds the exited record performs no new stop and clears its unused request claim.
-Only confirmed absence settles the job as cancelled. Explicit recovery preserves
-earlier loss diagnostics and invents no exit status. Marker, transport, or
-owner-check failures stay visible and retryable. Generic shell watchers still require a successful
-fresh check before their saved command runs. A notified degraded watcher can
-settle this attributed action without losing delivery history or waking its chat
-again.
-
-For a generic saved command, success means **Cancel requested** and disables
-repeat requests; polling still proves completion. Registered helper cancellation
-already includes the fresh absence check and returns the completed observation.
-Failure allows an explicit retry. Timeout leaves the
-outcome unknown. A crash between the claim and result never triggers an
-automatic replay. Stop, pause, arming and polling never execute cancellation.
-Stopped observers retain Cancel for live work. They may record completion
-without reopening delivery.
+Cancelling the job is job control, and an accepted command ends the watcher with
+it, attributed to the member. A failed or timed-out command records its error,
+leaves the watcher live, and offers Cancel again. A crash between the claim and
+the result never replays the command. Stop, pause, arming and polling never
+execute cancellation.
 
 ## Durable state and transfer
 

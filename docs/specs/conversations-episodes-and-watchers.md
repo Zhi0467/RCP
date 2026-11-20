@@ -1230,23 +1230,17 @@ carries a durable ending. While the episode can still take a graceful **Stop
 loop** that control owns its watchers; after the ending fence Stop is refused, so
 the observer would otherwise keep the loop shut with no control but Cancel.
 Retiring is not cancelling: the observed job keeps running, and the retired
-observer can no longer deliver a retained completion. It is offered for one lone
-external observation on the graph target being shown: a grouped member cannot be
-retired alone, because a human-stopped member makes its whole group
-undeliverable; a completed observation is a retained result to claim rather than
-an observer to retire; and an Experiment graph condition runs no job, so this
-control is not its answer. A live condition can therefore still hold an ended
+observer can no longer deliver a retained completion. It is offered for a live external check and releases
+that check's whole watcher. A completed observation is a retained result to claim
+rather than an observer to retire, and an Experiment graph condition runs no job,
+so this control is not its answer. A live condition can therefore still hold an ended
 episode shut.
 
 An optional saved `cancel_command` runs only on a member's Cancel request, from
-Runs or that member's own chat, after a fresh check confirms active work. Exact registered helper recovery follows the
-[human Cancel contract](machines-and-compute.md#one-watcher-and-human-cancel-contract),
-including lost work without an exit receipt. It uses the recorded execution host and cwd,
-and never changes the watcher into a separate cancelled lifecycle. A successful
-command is an attributed request; observation still determines completion.
-Stop fences continuation and leaves the action available for still-live work.
-Cancellation failures permit explicit retry. Transfer and offline restore
-remove executable actions; ordinary restart preserves them.
+Runs or that member's own chat, following the
+[human Cancel contract](machines-and-compute.md#one-watcher-and-human-cancel-contract).
+An accepted Cancel also ends the watcher. Transfer and offline restore remove
+executable actions; ordinary restart preserves them.
 
 Prompt guidance lets short jobs finish inline and recommends a watcher for
 roughly more than ten minutes of waiting. This is not a runtime cutoff.
