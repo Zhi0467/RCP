@@ -220,7 +220,7 @@ test("branch chat preserves its target and origin without starting a turn", asyn
         body: { request_id: "fork-request", at: "branch:source-branch@7", name: "New direction" },
       },
       {
-        path: "/api/projects/project/chats/source/branch",
+        path: "/api/agent-threads/source/branch",
         method: "POST",
         body: { graph_target: target, request_id: "branch-request" },
       },

@@ -543,7 +543,9 @@ export function useAgentThread({
 
   const commentScope = useMemo<CommentScope>(
     () =>
-      projectId ? { kind: "project", projectId } : { kind: "space", threadId: threadId ?? "" },
+      projectId
+        ? { kind: "project", projectId, threadId: threadId ?? undefined }
+        : { kind: "space", threadId: threadId ?? "" },
     [projectId, threadId],
   );
   const cardSource = useMemo<CardSource>(

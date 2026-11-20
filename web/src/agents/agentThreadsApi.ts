@@ -1,7 +1,5 @@
-// The typed client for the member's agent threads. A project thread is an
-// ordinary project chat, so its transcript, sends, tasks and questions use the
-// chat routes; the Space thread has its own routes with the same shapes.
-
+import { threadPath } from "./agentRoutes.ts";
+export { threadPath } from "./agentRoutes.ts";
 import { api, ApiError } from "../core/api.ts";
 import type {
   AgentCardList,
@@ -31,22 +29,14 @@ type ThreadTaskOwner = Pick<AgentThread, "kind" | "project_id" | "thread_id">;
 
 const THREADS = "/api/agent-threads";
 
-/** The member-owned routes of one thread. */
-export function threadPath(threadId: string): string {
-  return `${THREADS}/${encodeURIComponent(threadId)}`;
-}
-
 export function threadProjectPath(thread: ThreadTaskOwner): string {
-  if (thread.kind !== "project" || !thread.project_id)
-    throw new Error("This thread has no project.");
+  if (!thread.project_id) throw new Error("This thread has no project.");
   return `/api/projects/${encodeURIComponent(thread.project_id)}`;
 }
 
 /** Where a thread's turns are read and controlled. */
 export function threadTasksPath(thread: ThreadTaskOwner): string {
-  return thread.kind === "space"
-    ? `${threadPath(thread.thread_id)}/tasks`
-    : `${threadProjectPath(thread)}/tasks`;
+  return `${threadPath(thread.thread_id)}/tasks`;
 }
 
 /** Lists every thread, creating any that are missing. */
@@ -58,11 +48,7 @@ export function loadThreadTranscript(
   thread: AgentThread,
   request: Request = api,
 ): Promise<ChatTranscript> {
-  return request(
-    thread.kind === "space"
-      ? `${threadPath(thread.thread_id)}/transcript`
-      : `${threadProjectPath(thread)}/chats/${encodeURIComponent(thread.thread_id)}`,
-  );
+  return request(`${threadPath(thread.thread_id)}/transcript`);
 }
 
 /** The fields a Space turn takes; it has no project references, worktree or provider skills. */
@@ -101,18 +87,16 @@ export async function sendThreadTurn(
   requestId: string,
   request: Request = api,
 ): Promise<{ operation_id: string }> {
-  const init = (body: object): RequestInit => ({
-    method: "POST",
-    body: JSON.stringify(body),
-    headers: { "Idempotency-Key": requestId },
-  });
-  if (thread.kind === "space")
-    return request(`${threadPath(thread.thread_id)}/turns`, init(spaceTurn(turn)), {
-      retryIdentity: false,
-    });
-  const task = await request<AgentTask>(
-    `${threadProjectPath(thread)}/tasks/project_chat`,
-    init({ chat_scope: "project", chat_id: thread.thread_id, mode: "work", ...turn }),
+  const body = thread.project_id
+    ? { chat_scope: "project", chat_id: thread.thread_id, mode: "work", ...turn }
+    : spaceTurn(turn);
+  const task = await request<{ operation_id: string }>(
+    `${threadPath(thread.thread_id)}/turns`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: { "Idempotency-Key": requestId },
+    },
     { retryIdentity: false },
   );
   return { operation_id: task.operation_id };

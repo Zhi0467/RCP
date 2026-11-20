@@ -1,3 +1,4 @@
+import { projectAgentPath } from "../agents/agentRoutes.ts";
 import {
   useCallback,
   useEffect,
@@ -375,8 +376,7 @@ export function useComposerAttachments({
   const [draftScope, setDraftScope] = useState(() => crypto.randomUUID());
   const scope = scopeId ?? draftScope;
   const uploadUrl =
-    attachmentsUrl ??
-    (apiBase ? `${apiBase}/chats/${encodeURIComponent(scope)}/attachments` : null);
+    attachmentsUrl ?? (apiBase ? projectAgentPath(apiBase, scope, "attachments") : null);
   const [references, setReferences] = useDraftReferences(referencesKey, apiBase);
   // Upload callbacks retain their owner across awaits. A different conversation starts
   // empty immediately, and a late upload removes its file from the old collection.

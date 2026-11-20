@@ -51,7 +51,7 @@
   },
   "src/agents/agentThreadsApi.ts": {
     "rcp/no-comments": {
-      "count": 4
+      "count": 1
     }
   },
   "src/agents/chatSendMutation.ts": {
