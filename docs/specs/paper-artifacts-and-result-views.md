@@ -402,14 +402,14 @@ Bytes pass through unchanged. A remote rename is a delete plus a create.
 [multi-file write](#editing) by the actor `github`, after an automatic History
 version that serves as the undo point. Text edits apply as minimal
 replacements, so co-editors keep their cursors and keystrokes outside an
-overlap survive. A merged text over the document limit is skipped with a
-reason, like an entry Paper cannot hold.
+overlap survive. A merged text over the document limit takes the GitHub file
+whole.
 **Why:** the co-author already pushed; History keeps the Paper side, and a
 second review queue would duplicate the turn change list.
 
 **Entries Paper cannot hold.** Every pull judges the whole remote tree. It
 skips, with a reason, an entry whose path Paper refuses, a symlink or submodule,
-a file over the upload or document limit, and a new entry that would break a
+a file over the upload limit, and a new entry that would break a
 Paper tree limit or collide with a local file or folder. Entries are judged in
 path order, so the skipped set is stable. One bad entry never blocks the rest.
 Push carries every skipped entry through unchanged. An entry that later fits
