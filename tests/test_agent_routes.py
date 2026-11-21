@@ -144,6 +144,9 @@ def test_a_split_node_chat_is_one_conversation(manifest, tmp_path, monkeypatch):
     )
     project = app.state.default_project_id
     assert store.has_resumable_paused_chat_task(project, "node_chat", agent)
+    assert store.has_chat_native_session_origin(
+        project, "node_chat", agent, node, "codex", "backend", "session-b"
+    )
     with signed_in_client(app) as client:
         sent = client.post(
             f"/api/agent-threads/{agent}/turns",

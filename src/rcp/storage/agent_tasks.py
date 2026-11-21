@@ -3986,15 +3986,19 @@ class AgentTaskStoreMixin(StoreMixinBase):
         machine_id: str,
         native_session_id: str,
     ) -> bool:
-        """Prove that RCP previously observed this session on the exact chat binding."""
+        """Prove that RCP previously observed this session on the exact chat binding.
 
+        A chat's ordinary turn in its other scope also proves it, as a baseline does.
+        """
+
+        kind_test, kinds = _kinds_in("graph_runs", kind)
         with self.connection() as connection:
             row = connection.execute(
-                """
+                f"""
                 SELECT 1 FROM graph_runs
-                WHERE project_id = ? AND kind = ?
+                WHERE project_id = ? AND {kind_test}
                   AND json_extract(request_json, '$.chat_id') = ?
-                  AND json_extract(request_json, '$.node_id') IS ?
+                  AND (kind != ? OR json_extract(request_json, '$.node_id') IS ?)
                   AND json_extract(request_json, '$.provider') = ?
                   AND json_extract(request_json, '$.run_on') = ?
                   AND native_session_id = ?
@@ -4003,8 +4007,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 """,
                 (
                     project_id,
-                    kind,
+                    *kinds,
                     chat_id,
+                    kind,
                     node_id,
                     provider,
                     machine_id,
