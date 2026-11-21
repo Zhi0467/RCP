@@ -228,7 +228,9 @@ backend card. `run_on_machine` resolves a task's card; an unset machine is the
 project's base machine, and a Space task always runs on the backend. A changed provider takes the provider switch path below.
 
 Project transcripts use `private-<user_id>-<chat_id>.jsonl`, with `privateOwner`
-on each record. The reader verifies the filename against the record. Source
+on each record. The reader verifies the filename against the record. A chat id
+found in both a node and a project transcript reads as one conversation: the
+node file names it and the messages interleave by time. Source
 indexing excludes `private-*.jsonl` before reading, using the hidden-read selector;
 private transcripts never enter consolidation sources. Space
 transcripts live under `<data_dir>/agent-threads/<user_id>/<chat_id>.jsonl` and
@@ -510,9 +512,12 @@ takes it back. A turn that binds a different native session leaves an
 `agent_session_replaced` receipt naming what it replaced and why. Each episode
 records the agent it runs on: the agent of the episode it continues, else of its
 first turn, else the episode itself. The migration backfill applies the same
-rule. The session pointer is keyed by agent, project and task kind, exactly as
-turn resolution reads it, so an Experiment's turns and a member's turns in the
-same conversation each keep their own session line.
+rule. The session pointer is keyed by agent, project and task kind, so an
+Experiment's turns and a member's turns in the same conversation each keep their
+own session line. A chat's ordinary node and project turns are one line: the
+current session, overlap and paused-turn closure read the newest of either kind,
+and a turn resuming a session receives, as labelled history, the exchanges the
+chat had in another native session since that session's last turn.
 
 - Active turns block human turns. Active and paused-resumable turns defer wakes
   and queued messages. A human message after a paused turn starts the next turn

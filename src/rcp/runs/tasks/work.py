@@ -2543,7 +2543,9 @@ async def _stream_work_run(
             launcher,
             turn.request,
             execution,
-            thread_history_seed(service, turn.request),
+            thread_history_seed(
+                service, turn.request, execution.operation_id if execution else None
+            ),
             prepare_scope=partial(prepare_project_summary_scope, service, execution, data_dir),
             local_stage=turn.local_stage,
             remote_stage=turn.remote_stage,

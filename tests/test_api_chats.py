@@ -126,22 +126,18 @@ def test_a_finished_paper_chat_summary_keeps_its_focus(manifest, tmp_path):
         assert next(row for row in rows if row["chat_id"] == chat_id)["focus"] == "paper"
 
 
-def test_batch_chat_reader_preserves_single_chat_validation_and_ambiguity(
-    manifest, tmp_path, monkeypatch
-):
+def test_batch_chat_reader_validates_and_reads_a_split_chat_as_one(manifest, tmp_path, monkeypatch):
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     service = app.state.service
-    good, ambiguous, missing = (str(uuid.uuid4()) for _ in range(3))
-    for chat_id, scope, node_id in [
-        (good, "project", None),
-        (ambiguous, "project", None),
-        (ambiguous, "node", "rq/ambiguous"),
+    good, split, missing = (str(uuid.uuid4()) for _ in range(3))
+    for chat_id, scope, node_id, message in [
+        (good, "project", None, "Read this chat."),
+        (split, "node", "rq/split", "First, on the node."),
+        (split, "project", None, "Then, mislabelled."),
     ]:
         _append_chat_exchange(
             service,
-            RunRequest(
-                chat_id=chat_id, chat_scope=scope, node_id=node_id, message="Read this chat."
-            ),
+            RunRequest(chat_id=chat_id, chat_scope=scope, node_id=node_id, message=message),
             "A retained answer.",
             None,
             None,
@@ -154,11 +150,20 @@ def test_batch_chat_reader_preserves_single_chat_validation_and_ambiguity(
         return original(root)
 
     monkeypatch.setattr(service, "_canonical_chat_files", counted)
-    transcripts = service.chat_transcripts([good, ambiguous, missing, good])
-    assert list(transcripts) == [good]
+    transcripts = service.chat_transcripts([good, split, missing, good])
+    assert set(transcripts) == {good, split}
     assert transcripts[good].messages[-1].text == "A retained answer."
     assert len(scans) == 1
-    assert service.chat_transcript(ambiguous) is None
+    merged = transcripts[split]
+    assert (merged.kind, merged.node_id) == ("node_chat", "rq/split")
+    assert [message.text for message in merged.messages if message.role == "user"] == [
+        "First, on the node.",
+        "Then, mislabelled.",
+    ]
+    listed = [row for row in service._canonical_chat_summaries() if row.chat_id == split]
+    assert [(row.kind, row.message_count) for row in listed] == [
+        ("node_chat", len(merged.messages))
+    ]
     assert service.chat_transcripts([]) == {}
     for invalid in ["not-a-uuid", good.upper()]:
         with pytest.raises(ValueError, match="chat_id must be"):

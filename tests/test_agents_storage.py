@@ -13,24 +13,31 @@ from rcp.storage import AppStore
 from rcp.storage.agent_tasks import SESSION_TASK_KINDS
 from rcp.storage.agents import backfill_agents
 from rcp.storage.base import AppStoreBase
+from rcp.storage.models import conversation_kinds
 from tests.test_storage import _task_record
 
 _AGENTS_MIGRATION = 93
 
 
 def _legacy_scan(connection: sqlite3.Connection, project_id: str, kind: str, chat_id: str):
-    """The newest-turn scan the session pointer replaced, kept as the oracle."""
+    """The newest-turn scan the session pointer replaced, kept as the oracle.
+
+    A chat's node and project turns form one conversation, so an ordinary turn
+    of either kind counts.
+    """
+    group = conversation_kinds(kind)
     row = connection.execute(
-        """
+        f"""
         SELECT operation_id FROM graph_runs
-        WHERE project_id = ? AND kind = ?
+        WHERE project_id = ?
+          AND (kind = ? OR (kind IN ({", ".join("?" for _ in group)}) AND episode_id IS NULL))
           AND json_extract(request_json, '$.chat_id') = ?
           AND native_session_id IS NOT NULL AND native_session_id != ''
           AND (json_extract(request_json, '$.artifact_edit') IS NULL
                OR json_extract(request_json, '$.artifact_edit.origin_bound') = 0)
         ORDER BY created_at DESC, rowid DESC LIMIT 1
         """,
-        (project_id, kind, chat_id),
+        (project_id, kind, *group, chat_id),
     ).fetchone()
     return row[0] if row is not None else None
 
@@ -122,7 +129,7 @@ def test_a_turn_names_its_agent_and_the_session_follows_the_newest_bound_turn(tm
             )
         )
         assert _bound(store, key["kind"], "chat", key["project_id"]) == operation_id
-    assert _bound(store, "project_chat", "chat") == "third"
+    assert _bound(store, "project_chat", "chat") == "other-kind"
     newest = store.agent_session("chat")
     assert newest is not None and newest.operation_id == "other-project"
     store.close()
@@ -315,7 +322,7 @@ def test_older_database_upgrades_every_agent_kind_and_its_session(tmp_path, monk
         "2026-01-02",
     )
     assert _bound(upgraded, "project_chat", "shared") == "s2"
-    assert _bound(upgraded, "node_chat", "shared") == "n1"
+    assert _bound(upgraded, "node_chat", "shared") == "s2"
     assert _bound(upgraded, "project_chat", "thread") == "t1"
     assert _bound(upgraded, "space_chat", "space-thread", space_id) == "sp1"
     assert upgraded.agent_session("worker") is None

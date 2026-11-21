@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -416,6 +416,30 @@ class ChatSummaryPage(BaseModel):
 
 class ChatTranscript(ChatSummary):
     messages: list[ChatMessage] = Field(default_factory=list)
+
+
+_Chat = TypeVar("_Chat", bound=ChatSummary)
+
+
+def _merge_split_chat(first: _Chat, second: _Chat) -> _Chat:
+    """One chat id saved under both a node and a project path is one conversation.
+
+    0.4.49 saved node-chat sends as project turns, so a node chat gained a second
+    history file. Both are read as one: the node file names the chat, and the
+    messages interleave by time.
+    """
+    named, other = (second, first) if second.node_id is not None else (first, second)
+    newer = max(first, second, key=lambda item: item.updated_at)
+    update: dict[str, object] = {
+        "updated_at": newer.updated_at,
+        "message_count": first.message_count + second.message_count,
+        "last_message_preview": newer.last_message_preview,
+    }
+    if isinstance(named, ChatTranscript) and isinstance(other, ChatTranscript):
+        update["messages"] = sorted(
+            [*named.messages, *other.messages], key=lambda message: message.timestamp
+        )
+    return named.model_copy(update=update)
 
 
 @dataclass(frozen=True)
@@ -1568,7 +1592,7 @@ class ProjectService:
         if not requested:
             return {}
         suffixes = tuple(f"-{chat_id}.jsonl" for chat_id in requested)
-        transcripts: dict[str, ChatTranscript | None] = {}
+        transcripts: dict[str, ChatTranscript] = {}
         with self.history.workspace.read_snapshot() as root:
             for path, _ in self._canonical_chat_files(root):
                 if (
@@ -1577,11 +1601,11 @@ class ProjectService:
                     and transcript.chat_id in requested
                     and transcript.graph_target == self.history.graph_target
                 ):
+                    earlier = transcripts.get(transcript.chat_id)
                     transcripts[transcript.chat_id] = (
-                        None if transcript.chat_id in transcripts else transcript
+                        transcript if earlier is None else _merge_split_chat(earlier, transcript)
                     )
-        # The same UUID under two canonical node/project paths is ambiguous.
-        return {chat_id: transcript for chat_id, transcript in transcripts.items() if transcript}
+        return transcripts
 
     def _chat_project_id(self) -> str:
         """Conversation names are project-scoped; only a bound project has chats."""
@@ -1594,7 +1618,7 @@ class ProjectService:
             files = self._canonical_chat_files(root)
             # Keyed inside the root: each display generation is a new directory.
             live_paths = {path.relative_to(root) for path, _ in files}
-            summaries: dict[str, ChatSummary | None] = {}
+            summaries: dict[str, ChatSummary] = {}
             with self._chat_summary_lock:
                 for stale in self._chat_summary_cache.keys() - live_paths:
                     del self._chat_summary_cache[stale]
@@ -1613,12 +1637,12 @@ class ProjectService:
                     if cached.summary is None:
                         continue
                     chat_id = cached.summary.chat_id
-                    if chat_id in summaries:
-                        # One conversation has exactly one canonical file. Ambiguous
-                        # duplicates are safer hidden than selected by filesystem order.
-                        summaries[chat_id] = None
-                    else:
-                        summaries[chat_id] = cached.summary
+                    earlier = summaries.get(chat_id)
+                    summaries[chat_id] = (
+                        cached.summary
+                        if earlier is None
+                        else _merge_split_chat(earlier, cached.summary)
+                    )
             return [
                 summary.model_copy(
                     update={
@@ -1628,7 +1652,6 @@ class ProjectService:
                     }
                 )
                 for summary in summaries.values()
-                if summary is not None
             ]
 
     def _canonical_chat_files(

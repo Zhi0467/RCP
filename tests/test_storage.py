@@ -1862,7 +1862,7 @@ def test_committed_chat_session_owns_its_reusable_stage_after_the_task_settles(t
     assert lifecycle[0].protect_from_cleanup is True
 
 
-def test_has_active_chat_task_is_scoped_to_project_kind_and_chat(tmp_path) -> None:
+def test_has_active_chat_task_is_scoped_to_project_conversation_and_chat(tmp_path) -> None:
     store = AppStore(tmp_path / "rcp.sqlite3")
     now = store.now()
     tasks = [
@@ -1887,7 +1887,8 @@ def test_has_active_chat_task_is_scoped_to_project_kind_and_chat(tmp_path) -> No
     assert store.has_active_chat_task("project-a", "project_chat", "chat-a")
     assert store.has_active_chat_task("project-a", "project_chat", "chat-b")
     assert store.has_active_chat_task("project-b", "project_chat", "chat-a")
-    assert not store.has_active_chat_task("project-a", "node_chat", "chat-a")
+    assert store.has_active_chat_task("project-a", "node_chat", "chat-a")
+    assert not store.has_active_chat_task("project-a", "space_chat", "chat-a")
     assert not store.has_active_chat_task("project-a", "node_chat", "finished-chat")
     assert not store.has_active_chat_task("project-a", "project_chat", "missing")
 
@@ -2048,7 +2049,7 @@ def test_chat_session_context_cas_rejects_missing_stale_or_invalid_snapshots(tmp
     ("field", "value"),
     [
         ("project_id", "other-project"),
-        ("kind", "project_chat"),
+        ("kind", "space_chat"),
         ("chat_id", "other-chat"),
         ("node_id", "rq/other"),
     ],
@@ -3803,7 +3804,8 @@ def test_resumable_paused_chat_query_is_exact_and_child_attempt_resolves_it(tmp_
 
     assert store.has_resumable_paused_chat_task("project", "node_chat", chat_id)
     assert not store.has_resumable_paused_chat_task("other", "node_chat", chat_id)
-    assert not store.has_resumable_paused_chat_task("project", "project_chat", chat_id)
+    assert store.has_resumable_paused_chat_task("project", "project_chat", chat_id)
+    assert not store.has_resumable_paused_chat_task("project", "space_chat", chat_id)
     assert not store.has_resumable_paused_chat_task(
         "project", "node_chat", "701929b2-50f5-41e6-9614-41e4a82b9e34"
     )

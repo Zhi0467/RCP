@@ -10,7 +10,7 @@ import uuid
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Annotated, Literal, NamedTuple
+from typing import TYPE_CHECKING, Annotated, Literal, NamedTuple, get_args
 from urllib.parse import urlsplit
 
 from pydantic import (
@@ -1976,18 +1976,30 @@ class ProviderSkillInventoryRecord(BaseModel):
     updated_at: str
 
 
+GraphChatKind = Literal["node_chat", "project_chat"]
 AgentTaskKind = Literal[
     "space_chat",
     "seed",
     "refresh",
-    "node_chat",
-    "project_chat",
+    GraphChatKind,
     "paper_coach",
     "auto_research",
     "branch_merge",
     "episode_report",
     "artifact_edit",
 ]
+
+
+def conversation_kinds(kind: str) -> tuple[str, ...]:
+    """The task kinds whose turns of one chat id form one conversation.
+
+    Node and project chat are two scopes of one conversation: its session,
+    overlap and paused-turn lookups span both. Every other kind is its own line.
+    """
+    group = get_args(GraphChatKind)
+    return group if kind in group else (kind,)
+
+
 AgentTaskStatus = Literal[
     "queued",
     "running",
@@ -3846,6 +3858,7 @@ __all__ = [
     "AgentTaskContractRecord",
     "AgentTaskEventRecord",
     "AgentTaskKind",
+    "conversation_kinds",
     "AgentTaskReceiptRecord",
     "AgentTaskReceiptTier",
     "AgentTaskRecord",

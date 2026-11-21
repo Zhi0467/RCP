@@ -100,6 +100,7 @@ from rcp.storage.models import (
     _canonical_uuid4,
     _required_timestamp,
     _retention_reference_time,
+    conversation_kinds,
 )
 from rcp.storage.question_models import QuestionRecord
 from rcp.storage.request_compat import stored_dispatch_authority
@@ -127,6 +128,22 @@ def native_session_profile_reason(
 
 
 SESSION_TASK_KINDS = frozenset({"node_chat", "project_chat", "space_chat"})
+
+
+def _kinds_in(table: str, kind: str, *, ordinary: bool = True) -> tuple[str, tuple[str, ...]]:
+    """An SQL test that a `table` row is on a `kind` turn's conversation line.
+
+    That is its own kind, or, for an ordinary turn, an ordinary turn of another
+    kind forming the same conversation. Episode turns keep their kind's line.
+    """
+    group = conversation_kinds(kind) if ordinary else (kind,)
+    if len(group) == 1:
+        return f"{table}.kind = ?", (kind,)
+    marks = ", ".join("?" for _ in group)
+    return (
+        f"({table}.kind = ? OR ({table}.kind IN ({marks}) AND {table}.episode_id IS NULL))",
+        (kind, *group),
+    )
 
 
 def _origin_bound_edit(request: Mapping[str, object]) -> bool:
@@ -2059,14 +2076,16 @@ class AgentTaskStoreMixin(StoreMixinBase):
     def _current_chat_session_row(
         connection: sqlite3.Connection, project_id: str, kind: str, chat_id: str
     ) -> sqlite3.Row | None:
-        """The turn that bound the agent's current session, when this chat owns it."""
+        """The turn that bound the chat's current session: its conversation's newest binding."""
+        kind_test, kinds = _kinds_in("run", kind)
         return connection.execute(
             "SELECT run.*, "
             + _SESSION_DROP_COLUMNS
             + " FROM agent_sessions AS session JOIN graph_runs AS run "
             "ON run.operation_id = session.operation_id "
-            "WHERE session.agent_id = ? AND session.project_id = ? AND session.kind = ?",
-            (chat_id, project_id, kind),
+            f"WHERE session.agent_id = ? AND session.project_id = ? AND {kind_test} "
+            "ORDER BY run.created_at DESC, run.rowid DESC LIMIT 1",
+            (chat_id, project_id, *kinds),
         ).fetchone()
 
     def _bind_agent_session(self, connection: sqlite3.Connection, operation_id: str) -> None:
@@ -2520,7 +2539,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     raise AgentTaskAdmissionConflict(
                         "The current chat session has an unresolved turn. Resume or retry it before continuing."
                     )
-                if previous.get("node_id") != record.request.get("node_id"):
+                if current["kind"] == record.kind and previous.get("node_id") != (
+                    record.request.get("node_id")
+                ):
                     raise ValueError("This native session belongs to another chat node.")
                 reason = "current_session"
                 if waking and previous.get("run_on") == record.request.get("run_on"):
@@ -2629,16 +2650,19 @@ class AgentTaskStoreMixin(StoreMixinBase):
         session_id = record.request.get("session_id")
         watcher_ids = record.request.get("watcher_ids")
         if isinstance(session_id, str) and session_id:
+            kind_test, kinds = _kinds_in(
+                "graph_runs", record.kind, ordinary=record.episode_id is None
+            )
             rows = connection.execute(
-                """
+                f"""
                 SELECT DISTINCT COALESCE(stage_machine_id, '') AS machine_id, stage_root AS root,
                                 graph_target_json, request_json,
                                 json_extract(request_json, '$.chat_id') AS chat_id
                 FROM graph_runs
-                WHERE project_id = ? AND kind = ?
+                WHERE project_id = ? AND {kind_test}
                   AND native_session_id = ?
                 """,
-                (record.project_id, record.kind, session_id),
+                (record.project_id, *kinds, session_id),
             ).fetchall()
             if any(
                 GraphTargetRef.model_validate_json(row["graph_target_json"]) != record.graph_target
@@ -2909,15 +2933,16 @@ class AgentTaskStoreMixin(StoreMixinBase):
         chat_id = record.request.get("chat_id")
         if not isinstance(chat_id, str) or not chat_id:
             return False
+        kind_test, kinds = _kinds_in("graph_runs", record.kind, ordinary=record.episode_id is None)
         active = connection.execute(
-            """
+            f"""
             SELECT 1 FROM graph_runs
-            WHERE project_id = ? AND kind = ?
+            WHERE project_id = ? AND {kind_test}
               AND json_extract(request_json, '$.chat_id') = ?
               AND status IN ('queued', 'running', 'pausing')
             LIMIT 1
             """,
-            (record.project_id, record.kind, chat_id),
+            (record.project_id, *kinds, chat_id),
         ).fetchone()
         return active is not None
 
@@ -3881,16 +3906,17 @@ class AgentTaskStoreMixin(StoreMixinBase):
     ) -> bool:
         """Return whether one exact chat already owns an active task."""
 
+        kind_test, kinds = _kinds_in("graph_runs", kind)
         with self.connection() as connection:
             row = connection.execute(
-                """
+                f"""
                 SELECT 1 FROM graph_runs
-                WHERE project_id = ? AND kind = ?
+                WHERE project_id = ? AND {kind_test}
                   AND json_extract(request_json, '$.chat_id') = ?
                   AND status IN ('queued', 'running', 'pausing')
                 LIMIT 1
                 """,
-                (project_id, kind, chat_id),
+                (project_id, *kinds, chat_id),
             ).fetchone()
         return row is not None
 
@@ -3911,6 +3937,45 @@ class AgentTaskStoreMixin(StoreMixinBase):
             ).fetchone()
         return row[0] if row is not None else None
 
+    def turns_missed_by_session(self, operation_id: str, native_session_id: str) -> set[str]:
+        """The conversation's turns that ran in another native session since this one's last.
+
+        Empty when no earlier turn of the conversation ran in `native_session_id`,
+        so a session the conversation never used is never told it missed anything.
+        An ordinary turn reads ordinary turns only: an episode turn resuming the
+        session got no catch-up, so it settles nothing the chat missed.
+        """
+
+        with self.connection() as connection:
+            turn = connection.execute(
+                "SELECT project_id, kind, episode_id, "
+                "json_extract(request_json, '$.chat_id') AS chat_id "
+                "FROM graph_runs WHERE operation_id = ?",
+                (operation_id,),
+            ).fetchone()
+            if turn is None or not turn["chat_id"]:
+                return set()
+            ordinary = turn["episode_id"] is None
+            kind_test, kinds = _kinds_in("graph_runs", turn["kind"], ordinary=ordinary)
+            rows = connection.execute(
+                f"""
+                SELECT operation_id, native_session_id FROM graph_runs
+                WHERE project_id = ? AND {kind_test}
+                  AND (? = 0 OR episode_id IS NULL)
+                  AND json_extract(request_json, '$.chat_id') = ?
+                  AND operation_id != ? AND native_session_id IS NOT NULL
+                ORDER BY created_at, rowid
+                """,
+                (turn["project_id"], *kinds, ordinary, turn["chat_id"], operation_id),
+            ).fetchall()
+        missed: set[str] | None = None
+        for row in rows:
+            if row["native_session_id"] == native_session_id:
+                missed = set()
+            elif missed is not None:
+                missed.add(row["operation_id"])
+        return missed or set()
+
     def has_chat_native_session_origin(
         self,
         project_id: str,
@@ -3921,15 +3986,19 @@ class AgentTaskStoreMixin(StoreMixinBase):
         machine_id: str,
         native_session_id: str,
     ) -> bool:
-        """Prove that RCP previously observed this session on the exact chat binding."""
+        """Prove that RCP previously observed this session on the exact chat binding.
 
+        A chat's ordinary turn in its other scope also proves it, as a baseline does.
+        """
+
+        kind_test, kinds = _kinds_in("graph_runs", kind)
         with self.connection() as connection:
             row = connection.execute(
-                """
+                f"""
                 SELECT 1 FROM graph_runs
-                WHERE project_id = ? AND kind = ?
+                WHERE project_id = ? AND {kind_test}
                   AND json_extract(request_json, '$.chat_id') = ?
-                  AND json_extract(request_json, '$.node_id') IS ?
+                  AND (kind != ? OR json_extract(request_json, '$.node_id') IS ?)
                   AND json_extract(request_json, '$.provider') = ?
                   AND json_extract(request_json, '$.run_on') = ?
                   AND native_session_id = ?
@@ -3938,8 +4007,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 """,
                 (
                     project_id,
-                    kind,
+                    *kinds,
                     chat_id,
+                    kind,
                     node_id,
                     provider,
                     machine_id,
@@ -4414,8 +4484,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
         """Whether this conversation has a paused attempt awaiting a decision.
 
         A Resume or Retry creates a child operation immediately, and a member's
-        next message starts a later turn in the same session. Either closes the
-        paused attempt; a later turn that itself pauses is found by this query.
+        next message starts a later turn in the same conversation, of either chat
+        scope. Either closes the paused attempt; a later turn that itself pauses is
+        found by this query.
         Server-bound consolidation operations are never resumable.
         """
 
@@ -4426,12 +4497,18 @@ class AgentTaskStoreMixin(StoreMixinBase):
     def _has_resumable_paused_chat_task(
         connection: sqlite3.Connection, project_id: str, kind: str, chat_id: str
     ) -> bool:
+        paused_kind, kinds = _kinds_in("paused", kind)
+        group = conversation_kinds(kind)
+        later_kind = (
+            "(later.kind = paused.kind OR (paused.episode_id IS NULL AND later.episode_id IS NULL "
+            f"AND later.kind IN ({', '.join('?' for _ in group)})))"
+        )
         row = connection.execute(
-            """
+            f"""
             SELECT 1
             FROM graph_runs AS paused
             WHERE paused.project_id = ?
-                AND paused.kind = ?
+                AND {paused_kind}
                 AND paused.status = 'paused'
                 AND paused.history_only = 0
                 AND paused.native_session_id IS NOT NULL
@@ -4452,7 +4529,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     SELECT 1
                     FROM graph_runs AS later
                     WHERE later.project_id = paused.project_id
-                      AND later.kind = paused.kind
+                      AND {later_kind}
                       AND json_extract(later.request_json, '$.chat_id') = ?
                       AND (later.created_at, later.rowid) > (paused.created_at, paused.rowid)
                 )
@@ -4464,7 +4541,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                 )
             LIMIT 1
             """,
-            (project_id, kind, BACKEND_MACHINE_ID, chat_id, chat_id),
+            (project_id, *kinds, BACKEND_MACHINE_ID, chat_id, *group, chat_id),
         ).fetchone()
         return row is not None
 
@@ -7028,12 +7105,10 @@ class AgentTaskStoreMixin(StoreMixinBase):
         chat_id: str,
         node_id: str | None,
     ) -> None:
-        expected = {
-            "project_id": project_id,
-            "kind": kind,
-            "chat_id": chat_id,
-            "node_id": node_id,
-        }
+        """A session's baseline stays with its chat; a chat's other scope may continue it."""
+        expected: dict[str, object] = {"project_id": project_id, "chat_id": chat_id}
+        if row["kind"] == kind or row["kind"] not in conversation_kinds(kind):
+            expected |= {"kind": kind, "node_id": node_id}
         conflicts = [name for name, value in expected.items() if row[name] != value]
         if conflicts:
             raise ValueError(

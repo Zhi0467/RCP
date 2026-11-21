@@ -230,12 +230,13 @@ def agent_session(connection: sqlite3.Connection, agent_id: str) -> AgentSession
 def bind_session(
     connection: sqlite3.Connection, session: AgentSessionRecord
 ) -> AgentSessionRecord | None:
-    """Make this turn's session current for its agent, project and task kind.
+    """Record this turn's session as the newest for its agent, project and task kind.
 
-    The key is the one the turn scan resolved by, so a conversation whose turns
-    run under two task kinds keeps each kind's own session line. A turn older
-    than the bound one never takes the session back. Returns the session this
-    one replaced, when the native session changed; the caller owes that
+    Each kind keeps its own row, and a turn older than its row's never takes the
+    session back. A chat's current session is read across the rows of the kinds
+    that form one conversation, newest bound turn first, so node and project
+    turns of one chat continue one session. Returns the session this one
+    replaced in its row, when the native session changed; the caller owes that
     replacement a receipt.
     """
     key = (session.agent_id, session.project_id, session.kind)

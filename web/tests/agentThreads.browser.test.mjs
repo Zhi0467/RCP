@@ -1868,15 +1868,6 @@ test("Wakes shows each schedule's zone, next run and waiting state, with Cancel 
           .click(),
       ]);
       assert.equal(resume.method(), "POST");
-      await page
-        .waitForFunction(
-          (element) =>
-            element.getBoundingClientRect().bottom <=
-            element.closest(".space-agent").getBoundingClientRect().bottom,
-          await popover.elementHandle(),
-          { timeout: 2000 },
-        )
-        .catch(() => undefined);
       const box = await popover.evaluate((element) => ({
         scroll: element.scrollHeight > element.clientHeight,
         right: element.getBoundingClientRect().right,

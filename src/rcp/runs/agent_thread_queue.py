@@ -9,6 +9,7 @@ from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from rcp.agents.agent_owner import chat_turn_kind
 from rcp.attachments import ChatAttachmentStore
 from rcp.core.models import AuthorizedHuman
 from rcp.limits import (
@@ -180,10 +181,13 @@ def _start_queued_turn(
         kind = "project_chat" if thread.project_id else "space_chat"
     elif previous is not None:
         last = RunRequest.model_validate(previous.request)
+        scope = store.chat_scope(project_id, thread.agent_id)
+        if scope is None:
+            raise ValueError("The agent has no chat scope to continue")
         request = RunRequest(
             chat_id=thread.agent_id,
-            chat_scope=last.chat_scope,
-            node_id=last.node_id,
+            chat_scope=scope[0],
+            node_id=scope[1],
             mode="work",
             provider=last.provider,
             model=last.model,
@@ -191,7 +195,7 @@ def _start_queued_turn(
             run_on=last.run_on,
             browser_requested=store.chat_browser_requested(project_id, thread.agent_id),
         )
-        kind = previous.kind
+        kind = chat_turn_kind(scope[0])
     else:
         raise ValueError("The agent has no ordinary turn to continue")
     request = request.model_copy(
