@@ -911,6 +911,8 @@ details[open] > .view-disclosure-summary > svg:last-child {
   flex: none;
   gap: 6px;
   margin-left: auto;
+  /* Header popovers hang from this row, not from the conversation below it. */
+  position: relative;
 }
 .agent-provider-label {
   align-items: center;
