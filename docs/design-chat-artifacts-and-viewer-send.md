@@ -9,11 +9,10 @@ This file is deleted before merge. Its rules move to
 ## Problem
 
 1. A chat shows its artifacts only as cards scattered through the transcript.
-2. A saved viewer comment silently docks at the source chat's composer and the
+2. A saved viewer comment silently docks at the source chat's composer, and the
    viewer navigates there. Readers do not know how a comment reaches the agent.
-   Behind that are two client paths (dock, or post `/comments`) and two server
-   copies of "send threads as a chat turn": `start_agent_task` and
-   `comment_artifact`'s `artifact_send_chat_turn` branch.
+   The viewer has two client paths for one job. It docks when the artifact's chat
+   takes turns, and otherwise posts `/comments`.
 
 ## Decisions (answered by the user)
 
@@ -23,17 +22,17 @@ This file is deleted before merge. Its rules move to
 
 ## One resolver
 
-An artifact's chat is `artifact_chat_id(artifact_reply_origin(store, artifact))`.
-This is the rule that comment threads, `admit_chat_artifact_comment` and
-`_require_chat` already use. The pane, the viewer's Send and the send's chat
-check all use it, so they cannot disagree. Its outcomes:
+An artifact's chat is `artifact_chat_id(artifact_reply_origin(store, artifact))`
+(`src/rcp/storage/artifact_replies.py`). Admission already uses it to send an
+artifact's comments. The pane uses the same function, so a row and its Send
+always agree.
 
 | Origin | Chat |
 | --- | --- |
 | node or project chat turn | its `chat_id` |
-| Auto-research orchestrator or reply chain | the chain root's branch id |
-| Experiment report | the latest `experiment_loop` task's chat |
-| task outside any chat (ingestion) | none |
+| Auto-research reply chain | the origin's `graph_target.branch_id` |
+| Experiment report whose parent has no chat | the latest `experiment_loop` task's chat |
+| task outside any chat (ingestion) | none: the resolver raises, and the pane skips it |
 
 `_artifact_source_hrefs` keeps building links. Unifying it with this resolver is
 out of scope.
@@ -41,16 +40,22 @@ out of scope.
 ## A. The chat's artifacts pane
 
 **Route.** `GET /api/projects/{p}/chats/{chat_id}/artifacts` lives in
-`src/rcp/api/artifacts.py` and returns `list[RunArtifactEntry]`, the episode
-route's model. It contains the project's unexpired artifacts whose resolved chat
-is `chat_id`, newest first.
+`src/rcp/api/artifacts.py`. It returns `list[RunArtifactEntry]`, the episode
+route's model: id, name, media type, `created_at`. It lists the project's
+unexpired artifacts whose resolved chat is `chat_id`, newest first.
 
 - **Scan.** The route loads `store.artifacts(project_id)` and filters in memory,
-  as `run_artifacts` does. Resolving the chat costs one task read per artifact.
-  Projects hold hundreds of artifacts, not tens of thousands. Add an index only if
-  a measurement shows a cost.
-- **Access.** A private chat of another member is refused with 404, using the
-  `private_chat_ids_except` check that `saved_artifacts` already makes.
+  as `run_artifacts` does.
+  - Resolving one artifact reads its origin task, plus the episode and parent
+    for reports.
+  - Within one request, the experiment-loop chat is cached per episode, so
+    `episode_tasks` runs once per episode, not once per artifact.
+  - A project with a few hundred artifacts costs a few hundred indexed reads per
+    refetch.
+  - An artifact-to-chat column is the fallback if a measurement shows a cost.
+- **Access.** The route filters like `saved_artifacts`:
+  - a private chat of another member is refused with 404 (`private_chat_ids_except`);
+  - each artifact passes `private_artifact_owner`.
 
 **Web.**
 
@@ -63,7 +68,7 @@ is `chat_id`, newest first.
 - The pane is `web/src/chat/ChatArtifactsPane.tsx`:
   - a right column inside the conversation surface, 300px wide; at phone width
     it covers the chat;
-  - each row shows the type icon and the name, with the version and time on hover;
+  - each row shows the type icon and the name, with the time on hover;
   - the artifact open in the viewer is highlighted;
   - a click calls `openArtifact`;
   - the chip and Close close the pane, and the open state is not persisted.
@@ -72,31 +77,34 @@ is `chat_id`, newest first.
 
 ## B. Sending comments from the viewer
 
-**Server.** `comment_artifact` (`POST /artifacts/{a}/comments`) stays the
-viewer's one endpoint, because only the server knows the artifact's chat, branch,
-node and latest profile. Its chat branch stops building its own turn. Extract
-`send_chat_turn(...)` from `start_agent_task` into `src/rcp/api/tasks.py`. It
-covers four steps: `chat_turn_send`, client-request admission, starting the
-ordinary task, and marking threads sent. `start_agent_task` (the composer) and
-`comment_artifact` both call it. `artifact_send_chat_turn` shrinks to deriving
-the kind, chat, node, branch and profile; it no longer builds an
-`artifact_context`. When the artifact has no chat, or its chat refuses human turns
-now, the route keeps the existing origin-bound `admit_artifact_edit`. The
-`fresh_session` flag and its `fresh_session_required` error stay on this route
-only, since the edit path is the only one that can require a fresh session.
-Invariant 10g holds: the retry is the existing explicit retry, never a silent
-fallback.
+**Server: unchanged send path.** `comment_artifact` (`POST /artifacts/{a}/comments`)
+stays the viewer's one endpoint, because only the server knows the artifact's
+chat, branch, node and latest profile. It already does the following:
+
+- calls `artifact_thread_context`, which checks that every thread targets this
+  artifact;
+- admits under one idempotency scope, `artifacts/{a}/comments`;
+- inside that admission, starts either an ordinary Work turn in the chat
+  (`artifact_send_chat_turn`, then `start_ordinary_task`, the same task start the
+  composer route ends in) or, when the chat refuses human turns now, the
+  origin-bound `admit_artifact_edit`.
+
+The route keeps the `fresh_session` flag and its `fresh_session_required` error.
+Only the edit branch reads the flag; the chat branch's context never sets it.
+Invariant 10g holds: the retry is the existing explicit retry.
 
 **Viewer.**
 
-- The comment rail gains a footer with one button, "Send N to agent", for this
-  artifact's open, unsent, sendable threads. It hides when N is 0.
-- The send posts `thread_ids` with one idempotency key per attempt, as today.
+- The comment rail gains a footer with one button, "Send N to agent". N counts
+  this artifact's threads with `can_send` (open, with posts after their last
+  send). The footer hides when N is 0. A chat-less artifact's threads are never
+  sendable today, and that stays.
+- Send posts every such thread id to `/comments`, with one idempotency key per
+  attempt and the existing `fresh_session` retry.
 - Saving a comment only saves it.
 - After a send, the threads show as sent. The viewer keeps posting
-  `rcp-artifact-edit-started` with the operation id. The parent marks the
-  artifact as editing, and polling ends that mark when the turn finishes or a new
-  version lands.
+  `rcp-artifact-edit-started`. The parent marks the artifact as editing, and
+  polling ends that mark.
 - A refusal shows in the rail notice.
 
 **Deleted.**
@@ -104,36 +112,36 @@ fallback.
 - `origin_chat_id`: `ArtifactViewerState`, `web/src/core/types.ts`, the
   `ViewerState` in `viewer.tsx`, and `tests/test_artifact_viewer_state.py`;
 - the viewer's `dock`, which posts `rcp-artifact-comments-docked`;
-- `artifactDockMessage` and its `ArtifactViewer` handler and navigation;
-- `artifact_send_chat_turn`'s body building.
+- `artifactDockMessage` and its `ArtifactViewer` handler and navigation.
 
 Inline artifact comments inside a chat keep docking at that chat's composer.
 
 ## Phases
 
-1. Server:
-   - extract `send_chat_turn`;
-   - add the chat artifacts route with its private-chat check;
-   - simplify `comment_artifact` and drop `origin_chat_id`.
-   - Tests: `tests/test_viewer_comment_sends.py`,
-     `tests/test_artifact_edit_admission.py`, `tests/test_artifact_viewer_state.py`,
-     and a new route test.
-2. Viewer:
-   - the Send footer;
-   - remove the dock and navigation.
-   - Tests: `web/tests/commentsViewer.test.mjs`, the artifact viewer browser test.
-3. Pane:
-   - the resource, the chip and `ChatArtifactsPane`;
+These ship in one PR. The viewer's dock and `origin_chat_id` go in the same
+commit as Send, so comments never lose their way out.
+
+1. Pane server:
+   - add the route with its access filters;
+   - tests: chat, report, orchestrator, expired, private, chat-less.
+2. Viewer Send:
+   - add the footer;
+   - remove the dock, navigation and `origin_chat_id`;
+   - tests: `web/tests/commentsViewer.test.mjs`, `tests/test_artifact_viewer_state.py`.
+3. Pane web:
+   - add the resource, the chip and `ChatArtifactsPane`;
    - a browser test at 1040 and 390px.
-4. Specs, then delete this file.
+4. Move the rules into the specs, then delete this file.
 
 ## Alternatives considered
 
 - **Client posts to the composer route.** The viewer would need the branch, node,
-  kind and the chat's latest profile, and would duplicate server derivation.
-  Rejected.
-- **Index on a chat column.** Rejected until measured. The one resolver also
-  covers reports and orchestrator chains, which a stored `chat_id` does not.
+  kind and latest profile, and two idempotency scopes would split one send.
+  Rejected. The server route already ends in the composer's task start.
+- **Extract a shared `send_chat_turn`.** Rejected. The two callers differ in
+  admission scope, thread checks and the edit fallback, so the extraction would
+  need flags.
+- **Index on a chat column.** Deferred until measured.
 - **Note field on Send.** Cut: the comments already carry the text.
 
 ## Risks
@@ -150,17 +158,16 @@ Inline artifact comments inside a chat keep docking at that chat's composer.
 
 - **API:**
   - the route lists a chat's turn artifacts, its experiment report, and an
-    orchestrator chain's artifacts under the root branch;
-  - it excludes expired artifacts and other chats, and refuses another member's
-    private chat;
-  - a viewer send on a chat that takes turns starts a Work turn through
-    `send_chat_turn` and marks the threads sent;
-  - a read-only or chat-less artifact starts an `artifact_edit`;
+    orchestrator chain's artifacts under the branch id;
+  - it skips chat-less and expired artifacts and other chats;
+  - it refuses another member's private chat;
   - an old artifact with no `chat_id` resolves through its origin task.
 - **Browser:**
   - the chip count matches the rows, and a row opens the viewer, at 1040 and
     390px;
-  - Send posts once with the thread ids, and the threads then show as sent;
-  - a save does not navigate.
+  - Send posts once with the sendable thread ids, and the threads then show as
+    sent;
+  - a save does not navigate;
+  - the footer hides with no sendable threads.
 - **Served journey on a data copy:** send from an episode report viewer and see
   the turn in its chat.
