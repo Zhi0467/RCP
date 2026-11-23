@@ -4,9 +4,10 @@ import { readPref, writePref } from "../core/prefStorage";
 import type { ResolvedShareLink, ShareLinkKind } from "../core/types";
 
 /**
- * A share link is `https://<access_url>/open#l=<token>`. The token is read once
- * at load, like a pairing code, so the team sign-in in between keeps it. A link
- * clicked inside the app to this same space joins the same request in place.
+ * A copied share link is `<public page>#s=<space>&h=<host>&l=<token>`; the team's
+ * own `https://<access_url>/open#l=<token>` page serves older links. The token is
+ * read once at load, like a pairing code, so the team sign-in in between keeps it.
+ * A link clicked inside the app to this same space joins the same request in place.
  */
 
 export type OpenChoice = "app" | "here" | "ask";
@@ -28,29 +29,27 @@ export function shareTokenFromLocation(pathname: string, hash: string): string |
   return pathname === "/open" ? (TOKEN_HASH.exec(hash)?.[1] ?? null) : null;
 }
 
-/** The team host and token a copied link carries for the public page: `#s=…&h=…&l=…`. */
-export function publicShareLink(hash: string): { host: string; token: string } | null {
+/** The space and token a copied link carries for the public page: `#s=…&h=…&l=…`. */
+export function publicShareLink(hash: string): { space: string; token: string } | null {
   const fields = new URLSearchParams(hash.replace(/^#/, ""));
-  const host = fields.get("h");
+  const space = fields.get("s");
   const token = fields.get("l");
-  return fields.get("s") && host && token && TOKEN_HASH.test(`#l=${token}`)
-    ? { host, token }
+  return space && fields.get("h") && token && TOKEN_HASH.test(`#l=${token}`)
+    ? { space, token }
     : null;
 }
 
 /** The token of a link to this same space: this origin, its team access origin, or a
- *  public-page link that names this space's host. */
+ *  public-page link that names this space. */
 export function sameSpaceShareToken(
   href: string,
   here: URL,
   accessOrigin: string | null,
+  spaceId: string | null = null,
 ): string | null {
   const target = new URL(href, here);
   const shared = publicShareLink(target.hash);
-  if (shared) {
-    const hosts = [here.host, accessOrigin ? new URL(accessOrigin).host : null];
-    return hosts.includes(shared.host) ? shared.token : null;
-  }
+  if (shared) return spaceId && shared.space === spaceId ? shared.token : null;
   if (target.origin !== here.origin && target.origin !== accessOrigin) return null;
   return shareTokenFromLocation(target.pathname, target.hash);
 }
@@ -199,6 +198,7 @@ let request: ShareLinkRequest | null = (() => {
   return token ? { token, inPlace: false, openHere: false } : null;
 })();
 let accessOrigin: string | null = null;
+let teamSpace: string | null = null;
 const listeners = new Set<() => void>();
 
 function publish(next: ShareLinkRequest | null) {
@@ -235,11 +235,16 @@ export function useShareLinkRequest(): ShareLinkRequest | null {
   );
 }
 
-/** The desktop shell matches links by the team's access origin, read once signed in. */
-export function setTeamAccessOrigin(origin: string | null): void {
+/** The desktop shell matches links by the team's access origin and space, read once signed in. */
+export function setTeamAccessOrigin(origin: string | null, spaceId: string | null = null): void {
   accessOrigin = origin;
+  teamSpace = spaceId;
 }
 
 export function teamAccessOrigin(): string | null {
   return accessOrigin;
+}
+
+export function teamSpaceId(): string | null {
+  return teamSpace;
 }

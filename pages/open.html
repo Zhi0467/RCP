@@ -6,7 +6,7 @@
     <meta name="referrer" content="no-referrer" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'sha256-wRoTT0KIXmd+Eo9lLg/ocSR1IYsDijcuvFY93pd6iXI='; style-src 'unsafe-inline'"
+      content="default-src 'none'; script-src 'sha256-esuWwVyha5H99xduOQwuzeIoTxK8mtdwtordX7XVkfk='; style-src 'unsafe-inline'"
     />
     <title>Open in RCP</title>
     <style>
@@ -68,6 +68,9 @@
         background: var(--accent);
         color: var(--accent-ink);
       }
+      [hidden] {
+        display: none !important;
+      }
       #server {
         margin-top: 8px;
         color: var(--muted);
@@ -83,8 +86,8 @@
     <main>
       <h1>Open in RCP</h1>
       <div id="links" hidden>
-        <a id="app">Open in RCP</a>
-        <a id="server">Open on the team server</a>
+        <a id="app" hidden>Open in RCP</a>
+        <a id="server"></a>
       </div>
       <p id="broken" hidden>This link is incomplete. Copy it again from RCP.</p>
     </main>
@@ -95,15 +98,20 @@
       const token = fields.get("l") || "";
       const valid =
         /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(space) &&
-        /^[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?$/.test(host) &&
+        /^(\[[0-9A-Fa-f:.]{2,45}\]|[A-Za-z0-9.-]{1,253})(:[0-9]{1,5})?$/.test(host) &&
         /^[A-Za-z0-9_-]{1,128}$/.test(token);
       if (valid) {
-        const app = "rcp://open?" + new URLSearchParams({ space, host, l: token });
-        document.getElementById("app").href = app;
-        document.getElementById("server").href = "https://" + host + "/open#l=" + token;
+        const server = document.getElementById("server");
+        server.href = "https://" + host + "/open#l=" + token;
+        server.textContent = "Open on " + host;
         document.getElementById("links").hidden = false;
-        if (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints <= 1)
+        if (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints <= 1) {
+          const app = "rcp://open?" + new URLSearchParams({ space, host, l: token });
+          const button = document.getElementById("app");
+          button.href = app;
+          button.hidden = false;
           location.href = app;
+        }
       } else document.getElementById("broken").hidden = false;
     </script>
   </body>

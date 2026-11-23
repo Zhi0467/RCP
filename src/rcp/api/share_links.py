@@ -161,7 +161,8 @@ def create_share_link(
     token = store.share_link_token(
         project, body.kind, body.item_id, graph_target, created_by=user_id
     )
-    fragment = urlencode({"s": store.space_id, "h": urlsplit(access_url).netloc, "l": token})
+    host = urlsplit(access_url).netloc.removesuffix(":443")
+    fragment = urlencode({"s": store.space_id, "h": host, "l": token})
     return {"url": f"{SHARE_LINK_PAGE}#{fragment}"}
 
 

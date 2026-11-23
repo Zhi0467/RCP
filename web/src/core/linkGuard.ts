@@ -3,6 +3,7 @@ import {
   requestShareLinkInPlace,
   sameSpaceShareToken,
   teamAccessOrigin,
+  teamSpaceId,
 } from "../open/openLinkModel";
 
 /** Whether following `href` in place would unload the app document: a link to another
@@ -26,9 +27,10 @@ export function linkClickAction(
   click: LinkClick,
   here: URL,
   accessOrigin: string | null,
+  spaceId: string | null = null,
 ): { kind: "share"; token: string } | { kind: "new-tab" } | { kind: "pass" } {
   if (click.download) return { kind: "pass" };
-  const token = sameSpaceShareToken(click.href, here, accessOrigin);
+  const token = sameSpaceShareToken(click.href, here, accessOrigin, spaceId);
   if (token && !click.modified) return { kind: "share", token };
   if (click.target || !leavesApp(click.href, here)) return { kind: "pass" };
   return { kind: "new-tab" };
@@ -63,6 +65,7 @@ export function installLinkGuard() {
         found.click,
         new URL(window.location.href),
         teamAccessOrigin(),
+        teamSpaceId(),
       );
       if (action.kind === "share") {
         event.preventDefault();
@@ -86,7 +89,12 @@ export function installLinkGuard() {
     if (event.defaultPrevented) return;
     const found = linkClick(event);
     if (!found) return;
-    const action = linkClickAction(found.click, new URL(window.location.href), teamAccessOrigin());
+    const action = linkClickAction(
+      found.click,
+      new URL(window.location.href),
+      teamAccessOrigin(),
+      teamSpaceId(),
+    );
     if (action.kind !== "new-tab") return;
     event.preventDefault();
     window.open(found.link.href, "_blank", "noopener,noreferrer");
