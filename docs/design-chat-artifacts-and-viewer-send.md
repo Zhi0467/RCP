@@ -25,7 +25,9 @@ This file is deleted before merge. Its rules move to
 An artifact's chat is `artifact_chat_id(artifact_reply_origin(store, artifact))`
 (`src/rcp/storage/artifact_replies.py`). Admission already uses it to send an
 artifact's comments. The pane uses the same function, so a row and its Send
-always agree.
+agree on the conversation. Where the turn runs still depends on state. A chat
+that takes turns gets an ordinary Work turn. A running orchestrator's artifacts
+get the existing origin-bound edit.
 
 | Origin | Chat |
 | --- | --- |
@@ -48,8 +50,10 @@ unexpired artifacts whose resolved chat is `chat_id`, newest first.
   as `run_artifacts` does.
   - Resolving one artifact reads its origin task, plus the episode and parent
     for reports.
-  - Within one request, the experiment-loop chat is cached per episode, so
-    `episode_tasks` runs once per episode, not once per artifact.
+  - Within one request, a memoizing `ReplyOriginReader` wrapper caches task,
+    episode and `episode_tasks` reads, so the resolver itself stays unchanged.
+    Artifacts whose origin cannot match the chat are skipped before resolving.
+  - The cost is measured on a production copy before merge.
   - A project with a few hundred artifacts costs a few hundred indexed reads per
     refetch.
   - An artifact-to-chat column is the fallback if a measurement shows a cost.
@@ -69,11 +73,11 @@ unexpired artifacts whose resolved chat is `chat_id`, newest first.
   - a right column inside the conversation surface, 300px wide; at phone width
     it covers the chat;
   - each row shows the type icon and the name, with the time on hover;
-  - the artifact open in the viewer is highlighted;
-  - a click calls `openArtifact`;
+  - a click calls `openArtifact`, and at phone width it also closes the pane;
   - the chip and Close close the pane, and the open state is not persisted.
-- Scope: project chats and the floating chat. Space threads store their
-  artifacts elsewhere and keep their inline cards.
+- The chip never makes the header chips wrap.
+- Scope: workspace project chats. The floating chat and Space threads keep
+  their inline cards.
 
 ## B. Sending comments from the viewer
 
@@ -95,14 +99,28 @@ Invariant 10g holds: the retry is the existing explicit retry.
 
 **Viewer.**
 
-- The comment rail gains a footer with one button, "Send N to agent". N counts
-  this artifact's threads with `can_send` (open, with posts after their last
-  send). The footer hides when N is 0. A chat-less artifact's threads are never
-  sendable today, and that stays.
-- Send posts every such thread id to `/comments`, with one idempotency key per
+- The comment rail gains a footer with one button. It sends this artifact's
+  threads that have `can_send`: open, in a chat the sender may use. That
+  includes teammates' open threads, since members are one lab. Sending resolves
+  them under the sender's name. The footer hides when none are sendable. A
+  chat-less artifact's threads are never sendable today, and that stays.
+- **Limits.** One send takes the oldest sendable threads that fit: at most
+  `maxSelections` (50) threads, with rendered text within `maxChars`. Both
+  values are already in the viewer config.
+  - The button names the batch, for example "Send 12 of 30 to agent".
+  - The rest stay open, and the footer offers them next.
+  - The server's all-or-nothing refusal stays the backstop. On
+    `comment_send_too_long`, the viewer drops the newest thread from the batch
+    and shows the refusal, so the next click fits.
+  - One click is one turn, never a split.
+- Send posts the batch's thread ids to `/comments`, with one idempotency key per
   attempt and the existing `fresh_session` retry.
+- A Send while the chat's agent is mid-turn is admitted, as a composer send is
+  (admission refuses only archived or closed chats). A check covers it.
 - Saving a comment only saves it.
-- After a send, the threads show as sent. The viewer keeps posting
+- After a send, the sent threads resolve and leave the open list. The rail
+  notice says "Sent" and links "Open chat", built from the thread's `chat_id`,
+  so the reader knows where the turn runs. The viewer keeps posting
   `rcp-artifact-edit-started`. The parent marks the artifact as editing, and
   polling ends that mark.
 - A refusal shows in the rail notice.
@@ -165,8 +183,11 @@ commit as Send, so comments never lose their way out.
 - **Browser:**
   - the chip count matches the rows, and a row opens the viewer, at 1040 and
     390px;
-  - Send posts once with the sendable thread ids, and the threads then show as
-    sent;
+  - Send posts once with the batch's thread ids, the threads resolve, and the
+    notice links the chat;
+  - with more than 50 threads, or text over the limit, the button names a
+    batch that fits and the rest stay;
+  - a Send while the chat is mid-turn is admitted;
   - a save does not navigate;
   - the footer hides with no sendable threads.
 - **Served journey on a data copy:** send from an episode report viewer and see
