@@ -30,6 +30,8 @@ interface ViewerState {
   edit_failure?: string | null;
 }
 interface Surface {
+  /** Comment mode: while off, the page takes clicks and drags as its own. */
+  select(on: boolean): void;
   locate(thread: CommentThread): Promise<void>;
   position(thread: CommentThread): Point | null;
   track(threads: CommentThread[]): void;
@@ -60,6 +62,7 @@ function mountSurface(
   const reposition = () => document.dispatchEvent(new Event("scroll"));
   const frameLocator = frame ? createFrameLocator(frame, reposition) : null;
   let disposed = false;
+  let selecting = false;
   let locateRequest = 0;
   const imageBounds = (): CommentRect | undefined => {
     if (!image?.naturalWidth || !image.naturalHeight) return undefined;
@@ -79,7 +82,7 @@ function mountSurface(
         pdfRoot,
         pdfRoot.dataset.contentUrl,
         (anchor, point) => {
-          if (config.selectionEnabled) offer(anchor, point);
+          if (selecting) offer(anchor, point);
         },
         showError,
       )
@@ -117,7 +120,7 @@ function mountSurface(
     "message",
     (event) => {
       frameLocator?.receive(event);
-      if (!config.selectionEnabled || !frame || event.source !== frame.contentWindow) return;
+      if (!selecting || !frame || event.source !== frame.contentWindow) return;
       const value: unknown = event.data;
       if (
         !value ||
@@ -134,13 +137,20 @@ function mountSurface(
     },
     { signal: abort.signal },
   );
-  const enableSelection = () => {
-    frameLocator?.reload();
-    if (config.selectionEnabled)
-      frame?.contentWindow?.postMessage({ type: "rcp-artifact-selection-enable" }, "*");
-  };
-  frame?.addEventListener("load", enableSelection, { signal: abort.signal });
-  enableSelection();
+  const postSelecting = () =>
+    frame?.contentWindow?.postMessage(
+      { type: selecting ? "rcp-artifact-selection-enable" : "rcp-artifact-selection-disable" },
+      "*",
+    );
+  frame?.addEventListener(
+    "load",
+    () => {
+      frameLocator?.reload();
+      if (selecting) postSelecting();
+    },
+    { signal: abort.signal },
+  );
+  frameLocator?.reload();
   let clearBox: (() => void) | undefined;
   let observer: ResizeObserver | undefined;
   let layer: HTMLDivElement | undefined;
@@ -148,6 +158,7 @@ function mountSurface(
     const drawLayer = document.createElement("div");
     layer = drawLayer;
     drawLayer.className = "rcp-comment-image-layer";
+    drawLayer.hidden = true;
     document.body.append(drawLayer);
     const size = () => {
       const bounds = imageBounds();
@@ -197,6 +208,11 @@ function mountSurface(
       { signal: abort.signal },
     );
   return {
+    select(on) {
+      selecting = Boolean(config.selectionEnabled) && on;
+      postSelecting();
+      if (layer) layer.hidden = !selecting;
+    },
     track: (threads) => frameLocator?.track(threads),
     async locate(thread) {
       const request = ++locateRequest;
@@ -263,6 +279,7 @@ function ViewerComments({ config }: { config: ViewerConfig }) {
   const [members, setMembers] = useState<CommentMember[]>([]);
   const [offer, setOffer] = useState<(CommentOffer & { key: number }) | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  const [selecting, setSelecting] = useState(false);
   const surface = useRef<Surface | null>(null);
   const revision = useRef(0);
   const stateRef = useRef(state);
@@ -389,6 +406,12 @@ function ViewerComments({ config }: { config: ViewerConfig }) {
     };
   }, [config, offerAt]);
 
+  const commentMode = Boolean(config.selectionEnabled) && canComment && selecting;
+  useEffect(() => {
+    surface.current?.select(commentMode);
+    if (!commentMode) setOffer((current) => (current?.anchor.kind === "whole" ? current : null));
+  }, [commentMode]);
+
   useEffect(() => {
     if (!canComment) setOffer(null);
   }, [canComment]);
@@ -470,6 +493,11 @@ function ViewerComments({ config }: { config: ViewerConfig }) {
             : undefined
         }
         onWhole={() => offerAt({ kind: "whole", comment: "" })}
+        commentMode={
+          config.selectionEnabled && canComment
+            ? { on: commentMode, toggle: () => setSelecting(!commentMode) }
+            : undefined
+        }
       />
       <CommentPins
         threads={comments.threads}

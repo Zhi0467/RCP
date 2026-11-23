@@ -871,6 +871,10 @@
 .chat-inline-artifact-frame {
   height: 100%;
 }
+/* A hairline shows where the embedded page ends; comment mode dashes it. */
+.chat-inline-artifact-box {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--line) 70%, transparent);
+}
 .chat-inline-artifact-placeholder:not([role="alert"]) {
   background: linear-gradient(
     100deg,

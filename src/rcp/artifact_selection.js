@@ -328,39 +328,41 @@ function installArtifactSelection(surface, publish, isActive = () => true) {
     clear();
     publish({ kind: "element", ...describeElement(element) });
   }
-  if (surface === doc)
+  // One quiet outline glides to the element under the pointer; a click picks it.
+  if (surface === doc) {
     listen(surface, "pointermove", (event) => {
       if (!event.isTrusted || !isActive() || drag || event.pointerType === "touch") return;
       const element = event.target;
       if (!(element instanceof Element) || element.closest("[data-rcp-selection]")) return;
-      hover?.remove();
-      hover = doc.createElement("div");
-      hover.dataset.rcpSelection = "hover";
+      if (!hover) {
+        hover = doc.createElement("div");
+        hover.dataset.rcpSelection = "hover";
+        hover.setAttribute("aria-hidden", "true");
+        Object.assign(hover.style, {
+          position: "fixed",
+          pointerEvents: "none",
+          zIndex: "2147483646",
+          boxSizing: "border-box",
+          borderRadius: "4px",
+          boxShadow: "0 0 0 1.5px rgba(189,91,54,.55)",
+          background: "rgba(189,91,54,.06)",
+          transition: "left .12s ease-out, top .12s ease-out, width .12s ease-out, height .12s ease-out",
+        });
+        doc.documentElement.appendChild(hover);
+      }
       const rect = element.getBoundingClientRect();
       Object.assign(hover.style, {
-        position: "fixed",
-        pointerEvents: "none",
-        zIndex: "2147483646",
         left: `${rect.left}px`,
         top: `${rect.top}px`,
         width: `${rect.width}px`,
         height: `${rect.height}px`,
-        border: "1px solid #bd5b36",
       });
-      const chip = doc.createElement("span");
-      chip.textContent = ownLabel(element) || element.tagName.toLowerCase();
-      Object.assign(chip.style, {
-        position: "absolute",
-        left: "0",
-        top: "0",
-        background: "#bd5b36",
-        color: "white",
-        font: "12px sans-serif",
-        padding: "2px 4px",
-      });
-      hover.appendChild(chip);
-      doc.documentElement.appendChild(hover);
     });
+    listen(doc.documentElement, "pointerleave", () => {
+      hover?.remove();
+      hover = null;
+    });
+  }
   listen(
     surface,
     "touchmove",

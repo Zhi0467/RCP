@@ -966,6 +966,8 @@ print(json.dumps(dict(shell=shell, broken=broken, fixed=fixed)))`,
     assert.ok((await notice.getAttribute("title")).includes("inline-failure"));
     assert.equal(await embed.locator("[data-artifact-action=keep]").count(), 1);
     assert.ok(await embed.locator("[download]").count());
+    assert.doesNotMatch(await embed.getAttribute("class"), /\bcommenting\b/);
+    await embed.getByRole("button", { name: "Comment on a part" }).click();
     assert.match(await embed.getAttribute("class"), /\bcommenting\b/);
     await embed.locator("[data-artifact-action=fix]").click();
     await page.locator(".artifact-viewer iframe").waitFor();

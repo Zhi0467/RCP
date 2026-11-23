@@ -820,8 +820,8 @@ test("Pip refreshes an inline artifact version and docks a comment drawn on its 
     assert.equal(await space.locator(".chat-inline-artifact-frame").count(), 0);
     refusing = false;
     await retry.click();
-    const embed = space.locator(".chat-inline-artifact.commenting");
-    await embed.waitFor();
+    const embed = space.locator(".chat-inline-artifact");
+    await embed.getByRole("button", { name: "Comment on a part" }).click();
     assert.equal(
       await embed.getByRole("button", { name: "Done commenting" }).getAttribute("aria-pressed"),
       "true",
