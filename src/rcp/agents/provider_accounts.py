@@ -54,12 +54,10 @@ def account_login_refusal(
     state = store.provider_login_state(key)
     if state.removed_at:
         return "This sign-in was removed. Start a new chat."
-    if not profile.authentication.credential_available(
+    if state.state == "signed_out" or not profile.authentication.credential_available(
         credentials, key.machine_id, key.login_id, login_state=state
     ):
-        return profile.authentication.missing_credential_detail
-    if state.state == "signed_out":
-        return f"{profile.label} is signed out. Sign in in Settings, Sign-ins."
+        return f"{profile.label} is not signed in. Sign in in Settings, Sign-ins."
     return None
 
 

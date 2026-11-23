@@ -50,9 +50,6 @@
   .artifact-viewer-header .branch-picker-trigger > span:first-of-type {
     max-width: 48px;
   }
-  .artifact-viewer-label {
-    display: none;
-  }
 }
 .artifact-viewer-status.live {
   color: var(--green);
