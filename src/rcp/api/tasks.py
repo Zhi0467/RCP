@@ -15,6 +15,7 @@ from fastapi.responses import Response
 from pydantic import UUID4, BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from rcp.agents.agent_owner import resolve_agent_task, task_retry_overrides, task_write_admission
+from rcp.api.chats import _artifact_comments
 from rcp.api.dependencies import (
     get_artifact_mutation_locks,
     get_attachment_store,
@@ -258,6 +259,10 @@ def _agent_task_response(
         response.update(can_resume=False, can_retry=True)
     if record.kind in {"node_chat", "project_chat"}:
         if record.request.get("trigger", "human") == "human":
+            comments = _artifact_comments(store, record.request)
+            response["artifact_comments"] = (
+                comments.model_dump(mode="json") if comments is not None else None
+            )
             if followup_question_ids is None:
                 followup_question_ids = {
                     operation_id: question.question_id

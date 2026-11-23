@@ -415,6 +415,7 @@ export function reconstructTaskTranscript(tasks: AgentTask[]): TaskTranscriptLin
         mode,
         trigger,
         ...(attachments.length ? { attachments } : {}),
+        artifactComments: task.artifact_comments,
       });
     }
     const messages = Array.isArray(task.result?.messages)

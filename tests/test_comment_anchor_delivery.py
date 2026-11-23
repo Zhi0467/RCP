@@ -9,6 +9,7 @@ import pytest
 from PIL import Image
 
 from rcp.agents import AgentProcessControl
+from rcp.agents.prompts import _attachment_items
 from rcp.background import AgentTaskExecution
 from rcp.comments.models import COMMENT_MEDIA_TYPES
 from rcp.limits import ARTIFACT_RECENT_VERSIONS
@@ -211,3 +212,21 @@ def test_revoking_edit_resume_reuses_staged_context(manifest, tmp_path, continua
     artifact = execution.store.artifact(source.artifact_id)
     assert artifact is not None
     assert recovered.pointer["current_version"] == artifact.current_version
+
+
+def test_artifact_attachment_names_its_current_version_once():
+    selection = {"kind": "text", "text": "quoted", "surrounding_text": "", "comment": "fix"}
+    prompt = _attachment_items(
+        [
+            {
+                "name": "report.html",
+                "media_type": "text/html",
+                "path": "/stage/report.html",
+                "source_artifact_id": "a" * 24,
+                "current_version": "version-digest",
+                "selections": [selection, selection],
+            }
+        ]
+    )
+    assert prompt.count("quoted") == 2
+    assert prompt.count("version-digest") == 1
