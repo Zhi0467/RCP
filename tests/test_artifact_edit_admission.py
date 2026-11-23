@@ -886,6 +886,10 @@ def test_chat_transcript_quotes_what_each_comment_was_drawn_on(edit_origin):
         artifact_context=context,
     )
     turn = _task(store, origin.project_id, request=request.model_dump(mode="json"))
+    running = signed_in_client(app).get(
+        f"/api/projects/{origin.project_id}/tasks/{turn.operation_id}"
+    )
+    assert running.status_code == 200, running.text
     execution = SimpleNamespace(operation_id=turn.operation_id, store=store)
     _append_chat_exchange(app.state.service, request, "Fixed.", None, None, execution=execution)
 
@@ -893,6 +897,7 @@ def test_chat_transcript_quotes_what_each_comment_was_drawn_on(edit_origin):
     assert response.status_code == 200, response.text
     question, answer = response.json()["messages"]
     assert answer["artifact_comments"] is None
+    assert running.json()["artifact_comments"] == question["artifact_comments"]
     assert question["artifact_comments"] == {
         "artifact_id": artifact.artifact_id,
         "name": "report.html",
