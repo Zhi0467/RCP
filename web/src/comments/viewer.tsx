@@ -19,6 +19,7 @@ interface ViewerConfig {
   projectId: string;
   artifactId: string;
   selectionEnabled?: boolean;
+  mediaType?: string;
   stateUrl: string;
   stateRefreshMs: number;
   maxSelections: number;
@@ -30,7 +31,7 @@ interface ViewerState {
   edit_failure?: string | null;
 }
 interface Surface {
-  /** Comment mode: while off, the page takes clicks and drags as its own. */
+  /** Comment mode: while off, the page keeps its clicks. */
   select(on: boolean): void;
   locate(thread: CommentThread): Promise<void>;
   position(thread: CommentThread): Point | null;
@@ -82,7 +83,7 @@ function mountSurface(
         pdfRoot,
         pdfRoot.dataset.contentUrl,
         (anchor, point) => {
-          if (selecting) offer(anchor, point);
+          if (config.selectionEnabled) offer(anchor, point);
         },
         showError,
       )
@@ -406,7 +407,8 @@ function ViewerComments({ config }: { config: ViewerConfig }) {
     };
   }, [config, offerAt]);
 
-  const commentMode = Boolean(config.selectionEnabled) && canComment && selecting;
+  const hasMode = Boolean(config.selectionEnabled) && config.mediaType !== "application/pdf";
+  const commentMode = hasMode && canComment && selecting;
   useEffect(() => {
     surface.current?.select(commentMode);
     if (!commentMode) setOffer((current) => (current?.anchor.kind === "whole" ? current : null));
@@ -494,7 +496,7 @@ function ViewerComments({ config }: { config: ViewerConfig }) {
         }
         onWhole={() => offerAt({ kind: "whole", comment: "" })}
         commentMode={
-          config.selectionEnabled && canComment
+          hasMode && canComment
             ? { on: commentMode, toggle: () => setSelecting(!commentMode) }
             : undefined
         }

@@ -782,7 +782,8 @@ HTML, raster images, and SVG take gestures in comment mode, which starts off
 in the panel and inline. The panel header's toggle and the inline Comment
 button turn it on; Done turns it off. Text
 selection highlights text. Dragging on figures or blank space selects a boxed
-region. In comment mode, hovering an HTML element outlines it, and a click picks it. PDFs take page areas. Every viewable type takes whole-file
+region. In comment mode, hovering an HTML element outlines it, and a click picks it. PDFs take page areas through their own area tool, outside comment mode, since
+they never take the page's clicks. Every viewable type takes whole-file
 comments; types available only for download take none. Comment saves a
 [shared thread](#shared-comments). Cancel or Escape discards the comment being
 written. Clicking elsewhere closes the window but retains the text for the next
