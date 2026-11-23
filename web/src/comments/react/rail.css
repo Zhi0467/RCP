@@ -7,3 +7,13 @@
   place-items: center;
   padding: 4px;
 }
+.rcp-comments .rcp-comments-mode {
+  display: inline-grid;
+  place-items: center;
+  padding: 4px 6px;
+}
+.rcp-comments .rcp-comments-mode[aria-pressed="true"] {
+  color: var(--comment-panel);
+  background: var(--comment-accent);
+  border-color: var(--comment-accent);
+}

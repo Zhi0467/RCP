@@ -589,7 +589,7 @@ chip, the agent that ran it, and how it ended; the answer stays in that agent's 
 Project threads support node references, saved artifacts, and
 artifact-selection comments. Space threads render their own turn artifacts and
 accept files and the same shared comments on replies and inline artifacts, which
-open in comment mode like a project thread's. A Space artifact comment travels
+take comment mode like a project thread's. A Space artifact comment travels
 with the next message as numbered selections on that turn file, and the agent
 writes a revision at its original tracked path. Space turns synchronize earlier files and
 publish changes as the same artifact's next version, just as project turns do.
@@ -782,7 +782,7 @@ There is no row of mode buttons.
 
 Inline artifacts share the reply's width and palette without a frame.
 They have a loading shimmer and a quiet caption with name, version, live state,
-and action. Comment mode adds a dashed selection outline.
+and action. A hairline marks the edge; comment mode dashes it.
 [Artifact interaction](paper-artifacts-and-result-views.md#artifacts-inside-a-reply)
 owns content, comments, versions, polling, and recovery.
 

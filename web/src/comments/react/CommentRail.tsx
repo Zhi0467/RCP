@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { X } from "lucide-react";
+import { MessageSquarePlus, X } from "lucide-react";
 import { railState } from "../model.ts";
 import type { CommentThread } from "../types.ts";
 import { CommentThreadCard } from "./CommentThreadCard";
@@ -65,17 +65,21 @@ export function CommentList({ comments, wholeLabel, selected, onLocate, note }: 
   );
 }
 
-/** The side rail: a header with whole-target Comment and Close, then the list.
+/** The side rail: a header with the comment-mode toggle, whole-target Comment and
+ *  Close, then the list.
  *  At phone width the shared stylesheet makes it a bottom sheet. */
 export function CommentRail({
   className = "",
   onWhole,
   onClose,
+  commentMode,
   children,
   ...list
 }: CommentListProps & {
   className?: string;
   onWhole?: () => void;
+  /** Present where parts can be picked; off leaves the page its own clicks. */
+  commentMode?: { on: boolean; toggle: () => void };
   onClose?: () => void;
   children?: ReactNode;
 }) {
@@ -84,6 +88,22 @@ export function CommentRail({
       <header className="rcp-comments-header">
         <strong>Comments</strong>
         <span className="rcp-comments-tools">
+          {commentMode && (
+            <button
+              type="button"
+              className="rcp-comments-mode"
+              aria-pressed={commentMode.on}
+              aria-label={commentMode.on ? "Done commenting" : "Comment on a part"}
+              title={
+                commentMode.on
+                  ? "Stop commenting and use the artifact"
+                  : "Select a part of this artifact to comment on it"
+              }
+              onClick={commentMode.toggle}
+            >
+              <MessageSquarePlus size={14} />
+            </button>
+          )}
           {onWhole && list.comments.canPost && (
             <button type="button" onClick={onWhole} title={list.wholeLabel}>
               Comment

@@ -113,7 +113,7 @@ export function InlineArtifact({
   const error = resource.error ? errorMessage(resource.error) : "";
   const [pageError, setPageError] = useState<{ message: string; count: number } | null>(null);
   // null until the reader presses the toggle; comment mode starts on.
-  const [commentChoice, setCommentChoice] = useState<boolean | null>(null);
+  const [commentChoice, setCommentChoice] = useState(false);
   const onVersionChangeRef = useRef(onVersionChange);
   onVersionChangeRef.current = onVersionChange;
   const freshSessionRef = useRef(false);
@@ -164,7 +164,7 @@ export function InlineArtifact({
     (artifact?.view === "html" || artifact?.view === "image");
   // Derived, so a refresh that withdraws commenting (another edit reserving the
   // artifact) also ends comment mode, with no Done left to press.
-  const commentMode = selectable && (commentChoice ?? true);
+  const commentMode = selectable && commentChoice;
   const pins = useInlineArtifactPins(frame, threads);
   const watch = useRef(watchThreads);
   watch.current = watchThreads;

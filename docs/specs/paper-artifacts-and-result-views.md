@@ -761,9 +761,9 @@ reader in the chat scroll box. A mounted frame re-reads its state when the
 project's artifacts watermark moves and reloads when the current version changes.
 Live relay is one-way.
 
-An inline artifact opens in comment mode, whose dashed outline is also its
-visible edge. Done hands the page back for clicks and drags until the reader
-turns comment mode on again. Readers can select with a
+An inline artifact opens with comment mode off, so the page takes its own
+clicks and drags; a hairline marks its edge. Comment turns comment mode on and
+dashes the edge, and Done hands the page back. Readers can select with a
 mouse or pen; at phone width a tap picks an element and a long-press drag draws
 an area. Comment saves a [shared thread](#shared-comments) drawn on the shown
 version, and its pin shows inline and in the expanded viewer. The composer can
@@ -778,11 +778,12 @@ as scratch edits, without references. Both paths can publish tracked next versio
 
 ### Selection and comments
 
-HTML, raster images, and SVG support gestures immediately in the panel and
-inline, where comment mode starts on until the reader presses Done. Text
+HTML, raster images, and SVG take gestures in comment mode, which starts off
+in the panel and inline. The panel header's toggle and the inline Comment
+button turn it on; Done turns it off. Text
 selection highlights text. Dragging on figures or blank space selects a boxed
-region. In comment mode, hovering an HTML element outlines it with its name chip,
-and a click picks it. PDFs take page areas. Every viewable type takes whole-file
+region. In comment mode, hovering an HTML element outlines it, and a click picks it. PDFs take page areas through their own area tool, outside comment mode, since
+they never take the page's clicks. Every viewable type takes whole-file
 comments; types available only for download take none. Comment saves a
 [shared thread](#shared-comments). Cancel or Escape discards the comment being
 written. Clicking elsewhere closes the window but retains the text for the next
