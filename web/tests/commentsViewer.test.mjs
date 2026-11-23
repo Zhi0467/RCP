@@ -17,6 +17,7 @@ from rcp.artifacts import AgentArtifactDescriptor, html_preview_document
 from rcp.artifact_comments import comment_panel, selection_frame_addon
 from rcp.artifact_views import artifact_viewer_document
 source = '''<style>body{margin:0;min-height:2200px}#first,#second{position:absolute;left:20px;width:100px;height:40px;background:tan}#first{top:100px}#second{top:1000px}</style><div id="first">First anchor</div><div id="second">Second anchor</div><script>
+window.clicks=0;document.getElementById('second').addEventListener('click',()=>window.clicks++);
 window.attack=async()=>{
   const forged={type:'rcp-artifact-position',version:1,id:'first',rect:{x:1,y:1,width:1,height:1}};
   parent.postMessage(forged,'*');
@@ -131,6 +132,18 @@ for (const width of [1040, 390]) {
           .locator('[data-thread-id="second"]')
           .evaluate((card) => card.classList.contains("selected")),
       );
+      const dialog = page.getByRole("dialog", { name: "Comment", exact: true });
+      await artifact.locator("#second").click();
+      assert.equal(await artifact.locator("body").evaluate(() => window.clicks), 1);
+      assert.equal(await dialog.isVisible(), false);
+      await page.getByRole("button", { name: "Comment on a part" }).click();
+      await artifact.locator("#second").click();
+      await dialog.waitFor();
+      assert.equal(await artifact.locator("body").evaluate(() => window.clicks), 1);
+      await page.keyboard.press("Escape");
+      await page.getByRole("button", { name: "Done commenting" }).click();
+      await artifact.locator("#second").click();
+      assert.equal(await artifact.locator("body").evaluate(() => window.clicks), 2);
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       if (width === 390) {
         const rail = await page.locator("#comments-root > .rcp-comments").boundingBox();
