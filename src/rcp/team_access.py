@@ -22,6 +22,9 @@ INSTALLED_TEAM_CONFIG_PATH: Path = DEFAULT_SERVER_LAYOUT.team_config_path
 logger = logging.getLogger(__name__)
 
 
+SHARE_LINK_PAGE = "https://zhi0467.github.io/RCP/open"
+
+
 def team_access_url() -> str | None:
     """Return the configured https origin, or None when unset or unusable."""
 
@@ -40,4 +43,9 @@ def team_access_url() -> str | None:
     return config.access_url if config is not None else None
 
 
-__all__ = ["INSTALLED_TEAM_CONFIG_PATH", "TEAM_ACCESS_URL_ENV", "team_access_url"]
+__all__ = [
+    "INSTALLED_TEAM_CONFIG_PATH",
+    "SHARE_LINK_PAGE",
+    "TEAM_ACCESS_URL_ENV",
+    "team_access_url",
+]

@@ -173,6 +173,10 @@ test("the guard opens a same-space share link in place and any other in a tab", 
     "abc",
   );
   assert.equal(model.sameSpaceShareToken("https://other.example/open#l=abc", shell, null), null);
+  const copied = "https://pages.example/RCP/open#s=9b2f&h=rcp.lab.example&l=abc";
+  assert.equal(model.sameSpaceShareToken(copied, shell, "https://rcp.lab.example"), "abc");
+  assert.equal(model.sameSpaceShareToken(copied, here, null), "abc");
+  assert.equal(model.sameSpaceShareToken(copied, shell, null), null);
   assert.equal(model.sameSpaceShareToken("https://rcp.lab.example/files#l=abc", here, null), null);
   assert.equal(leavesApp("https://rcp.lab.example/open#l=abc", here), true);
 

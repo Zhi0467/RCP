@@ -28,13 +28,29 @@ export function shareTokenFromLocation(pathname: string, hash: string): string |
   return pathname === "/open" ? (TOKEN_HASH.exec(hash)?.[1] ?? null) : null;
 }
 
-/** The token of a link to this same space: this origin, or its team access origin. */
+/** The team host and token a copied link carries for the public page: `#s=…&h=…&l=…`. */
+export function publicShareLink(hash: string): { host: string; token: string } | null {
+  const fields = new URLSearchParams(hash.replace(/^#/, ""));
+  const host = fields.get("h");
+  const token = fields.get("l");
+  return fields.get("s") && host && token && TOKEN_HASH.test(`#l=${token}`)
+    ? { host, token }
+    : null;
+}
+
+/** The token of a link to this same space: this origin, its team access origin, or a
+ *  public-page link that names this space's host. */
 export function sameSpaceShareToken(
   href: string,
   here: URL,
   accessOrigin: string | null,
 ): string | null {
   const target = new URL(href, here);
+  const shared = publicShareLink(target.hash);
+  if (shared) {
+    const hosts = [here.host, accessOrigin ? new URL(accessOrigin).host : null];
+    return hosts.includes(shared.host) ? shared.token : null;
+  }
   if (target.origin !== here.origin && target.origin !== accessOrigin) return null;
   return shareTokenFromLocation(target.pathname, target.hash);
 }
