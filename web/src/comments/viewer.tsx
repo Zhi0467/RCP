@@ -512,7 +512,7 @@ function ViewerComments({ config }: { config: ViewerConfig }) {
                   {sent.queued ? "Queued" : "Sent"}
                   {state?.thread_href && (
                     <a href={state.thread_href} onClick={openChat(state.thread_href)}>
-                      Open chat
+                      Open agent
                     </a>
                   )}
                 </span>

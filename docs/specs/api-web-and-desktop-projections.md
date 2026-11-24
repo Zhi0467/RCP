@@ -2237,8 +2237,8 @@ has a queue row; a key whose queue row was removed or refused gets 409
 ([queued comment threads](conversations-episodes-and-watchers.md#queued-comment-threads)).
 A conflict keeps the comments filed. A started turn sends `rcp-artifact-edit-started`
 protocol version 1 to the same-origin parent with the artifact and operation
-ids. The rail's Open chat link sends `rcp-artifact-open-chat` version 1 with an
-in-app `#/` href, which the parent opens.
+ids. The rail's Open agent link sends `rcp-artifact-open-chat` version 1 with an
+in-app `#/` href, which the parent, overlay viewer or pinned view, opens.
 
 ### Inline artifact presentation
 
