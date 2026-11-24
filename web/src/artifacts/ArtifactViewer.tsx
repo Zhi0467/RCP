@@ -8,7 +8,7 @@ import { refsProfile } from "../graph/graphResources";
 import { pickerMergeRequestBody, type BranchMergeRequest } from "../graph/mergePanel";
 import { taskStatusProfile } from "../agents/taskResources";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { MessageCircle, Minus, Pin, RefreshCw, X } from "lucide-react";
+import { Download, MessageCircle, Minus, Pin, RefreshCw, X } from "lucide-react";
 import { api } from "../core/api";
 import {
   closeArtifactViewer,
@@ -417,6 +417,18 @@ export function ArtifactViewer({ onMerge }: { onMerge?: BranchMergeRequest }) {
           >
             <MessageCircle size={16} />
           </a>
+        )}
+        {target.kind === "artifact" && state && (
+          <StoredArtifactDownload
+            key={`download:${state.artifact_id}`}
+            projectId={target.projectId}
+            artifactId={state.artifact_id}
+            name={state.name}
+            className="artifact-viewer-control"
+            href={state.download_url}
+          >
+            <Download size={16} />
+          </StoredArtifactDownload>
         )}
         {target.kind === "artifact" && state?.can_delete && (
           <DeleteArtifactButton

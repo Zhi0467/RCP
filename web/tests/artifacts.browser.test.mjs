@@ -641,6 +641,10 @@ test("viewer persists placement and follows an edit through publication and Undo
     await open();
     const panel = page.locator(".artifact-viewer");
     await panel.locator("iframe").waitFor();
+    assert.equal(
+      await panel.getByRole("link", { name: "Download Saved plot" }).getAttribute("href"),
+      "/api/projects/project/artifacts/plot/download",
+    );
     const docked = await panel.boundingBox();
     assert.equal(docked.y, 0);
     assert.equal(docked.height, 850);

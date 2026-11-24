@@ -141,33 +141,32 @@ export function ChatArtifactsPane({
                   </time>
                 </div>
               </div>
-              {downloadOnly ? (
-                projectId === null ? (
-                  <a
-                    className="icon-button artifact-entry-action"
-                    href={endpoints.artifactUrl(
-                      artifact.origin_operation_id ?? "",
-                      artifact.artifact_id,
-                      "download",
-                    )}
-                    download={artifact.name}
-                    aria-label={`Download ${artifact.name}`}
-                    title="Download"
-                  >
-                    <Download size={15} />
-                  </a>
-                ) : (
-                  <StoredArtifactDownload
-                    projectId={projectId}
-                    artifactId={artifact.artifact_id}
-                    name={artifact.name}
-                    className="icon-button artifact-entry-action"
-                    href={`/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifact.artifact_id)}/download`}
-                  >
-                    <Download size={15} />
-                  </StoredArtifactDownload>
-                )
+              {projectId === null ? (
+                <a
+                  className="icon-button artifact-entry-action"
+                  href={endpoints.artifactUrl(
+                    artifact.origin_operation_id ?? "",
+                    artifact.artifact_id,
+                    "download",
+                  )}
+                  download={artifact.name}
+                  aria-label={`Download ${artifact.name}`}
+                  title="Download"
+                >
+                  <Download size={15} />
+                </a>
               ) : (
+                <StoredArtifactDownload
+                  projectId={projectId}
+                  artifactId={artifact.artifact_id}
+                  name={artifact.name}
+                  className="icon-button artifact-entry-action"
+                  href={`/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifact.artifact_id)}/download`}
+                >
+                  <Download size={15} />
+                </StoredArtifactDownload>
+              )}
+              {!downloadOnly && (
                 <button
                   type="button"
                   className="artifact-entry-open"
