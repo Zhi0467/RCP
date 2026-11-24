@@ -1786,8 +1786,8 @@ it, two sunken trays, "Personal sign-ins" and "Shared on <machine>", hold raised
 cards. The personal tray title explains on hover, "Only you can use these sign-ins."
 The first tray is the member's preferred group. If that group has no
 usable login, work tries the other group. At phone width the trays stack in
-the same order. The button between them is an arrow from the first tray to the
-second; it reverses the order and saves it immediately. A ＋ slot ends the Shared tray, and the personal tray offers a ＋
+the same order. Each tray title carries its rank, 1 filled and 2 outlined. The swap
+button between them reverses the order and saves it immediately. A ＋ slot ends the Shared tray, and the personal tray offers a ＋
 while the member has no own login. Adding starts the provider's sign-in flow
 or opens token entry on the new card. The built-in card is named "Shared sign-in".
 An added shared card shows who added it, with the date on hover. The viewer's

@@ -458,11 +458,8 @@
 }
 
 @media (max-width: 560px) {
-  form.sign-in-device {
-    flex-wrap: wrap;
-  }
-  form.sign-in-device > a {
-    flex-basis: 100%;
+  .sign-in-open-label {
+    display: none;
   }
 }
 

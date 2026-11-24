@@ -1,6 +1,6 @@
 import {
-  ArrowDown,
-  ArrowRight,
+  ArrowLeftRight,
+  ArrowUpDown,
   ExternalLink,
   Info,
   LoaderCircle,
@@ -352,6 +352,7 @@ function ProviderPanel({
     <SignInTray
       key="own"
       tray="own"
+      rank={ownFirst ? 1 : 2}
       title="Personal sign-ins"
       hover="Only you can use these sign-ins."
     >
@@ -362,6 +363,7 @@ function ProviderPanel({
     <SignInTray
       key="shared"
       tray="shared"
+      rank={ownFirst ? 2 : 1}
       title={`Shared on ${machineName}`}
       hover="Any member can use, add or remove these."
     >
@@ -388,16 +390,12 @@ function ProviderPanel({
           type="button"
           data-sign-ins-swap=""
           aria-label="Swap sign-in order"
-          title={
-            ownFirst
-              ? "Personal sign-ins first, then shared. Click to swap."
-              : "Shared sign-ins first, then personal. Click to swap."
-          }
+          title={ownFirst ? "Swap: try shared first" : "Swap: try personal first"}
           disabled={!settingsReady}
           onClick={() => write(ownFirst ? "shared_then_own" : "own_then_shared")}
         >
-          <ArrowRight size={15} className="sign-ins-swap-wide" aria-hidden="true" />
-          <ArrowDown size={15} className="sign-ins-swap-narrow" aria-hidden="true" />
+          <ArrowLeftRight size={15} className="sign-ins-swap-wide" aria-hidden="true" />
+          <ArrowUpDown size={15} className="sign-ins-swap-narrow" aria-hidden="true" />
         </button>
         {ownFirst ? sharedTray : ownTray}
       </div>
@@ -420,15 +418,22 @@ function ProviderPanel({
 
 interface TrayProps {
   tray: Tray;
+  rank: 1 | 2;
   title: string;
   hover: string;
   children: ReactNode;
 }
 
-function SignInTray({ tray, title, hover, children }: TrayProps) {
+function SignInTray({ tray, rank, title, hover, children }: TrayProps) {
   return (
-    <section className="sign-ins-tray" data-tray={tray}>
+    <section className="sign-ins-tray" data-tray={tray} data-rank={rank}>
       <header>
+        <span
+          className="sign-ins-rank"
+          title={rank === 1 ? "Tried first" : "Tried when the first has no usable sign-in"}
+        >
+          {rank}
+        </span>
         <strong title={hover}>{title}</strong>
       </header>
       <div className="sign-ins-cards">{children}</div>
@@ -667,6 +672,7 @@ export function SignInCard({
           autoComplete="off"
           autoFocus
           aria-label={`${row.label} code`}
+          placeholder="Paste the code"
           value={token}
           disabled={disabled}
           onChange={(event) => setToken(event.target.value)}
