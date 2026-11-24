@@ -331,8 +331,8 @@ function ViewerComments({ config }: { config: ViewerConfig }) {
       const result = await client.sendArtifact(config.artifactId, ids, attempt.current.fresh, key);
       keys.current.done();
       freshRequired.current = false;
-      setSent({ queued: Boolean(result.queued) });
-      if (!result.queued && result.operation_id)
+      setSent({ queued: Boolean(result.queue_id) });
+      if (!result.queue_id && result.operation_id)
         window.parent.postMessage(
           {
             type: "rcp-artifact-edit-started",

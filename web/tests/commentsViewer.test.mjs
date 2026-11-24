@@ -220,7 +220,7 @@ test("Send posts the oldest 50 sendable threads once and links the chat", async 
     const list = Array.from({ length: 60 }, (_, index) => sendableThread(59 - index));
     const { page, errors, sends } = await openViewer(browser, list, () => ({
       status: 200,
-      json: { operation_id: "op" },
+      json: { operation_id: "op", queued: true, status: "queued" },
     }));
     await page.evaluate(() => {
       window.posted = [];

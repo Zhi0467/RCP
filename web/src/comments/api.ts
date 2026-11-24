@@ -97,7 +97,7 @@ export function createScopedCommentsClient(scope: CommentScope, request: Comment
     mentions: async () =>
       (await send<{ mentions: CommentMention[] }>(`${base}/comment-mentions`)).mentions,
     sendArtifact: (id: string, threadIds: readonly string[], freshSession: boolean, key: string) =>
-      send<{ operation_id: string | null; queued?: boolean }>(
+      send<{ operation_id: string | null; queue_id?: string }>(
         `${base}/artifacts/${encodeURIComponent(id)}/comments`,
         "POST",
         { thread_ids: threadIds, fresh_session: freshSession },
