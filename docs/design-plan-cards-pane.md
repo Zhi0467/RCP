@@ -185,6 +185,27 @@ the Auto-research text in `work_episode_controls.py` change. They now say that r
 the command again for the same node (or Auto-research), with a new key as today, revises
 the open card. `WORK_POLICY_VERSION` is bumped.
 
+### One card for the plan's life
+
+A plan card stays the plan's card from proposal to result:
+Needs you → Parked → Running → Ended.
+
+- **Starting.** On Start, the card in its turn becomes the run's live card. It keeps the
+  plan's title and shows the run's state ("Running · turn 4 of 30") with **Open agent**.
+  Its menu holds the run controls that the dock row has today: Stop and the task actions.
+  The card reads the run through the card result's episode id, the same projection that
+  `RunningRunRow` uses.
+- **Ending.** When the run ends, the card shows its outcome ("Ended: completed") and links
+  to the run's report. A start that fails keeps today's failed line.
+- **Pane.** The pane's Running row is that run. Clicking the row scrolls the chat to the
+  card. A run with no plan card, such as one started from the node page, appears only in
+  the pane.
+
+**No second plan while a run is live.** An Experiment allows one live episode per graph
+target. When the agent asks for a plan for a node whose run is live, the `episode`
+command refuses with a reason the agent can act on: the run is live, so wait for it to
+end or ask the member to stop it. No card is raised. Auto-research keeps its own rule.
+
 ### Agent pane
 
 One header button is always shown. Its count is the number of running runs, parked
@@ -192,7 +213,8 @@ plans, and artifacts. It opens one pane with up to three sections in this order:
 **Running**, **Parked plans**, and **Artifacts**. Empty sections are hidden. An empty
 pane shows only its header.
 
-- **Running** replaces the dock's "N runs in progress" strip. `RunningRunRow` and its run
+- **Running** replaces the dock's "N runs in progress" strip. Each row is a live run,
+  and a row that has a plan card scrolls to it. `RunningRunRow` and its run
   state move from `ApprovalCardStack` into a shared module that the pane uses. Runs that
   need the member's action stay in the dock.
 - **Parked plans** lists the chat's parked cards, newest first. Each row shows the title
@@ -250,6 +272,9 @@ narrow one, full width at 390px.
 - An agent revision drops the draft and shows the note.
 - The pane button shows with no artifacts.
 - The pane holds at 390px. Reduced motion is respected.
+
+- A started card shows the live run, then its outcome. A plan request for a node with
+  a live run is refused.
 
 **Served-app drive:** a real Codex Work turn raises a plan. The member parks it, the
 agent revises it, and the member edits Design and Starts.
