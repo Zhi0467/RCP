@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { MessageSquarePlus, X } from "lucide-react";
+import { MessageSquarePlus, PanelRightClose, X } from "lucide-react";
 import { railState } from "../model.ts";
 import type { CommentThread } from "../types.ts";
 import { CommentThreadCard } from "./CommentThreadCard";
@@ -72,6 +72,7 @@ export function CommentRail({
   className = "",
   onWhole,
   onClose,
+  onFold,
   commentMode,
   children,
   footer,
@@ -82,6 +83,8 @@ export function CommentRail({
   /** Present where parts can be picked; off leaves the page its own clicks. */
   commentMode?: { on: boolean; toggle: () => void };
   onClose?: () => void;
+  /** Folds the rail away; the host shows its own control to bring it back. */
+  onFold?: () => void;
   children?: ReactNode;
   footer?: ReactNode;
 }) {
@@ -109,6 +112,17 @@ export function CommentRail({
           {onWhole && list.comments.canPost && (
             <button type="button" onClick={onWhole} title={list.wholeLabel}>
               Comment
+            </button>
+          )}
+          {onFold && (
+            <button
+              type="button"
+              className="rcp-comments-fold"
+              aria-label="Hide comments"
+              title="Hide comments"
+              onClick={onFold}
+            >
+              <PanelRightClose size={14} />
             </button>
           )}
           {onClose && (
