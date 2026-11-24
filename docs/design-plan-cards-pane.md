@@ -225,14 +225,15 @@ an empty pane shows only its header. Each section header folds its section and s
 count while folded. The fold state is remembered per section on this device.
 
 - **Running** lists the chat's live runs as the experiment card in its compact form:
-  one line with the title, the state, and a menu. Clicking the line expands the card in
-  place. It replaces the dock's "N runs in progress" strip. Runs that need the member
+  one line with the icon, the title, the phase badge, and a ⋯ menu, with no text
+  buttons. Clicking the card opens the run's agent (a parked card scrolls to itself in
+  the chat). The menu holds Show in chat, Stop, and the run's other controls. It replaces the dock's "N runs in progress" strip. Runs that need the member
   stay in the dock as well, as today.
 - **Parked** lists the chat's parked plan cards, newest first, in the same compact form.
 - **Ended** lists the chat's ended runs, newest first, each with Open report.
 - **Artifacts** is the existing list, with Copy link and Download on each row.
 
-A compact card that has a turn offers "Show in chat", which scrolls to it.
+Show in chat appears in the menu only when the card has a turn.
 `useArtifactsPaneLayout` becomes the pane's layout hook, and it no longer depends on the
 chat having artifacts. The pane sits beside the chat on a wide window and covers the
 chat on a narrow one, full width at 390px.
