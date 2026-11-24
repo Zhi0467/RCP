@@ -829,8 +829,8 @@ Viewer Send names thread ids, never client-built selections, and posts them to
 the artifact's `/comments` route with one key per attempt. Only the server knows
 the artifact's chat, branch, node and latest profile, so it picks the route.
 Sent threads resolve under the sender's name. The footer then says Sent, or
-Queued when the chat was busy, with an Open chat link to the artifact's reply
-link; the in-app parent opens it. A refusal changes no thread and shows in the
+Queued when the chat was busy, with an Open agent link to the artifact's reply
+link; the in-app parent, overlay viewer or pinned view, opens it. A refusal changes no thread and shows in the
 rail. A started turn, never a queued one, posts `rcp-artifact-edit-started`, so
 the parent marks the artifact as editing until polling ends it. Send needs a
 readable, unexpired artifact context. Only a chat that refuses human turns can

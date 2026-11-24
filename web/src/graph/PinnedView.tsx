@@ -6,7 +6,10 @@ import { resourceKeyId } from "../core/resourceStore";
 import { useRefreshRuntime, useResource } from "../core/useResource";
 import type { ResearchViewPin } from "../core/types";
 import { artifactStateProfile } from "../artifacts/artifactResources";
-import { acceptsArtifactOpenNodeMessage } from "../artifacts/artifactViewerLayout";
+import {
+  acceptsArtifactOpenNodeMessage,
+  artifactOpenChatMessage,
+} from "../artifacts/artifactViewerLayout";
 import { researchViewsProfile } from "./researchViewResources";
 
 export function PinnedView({
@@ -31,6 +34,15 @@ export function PinnedView({
   const state = resource.value;
   useEffect(() => {
     const receive = (event: MessageEvent) => {
+      const agent = artifactOpenChatMessage(
+        event,
+        frame.current?.contentWindow,
+        window.location.origin,
+      );
+      if (agent) {
+        window.location.hash = agent;
+        return;
+      }
       if (
         !acceptsArtifactOpenNodeMessage(
           event,
