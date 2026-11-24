@@ -783,13 +783,15 @@ only cards scattered through the transcript. A header chip with the Files icon
 and the count opens and closes it. The chip shows only when the count is above
 zero, is pressed while the pane is open, and has "Artifacts" as its hover name.
 The pane is a 300px right column inside the conversation; at phone width it
-covers the chat. Each row shows the type icon and the name, newest first, with
-the time on hover. A click opens the artifact in the viewer and, at phone width,
-also closes the pane. Close and the chip close it, and the open state is not
-kept. The list comes from the
+covers the chat. Its rows, newest first, are the shared
+[run-artifact rows](../../web/src/experiments/RunArtifacts.tsx):
+type label, name, time, and Download for a file, or for a PDF outside the
+desktop app. A row opens the artifact in the viewer and leaves the pane open.
+Close and the chip close it, and the open state is not kept. The list comes
+from the
 [chat artifact route](api-web-and-desktop-projections.md#artifact-viewer-and-run-inventory)
-and refreshes on the project's artifacts watermark. The floating chat and Space
-threads keep only their inline cards.
+and refreshes on the project's artifacts watermark. Paper coach chats show no
+chip. The floating chat and Space threads keep only their inline cards.
 
 ### Selection and comments
 
@@ -807,7 +809,8 @@ reply only saves it, and the viewer stays where it is. Comments are never graph
 annotations.
 
 The rail's footer holds one Send button whenever the artifact has threads the
-member may send (`can_send`), teammates' open threads included. One click sends
+member may send (`can_send`), teammates' open threads included. A thread an
+unstarted queued message still holds is not sendable; another send of it gets 409. One click sends
 the oldest `maxSelections` of them, from the viewer config. When more are open,
 the button names the batch, as in "Send 50 of 60 to agent", and the rest stay
 open for the next click. The server's length limit refuses an oversize batch

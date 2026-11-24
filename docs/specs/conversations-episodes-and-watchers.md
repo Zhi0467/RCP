@@ -322,23 +322,30 @@ provider from starting; an unconfirmed remote exit fences further execution.
 
 A queued message may carry `comment_thread_ids`, at most
 `ARTIFACT_CONTEXT_MAX_SELECTIONS`, so comments wait for a busy chat as text does.
-A message then needs text, files, or threads. Queueing checks the send at once
-with `chat_turn_send` under the queue's key and the thread's chat. A wrong chat
-or an oversize send is refused now, not at drain. The row stores the ids, and
-the threads resolve at once under the key and the queued turn's operation id.
+A message then needs text, files, or threads. Queueing and drain share
+[`admit_queued_comments`](../../src/rcp/runs/agent_thread_queue.py). It runs
+`chat_turn_send` under the queue's key and the thread's chat, then the
+artifact-comment admission on the artifact origin's graph target, or
+`admit_space_artifact_comment` in a Space chat. Paper threads are sendable only
+when the chat's latest turn had Paper focus. A wrong chat, an oversize send, or
+a refused admission fails at queue time, not at drain.
 
-At drain, the queued turn runs `chat_turn_send` again with the same key. A
-resolved thread whose send key matches renders its frozen snapshot, so the turn
-carries the text and anchored `artifact_context` the queue accepted. The turn's
-message leads with the queued text, and the rendered threads follow it. A queued
-message that is removed or refused before its turn starts reopens its threads,
-but only those still resolved under its key and operation id.
+The row keeps the ids in its picks JSON. In the same transaction the threads
+resolve under the key and the queued turn's operation id. Until that turn
+starts, the queued message holds its threads: another send of one gets 409,
+both at the queue claim and after a reply reopened it. At drain the same key
+renders each thread's frozen snapshot, whether or not it was reopened, so the
+turn carries the text and anchored `artifact_context` the queue accepted. The
+turn's message leads with the queued text, and the rendered threads follow it.
+A queued message that is removed or refused before its turn starts reopens its
+threads, but only those still resolved under its key and operation id.
 
-Two sends queue comments. A composer send while the chat is busy queues its
-docked comments with its text; steering still carries them as a steer. The
-artifact viewer's Send queues when the artifact's chat takes human turns and
-has an active turn, or when its key is already queued. That queued send carries
-only the threads and drops `fresh_session`, which only an origin-bound edit reads.
+Two sends queue comments. A composer send queues its docked comments with its
+text when the chat is busy or its queue is not empty; steering still carries
+them as a steer. The artifact viewer's Send queues when the artifact's chat
+takes human turns and has an active turn, or when its key is already queued.
+That queued send carries only the threads and drops `fresh_session`, which only
+an origin-bound edit reads.
 
 ## Human notification observations
 

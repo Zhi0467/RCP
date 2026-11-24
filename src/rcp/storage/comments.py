@@ -599,6 +599,13 @@ class CommentStoreMixin(StoreMixinBase):
             for thread_id in thread_ids:
                 _reopen(connection, thread_id, (key, operation_id))
 
+    def held_by_queued_send(self, thread: Mapping[str, Any]) -> bool:
+        """An unstarted queued message holds the thread, so another send is refused."""
+        if not thread.get("send_key"):
+            return False
+        with self.connection() as connection:
+            return _queued_send_holds(connection, thread["thread_id"], thread["send_key"])
+
     def sendable_threads(
         self, project_id: str, user_id: str, ids: list[str], key: str
     ) -> list[tuple[dict[str, Any], CommentTargetRoute]]:

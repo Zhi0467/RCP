@@ -92,7 +92,6 @@ interface Props {
   onOpenSignIns?: (state: ProjectLoginNotice) => void;
   /** The page's voice session, which a thread's mic binds to that thread. */
   voice: VoiceAgent;
-  /** A share link's team host to add, prefilled in the Add team space dialog. */
   addTeamSpaceRequested?: boolean;
   onAddTeamSpaceTaken?: () => void;
 }

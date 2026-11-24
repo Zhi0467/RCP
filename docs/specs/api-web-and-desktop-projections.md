@@ -2231,7 +2231,8 @@ The shell is frameable only by its own RCP origin. It posts `thread_ids` (1 to
 50 saved comment threads) and `fresh_session`, with an `Idempotency-Key`, to
 `POST /api/projects/{project_id}/artifacts/{artifact_id}/comments`, which
 returns 202. It returns the started task, or `{queued: true, queue_id,
-operation_id}` when the artifact's chat has an active turn
+operation_id}` when the artifact's chat has an active turn or the key already
+has a queue row; a key whose queue row was removed or refused gets 409
 ([queued comment threads](conversations-episodes-and-watchers.md#queued-comment-threads)).
 A conflict keeps the comments filed. A started turn sends `rcp-artifact-edit-started`
 protocol version 1 to the same-origin parent with the artifact and operation
@@ -2458,10 +2459,11 @@ item's kind, project, and title. Signed out, it shows no item details. It offers
 hover). "Open here" resolves the link after sign-in and hands it to the
 notification resolver. "Open in app" sets the location to
 `rcp://open?space=<space_id>&host=<host>&l=<token>`. The card waits until the
-session state is known. In a browser a 404 shows "Not available" with no
-buttons, and a 503 shows Retry. Any other failure, and every failure in the
-desktop shell, settles the link and shows "This link is not available." over
-the app. The remembered choice lives in browser storage: `app`, `here`, or
+session state is known. A 503 shows Retry, in a browser and in the desktop
+shell. In a browser a 404 shows "Not available" with no buttons. Any other
+failure, and a 404 in the desktop shell, settles the link and shows "This link
+is not available." over the app
+([failure rule](../../web/src/open/openLinkModel.ts)). The remembered choice lives in browser storage: `app`, `here`, or
 `ask` (the default). `app` skips the card and, after a short wait, shows an
 "Open here" fallback; where "Open in app" is not offered, `app` acts as `ask`.
 `here` skips the card. Space Settings' Appearance pane shows an "Open share
@@ -2470,8 +2472,9 @@ a team space's browser only. The desktop shell never shows the card; it
 resolves and opens in place.
 
 **In place.** A click on a share link to the current space opens it in place,
-without the card. In a browser that is a same-origin link. In the desktop shell
-it is a link on the space's access origin. A failed in-place open shows a
+without the card. It is a link on this origin or the space's access origin, or
+any link whose fragment carries this space's `s`, `h`, and `l`
+(`sameSpaceShareToken` in [open links](../../web/src/open/openLinkModel.ts)). A failed in-place open shows a
 notice. Other share links open in a new tab.
 
 **Desktop.** The release app registers the `rcp` URL scheme and RCP Dev
@@ -2619,14 +2622,16 @@ Every agent's waiting work, the Space thread's included, lives at
 `/api/agent-threads/{thread_id}/queue`. Another member's private agent or a
 closed thread gets 404
 ([behavior](conversations-episodes-and-watchers.md#private-agent-threads)).
-`POST` takes the project send's `{message, attachment_set_id?,
-attachment_client_id?, references?, comment_thread_ids?}` with a UUID4 `Idempotency-Key`, needs a
-patch-capable identity, plus write admission for a project agent, and returns 202
-`{queue_id, operation_id}`. It runs one drain pass, so `operation_id` is set
-when that pass started the turn. It returns 422 for no text, files or comment threads, text
-over `AGENT_THREAD_QUEUE_MAX_CHARS`, unclaimable files, or a key reused with
-another message, and 409 for an archived or refused thread or a thread holding
-`AGENT_THREAD_QUEUE_MAX_ITEMS` unstarted messages. `DELETE .../queue/{queue_id}`
+`POST` takes a [`QueuedMessageBody`](../../src/rcp/api/agent_threads.py) with a
+UUID4 `Idempotency-Key`, needs a patch-capable identity, plus write admission
+for a project agent, and returns 202 `{queue_id, operation_id}`. It runs one
+drain pass, so `operation_id` is set when that pass started the turn. It
+returns 422 for no text, files or comment threads, text over
+`AGENT_THREAD_QUEUE_MAX_CHARS`, a model or reasoning pick without its provider,
+provider skills on a Space agent, unclaimable files, or a key reused with
+another message. It returns 409 for an archived or refused thread, a thread
+holding `AGENT_THREAD_QUEUE_MAX_ITEMS` unstarted messages, a comment admission
+conflict, or a comment thread another queued message holds. `DELETE .../queue/{queue_id}`
 removes an unstarted or refused message; a started one is 409. `GET` returns
 `{items}` ordered by readiness: `{kind: "handoff", handoff_id, message,
 source_agent_name, ready_at}` for pending handoffs whose Space turn succeeded,

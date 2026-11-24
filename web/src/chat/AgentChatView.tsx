@@ -1565,6 +1565,7 @@ export function AgentChatView({
           type="button"
           aria-expanded={artifactsOpen}
           aria-label="Artifacts"
+          title="Artifacts"
           onClick={() => setArtifactsOpen((open) => !open)}
         >
           <Files size={12} /> {chatArtifacts.length}
