@@ -36,6 +36,7 @@ from rcp.api.agent_schedules import router as agent_schedules_router
 from rcp.api.agent_threads import router as agent_threads_router
 from rcp.api.approval_cards import membership_router as approval_cards_membership_router
 from rcp.api.approval_cards import router as approval_cards_router
+from rcp.api.artifacts import agent_router as agent_artifacts_router
 from rcp.api.artifacts import router as artifacts_router
 from rcp.api.bulletin import router as bulletin_router
 from rcp.api.chats import agent_router as agent_metadata_router
@@ -2922,6 +2923,7 @@ def create_app(
     app.include_router(paper_assets_router)
     app.include_router(result_views_router)
     app.include_router(artifacts_router)
+    app.include_router(agent_artifacts_router)
     app.include_router(research_views_router)
     app.include_router(sync_router)
     app.include_router(tasks_router)

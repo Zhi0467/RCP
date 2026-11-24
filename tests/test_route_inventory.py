@@ -118,6 +118,7 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/agent-threads/{thread_id}/tasks/{operation_id}/resume"),
     (("POST",), "/api/agent-threads/{thread_id}/tasks/{operation_id}/retry"),
     (("POST",), "/api/agent-threads/{thread_id}/tasks/{operation_id}/steer"),
+    (("GET",), "/api/agent-threads/{thread_id}/artifact-list"),
     (("GET",), "/api/agent-threads/{thread_id}/artifacts/{artifact_id}/state"),
     (
         ("GET", "HEAD"),
@@ -290,7 +291,6 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("GET",), "/api/projects/{project_id}/artifacts"),
     (("GET",), "/api/projects/{project_id}/artifacts/{artifact_id}/state"),
     (("GET",), "/api/projects/{project_id}/episodes/{episode_id}/artifacts"),
-    (("GET",), "/api/projects/{project_id}/chats/{chat_id}/artifact-list"),
     (("HEAD",), "/api/projects/{project_id}/artifacts/{artifact_id}/content"),
     (("GET",), "/api/projects/{project_id}/artifacts/{artifact_id}/content"),
     (("HEAD",), "/api/projects/{project_id}/artifacts/{artifact_id}/viewer"),

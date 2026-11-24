@@ -128,6 +128,7 @@ export function createPaperFixture({ room = new PaperTestRoom() } = {}) {
   /** Paper chats the Coach lists, and each finished turn's files by operation id. */
   const chats = [];
   const turns = {};
+  const artifacts = [];
   const rooms = new Map([["f1", room]]);
   let nextFile = 10;
   const versions = [
@@ -160,6 +161,7 @@ export function createPaperFixture({ room = new PaperTestRoom() } = {}) {
     versions,
     chats,
     turns,
+    artifacts,
     respond(path, method = "GET", body = {}, query = new URLSearchParams()) {
       if (method === "POST") posts.push({ path, body });
       if (path === "/api/health")
@@ -188,6 +190,7 @@ export function createPaperFixture({ room = new PaperTestRoom() } = {}) {
       if (/^\/api\/agent-threads\/[^/]+\/browser$/.test(path))
         return { json: { browser_requested: false } };
       if (/^\/api\/agent-threads\/[^/]+\/queue$/.test(path)) return { json: { items: [] } };
+      if (/^\/api\/agent-threads\/[^/]+\/artifact-list$/.test(path)) return { json: artifacts };
       if (/^\/api\/agent-threads\/[^/]+\/schedules$/.test(path)) return { json: { schedules: [] } };
       if (path === "/api/service-connections") return { json: { dictation: "", connections: [] } };
       if (/\/chats\/[^/]+\/worktree$/.test(path))

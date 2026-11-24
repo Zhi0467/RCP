@@ -76,6 +76,7 @@ from rcp.storage.research_views import ResearchViewConflict
 from rcp.transport import StateUnavailable
 
 router = APIRouter(dependencies=[Depends(require_project_membership)])
+agent_router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
@@ -671,30 +672,26 @@ def _resolved_chat_id(store: AppStore, artifact: Artifact) -> object:
         return None
 
 
-@router.get(
-    "/api/projects/{project_id}/chats/{chat_id}/artifact-list",
-    response_model=list[RunArtifactEntry],
+@agent_router.get(
+    "/api/agent-threads/{thread_id}/artifact-list", response_model=list[RunArtifactEntry]
 )
-def chat_artifacts(
-    project_id: str,
-    chat_id: str,
+def agent_artifacts(
+    thread_id: str,
     request: Request,
     *,
-    catalog: Annotated[ProjectCatalog, Depends(get_catalog)],
     store: Annotated[AppStore, Depends(get_store)],
     identity_access: Annotated[IdentityAccess, Depends(get_identity_access)],
 ) -> list[RunArtifactEntry]:
-    require_registered_project(catalog, project_id)
+    """The unexpired artifacts whose reply thread is this agent's conversation."""
     user_id = identity_access.acting_user(request).user_id
-    if chat_id in store.private_chat_ids_except(user_id):
-        raise HTTPException(status_code=404, detail="Chat not found")
+    agent = accessible_agent(store, thread_id, user_id)
     now = store.now()
     with store.connection() as connection:
         artifacts = [
             artifact
-            for artifact in store.artifacts(project_id)
+            for artifact in store.artifacts(agent.project_id or store.space_id)
             if _unexpired(artifact, now)
-            and _resolved_chat_id(store, artifact) == chat_id
+            and _resolved_chat_id(store, artifact) == thread_id
             and private_artifact_owner(connection, artifact) in {None, user_id}
         ]
     artifacts.sort(key=lambda artifact: (artifact.created_at, artifact.artifact_id), reverse=True)

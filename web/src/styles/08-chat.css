@@ -291,42 +291,86 @@
   background: color-mix(in srgb, var(--cobalt) 20%, var(--sheet));
   border-color: var(--cobalt);
 }
-.chat-dock.workspace {
+.chat-dock:has(> .chat-artifacts-pane) {
   position: relative;
 }
 .chat-artifacts-pane {
   animation: paper-pane-enter 160ms ease;
   background: var(--surface);
-  border-left: 1px solid var(--line);
   bottom: 0;
+  left: 0;
   overflow-y: auto;
-  padding: 10px 16px;
+  padding: 10px 10px 16px;
   position: absolute;
   right: 0;
-  top: 52px;
-  width: 300px;
   z-index: 3;
 }
 .chat-artifacts-pane > header {
   align-items: center;
   display: flex;
   justify-content: space-between;
+  padding: 0 0 6px 8px;
 }
-/* On a desktop the chat narrows beside the pane under a full-width header;
- * on a phone the pane covers the chat. */
-@media (min-width: 561px) {
-  .chat-dock.artifacts-open {
-    padding-right: 300px;
-  }
-  .chat-dock.artifacts-open > header {
-    margin-right: -300px;
-  }
+.chat-artifacts-pane > ul {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
 }
-@media (max-width: 560px) {
-  .chat-artifacts-pane {
-    border-left: 0;
-    width: 100%;
-  }
+.chat-artifacts-pane > header > .icon-button,
+.chat-artifacts-pane .artifact-entry-action {
+  background: none;
+  border-color: transparent;
+  color: var(--muted);
+}
+.chat-artifacts-pane .artifact-entry {
+  background: var(--sheet);
+  border: 1px solid var(--line);
+  gap: 10px;
+  padding: 10px;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+.chat-artifacts-pane .artifact-entry:hover,
+.chat-artifacts-pane .artifact-entry:focus-within {
+  background: color-mix(in srgb, var(--surface-cool) 45%, var(--sheet));
+  border-color: var(--line-strong);
+}
+.chat-artifacts-pane .artifact-entry:has(.artifact-entry-open:hover) h3 {
+  text-decoration: none;
+}
+.chat-artifacts-pane .artifact-entry > div {
+  margin-right: 0;
+}
+.chat-artifacts-pane .artifact-entry-open {
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.chat-artifact-icon {
+  align-items: center;
+  background: var(--surface-cool);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--muted);
+  display: inline-flex;
+  flex: none;
+  height: 32px;
+  justify-content: center;
+  width: 32px;
+}
+.chat-dock.artifacts-beside {
+  padding-right: 300px;
+}
+.chat-dock.artifacts-beside > header {
+  margin-right: -300px;
+}
+.chat-dock.artifacts-beside > .chat-artifacts-pane {
+  border-left: 1px solid var(--line);
+  left: auto;
+  width: 300px;
 }
 .chat-watchers {
   background: var(--paper-deep);

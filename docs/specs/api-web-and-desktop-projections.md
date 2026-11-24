@@ -2280,17 +2280,20 @@ orchestrator labels follow the [canonical agent-name rule](conversations-episode
 Missing worker names use the instruction heading, or Worker. Both routes enforce project
 membership, and the inventory rejects an episode from another project.
 
-`GET /api/projects/{project_id}/chats/{chat_id}/artifact-list` returns
-`RunArtifactEntry[]` for one chat, newest first. It lists the project's
-unexpired or kept artifacts whose chat is `chat_id`. An artifact's chat is
-`artifact_chat_id(*artifact_reply_origin(...))` in
+`GET /api/agent-threads/{thread_id}/artifact-list` returns
+`RunArtifactEntry[]` for one agent, newest first. It answers for any agent
+`accessible_agent` admits: project chats, Paper coach chats, orchestrators, and
+Space threads. It lists the unexpired or kept artifacts of the agent's project,
+or of the Space for a Space thread, whose chat is `thread_id`. An artifact's chat
+is `artifact_chat_id(*artifact_reply_origin(...))` in
 [artifact replies](../../src/rcp/storage/artifact_replies.py), the same resolver
-that sends the artifact's comments, so a row and its Send agree. An artifact
-outside any chat is skipped.
+that sends the artifact's comments, so a row and its Send agree. An
+orchestrator's chat is its chain root's branch, which is also its agent id. An
+artifact outside any chat is skipped.
 
-The route scans the project's artifacts in memory, as the episode inventory
-does. Another member's private chat answers 404, and each artifact must pass
-`private_artifact_owner`.
+The route scans the scope's artifacts in memory, as the episode inventory
+does. An unknown agent, or another member's private one, answers 404, and each
+artifact must pass `private_artifact_owner`.
 
 ## Bulletin channels
 
