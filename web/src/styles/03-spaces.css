@@ -16,10 +16,15 @@
   margin: 0 0 20px;
 }
 .space-group-title-row {
-  align-items: baseline;
+  align-items: center;
   display: flex;
   gap: 14px;
   justify-content: space-between;
+  margin-bottom: 28px;
+}
+.space-group-title-row > .space-group-title,
+.space-group-title-row > .group-breadcrumb {
+  margin-bottom: 0;
 }
 .team-space-groups {
   border-top: 1px solid var(--landing-rule);
