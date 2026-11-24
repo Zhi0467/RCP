@@ -637,7 +637,9 @@ function installArtifactLocator(doc, publish) {
   view.addEventListener("resize", refresh);
   const observer = new ResizeObserver(refresh);
   observer.observe(doc.documentElement);
-  new MutationObserver(() => pending && refresh()).observe(doc.documentElement, {
+  new MutationObserver((records) => {
+    if ((pending || focused) && records.some((record) => record.target !== mark)) refresh();
+  }).observe(doc.documentElement, {
     attributes: true,
     childList: true,
     subtree: true,

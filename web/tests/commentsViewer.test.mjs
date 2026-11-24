@@ -328,6 +328,10 @@ test("a comment link outlines its anchor after a slow artifact loads, and the ou
     const outlined = await outline.boundingBox();
     assert.ok(late.y >= 0 && late.y + late.height <= 844);
     assert.ok(Math.abs(outlined.y - late.y) < 1);
+    await artifact.locator("#late").evaluate((late) => (late.style.left = "300px"));
+    await page.waitForTimeout(200);
+    const shifted = await artifact.locator("#late").boundingBox();
+    assert.ok(Math.abs((await outline.boundingBox()).x - shifted.x) < 1);
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();
