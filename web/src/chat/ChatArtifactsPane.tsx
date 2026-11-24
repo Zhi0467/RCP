@@ -5,6 +5,7 @@ import { chatArtifactsProfile } from "../artifacts/artifactResources";
 import { openArtifact, openSpaceArtifact } from "../artifacts/artifactViewerModel";
 import { StoredArtifactDownload } from "../artifacts/StoredArtifactDownload";
 import { isDesktopRuntime, openDesktopArtifactPdf } from "../core/desktopRuntime";
+import { CopyReferenceButton } from "../core/CopyReferenceButton";
 import { errorMessage } from "../core/errors";
 import { setReferenceDrag } from "../core/projectReferences";
 import type { GraphTargetRef, RunArtifactEntry } from "../core/types";
@@ -141,6 +142,14 @@ export function ChatArtifactsPane({
                   </time>
                 </div>
               </div>
+              {projectId !== null && (
+                <CopyReferenceButton
+                  projectId={projectId}
+                  graphTarget={graphTarget}
+                  reference={{ kind: "artifact", artifact_id: artifact.artifact_id }}
+                  className="icon-button artifact-entry-action"
+                />
+              )}
               {projectId === null ? (
                 <a
                   className="icon-button artifact-entry-action"
