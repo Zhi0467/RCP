@@ -108,6 +108,7 @@ class QueuedTurnPicks(BaseModel):
     invoked_workflow_ids: list[str] = Field(default_factory=list)
     invoked_skill_ids: list[str] = Field(default_factory=list)
     invoked_provider_skill_names: list[str] = Field(default_factory=list)
+    comment_thread_ids: list[str] = Field(default_factory=list, exclude_if=lambda value: not value)
 
 
 class AgentThreadQueueRecord(BaseModel):
@@ -126,22 +127,16 @@ class AgentThreadQueueRecord(BaseModel):
     deferred_at: str | None = None
     removed_at: str | None = None
     picks: QueuedTurnPicks = Field(default_factory=QueuedTurnPicks)
-    comment_thread_ids: list[str] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
-    def read_json_columns(cls, data: Any) -> Any:
-        """A stored row carries picks and thread ids as JSON; a row queued before
-        migration 94 has neither column, and one queued before migration 95 has no ids."""
-        if isinstance(data, dict):
+    def read_picks_column(cls, data: Any) -> Any:
+        """A stored row carries its picks as JSON; a row queued before migration 94 has none."""
+        if isinstance(data, dict) and "picks_json" in data:
             data = dict(data)
-            for column, field in (
-                ("picks_json", "picks"),
-                ("comment_thread_ids_json", "comment_thread_ids"),
-            ):
-                stored = data.pop(column, None)
-                if stored is not None:
-                    data[field] = json.loads(stored)
+            stored = data.pop("picks_json")
+            if stored is not None:
+                data["picks"] = json.loads(stored)
         return data
 
 
@@ -217,12 +212,6 @@ def migrate_agent_thread_queue_picks(connection: sqlite3.Connection) -> None:
     columns = {row[1] for row in connection.execute("PRAGMA table_info(agent_thread_queue)")}
     if "picks_json" not in columns:
         connection.execute("ALTER TABLE agent_thread_queue ADD COLUMN picks_json TEXT")
-
-
-def migrate_agent_thread_queue_comment_threads(connection: sqlite3.Connection) -> None:
-    columns = {row[1] for row in connection.execute("PRAGMA table_info(agent_thread_queue)")}
-    if "comment_thread_ids_json" not in columns:
-        connection.execute("ALTER TABLE agent_thread_queue ADD COLUMN comment_thread_ids_json TEXT")
 
 
 def migrate_space_turn_project_bindings(connection: sqlite3.Connection) -> None:
@@ -531,10 +520,11 @@ class AgentThreadStoreMixin(StoreMixinBase):
         """Store one member message for the thread's next free turn; a replayed key returns it.
 
         A removed message keeps its key, so a late retry of its request finds it removed.
-        Its comment threads are marked sent as `sent_operation_id` in the same transaction.
+        Its comment threads resolve under the key and `sent_operation_id` in the same
+        transaction, or nothing is stored when another send already took one.
         """
         from rcp.limits import AGENT_THREAD_QUEUE_MAX_ITEMS
-        from rcp.storage.comments import mark_threads_sent_in
+        from rcp.storage.comments import claim_threads_sent_in
 
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -564,12 +554,11 @@ class AgentThreadStoreMixin(StoreMixinBase):
                 request_sha256=request_sha256,
                 created_at=self.now(),
                 picks=picks or QueuedTurnPicks(),
-                comment_thread_ids=list(rendered_through or {}),
             )
             connection.execute(
                 "INSERT INTO agent_thread_queue(queue_id,thread_id,user_id,idempotency_key,message,"
                 "attachment_set_id,attachment_client_id,attachment_count,request_sha256,created_at,"
-                "picks_json,comment_thread_ids_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                "picks_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     record.queue_id,
                     thread_id,
@@ -582,11 +571,10 @@ class AgentThreadStoreMixin(StoreMixinBase):
                     request_sha256,
                     record.created_at,
                     record.picks.model_dump_json(),
-                    json.dumps(record.comment_thread_ids),
                 ),
             )
             if rendered_through:
-                mark_threads_sent_in(
+                claim_threads_sent_in(
                     connection,
                     rendered_through,
                     sent_operation_id,
@@ -789,7 +777,7 @@ def _require_queued_turn(
     message = record.request.get("message")
     same_text = (
         isinstance(message, str) and message.startswith(row["message"].strip())
-        if json.loads(row["comment_thread_ids_json"] or "[]")
+        if json.loads(row["picks_json"] or "{}").get("comment_thread_ids")
         else message == row["message"]
     )
     closed = connection.execute(

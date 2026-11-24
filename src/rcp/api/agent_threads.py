@@ -101,8 +101,7 @@ from rcp.repository_preview import repository_for_path
 from rcp.runs.agent_names import DEFAULT_AGENT_NAMES
 from rcp.runs.agent_thread_commands import sent_thread_agent, store_thread_pick
 from rcp.runs.agent_thread_queue import (
-    admit_queued_comment,
-    queued_comment_send,
+    admit_queued_comments,
     queued_turn_operation_id,
     release_queued_message,
 )
@@ -1040,7 +1039,12 @@ def queue_thread_message(
             body,
             str(idempotency_key),
         )
-    return queued_reply(request, store, queued)
+    request.app.state.reconcile_thread_handoffs()
+    current = store.agent_thread_queue_item(queued.queue_id)
+    return {
+        "queue_id": queued.queue_id,
+        "operation_id": current.operation_id if current is not None else None,
+    }
 
 
 def queue_message(
@@ -1066,18 +1070,6 @@ def queue_message(
     return queued
 
 
-def queued_reply(
-    request: Request, store: AppStore, queued: AgentThreadQueueRecord
-) -> dict[str, str | None]:
-    """Run one drain pass, then name the queued message and the turn it started, if any."""
-    request.app.state.reconcile_thread_handoffs()
-    current = store.agent_thread_queue_item(queued.queue_id)
-    return {
-        "queue_id": queued.queue_id,
-        "operation_id": current.operation_id if current is not None else None,
-    }
-
-
 def _queue_new_message(
     store: AppStore,
     catalog: ProjectCatalog,
@@ -1088,43 +1080,20 @@ def _queue_new_message(
     body: QueuedMessageBody,
     key: str,
 ) -> AgentThreadQueueRecord:
-    """Claim the files for the queued turn's own id, then store the row, or release them.
-
-    Comment threads are checked now and resolve under the key and the turn's id.
-    """
+    """Claim the files for the queued turn's own id, then store the row, or release them."""
     queue_id = str(uuid.uuid4())
     operation_id = queued_turn_operation_id(queue_id)
-    sent = (
-        queued_comment_send(
-            store,
-            project_id,
-            thread.agent_id,
-            user_id,
-            body.comment_thread_ids,
-            key,
-            body.message,
-        )
-        if body.comment_thread_ids
-        else None
-    )
-    if sent is not None and sent.context is not None:
+    sent = None
+    if body.comment_thread_ids:
         try:
-            admit_queued_comment(
-                store,
-                catalog,
-                thread,
-                RunRequest(
-                    chat_id=thread.agent_id,
-                    chat_scope="project",
-                    mode="work",
-                    message=sent.text,
-                    artifact_context=sent.context,
-                ),
+            sent, *_ = admit_queued_comments(
+                store, catalog, thread, user_id, body.comment_thread_ids, key, body.message
             )
-        except AgentTaskAdmissionConflict as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except CommentError:
+            raise
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            status = 409 if isinstance(exc, AgentTaskAdmissionConflict) else 422
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
     client_id = body.attachment_client_id or (str(uuid.uuid4()) if body.references else None)
     try:
         claimed, batch = claim_turn_attachments(
@@ -1164,6 +1133,8 @@ def _queue_new_message(
     except (AgentThreadQueueFull, ValueError) as exc:
         if batch is not None:
             attachment_store.release(batch, operation_id)
+        if isinstance(exc, CommentError):
+            raise
         status = 409 if isinstance(exc, AgentThreadQueueFull) else 422
         raise HTTPException(status_code=status, detail=str(exc)) from exc
     if queued.queue_id != queue_id and batch is not None:

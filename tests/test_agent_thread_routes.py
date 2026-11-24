@@ -747,42 +747,6 @@ def test_space_turn_admits_a_comment_on_its_own_artifact(manifest, tmp_path, mon
     assert str(commented) in part and 'Bigger"' in part
 
 
-def test_space_queue_carries_a_comment_on_its_own_artifact(manifest, tmp_path, monkeypatch):
-    import uuid
-
-    from rcp.runs.agent_thread_queue import queued_turn_operation_id
-    from tests.helpers import fake_launch_admitted, wait_until
-
-    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
-    fake_launch_admitted(monkeypatch, app.state.background_tasks)
-    store = app.state.background_tasks.store
-    with signed_in_client(app) as client:
-        thread_id = client.get("/api/agent-threads").json()["threads"][0]["thread_id"]
-        task, artifact = _space_turn_artifact(app, thread_id)
-        comment = _space_comment(client, thread_id, "artifact", artifact.artifact_id)
-        with store.connection() as connection:
-            connection.execute(
-                "UPDATE graph_runs SET status='running' WHERE operation_id=?", (task.operation_id,)
-            )
-        response = client.post(
-            f"/api/agent-threads/{thread_id}/queue",
-            headers={"Idempotency-Key": str(uuid.uuid4())},
-            json={"message": "Fix it", "comment_thread_ids": [comment["thread_id"]]},
-        )
-        assert response.status_code == 202, response.text
-        operation_id = queued_turn_operation_id(response.json()["queue_id"])
-        with store.connection() as connection:
-            connection.execute(
-                "UPDATE graph_runs SET status='succeeded' WHERE operation_id=?",
-                (task.operation_id,),
-            )
-        app.state.reconcile_thread_handoffs()
-        turn = wait_until(lambda: store.agent_task(operation_id))
-        assert turn.request["message"].startswith("Fix it")
-        assert "Comment 1" in turn.request["message"]
-        assert turn.request["artifact_context"]["artifact_id"] == artifact.artifact_id
-
-
 def test_space_comment_request_key_keeps_its_frozen_base_after_publication(
     manifest, tmp_path, monkeypatch
 ):

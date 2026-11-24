@@ -291,22 +291,10 @@
   background: color-mix(in srgb, var(--cobalt) 20%, var(--sheet));
   border-color: var(--cobalt);
 }
-.chat-artifacts-count.icon-button {
-  font: 700 var(--type-sm) var(--mono);
-  gap: 5px;
-  padding: 0 10px;
-  width: auto;
-}
-.chat-artifacts-count.icon-button[aria-pressed="true"] {
-  background: var(--surface-cool);
-}
 .chat-dock.workspace {
   position: relative;
-  transition: padding-right 0.22s ease;
 }
-.chat-dock.workspace > header {
-  transition: margin-right 0.22s ease;
-}
+/* The open pane takes the dock's right 300px; the header keeps its full width. */
 .chat-dock.artifacts-open {
   padding-right: 300px;
 }
@@ -314,95 +302,22 @@
   margin-right: -300px;
 }
 .chat-artifacts-pane {
+  animation: paper-pane-enter 160ms ease;
   background: var(--surface);
   border-left: 1px solid var(--line);
   bottom: 0;
-  display: flex;
-  flex-direction: column;
-  opacity: 0;
+  overflow-y: auto;
+  padding: 10px 16px;
   position: absolute;
   right: 0;
   top: 52px;
-  transition:
-    opacity 0.22s ease,
-    visibility 0s linear 0.22s;
-  visibility: hidden;
   width: 300px;
   z-index: 3;
-}
-.chat-artifacts-pane.is-open {
-  opacity: 1;
-  transition: opacity 0.22s ease;
-  visibility: visible;
 }
 .chat-artifacts-pane > header {
   align-items: center;
   display: flex;
   justify-content: space-between;
-  padding: 12px 10px 8px 16px;
-}
-.chat-artifacts-pane > header > strong {
-  font-size: var(--type-base);
-}
-.chat-artifacts-pane > header > .icon-button {
-  background: none;
-  border-color: transparent;
-  color: var(--muted);
-  padding: 0;
-  width: 34px;
-}
-.chat-artifacts-pane > ul {
-  display: grid;
-  gap: 2px;
-  list-style: none;
-  margin: 0;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 0 8px 12px;
-}
-.chat-artifacts-pane li > button {
-  align-items: center;
-  background: none;
-  border: 0;
-  border-radius: 8px;
-  color: var(--ink);
-  cursor: pointer;
-  display: flex;
-  font: inherit;
-  gap: 10px;
-  padding: 8px;
-  text-align: left;
-  width: 100%;
-}
-.chat-artifacts-pane li > button:hover,
-.chat-artifacts-pane li > button:focus-visible {
-  background: var(--surface-cool);
-}
-.chat-artifacts-pane-icon {
-  align-items: center;
-  background: var(--surface-cool);
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  color: var(--muted);
-  display: inline-flex;
-  flex: none;
-  height: 32px;
-  justify-content: center;
-  width: 32px;
-}
-.chat-artifacts-pane-name {
-  font-size: var(--type-md);
-  font-weight: 600;
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-@media (prefers-reduced-motion: reduce) {
-  .chat-dock.workspace,
-  .chat-dock.workspace > header,
-  .chat-artifacts-pane,
-  .chat-artifacts-pane.is-open {
-    transition: none;
-  }
 }
 .chat-watchers {
   background: var(--paper-deep);

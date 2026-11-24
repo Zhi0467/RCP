@@ -22,7 +22,6 @@ interface ViewerConfig {
   stateUrl: string;
   stateRefreshMs: number;
   maxSelections: number;
-  maxChars: number;
 }
 interface ViewerState {
   can_comment: boolean;
@@ -315,11 +314,7 @@ function ViewerComments({ config }: { config: ViewerConfig }) {
   const [sent, setSent] = useState<{ queued: boolean } | null>(null);
   /** Lowered by the server's length refusal, so the next click fits. */
   const [cap, setCap] = useState(Infinity);
-  const { batch, sendable } = sendBatch(threads, {
-    maxSelections: config.maxSelections,
-    maxChars: config.maxChars,
-    cap,
-  });
+  const { batch, sendable } = sendBatch(threads, Math.min(cap, config.maxSelections));
   const send = async () => {
     const ids = batch.map((thread) => thread.thread_id);
     if (sending || !ids.length) return;

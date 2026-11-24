@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import UUID4, BaseModel, Field
 
-from rcp.api.agent_threads import QueuedMessageBody, accessible_agent, queue_message, queued_reply
+from rcp.api.agent_threads import QueuedMessageBody, accessible_agent, queue_message
 from rcp.api.dependencies import (
     get_attachment_store,
     get_background_tasks,
@@ -65,7 +65,7 @@ from rcp.storage import (
     EpisodeMode,
     EpisodeRecord,
 )
-from rcp.storage.agent_threads import AgentThreadQueueRecord, private_artifact_owner
+from rcp.storage.agent_threads import private_artifact_owner
 from rcp.storage.artifact_replies import artifact_chat_id, artifact_reply_origin
 from rcp.storage.artifacts import ArtifactDeleteRefused
 from rcp.storage.chat_names import chat_titles
@@ -966,7 +966,6 @@ def comment_artifact(
     origin = store.agent_task(artifact.origin_operation_id or "")
     if origin is None:
         raise HTTPException(status_code=409, detail="The artifact's origin is unavailable.")
-    queued: AgentThreadQueueRecord | None = None
     try:
         with store.client_request_admission(
             project_id,
@@ -1000,11 +999,13 @@ def comment_artifact(
                         key,
                     )
                     if queued.removed_at is not None or queued.refusal_reason is not None:
-                        raise HTTPException(
-                            status_code=409, detail="This queued send was removed or refused."
-                        )
-                    record = None
-                elif turn is not None:
+                        raise HTTPException(status_code=409, detail="This send was removed.")
+                    return {
+                        "queued": True,
+                        "queue_id": queued.queue_id,
+                        "operation_id": queued.operation_id,
+                    }
+                if turn is not None:
                     record = start_ordinary_task(
                         project_id,
                         turn[0],
@@ -1026,11 +1027,8 @@ def comment_artifact(
                     record = start_artifact_edit(
                         background_tasks, project_id, admitted, authorized_by=author
                     )
-            if record is not None:
-                store.mark_threads_sent(
-                    sent.rendered_through, record.operation_id, key, author.user_id
-                )
-                return record.model_dump(mode="json")
+            store.mark_threads_sent(sent.rendered_through, record.operation_id, key, author.user_id)
+            return record.model_dump(mode="json")
     except CommentError:
         raise
     except ClientRequestConflict as exc:
@@ -1046,8 +1044,6 @@ def comment_artifact(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    assert queued is not None
-    return {"queued": True, **queued_reply(request, store, queued)}
 
 
 @router.post(

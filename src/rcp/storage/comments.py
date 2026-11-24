@@ -391,6 +391,27 @@ def mark_threads_sent_in(
         )
 
 
+def claim_threads_sent_in(
+    connection: sqlite3.Connection,
+    rendered_through: Mapping[str, str],
+    operation_id: str,
+    key: str,
+    actor: str,
+    now: str,
+) -> None:
+    """Mark the threads sent for a turn that starts later, refusing the whole send when
+    another send took one of them since it was rendered."""
+    mark_threads_sent_in(connection, rendered_through, operation_id, key, actor, now)
+    for thread_id in rendered_through:
+        row = connection.execute(
+            "SELECT send_key FROM comment_threads WHERE thread_id=?", (thread_id,)
+        ).fetchone()
+        if row is None or row[0] != key:
+            raise CommentError(
+                "comment_thread_not_sendable", "Another send already took this thread.", 409
+            )
+
+
 class CommentStoreMixin(StoreMixinBase):
     def comment_target_route(
         self, user_id: str, kind: str, target_id: str, *, project_id: str

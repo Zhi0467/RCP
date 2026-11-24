@@ -198,6 +198,8 @@ interface Props {
   chatId: string;
   presentation?: "floating" | "workspace";
   fixedConversation?: boolean;
+  /** Whether the server lists this chat's artifacts; a Paper coach chat is not a workspace chat. */
+  listsArtifacts?: boolean;
   readOnly?: boolean;
   archived?: boolean;
   onRestore?: () => void;
@@ -310,6 +312,7 @@ export function AgentChatView({
   chatId,
   presentation = "floating",
   fixedConversation = false,
+  listsArtifacts: artifactListing = true,
   readOnly: requestedReadOnly = false,
   archived = false,
   onRestore,
@@ -373,7 +376,8 @@ export function AgentChatView({
     [projectId, chatId],
   );
   const endpoints = feed?.endpoints ?? chatEndpoints!;
-  const listsArtifacts = presentation === "workspace" && !feed && projectId !== null;
+  const listsArtifacts =
+    artifactListing && presentation === "workspace" && !feed && projectId !== null;
   const chatArtifacts = useChatArtifacts(listsArtifacts ? projectId : null, chatId);
   const [artifactsOpen, setArtifactsOpen] = useState(false);
   const artifactsPane = listsArtifacts && chatArtifacts.length > 0;
@@ -1560,14 +1564,13 @@ export function AgentChatView({
       {replyComments.headerButton}
       {artifactsPane && (
         <button
-          className="icon-button chat-artifacts-count"
+          className={`chat-watcher-count${artifactsOpen ? " is-open" : ""}`}
           type="button"
-          aria-pressed={artifactsOpen}
+          aria-expanded={artifactsOpen}
           aria-label="Artifacts"
-          title="Artifacts"
           onClick={() => setArtifactsOpen((open) => !open)}
         >
-          <Files size={15} /> {chatArtifacts.length}
+          <Files size={12} /> {chatArtifacts.length}
         </button>
       )}
     </>
@@ -1819,11 +1822,10 @@ export function AgentChatView({
           )
         }
       />
-      {artifactsPane && (
+      {artifactsPane && artifactsOpen && (
         <ChatArtifactsPane
           projectId={projectId!}
           artifacts={chatArtifacts}
-          open={artifactsOpen}
           onClose={() => setArtifactsOpen(false)}
         />
       )}

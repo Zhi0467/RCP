@@ -34,17 +34,6 @@ const project = {
   machines: [{ alias: "local", host: null }],
 };
 
-const history = Array.from({ length: 6 }, (_, index) => ({
-  message_id: `message-${index}`,
-  operation_id: `old-${Math.floor(index / 2)}`,
-  role: index % 2 ? "assistant" : "user",
-  text: `${index % 2 ? "Answer" : "Question"} ${index}\n\n${"A line of text. ".repeat(20)}`,
-  timestamp: new Date(Date.UTC(2026, 8, 5, 10, index)).toISOString(),
-  mode: "discuss",
-  trigger: "human",
-  attachments: [],
-}));
-
 function OpenedArtifacts() {
   const target = useArtifactViewerTarget();
   useEffect(() => {
@@ -55,8 +44,6 @@ function OpenedArtifacts() {
   return null;
 }
 
-const chatId = new URLSearchParams(window.location.search).get("chat") ?? "chat";
-
 createRoot(document.getElementById("root")!).render(
   <ResourceRuntime>
     <main style={{ height: "100vh" }}>
@@ -64,9 +51,7 @@ createRoot(document.getElementById("root")!).render(
         graphTarget={{ kind: "main" }}
         project={project as never}
         tasks={[]}
-        historyMessages={history as never}
-        header="Shorter-thinking steering runner"
-        chatId={chatId}
+        chatId="chat"
         presentation="workspace"
         onStartTask={async () => undefined as never}
         onInspectTask={() => undefined}

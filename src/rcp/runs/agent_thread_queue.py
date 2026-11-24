@@ -28,7 +28,7 @@ from rcp.storage.agents import AgentRecord
 
 if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks
-    from rcp.service import ArtifactContextRequest, ProjectService, RunRequest
+    from rcp.service import ArtifactContextRequest, ProjectService
 
 logger = logging.getLogger(__name__)
 
@@ -45,11 +45,10 @@ def queue_attachment_store(catalog: ProjectCatalog) -> ChatAttachmentStore:
 def release_queued_message(
     store: AppStore, attachment_store: ChatAttachmentStore, row: AgentThreadQueueRecord
 ) -> None:
-    """Reopen a removed or refused message's comment threads, return its uploads to
-    their set, and drop its reference copies."""
+    """Reopen a removed or refused message's comment threads, return its uploads to their
+    set, and drop its reference copies."""
     operation_id = queued_turn_operation_id(row.queue_id)
-    if row.comment_thread_ids:
-        store.reopen_unsent_threads(row.comment_thread_ids, operation_id, row.idempotency_key)
+    store.reopen_unsent_threads(row.picks.comment_thread_ids, operation_id, row.idempotency_key)
     if row.attachment_set_id is None:
         return
     try:
@@ -58,28 +57,60 @@ def release_queued_message(
         logger.warning("Queued message %s kept its files: %s", row.queue_id, exc)
 
 
-def queued_comment_send(
+def admit_queued_comments(
     store: AppStore,
-    project_id: str,
-    thread_id: str,
+    catalog: ProjectCatalog,
+    thread: AgentRecord,
     user_id: str,
     thread_ids: list[str],
     key: str,
     message: str,
-) -> CommentSend:
-    """The queued turn's comment send; under the queue's key it renders the snapshot the
-    queue accepted, so the drained turn carries the same text and artifact selections."""
-    latest = latest_agent_turn(store, thread_id)
-    return chat_turn_send(
+) -> tuple[CommentSend, str, ArtifactContextRequest | None, ProjectService | None]:
+    """A queued turn's comment send, its text and context, and for artifact comments the
+    origin graph target's service, admitted at queue time and again at drain.
+
+    Under the queue's key the threads render the snapshot the queue accepted.
+    """
+    from fastapi import HTTPException
+
+    from rcp.api.agent_threads import _space_artifact_comment
+    from rcp.api.dependencies import get_graph_service
+    from rcp.runs.artifact_edit_admission import admit_chat_artifact_comment
+    from rcp.service import RunRequest
+
+    latest = latest_agent_turn(store, thread.agent_id)
+    project_id = thread.project_id or store.space_id
+    sent = chat_turn_send(
         store,
         project_id,
         user_id,
         thread_ids,
         key,
         message=message,
-        chat_id=thread_id,
+        chat_id=thread.agent_id,
         paper=latest is not None and latest.request.get("focus") == "paper",
     )
+    if sent.context is None:
+        return sent, sent.text, None, None
+    if thread.project_id is None:
+        private_thread = store.agent_thread(thread.agent_id)
+        assert private_thread is not None
+        try:
+            context, text = _space_artifact_comment(store, private_thread, sent.context, sent.text)
+        except HTTPException as exc:
+            raise ValueError(str(exc.detail)) from exc
+        return sent, text, context, None
+    origin = store.agent_task(sent.context.operation_id or "")
+    service = get_graph_service(catalog, project_id, origin and origin.graph_target.branch_id)
+    admitted = admit_chat_artifact_comment(
+        store,
+        service,
+        project_id,
+        RunRequest(chat_id=thread.agent_id, message=sent.text, artifact_context=sent.context),
+    )
+    if admitted.artifact_edit is not None:
+        raise ValueError("The artifact's chat takes no human turns now")
+    return sent, admitted.message or "", admitted.artifact_context, service
 
 
 def dispatch_thread_queue(
@@ -228,29 +259,15 @@ def _start_queued_turn(
         kind = chat_turn_kind(scope[0])
     else:
         raise ValueError("The agent has no ordinary turn to continue")
-    sent = (
-        queued_comment_send(
-            store,
-            project_id,
-            thread.agent_id,
-            row.user_id,
-            row.comment_thread_ids,
-            row.idempotency_key,
-            row.message,
-        )
-        if row.comment_thread_ids
-        else None
-    )
-    context = sent.context if sent is not None else None
     request = request.model_copy(
         update={
-            "message": sent.text if sent is not None else row.message,
+            "message": row.message,
             "source": None,
             "trigger": "human",
             "session_id": None,
             "attachments": [],
             "references": [],
-            "artifact_context": context,
+            "artifact_context": None,
             "artifact_edit": None,
             "attachment_batch_id": None,
             "attachment_set_id": row.attachment_set_id,
@@ -272,15 +289,21 @@ def _start_queued_turn(
         }
     )
     with project_admission(project_id) if thread.project_id else nullcontext():
-        if context is not None:
-            service, request = admit_queued_comment(store, catalog, thread, request)
-        else:
-            service = (
-                get_graph_service(
-                    catalog, project_id, previous.graph_target.branch_id if previous else None
-                )
-                if thread.project_id
-                else None
+        sent, service = None, None
+        if row.picks.comment_thread_ids:
+            sent, text, context, service = admit_queued_comments(
+                store,
+                catalog,
+                thread,
+                row.user_id,
+                row.picks.comment_thread_ids,
+                row.idempotency_key,
+                row.message,
+            )
+            request = request.model_copy(update={"message": text, "artifact_context": context})
+        if service is None and thread.project_id:
+            service = get_graph_service(
+                catalog, project_id, previous.graph_target.branch_id if previous else None
             )
         if service is not None:
             request = _resolved_graph_request(service, kind, request)
@@ -289,12 +312,7 @@ def _start_queued_turn(
             if service is not None
             else nullcontext(request)
         )
-        with (
-            admission as request,
-            store.artifact_lock(context.artifact_id) if context is not None else nullcontext(),
-        ):
-            if request.artifact_context is not None:
-                _require_commented_version(store, request.artifact_context)
+        with admission as request:
             request, _ = claim_turn_attachments(
                 store,
                 catalog,
@@ -304,65 +322,19 @@ def _start_queued_turn(
                 operation_id=operation_id,
                 viewer_id=row.user_id,
             )
-            started = background.start(
+            background.start(
                 project_id,
                 kind,
                 request,
                 operation_id=operation_id,
                 authorized_by=member,
                 queue_id=row.queue_id,
-            ).operation_id
-    if sent is not None:
-        store.mark_threads_sent(sent.rendered_through, started, row.idempotency_key, row.user_id)
-    return started
-
-
-def admit_queued_comment(
-    store: AppStore, catalog: ProjectCatalog, thread: AgentRecord, request: RunRequest
-) -> tuple[ProjectService | None, RunRequest]:
-    """Admit a queued turn's artifact comments, at queue time and again at drain.
-
-    A project chat's comments are checked on the artifact origin's graph target, as the
-    viewer's idle send is; the returned service is that target's.
-    """
-    from fastapi import HTTPException
-
-    from rcp.api.agent_threads import _space_artifact_comment
-    from rcp.api.dependencies import get_graph_service
-    from rcp.runs.artifact_edit_admission import admit_chat_artifact_comment
-    from rcp.storage.artifact_replies import artifact_reply_origin
-
-    context = request.artifact_context
-    assert context is not None
-    if thread.project_id is None:
-        private_thread = store.agent_thread(thread.agent_id)
-        if private_thread is None:
-            raise ValueError("A Space comment needs its thread")
-        try:
-            comment, message = _space_artifact_comment(
-                store, private_thread, context, request.message or ""
             )
-        except HTTPException as exc:
-            raise ValueError(str(exc.detail)) from exc
-        return None, request.model_copy(update={"artifact_context": comment, "message": message})
-    artifact = store.artifact(context.artifact_id)
-    if artifact is None:
-        raise ValueError("The artifact is unavailable.")
-    origin, _ = artifact_reply_origin(store, artifact)
-    service = get_graph_service(catalog, thread.project_id, origin.graph_target.branch_id)
-    admitted = admit_chat_artifact_comment(store, service, thread.project_id, request)
-    if admitted.artifact_edit is not None:
-        raise ValueError("The artifact's chat takes no human turns now")
-    return service, admitted
-
-
-def _require_commented_version(store: AppStore, context: ArtifactContextRequest) -> None:
-    """Keep the commented version readable until the turn is recorded, as a composer
-    turn does under the same artifact lock."""
-    try:
-        store.read_artifact_bytes(context.artifact_id, context.base_version)
-    except (KeyError, OSError) as exc:
-        raise ValueError("The commented artifact version is no longer available") from exc
+    if sent is not None:
+        store.mark_threads_sent(
+            sent.rendered_through, operation_id, row.idempotency_key, row.user_id
+        )
+    return operation_id
 
 
 def _defer(
