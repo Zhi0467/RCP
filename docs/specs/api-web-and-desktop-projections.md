@@ -1800,8 +1800,7 @@ with a red edge and one Retry icon whose hover is the error. Only the viewer's o
 behind a ⋯
 shown on hover and always on touch screens and at phone width, hidden while the
 card signs in, drains or takes a token. Explanations are hover text only. An open token
-field names the command to run as its placeholder and keeps the full instructions
-on an info icon inside it.
+field keeps the provider's token instructions on an info icon inside it.
 Personal and team spaces draw the same fold; a provider whose login RCP does not
 manage, such as OpenCode, shows only its machine sign-in card, without state or
 actions. A collapsed Members row, shown when the space has other members, counts

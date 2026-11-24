@@ -739,7 +739,7 @@ export function SignInCard({
               autoComplete="off"
               autoFocus
               aria-label={`${row.label} token`}
-              placeholder={`Paste a token from ${row.login_command}`}
+              placeholder="Paste the token"
               value={token}
               disabled={disabled}
               onChange={(event) => setToken(event.target.value)}
