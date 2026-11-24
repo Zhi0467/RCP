@@ -70,15 +70,21 @@ export function runArtifactsProfile(
   };
 }
 export function chatArtifactsProfile(
-  projectId: string,
-  chatId: string,
+  agentId: string,
+  projectId: string | null,
 ): ResourceProfile<RunArtifactEntry[]> {
   return {
-    key: projectResourceKey(projectId, "artifacts", { query: `chat:${chatId}` }),
+    key: projectId
+      ? projectResourceKey(projectId, "artifacts", { query: `chat:${agentId}` })
+      : {
+          backend: "",
+          member: "",
+          project: "",
+          name: "agent_threads",
+          entity: agentId,
+          query: "artifacts",
+        },
     fetch: (signal) =>
-      api(
-        `/api/projects/${encodeURIComponent(projectId)}/chats/${encodeURIComponent(chatId)}/artifact-list`,
-        { signal },
-      ),
+      api(`/api/agent-threads/${encodeURIComponent(agentId)}/artifact-list`, { signal }),
   };
 }

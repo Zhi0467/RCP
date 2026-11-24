@@ -51,7 +51,7 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       await page.route("**/api/projects/*/chats/*/questions", (route) =>
         route.fulfill({ json: [] }),
       );
-      await page.route("**/api/projects/*/chats/*/artifact-list", (route) =>
+      await page.route("**/api/agent-threads/*/artifact-list", (route) =>
         route.fulfill({
           json: ["report", "plot"].map((artifact_id) => ({
             artifact_id,
@@ -155,9 +155,9 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       const paneBox = await pane.boundingBox();
       assert.deepEqual([paneBox.x, paneBox.width], [0, viewport.width]);
       assert.deepEqual(await page.evaluate(sidewaysScrollers), []);
-      await pane.getByRole("button", { name: "plot.html" }).click();
+      await pane.getByRole("button", { name: "Open plot.html" }).click();
       assert.equal(await page.evaluate(() => window.opened), "plot");
-      await pane.getByRole("button", { name: "Close", exact: true }).click();
+      await pane.waitFor({ state: "detached" });
       await page.locator(".chat-markdown table").waitFor();
       assert.deepEqual(
         await page.evaluate(sidewaysScrollers),

@@ -791,7 +791,7 @@ def _require_queued_turn(
     owner = agent(connection, row["thread_id"])
     message = record.request.get("message")
     same_text = (
-        isinstance(message, str) and message.startswith(row["message"].strip())
+        isinstance(message, str) and message.strip().startswith(row["message"].strip())
         if json.loads(row["picks_json"] or "{}").get("comment_thread_ids")
         else message == row["message"]
     )

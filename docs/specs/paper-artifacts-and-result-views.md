@@ -778,18 +778,27 @@ as scratch edits, without references. Both paths can publish tracked next versio
 
 ### A chat's artifacts
 
-A workspace project chat lists its artifacts in a side pane, so they are not
-only cards scattered through the transcript. A header chip with the Files icon
-and the count opens and closes it. The chip shows only when the count is above
-zero, is pressed while the pane is open, and has "Artifacts" as its hover name.
-The pane is a 300px right column inside the conversation; at phone width it
-covers the chat. Each row shows the type icon and the name, newest first, with
-the time on hover. A click opens the artifact in the viewer and, at phone width,
-also closes the pane. Close and the chip close it, and the open state is not
-kept. The list comes from the
-[chat artifact route](api-web-and-desktop-projections.md#artifact-viewer-and-run-inventory)
-and refreshes on the project's artifacts watermark. The floating chat and Space
-threads keep only their inline cards.
+Every agent view lists its agent's artifacts in a side pane, so they are not
+only cards scattered through the transcript. That covers project chats,
+orchestrator chats, Paper coach chats, Space threads, and floating windows.
+A header chip with the Files icon and the count opens and closes it. The chip
+shows only when the count is above zero, is pressed while the pane is open, and
+has "Artifacts" as its hover name. In a dock at least 640px wide the pane is a
+300px right column beside the chat; in a narrower dock it covers the chat, and
+opening an artifact closes it. Close and the chip close it, and the open state
+is not kept.
+
+Each row is a card, newest first: a type icon tile (table for CSV, image,
+text, or file), the title, and a quiet line with the kind, any worker label,
+and the relative time, with the full time on hover. The whole card opens the
+artifact in the viewer. A file, or a PDF outside the desktop app, opens
+nowhere and shows a Download action instead. A project agent's card drags as
+an artifact reference.
+
+The list comes from the
+[agent artifact route](api-web-and-desktop-projections.md#artifact-viewer-and-run-inventory).
+A view with no turns yet does not ask. The list refreshes on the project's
+artifacts watermark and whenever the view's newest turn changes.
 
 ### Selection and comments
 
@@ -807,7 +816,8 @@ reply only saves it, and the viewer stays where it is. Comments are never graph
 annotations.
 
 The rail's footer holds one Send button whenever the artifact has threads the
-member may send (`can_send`), teammates' open threads included. One click sends
+member may send (`can_send`), teammates' open threads included. A thread an
+unstarted queued message still holds is not sendable; another send of it gets 409. One click sends
 the oldest `maxSelections` of them, from the viewer config. When more are open,
 the button names the batch, as in "Send 50 of 60 to agent", and the rest stay
 open for the next click. The server's length limit refuses an oversize batch

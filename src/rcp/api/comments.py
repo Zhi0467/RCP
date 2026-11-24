@@ -43,11 +43,12 @@ def _sender(store: AppStore, request: Request, project: str) -> str | None:
 
 
 def _response(
-    thread: dict[str, Any], route: CommentTargetRoute, sender: str | None
+    store: AppStore, thread: dict[str, Any], route: CommentTargetRoute, sender: str | None
 ) -> dict[str, Any]:
     can_send = (
         sender is not None
         and thread["state"] == "open"
+        and not store.held_by_queued_send(thread)
         and (
             thread["target_kind"] == "paper"
             or (route.chat_id is not None and route.chat_owner in {None, sender})
@@ -60,7 +61,7 @@ def _respond(
     store: AppStore, request: Request, project: str, thread: dict[str, Any]
 ) -> dict[str, object]:
     route = _route(store, request, project, thread["target_kind"], thread["target_id"])
-    return {"thread": _response(thread, route, _sender(store, request, project))}
+    return {"thread": _response(store, thread, route, _sender(store, request, project))}
 
 
 @contextmanager
@@ -91,13 +92,13 @@ def list_threads(
         listed = store.list_chat_reply_threads(project, chat_id, user_id)
         if listed is None:
             raise comment_target_not_found()
-        return {"threads": [_response(thread, route, sender) for thread, route in listed]}
+        return {"threads": [_response(store, thread, route, sender) for thread, route in listed]}
     if target_id is None or chat_id is not None:
         raise CommentError("comment_list_needs_one_target", "Name one commented item.")
     route = _route(store, request, project, target_kind, target_id)
     return {
         "threads": [
-            _response(thread, route, sender)
+            _response(store, thread, route, sender)
             for thread in store.list_comment_threads(project, target_kind, target_id)
         ]
     }

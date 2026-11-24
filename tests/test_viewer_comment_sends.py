@@ -314,7 +314,7 @@ def test_viewer_queued_send_drains_when_the_turn_settled_before_it_queued(edit_o
 
 def test_a_reply_does_not_free_a_queued_thread_for_another_send(edit_origin, monkeypatch):
     _app, store, task = edit_origin
-    client, _artifact, running, (thread_id,) = _busy_chat(edit_origin, monkeypatch, "Revise")
+    client, artifact, running, (thread_id,) = _busy_chat(edit_origin, monkeypatch, "Revise")
     base = f"/api/agent-threads/{task.request['chat_id']}/queue"
     body = {"comment_thread_ids": [thread_id]}
     first = client.post(base, json=body, headers={"Idempotency-Key": str(uuid.uuid4())})
@@ -322,6 +322,11 @@ def test_a_reply_does_not_free_a_queued_thread_for_another_send(edit_origin, mon
     store.add_comment_post(
         task.project_id, thread_id, user_id=store.local_owner.user_id, text="One more"
     )
+    (listed,) = client.get(
+        f"/api/projects/{task.project_id}/comment-threads",
+        params={"target_kind": "artifact", "target_id": artifact.artifact_id},
+    ).json()["threads"]
+    assert (listed["state"], listed["can_send"]) == ("open", False)
     second = client.post(base, json=body, headers={"Idempotency-Key": str(uuid.uuid4())})
     assert second.status_code == 409, second.text
     with store.connection() as connection, pytest.raises(CommentError):
@@ -330,3 +335,28 @@ def test_a_reply_does_not_free_a_queued_thread_for_another_send(edit_origin, mon
         )
     turn = _drained(edit_origin, running, first.json()["queue_id"])
     assert "Revise" in turn.request["artifact_context"]["selections"][0]["comment"]
+
+
+def test_a_queued_message_with_leading_space_sends_its_reply_threads(edit_origin, monkeypatch):
+    _app, store, task = edit_origin
+    client, _artifact, running, _threads = _busy_chat(edit_origin, monkeypatch)
+    response = client.post(
+        f"/api/projects/{task.project_id}/comment-threads",
+        json={
+            "target": {"kind": "reply", "id": task.operation_id},
+            "anchor": {"kind": "whole"},
+            "text": "Why?",
+        },
+    )
+    assert response.status_code == 200, response.text
+    queued = client.post(
+        f"/api/agent-threads/{task.request['chat_id']}/queue",
+        json={
+            "message": "  Look here",
+            "comment_thread_ids": [response.json()["thread"]["thread_id"]],
+        },
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert queued.status_code == 202, queued.text
+    turn = _drained(edit_origin, running, queued.json()["queue_id"])
+    assert "Look here" in turn.request["message"] and "Why?" in turn.request["message"]

@@ -16,7 +16,7 @@ import { projectAgentWindowEndpoints } from "../agentWindow/agentWindowEndpoints
 import { ProviderSwitchHint } from "./ProviderSwitchHint";
 import { ChatBranchPicker, ChatOriginLink } from "./ChatBranchPicker";
 import { ChatComposer, ComposerField } from "./ChatComposer";
-import { ChatArtifactsPane, useChatArtifacts } from "./ChatArtifactsPane";
+import { ChatArtifactsPane, useArtifactsPaneLayout, useChatArtifacts } from "./ChatArtifactsPane";
 import { ChatHeaderMenu, type ChatHeaderAction } from "./ChatHeaderMenu";
 import { AgentHeader, AgentPickRow } from "./AgentHeader";
 import type { ChatAgentSetup, ChatOrigin } from "../core/types";
@@ -373,11 +373,14 @@ export function AgentChatView({
     [projectId, chatId],
   );
   const endpoints = feed?.endpoints ?? chatEndpoints!;
-  const listsArtifacts =
-    presentation === "workspace" && !feed && projectId !== null && profileName !== "paper_coach";
-  const chatArtifacts = useChatArtifacts(listsArtifacts ? projectId : null, chatId);
+  const hasTurns = Boolean(feed) || relatedTasks.length > 0 || Boolean(historyMessages?.length);
+  const chatArtifacts = useChatArtifacts(
+    hasTurns ? (feed?.thread.thread_id ?? chatId) : null,
+    projectId,
+    revision ?? relatedTasks.at(-1)?.updated_at ?? null,
+  );
   const [artifactsOpen, setArtifactsOpen] = useState(false);
-  const artifactsPane = listsArtifacts && chatArtifacts.length > 0;
+  const artifactsPane = chatArtifacts.length > 0;
   const questionApiBase = endpoints.questionsApiBase;
   const chatQuestions = useQuestions(
     questionApiBase ?? "",
@@ -541,6 +544,7 @@ export function AgentChatView({
   const [renaming, setRenaming] = useState(false);
   const [renamedTitle, setRenamedTitle] = useState<string | null>(null);
   const dockRef = useRef<HTMLDivElement>(null);
+  const artifactsLayout = useArtifactsPaneLayout(dockRef, artifactsPane && artifactsOpen);
   const dictationSpanRef = useRef<DictationSpan | null>(null);
   const dictationTimerRef = useRef<number | null>(null);
   const microphoneRef = useRef<{ sessionId: string; claim: MicrophoneClaim } | null>(null);
@@ -1565,6 +1569,7 @@ export function AgentChatView({
           type="button"
           aria-expanded={artifactsOpen}
           aria-label="Artifacts"
+          title="Artifacts"
           onClick={() => setArtifactsOpen((open) => !open)}
         >
           <Files size={12} /> {chatArtifacts.length}
@@ -1787,7 +1792,7 @@ export function AgentChatView({
   return (
     <div
       ref={dockRef}
-      className={`chat-dock ${presentation}${artifactsPane && artifactsOpen ? " artifacts-open" : ""}`}
+      className={`chat-dock ${presentation}${artifactsPane && artifactsOpen && artifactsLayout.beside ? " artifacts-beside" : ""}`}
       role={presentation === "floating" ? "dialog" : "region"}
       aria-modal="false"
       aria-label={
@@ -1820,8 +1825,13 @@ export function AgentChatView({
       />
       {artifactsPane && artifactsOpen && (
         <ChatArtifactsPane
-          projectId={projectId!}
+          endpoints={endpoints}
+          graphTarget={graphTarget}
           artifacts={chatArtifacts}
+          top={artifactsLayout.top}
+          onOpened={() => {
+            if (!artifactsLayout.beside) setArtifactsOpen(false);
+          }}
           onClose={() => setArtifactsOpen(false)}
         />
       )}
