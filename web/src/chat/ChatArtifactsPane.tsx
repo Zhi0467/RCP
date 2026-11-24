@@ -24,11 +24,12 @@ export function useChatArtifacts(
   const { store } = useRefreshRuntime();
   const profile = agentId ? chatArtifactsProfile(agentId, projectId) : null;
   const id = profile ? resourceKeyId(profile.key) : null;
-  const seen = useRef(revision);
+  const seen = useRef<{ id: string | null; revision: string | null } | null>(null);
   useEffect(() => {
-    if (!id || seen.current === revision) return;
-    seen.current = revision;
-    store.invalidate(id);
+    const previous = seen.current;
+    seen.current = { id, revision };
+    if (!id || previous?.id !== id || previous.revision === null) return;
+    if (previous.revision !== revision) store.invalidate(id);
   }, [store, id, revision]);
   const resource = useResource(owner, profile);
   return resource.value ?? NO_ARTIFACTS;

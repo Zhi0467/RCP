@@ -354,6 +354,7 @@ export async function mockApi(page, writes) {
         unavailable: [],
         agent_threads: { version: "1" },
       });
+    if (path.endsWith("/artifact-list")) return json([]);
     if (path === "/api/agent-threads/space/transcript") return json(spaceTranscript);
     if (path === "/api/agent-threads/moss/transcript") return json(mossTranscript);
     if (/^\/api\/agent-threads\/[^/]+\/transcript$/.test(path))

@@ -340,6 +340,7 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
           json = { proposal_cards: [], asked_cards: [] };
         else if (path === "/api/space/machines") json = { machines: [] };
         else if (/\/episodes\/[^/]+\/questions$/.test(path)) json = [];
+        else if (path.endsWith("/artifact-list")) json = [];
         else if (path.endsWith("/consolidation"))
           json = { schedule: null, inbox: [], can_write: true, recent_nights: [] };
         else if (path.endsWith("/timeline"))

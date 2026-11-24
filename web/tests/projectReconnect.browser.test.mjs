@@ -485,6 +485,7 @@ test("the actual App keeps global Space artifact interest out of project waterma
     [`${base}/schedules`, { schedules: [] }],
     [`${base}/watchers`, []],
     [`${base}/comment-threads`, { threads: [] }],
+    [`${base}/artifact-list`, []],
     [
       `${base}/transcript`,
       transcript("space", [
