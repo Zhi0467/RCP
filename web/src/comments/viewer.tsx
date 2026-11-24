@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { PanelRight } from "lucide-react";
 import { ApiError } from "../core/api.ts";
 import { createCommentsClient, fetchRequest } from "./api.ts";
 import { findAnchor } from "./anchors.ts";
@@ -284,7 +285,8 @@ function ViewerComments({ config }: { config: ViewerConfig }) {
   const [members, setMembers] = useState<CommentMember[]>([]);
   const [offer, setOffer] = useState<(CommentOffer & { key: number }) | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
-  const [selecting, setSelecting] = useState(false);
+  const [selecting, setSelecting] = useState(true);
+  const [folded, setFolded] = useState(false);
   const surface = useRef<Surface | null>(null);
   const revision = useRef(0);
   const stateRef = useRef(state);
@@ -398,7 +400,10 @@ function ViewerComments({ config }: { config: ViewerConfig }) {
   }, [config, offerAt]);
 
   const hasMode = Boolean(config.selectionEnabled) && config.mediaType !== "application/pdf";
-  const commentMode = hasMode && canComment && selecting;
+  const commentMode = hasMode && canComment && selecting && !folded;
+  useEffect(() => {
+    document.getElementById("comments-root")?.toggleAttribute("data-folded", folded);
+  }, [folded]);
   useEffect(() => {
     surface.current?.select(commentMode);
     if (!commentMode) setOffer((current) => (current?.anchor.kind === "whole" ? current : null));
@@ -472,11 +477,25 @@ function ViewerComments({ config }: { config: ViewerConfig }) {
   }, [config, client, loadThreads, locate]);
 
   const position = (thread: CommentThread) => surface.current?.position(thread) ?? null;
+  const openCount = comments.threads.filter((thread) => thread.state === "open").length;
   return (
     <>
+      {folded && (
+        <button
+          type="button"
+          className="rcp-comments-unfold"
+          aria-label="Show comments"
+          title="Show comments"
+          onClick={() => setFolded(false)}
+        >
+          <PanelRight size={14} />
+          {openCount > 0 && <span>{openCount}</span>}
+        </button>
+      )}
       <CommentRail
         comments={comments}
         wholeLabel="Whole artifact"
+        onFold={() => setFolded(true)}
         selected={selected}
         onLocate={locate}
         note={(thread) =>

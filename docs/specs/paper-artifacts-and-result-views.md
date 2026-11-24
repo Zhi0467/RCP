@@ -802,9 +802,11 @@ artifacts watermark and whenever the view's newest turn changes.
 
 ### Selection and comments
 
-HTML, raster images, and SVG take gestures in comment mode, which starts off
-in the panel and inline. The panel header's toggle and the inline Comment
-button turn it on; Done turns it off. Text
+HTML, raster images, and SVG take gestures in comment mode. It starts on in
+the viewer and off inline. The rail header's toggle and the inline Comment
+button turn it on; Done turns it off. The rail header also folds the rail away,
+which ends comment mode; a corner tab with the open-thread count brings it back.
+The viewer, the pinned view and any other host share this rail. Text
 selection highlights text. Dragging on figures or blank space selects a boxed
 region. In comment mode, hovering an HTML element outlines it, and a click picks it. PDFs take page areas through their own area tool, outside comment mode, since
 they never take the page's clicks. Every viewable type takes whole-file

@@ -324,6 +324,25 @@ test("release notice transitions, actions, visibility, and storage through a ser
         assert.equal(await notice.count(), 0);
       },
     );
+    await t.test(
+      "Update installs while the window waits to reconnect a changed backend",
+      async () => {
+        await page.goto(`${server.resolvedUrls.local[0]}tests/fixtures/updateNotice.html?native`);
+        await page.waitForFunction(() => window.refreshNativeUpdate);
+        await page.evaluate(async () => {
+          window.identityChanged = true;
+          window.nativeFailure = null;
+          window.nativeApplies = [];
+          window.nativeOffer.version = "0.4.44";
+          await window.refreshNativeUpdate();
+        });
+        await page.getByRole("button", { name: "Update", exact: true }).click();
+        await page.waitForFunction(() => window.nativeApplies.length === 1);
+        assert.deepEqual(await page.evaluate(() => window.nativeApplies), [
+          { confirmActiveWork: false },
+        ]);
+      },
+    );
     assert.deepEqual(errors, []);
   } finally {
     await browser?.close();

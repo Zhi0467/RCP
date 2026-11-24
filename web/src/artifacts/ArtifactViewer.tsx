@@ -8,7 +8,7 @@ import { refsProfile } from "../graph/graphResources";
 import { pickerMergeRequestBody, type BranchMergeRequest } from "../graph/mergePanel";
 import { taskStatusProfile } from "../agents/taskResources";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { MessageCircle, PanelRight, Pin, RefreshCw, X } from "lucide-react";
+import { MessageCircle, Minus, Pin, RefreshCw, X } from "lucide-react";
 import { api } from "../core/api";
 import {
   closeArtifactViewer,
@@ -434,7 +434,7 @@ export function ArtifactViewer({ onMerge }: { onMerge?: BranchMergeRequest }) {
           aria-label="Dock viewer"
           title="Dock viewer"
         >
-          <PanelRight size={16} />
+          <Minus size={16} />
         </button>
         <button
           className="artifact-viewer-control"
