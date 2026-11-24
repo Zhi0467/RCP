@@ -160,7 +160,10 @@ def test_viewer_replay_cannot_mark_a_different_thread(edit_origin, monkeypatch):
     assert store.get_comment_thread(task.project_id, other)["state"] == "open"
 
 
-def test_viewer_send_is_admitted_while_the_chat_turn_runs(edit_origin, monkeypatch):
+def test_viewer_send_queues_while_the_chat_turn_runs(edit_origin, monkeypatch):
+    from rcp.runs.agent_thread_queue import queued_turn_operation_id
+    from tests.helpers import wait_until
+
     app, store, task = edit_origin
     artifact = _stored_artifact(app, task.operation_id, "report.md", b"Original")
     artifact = store.artifact(artifact.artifact_id)
@@ -168,14 +171,64 @@ def test_viewer_send_is_admitted_while_the_chat_turn_runs(edit_origin, monkeypat
     fake_launch_admitted(monkeypatch, app.state.background_tasks)
     running = _task(store, task.project_id, request=task.request, status="running")
     thread_id = _thread(client, task.project_id, artifact)
-    response = client.post(
-        f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}/comments",
-        json={"thread_ids": [thread_id]},
-        headers={"Idempotency-Key": str(uuid.uuid4())},
-    )
+    url = f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}/comments"
+    key = str(uuid.uuid4())
+    response = client.post(url, json={"thread_ids": [thread_id]}, headers={"Idempotency-Key": key})
     assert response.status_code == 202, response.text
-    sent = store.agent_task(response.json()["operation_id"])
-    assert sent.operation_id != running.operation_id
-    assert sent.request["chat_id"] == task.request["chat_id"]
+    queued = response.json()
+    assert queued["queued"] is True and queued["operation_id"] is None
+    operation_id = queued_turn_operation_id(queued["queue_id"])
+    thread = store.get_comment_thread(task.project_id, thread_id)
+    assert (thread["state"], thread["sent_operation_id"]) == ("resolved", operation_id)
+    replay = client.post(url, json={"thread_ids": [thread_id]}, headers={"Idempotency-Key": key})
+    assert replay.status_code == 202, replay.text
+    assert replay.json()["queue_id"] == queued["queue_id"]
     assert store.agent_task(running.operation_id).status == "running"
-    assert store.get_comment_thread(task.project_id, thread_id)["state"] == "resolved"
+
+    store.complete_agent_task(running.operation_id, applied_revision=None, result={})
+    app.state.reconcile_thread_handoffs()
+    wait_until(lambda: store.agent_task(operation_id) is not None)
+    turn = store.agent_task(operation_id)
+    assert turn.request["chat_id"] == task.request["chat_id"]
+    context = turn.request["artifact_context"]
+    assert context["artifact_id"] == artifact.artifact_id
+    (selection,) = context["selections"]
+    assert selection["kind"] == "whole"
+    assert "Please revise" in selection["comment"]
+    assert selection["drawn_version"] == artifact.current_version
+
+
+def test_composer_queue_carries_comment_threads_and_removal_reopens(edit_origin, monkeypatch):
+    from rcp.runs.agent_thread_queue import queued_turn_operation_id
+    from tests.helpers import wait_until
+
+    app, store, task = edit_origin
+    artifact = _stored_artifact(app, task.operation_id, "report.md", b"Original")
+    artifact = store.artifact(artifact.artifact_id)
+    client = signed_in_client(app)
+    fake_launch_admitted(monkeypatch, app.state.background_tasks)
+    running = _task(store, task.project_id, request=task.request, status="running")
+    kept, dropped = (_thread(client, task.project_id, artifact, text) for text in ("Keep", "Drop"))
+    base = f"/api/agent-threads/{task.request['chat_id']}/queue"
+
+    def queue(body):
+        response = client.post(base, json=body, headers={"Idempotency-Key": str(uuid.uuid4())})
+        assert response.status_code == 202, response.text
+        return response.json()
+
+    queued = queue({"message": "Also check", "comment_thread_ids": [kept]})
+    removed = queue({"comment_thread_ids": [dropped]})
+    assert store.get_comment_thread(task.project_id, dropped)["state"] == "resolved"
+    assert client.delete(f"{base}/{removed['queue_id']}").status_code == 200
+    assert store.get_comment_thread(task.project_id, dropped)["state"] == "open"
+    assert store.get_comment_thread(task.project_id, kept)["state"] == "resolved"
+
+    store.complete_agent_task(running.operation_id, applied_revision=None, result={})
+    app.state.reconcile_thread_handoffs()
+    operation_id = queued_turn_operation_id(queued["queue_id"])
+    wait_until(lambda: store.agent_task(operation_id) is not None)
+    turn = store.agent_task(operation_id)
+    assert turn.request["message"].startswith("Also check")
+    (selection,) = turn.request["artifact_context"]["selections"]
+    assert "Keep" in selection["comment"]
+    assert store.get_comment_thread(task.project_id, kept)["sent_operation_id"] == operation_id

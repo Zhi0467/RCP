@@ -358,6 +358,7 @@ test("a project thread queues the send body with its picks under its key, reads 
     invoked_workflow_ids: ["flow"],
     invoked_skill_ids: ["skill"],
     invoked_provider_skill_names: ["native"],
+    comment_thread_ids: ["c1"],
     worktree: true,
     timezone: "UTC",
   };
@@ -389,6 +390,7 @@ test("a project thread queues the send body with its picks under its key, reads 
     invoked_workflow_ids: ["flow"],
     invoked_skill_ids: ["skill"],
     invoked_provider_skill_names: ["native"],
+    comment_thread_ids: ["c1"],
   });
   await queueThreadTurn(project, { message: "Plain", timezone: "UTC" }, "other", request);
   assert.deepEqual(calls.at(-1).body, { message: "Plain" });

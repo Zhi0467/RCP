@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from rcp.agents.agent_owner import chat_turn_kind
 from rcp.attachments import ChatAttachmentStore
+from rcp.comments.send import CommentSend, chat_turn_send
 from rcp.core.models import AuthorizedHuman
 from rcp.limits import (
     AGENT_HANDOFF_DELIVERY_TIMEOUT_SECONDS,
@@ -22,11 +23,12 @@ from rcp.runs.agent_thread_commands import _TRANSIENT_DELIVERY, _thread_request
 from rcp.runs.agent_threads import agent_turn_busy, latest_agent_turn
 from rcp.runs.turn_attachments import claim_turn_attachments
 from rcp.storage import AppStore
-from rcp.storage.agent_threads import AgentThreadQueueRecord
+from rcp.storage.agent_threads import AgentThreadQueueRecord, AgentThreadRecord
 from rcp.storage.agents import AgentRecord
 
 if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks
+    from rcp.service import RunRequest
 
 logger = logging.getLogger(__name__)
 
@@ -40,16 +42,44 @@ def queue_attachment_store(catalog: ProjectCatalog) -> ChatAttachmentStore:
     return ChatAttachmentStore(catalog.data_dir / "chat-attachments")
 
 
-def release_queued_files(
-    attachment_store: ChatAttachmentStore, row: AgentThreadQueueRecord
+def release_queued_message(
+    store: AppStore, attachment_store: ChatAttachmentStore, row: AgentThreadQueueRecord
 ) -> None:
-    """Return a removed or refused message's uploads to its set and drop its reference copies."""
+    """Reopen a removed or refused message's comment threads, return its uploads to
+    their set, and drop its reference copies."""
+    operation_id = queued_turn_operation_id(row.queue_id)
+    if row.comment_thread_ids:
+        store.reopen_unsent_threads(row.comment_thread_ids, operation_id, row.idempotency_key)
     if row.attachment_set_id is None:
         return
     try:
-        attachment_store.release(row.attachment_set_id, queued_turn_operation_id(row.queue_id))
+        attachment_store.release(row.attachment_set_id, operation_id)
     except (ValueError, OSError) as exc:
         logger.warning("Queued message %s kept its files: %s", row.queue_id, exc)
+
+
+def queued_comment_send(
+    store: AppStore,
+    project_id: str,
+    thread_id: str,
+    user_id: str,
+    thread_ids: list[str],
+    key: str,
+    message: str,
+) -> CommentSend:
+    """The queued turn's comment send; under the queue's key it renders the snapshot the
+    queue accepted, so the drained turn carries the same text and artifact selections."""
+    latest = latest_agent_turn(store, thread_id)
+    return chat_turn_send(
+        store,
+        project_id,
+        user_id,
+        thread_ids,
+        key,
+        message=message,
+        chat_id=thread_id,
+        paper=latest is not None and latest.request.get("focus") == "paper",
+    )
 
 
 def dispatch_thread_queue(
@@ -169,6 +199,7 @@ def _start_queued_turn(
 ) -> str:
     from rcp.api.dependencies import get_graph_service
     from rcp.api.task_requests import _resolved_graph_request
+    from rcp.api.tasks import _admit_artifact_context_request
     from rcp.runs.chat_admission import admit_fresh_chat_turn
     from rcp.service import RunRequest
 
@@ -198,15 +229,29 @@ def _start_queued_turn(
         kind = chat_turn_kind(scope[0])
     else:
         raise ValueError("The agent has no ordinary turn to continue")
+    sent = (
+        queued_comment_send(
+            store,
+            project_id,
+            thread.agent_id,
+            row.user_id,
+            row.comment_thread_ids,
+            row.idempotency_key,
+            row.message,
+        )
+        if row.comment_thread_ids
+        else None
+    )
+    context = sent.context if sent is not None else None
     request = request.model_copy(
         update={
-            "message": row.message,
+            "message": sent.text if sent is not None else row.message,
             "source": None,
             "trigger": "human",
             "session_id": None,
             "attachments": [],
             "references": [],
-            "artifact_context": None,
+            "artifact_context": context,
             "artifact_edit": None,
             "attachment_batch_id": None,
             "attachment_set_id": row.attachment_set_id,
@@ -235,14 +280,23 @@ def _start_queued_turn(
             if thread.project_id
             else None
         )
-        if service is not None:
+        if service is not None and context is not None:
+            request = _admit_artifact_context_request(store, service, project_id, kind, request)
+            if request.artifact_edit is not None:
+                raise ValueError("The artifact's chat takes no human turns now")
+        elif service is not None:
             request = _resolved_graph_request(service, kind, request)
         admission = (
             admit_fresh_chat_turn(service, store, project_id, request)
             if service is not None
             else nullcontext(request)
         )
-        with admission as request:
+        with (
+            admission as request,
+            store.artifact_lock(context.artifact_id) if context is not None else nullcontext(),
+        ):
+            if context is not None:
+                request = _admitted_comment(store, private_thread, service is None, request)
             request, _ = claim_turn_attachments(
                 store,
                 catalog,
@@ -260,6 +314,39 @@ def _start_queued_turn(
                 authorized_by=member,
                 queue_id=row.queue_id,
             ).operation_id
+
+
+def _admitted_comment(
+    store: AppStore,
+    private_thread: AgentThreadRecord | None,
+    space: bool,
+    request: RunRequest,
+) -> RunRequest:
+    """Admit a Space turn's comments, then keep the commented version readable until the
+    turn is recorded, as a composer turn does under the same artifact lock."""
+    from fastapi import HTTPException
+
+    from rcp.api.agent_threads import _space_artifact_comment
+
+    context = request.artifact_context
+    assert context is not None
+    if space:
+        if private_thread is None:
+            raise ValueError("A Space comment needs its thread")
+        try:
+            comment, message = _space_artifact_comment(
+                store, private_thread, context, request.message or ""
+            )
+        except HTTPException as exc:
+            raise ValueError(str(exc.detail)) from exc
+        request = request.model_copy(update={"artifact_context": comment, "message": message})
+        context = comment
+    assert context is not None
+    try:
+        store.read_artifact_bytes(context.artifact_id, context.base_version)
+    except (KeyError, OSError) as exc:
+        raise ValueError("The commented artifact version is no longer available") from exc
+    return request
 
 
 def _defer(
@@ -282,4 +369,4 @@ def _refuse(
         row.queue_id, reason[:AGENT_THREAD_QUEUE_MAX_CHARS]
     )
     if refused is not None or store.agent_thread_queue_item(row.queue_id) is None:
-        release_queued_files(queue_attachment_store(catalog), row)
+        release_queued_message(store, queue_attachment_store(catalog), row)

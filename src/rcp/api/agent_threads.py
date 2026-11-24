@@ -100,7 +100,11 @@ from rcp.providers import ProviderId
 from rcp.repository_preview import repository_for_path
 from rcp.runs.agent_names import DEFAULT_AGENT_NAMES
 from rcp.runs.agent_thread_commands import sent_thread_agent, store_thread_pick
-from rcp.runs.agent_thread_queue import queued_turn_operation_id, release_queued_files
+from rcp.runs.agent_thread_queue import (
+    queued_comment_send,
+    queued_turn_operation_id,
+    release_queued_message,
+)
 from rcp.runs.agent_threads import (
     episode_watching,
     thread_projection,
@@ -975,12 +979,22 @@ class QueuedMessageBody(BaseModel):
         max_length=AGENT_THREAD_QUEUE_MAX_INVOCATIONS,
         exclude_if=lambda value: not value,
     )
+    comment_thread_ids: list[str] = Field(
+        default_factory=list,
+        max_length=ARTIFACT_CONTEXT_MAX_SELECTIONS,
+        exclude_if=lambda value: not value,
+    )
 
     @model_validator(mode="after")
     def validate_content(self) -> Self:
         require_attachment_pair(self.attachment_set_id, self.attachment_client_id)
-        if not (self.message.strip() or self.attachment_set_id or self.references):
-            raise ValueError("A queued message needs text or files")
+        if not (
+            self.message.strip()
+            or self.attachment_set_id
+            or self.references
+            or self.comment_thread_ids
+        ):
+            raise ValueError("A queued message needs text, files, or comment threads")
         if self.provider is None and (self.model or self.reasoning):
             raise ValueError("A queued model or reasoning pick needs its provider")
         return self
@@ -1010,21 +1024,51 @@ def queue_thread_message(
     """Keep the member's message until the thread is free, then run one drain pass for it."""
     authorized = identity_access.require_patch_capable_identity(request)
     thread = accessible_agent(store, thread_id, authorized.user_id)
-    key = str(idempotency_key)
     with (
         project_write_admission(thread.project_id, request)
         if thread.project_id
         else nullcontext(store.space_id)
     ) as project_id:
-        if refusal := store.chat_turn_refusal(project_id, thread_id):
-            raise HTTPException(status_code=409, detail=refusal)
-        if thread.project_id is None and body.invoked_provider_skill_names:
-            raise HTTPException(status_code=422, detail="A Space turn takes no provider skills")
-        queued = store.agent_thread_queue_for_key(thread_id, key) or _queue_new_message(
-            store, catalog, attachment_store, thread, project_id, authorized.user_id, body, key
+        queued = queue_message(
+            store,
+            catalog,
+            attachment_store,
+            thread,
+            project_id,
+            authorized.user_id,
+            body,
+            str(idempotency_key),
         )
-    if queued.user_id != authorized.user_id or queued.request_sha256 != body.request_sha256():
+    return queued_reply(request, store, queued)
+
+
+def queue_message(
+    store: AppStore,
+    catalog: ProjectCatalog,
+    attachment_store: ChatAttachmentStore,
+    thread: AgentRecord,
+    project_id: str,
+    user_id: str,
+    body: QueuedMessageBody,
+    key: str,
+) -> AgentThreadQueueRecord:
+    """The thread's queued message for `key`, stored now or by an earlier try of it."""
+    if refusal := store.chat_turn_refusal(project_id, thread.agent_id):
+        raise HTTPException(status_code=409, detail=refusal)
+    if thread.project_id is None and body.invoked_provider_skill_names:
+        raise HTTPException(status_code=422, detail="A Space turn takes no provider skills")
+    queued = store.agent_thread_queue_for_key(thread.agent_id, key) or _queue_new_message(
+        store, catalog, attachment_store, thread, project_id, user_id, body, key
+    )
+    if queued.user_id != user_id or queued.request_sha256 != body.request_sha256():
         raise HTTPException(status_code=422, detail="The key was used for another message")
+    return queued
+
+
+def queued_reply(
+    request: Request, store: AppStore, queued: AgentThreadQueueRecord
+) -> dict[str, str | None]:
+    """Run one drain pass, then name the queued message and the turn it started, if any."""
     request.app.state.reconcile_thread_handoffs()
     current = store.agent_thread_queue_item(queued.queue_id)
     return {
@@ -1043,9 +1087,25 @@ def _queue_new_message(
     body: QueuedMessageBody,
     key: str,
 ) -> AgentThreadQueueRecord:
-    """Claim the files for the queued turn's own id, then store the row, or release them."""
+    """Claim the files for the queued turn's own id, then store the row, or release them.
+
+    Comment threads are checked now and resolve under the key and the turn's id.
+    """
     queue_id = str(uuid.uuid4())
     operation_id = queued_turn_operation_id(queue_id)
+    sent = (
+        queued_comment_send(
+            store,
+            project_id,
+            thread.agent_id,
+            user_id,
+            body.comment_thread_ids,
+            key,
+            body.message,
+        )
+        if body.comment_thread_ids
+        else None
+    )
     client_id = body.attachment_client_id or (str(uuid.uuid4()) if body.references else None)
     try:
         claimed, batch = claim_turn_attachments(
@@ -1079,14 +1139,18 @@ def _queue_new_message(
             attachment_count=len(claimed.attachments),
             request_sha256=body.request_sha256(),
             picks=body.picks(),
+            comment_thread_ids=body.comment_thread_ids,
         )
     except (AgentThreadQueueFull, ValueError) as exc:
         if batch is not None:
             attachment_store.release(batch, operation_id)
         status = 409 if isinstance(exc, AgentThreadQueueFull) else 422
         raise HTTPException(status_code=status, detail=str(exc)) from exc
-    if queued.queue_id != queue_id and batch is not None:
-        attachment_store.release(batch, operation_id)
+    if queued.queue_id != queue_id:
+        if batch is not None:
+            attachment_store.release(batch, operation_id)
+    elif sent is not None:
+        store.mark_threads_sent(sent.rendered_through, operation_id, key, user_id)
     return queued
 
 
@@ -1115,7 +1179,7 @@ def remove_queued_message(
     if removed is None:
         raise HTTPException(status_code=409, detail="This message already started")
     if removed.refusal_reason is None:
-        release_queued_files(attachment_store, removed)
+        release_queued_message(store, attachment_store, removed)
     return {"queue_id": queue_id}
 
 

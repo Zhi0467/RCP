@@ -11,8 +11,7 @@ import { CommentComposer, type CommentOffer } from "./react/CommentComposer";
 import { CommentPins } from "./react/CommentPins";
 import { CommentRail } from "./react/CommentRail";
 import { useCommentActions } from "./react/useCommentActions";
-import { dockedThread, type DockThreads } from "./react/CommentDock";
-import { sendKeys } from "./react/threadModel";
+import { sendBatch, sendKeys } from "./react/threadModel";
 import type { CommentAnchor, CommentMember, CommentRect, CommentThread } from "./types.ts";
 
 interface ViewerConfig {
@@ -23,11 +22,12 @@ interface ViewerConfig {
   stateUrl: string;
   stateRefreshMs: number;
   maxSelections: number;
+  maxChars: number;
 }
 interface ViewerState {
   can_comment: boolean;
-  origin_chat_id: string | null;
   fresh_session_required: boolean;
+  thread_href?: string | null;
   edit_failure?: string | null;
 }
 interface Surface {
@@ -265,6 +265,12 @@ function mountSurface(
   };
 }
 
+/** The chat runs in the app, so the parent opens it. */
+const openChat = (href: string) => (event: { preventDefault(): void }) => {
+  event.preventDefault();
+  window.parent.postMessage({ type: "rcp-artifact-open-chat", version: 1, href }, location.origin);
+};
+
 function ViewerComments({ config }: { config: ViewerConfig }) {
   const client = useMemo(
     () => createCommentsClient(config.projectId, fetchRequest()),
@@ -304,21 +310,35 @@ function ViewerComments({ config }: { config: ViewerConfig }) {
   const reload = useCallback(() => {
     loadThreads().catch((cause: unknown) => failRef.current(cause));
   }, [loadThreads]);
-  const send = useCallback(
-    async (threadIds: string[], key: string) => {
+  const keys = useRef(sendKeys());
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState<{ queued: boolean } | null>(null);
+  /** Lowered by the server's length refusal, so the next click fits. */
+  const [cap, setCap] = useState(Infinity);
+  const { batch, sendable } = sendBatch(threads, {
+    maxSelections: config.maxSelections,
+    maxChars: config.maxChars,
+    cap,
+  });
+  const send = async () => {
+    const ids = batch.map((thread) => thread.thread_id);
+    if (sending || !ids.length) return;
+    setSending(true);
+    setSent(null);
+    comments.clearError();
+    try {
+      const key = keys.current.key(ids);
       if (attempt.current?.key !== key)
         attempt.current = {
           key,
           fresh: freshRequired.current || Boolean(stateRef.current?.fresh_session_required),
         };
-      try {
-        const result = await client.sendArtifact(
-          config.artifactId,
-          threadIds,
-          attempt.current.fresh,
-          key,
-        );
-        freshRequired.current = false;
+      const result = await client.sendArtifact(config.artifactId, ids, attempt.current.fresh, key);
+      keys.current.done();
+      freshRequired.current = false;
+      setCap(Infinity);
+      setSent({ queued: Boolean(result.queued) });
+      if (!result.queued && result.operation_id)
         window.parent.postMessage(
           {
             type: "rcp-artifact-edit-started",
@@ -328,47 +348,25 @@ function ViewerComments({ config }: { config: ViewerConfig }) {
           },
           location.origin,
         );
-      } catch (error) {
-        if (error instanceof ApiError && error.code === "fresh_session_required")
-          freshRequired.current = true;
-        throw error;
-      }
-    },
-    [client, config.artifactId],
-  );
-  const keys = useRef(sendKeys());
-  const dock = useCallback<DockThreads>(
-    (saved) => {
-      if (stateRef.current?.origin_chat_id) {
-        window.parent.postMessage(
-          {
-            type: "rcp-artifact-comments-docked",
-            version: 1,
-            artifact_id: config.artifactId,
-            threads: saved.map(dockedThread),
-          },
-          location.origin,
-        );
-        return;
-      }
-      const ids = saved.map((thread) => thread.thread_id);
-      send(ids, keys.current.key(ids)).then(
-        () => keys.current.done(),
-        (cause: unknown) => {
-          keys.current.failed(cause);
-          failRef.current(cause);
-        },
-      );
-    },
-    [send, config.artifactId],
-  );
+    } catch (error) {
+      keys.current.failed(error);
+      if (error instanceof ApiError && error.code === "fresh_session_required")
+        freshRequired.current = true;
+      if (error instanceof ApiError && error.code === "comment_send_too_long")
+        setCap(Math.max(1, ids.length - 1));
+      failRef.current(error);
+    } finally {
+      setSending(false);
+      reload();
+    }
+  };
   const comments = useCommentActions({
     client,
     threads,
     loaded,
     members,
     canPost: canComment,
-    dock: canComment ? dock : null,
+    dock: null,
     reload,
   });
   failRef.current = comments.showError;
@@ -495,6 +493,34 @@ function ViewerComments({ config }: { config: ViewerConfig }) {
             : undefined
         }
         onWhole={() => offerAt({ kind: "whole", comment: "" })}
+        footer={
+          sendable > 0 || sent ? (
+            <>
+              {sent && (
+                <span className="rcp-comments-sent" role="status">
+                  {sent.queued ? "Queued" : "Sent"}
+                  {state?.thread_href && (
+                    <a href={state.thread_href} onClick={openChat(state.thread_href)}>
+                      Open chat
+                    </a>
+                  )}
+                </span>
+              )}
+              {sendable > 0 && (
+                <button
+                  type="button"
+                  className="rcp-comment-primary"
+                  disabled={sending || comments.busy}
+                  onClick={() => void send()}
+                >
+                  {batch.length < sendable
+                    ? `Send ${batch.length} of ${sendable} to agent`
+                    : "Send to agent"}
+                </button>
+              )}
+            </>
+          ) : null
+        }
         commentMode={
           hasMode && canComment
             ? { on: commentMode, toggle: () => setSelecting(!commentMode) }

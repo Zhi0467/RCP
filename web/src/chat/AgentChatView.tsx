@@ -1219,7 +1219,6 @@ export function AgentChatView({
       if (threads || queueing) setSubmitError(reason);
       return false;
     };
-    if (queueing && threads) return refuse("Comments wait until this thread is idle.");
     if (stop) return refuse("The running turn is stopping.");
     if (threads ? !canSendThreads : readOnly) return refuse("This chat cannot send comments.");
     if (dictating) {
@@ -1314,6 +1313,9 @@ export function AgentChatView({
             {
               message: submission.message.trim(),
               ...submission.attachments,
+              ...(submission.commentThreadIds?.length
+                ? { comment_thread_ids: [...submission.commentThreadIds] }
+                : {}),
               ...skillInvocationFields(
                 submission.skills ?? EMPTY_SKILL_SELECTION,
                 submission.providerSkillNames ?? [],
@@ -1635,7 +1637,7 @@ export function AgentChatView({
   const action: "Steer" | "Queue" | "Send" = steerable ? "Steer" : queueable ? "Queue" : "Send";
   const sendBlocked =
     action === "Queue"
-      ? dockedCount > 0
+      ? false
       : steerable
         ? Boolean(composer.staged)
         : attachmentsUnready ||
@@ -1645,19 +1647,17 @@ export function AgentChatView({
           !providerReady;
   const sendReason = submitting
     ? "Sending"
-    : action === "Queue" && dockedCount > 0
-      ? "Comments wait until this thread is idle"
-      : sendBlocked
-        ? steerable
-          ? "Attachments wait until this turn ends"
-          : relatedActive
-            ? "Wait until this turn ends"
-            : attachmentsUnready
-              ? "Attachments are still uploading"
-              : undefined
-        : !(draftSendable || dictating || dockedCount)
-          ? "Write a message"
-          : undefined;
+    : sendBlocked
+      ? steerable
+        ? "Attachments wait until this turn ends"
+        : relatedActive
+          ? "Wait until this turn ends"
+          : attachmentsUnready
+            ? "Attachments are still uploading"
+            : undefined
+      : !(draftSendable || dictating || dockedCount)
+        ? "Write a message"
+        : undefined;
   const sendDisabled =
     submitting || Boolean(stop) || sendBlocked || !(draftSendable || dictating || dockedCount);
   const stopSends =
@@ -2218,14 +2218,8 @@ export function AgentChatView({
                   className="icon-button chat-queue-button"
                   type="button"
                   aria-label="Queue"
-                  title={
-                    dockedCount
-                      ? "Comments wait until this thread is idle"
-                      : !draftSendable
-                        ? "Write a message"
-                        : "Queue"
-                  }
-                  disabled={submitting || dockedCount > 0 || !draftSendable}
+                  title={draftSendable || dockedCount ? "Queue" : "Write a message"}
+                  disabled={submitting || !(draftSendable || dockedCount)}
                   onClick={() => void sendMessage(true)}
                 >
                   <ListPlus size={16} />

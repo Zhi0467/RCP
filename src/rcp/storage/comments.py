@@ -529,6 +529,19 @@ class CommentStoreMixin(StoreMixinBase):
                     (operation_id, actor, self.now(), thread_id, thread_id, through),
                 )
 
+    def reopen_unsent_threads(self, thread_ids: list[str], operation_id: str, key: str) -> None:
+        """Reopen the threads a send resolved under `key` and `operation_id` when that
+        turn never started; a thread closed or sent another way stays as it is."""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for thread_id in thread_ids:
+                connection.execute(
+                    "UPDATE comment_threads SET state='open',closed_by=NULL,closed_at=NULL,"
+                    "sent_operation_id=NULL WHERE thread_id=? AND state='resolved' "
+                    "AND send_key=? AND sent_operation_id=?",
+                    (thread_id, key, operation_id),
+                )
+
     def sendable_threads(
         self, project_id: str, user_id: str, ids: list[str], key: str
     ) -> list[tuple[dict[str, Any], CommentTargetRoute]]:

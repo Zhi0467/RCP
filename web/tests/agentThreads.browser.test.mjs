@@ -3110,6 +3110,74 @@ test("Enter steers a steerable text-only run and otherwise queues behind the tur
   });
 });
 
+test("a busy thread queues a send that carries comments", async () => {
+  await withFixture(async (browser, base) => {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const writes = [];
+    await mockApi(page, writes);
+    const served = { items: [], posted: [], deleted: [] };
+    await serveQueue(page, served);
+    await page.route("**/api/agent-threads/moss/tasks/op-moss", (route) =>
+      route.fulfill({
+        json: {
+          ...settled("op-moss"),
+          active: true,
+          settled: false,
+          finished: false,
+          attempt: 1,
+          can_steer: false,
+          status_message: "Working",
+        },
+      }),
+    );
+    await page.route("**/api/agent-threads/moss/transcript", (route) =>
+      route.fulfill({
+        json: transcript("moss", [
+          message("request", "user", "Inspect the report", "op-moss", { timestamp: ago(10) }),
+          message("answer", "assistant", "The result is ready to compare.", "op-moss", {
+            timestamp: ago(1),
+          }),
+        ]),
+      }),
+    );
+    await page.goto(`${base}#/agent/moss`);
+    const moss = page.getByRole("region", { name: "Moss" });
+    await moss.locator(".agent-turn-live").waitFor();
+    await moss.locator(".chat-annotatable-answer").first().waitFor();
+    await moss.evaluate((element) => {
+      const answer = element.querySelector(".chat-annotatable-answer");
+      const node = document.createTreeWalker(answer, NodeFilter.SHOW_TEXT).nextNode();
+      const range = document.createRange();
+      range.setStart(node, 0);
+      range.setEnd(node, 10);
+      getSelection().removeAllRanges();
+      getSelection().addRange(range);
+    });
+    await page.locator(".chat-selection-comment").click();
+    await page.getByRole("textbox", { name: "Comment", exact: true }).fill("Compare to baseline");
+    await page
+      .getByRole("dialog", { name: "Comment" })
+      .getByRole("button", { name: "Comment", exact: true })
+      .click();
+    await moss.locator(".chat-annotation-count").waitFor();
+    const queue = moss.getByRole("button", { name: "Queue", exact: true });
+    assert.equal(await queue.isDisabled(), false);
+    await queue.click();
+    await moss.locator(".thread-queue-row").first().waitFor();
+    assert.equal(served.posted.length, 1);
+    assert.equal(served.posted[0].body.comment_thread_ids.length, 1);
+    assert.equal(
+      writes.filter((write) => write.path === "/api/agent-threads/moss/turns").length,
+      0,
+    );
+    assert.equal(await moss.locator(".chat-composer [role='alert']").count(), 0);
+    assert.deepEqual(errors, []);
+    await page.close();
+  });
+});
+
 test("Stop with a typed message stops the turn and sends it as the next one", async () => {
   await withFixture(async (browser, base) => {
     const page = await browser.newPage({ viewport: { width: 390, height: 844 } });

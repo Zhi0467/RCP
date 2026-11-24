@@ -17,3 +17,12 @@
   background: var(--comment-accent);
   border-color: var(--comment-accent);
 }
+.rcp-comments-sent {
+  display: inline-flex;
+  gap: 8px;
+  margin-right: auto;
+  color: var(--muted, #6b6258);
+}
+.rcp-comments-sent a {
+  color: var(--comment-accent);
+}

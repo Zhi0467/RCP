@@ -426,8 +426,11 @@ def test_a_queue_row_from_before_picks_loads_empty_and_still_starts(tmp_path: Pa
 
     store, actor, thread = _queue_world(tmp_path)
     with store.connection() as connection:
+        connection.execute("ALTER TABLE agent_thread_queue DROP COLUMN comment_thread_ids_json")
         connection.execute("ALTER TABLE agent_thread_queue DROP COLUMN picks_json")
-        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 94")
+        connection.execute(
+            "DELETE FROM storage_schema_migrations WHERE migration_version IN (94, 95)"
+        )
         connection.execute(
             "INSERT INTO agent_thread_queue(queue_id,thread_id,user_id,idempotency_key,message,"
             "attachment_set_id,attachment_client_id,attachment_count,request_sha256,created_at) "
@@ -437,6 +440,26 @@ def test_a_queue_row_from_before_picks_loads_empty_and_still_starts(tmp_path: Pa
     reopened = AppStore(tmp_path / "rcp.sqlite3")
     (row,) = reopened.agent_thread_queue(thread.thread_id)
     assert row.picks == QueuedTurnPicks()
+    turn = _queued_turn(reopened, actor, thread, row, "old-turn")
+    assert reopened.create_agent_task(turn, queue_id=row.queue_id).operation_id == "old-turn"
+
+
+def test_a_queue_row_from_before_comment_threads_loads_empty_and_still_starts(
+    tmp_path: Path,
+) -> None:
+    store, actor, thread = _queue_world(tmp_path)
+    with store.connection() as connection:
+        connection.execute("ALTER TABLE agent_thread_queue DROP COLUMN comment_thread_ids_json")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version = 95")
+        connection.execute(
+            "INSERT INTO agent_thread_queue(queue_id,thread_id,user_id,idempotency_key,message,"
+            "attachment_set_id,attachment_client_id,attachment_count,request_sha256,created_at,"
+            "picks_json) VALUES('old-row',?,?,'old-key','Old message',NULL,NULL,0,'hash',?,'{}')",
+            (thread.thread_id, thread.user_id, store.now()),
+        )
+    reopened = AppStore(tmp_path / "rcp.sqlite3")
+    (row,) = reopened.agent_thread_queue(thread.thread_id)
+    assert row.comment_thread_ids == []
     turn = _queued_turn(reopened, actor, thread, row, "old-turn")
     assert reopened.create_agent_task(turn, queue_id=row.queue_id).operation_id == "old-turn"
 
