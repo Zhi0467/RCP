@@ -7,6 +7,7 @@ whether its item exists, moved out of reach, or was never real.
 from __future__ import annotations
 
 from typing import Annotated
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -25,7 +26,7 @@ from rcp.storage import AppStore
 from rcp.storage.comments import CommentError, CommentTargetRoute
 from rcp.storage.membership import live_project_member
 from rcp.storage.share_links import ShareLinkKind, ShareLinkRecord
-from rcp.team_access import team_access_url
+from rcp.team_access import SHARE_LINK_PAGE, team_access_url
 from rcp.transport import StateMissing, StateUnavailable
 
 router = APIRouter()
@@ -160,7 +161,9 @@ def create_share_link(
     token = store.share_link_token(
         project, body.kind, body.item_id, graph_target, created_by=user_id
     )
-    return {"url": f"{access_url}/open#l={token}"}
+    host = urlsplit(access_url).netloc.removesuffix(":443")
+    fragment = urlencode({"s": store.space_id, "h": host, "l": token})
+    return {"url": f"{SHARE_LINK_PAGE}#{fragment}"}
 
 
 @router.post("/api/share-links/resolve")

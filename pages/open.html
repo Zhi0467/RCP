@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'sha256-esuWwVyha5H99xduOQwuzeIoTxK8mtdwtordX7XVkfk='; style-src 'unsafe-inline'"
+    />
+    <title>Open in RCP</title>
+    <style>
+      :root {
+        --paper: #f7f0e3;
+        --sheet: #fffaf0;
+        --ink: #2f2a24;
+        --muted: #6b6258;
+        --rule: #d8ccbb;
+        --accent: #873b30;
+        --accent-ink: #fffaf0;
+        color-scheme: light dark;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --paper: #191512;
+          --sheet: #221d19;
+          --ink: #efe6d8;
+          --muted: #a99e8e;
+          --rule: #3a332c;
+          --accent: #d98a7c;
+          --accent-ink: #191512;
+        }
+      }
+      body {
+        margin: 0;
+        min-height: 100dvh;
+        display: grid;
+        place-items: center;
+        background: var(--paper);
+        color: var(--ink);
+        font:
+          15px/1.5 -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+      }
+      main {
+        width: min(360px, calc(100% - 32px));
+        padding: 28px 24px;
+        background: var(--sheet);
+        border: 1px solid var(--rule);
+        border-radius: 12px;
+        box-shadow: 0 18px 52px rgb(58 39 25 / 12%);
+        text-align: center;
+      }
+      h1 {
+        font-size: 19px;
+        margin: 0 0 18px;
+      }
+      a {
+        display: block;
+        padding: 10px 14px;
+        border-radius: 8px;
+        text-decoration: none;
+        font-weight: 600;
+      }
+      #app {
+        background: var(--accent);
+        color: var(--accent-ink);
+      }
+      [hidden] {
+        display: none !important;
+      }
+      #server {
+        margin-top: 8px;
+        color: var(--muted);
+        font-weight: 500;
+      }
+      p {
+        margin: 0;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Open in RCP</h1>
+      <div id="links" hidden>
+        <a id="app" hidden>Open in RCP</a>
+        <a id="server"></a>
+      </div>
+      <p id="broken" hidden>This link is incomplete. Copy it again from RCP.</p>
+    </main>
+    <script>
+      const fields = new URLSearchParams(location.hash.slice(1));
+      const space = fields.get("s") || "";
+      const host = fields.get("h") || "";
+      const token = fields.get("l") || "";
+      const valid =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(space) &&
+        /^(\[[0-9A-Fa-f:.]{2,45}\]|[A-Za-z0-9.-]{1,253})(:[0-9]{1,5})?$/.test(host) &&
+        /^[A-Za-z0-9_-]{1,128}$/.test(token);
+      if (valid) {
+        const server = document.getElementById("server");
+        server.href = "https://" + host + "/open#l=" + token;
+        server.textContent = "Open on " + host;
+        document.getElementById("links").hidden = false;
+        if (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints <= 1) {
+          const app = "rcp://open?" + new URLSearchParams({ space, host, l: token });
+          const button = document.getElementById("app");
+          button.href = app;
+          button.hidden = false;
+          location.href = app;
+        }
+      } else document.getElementById("broken").hidden = false;
+    </script>
+  </body>
+</html>

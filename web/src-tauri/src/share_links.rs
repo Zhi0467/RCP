@@ -1,4 +1,4 @@
-//! `rcp://open` share links handed off by a team's /open page.
+//! `rcp://open` share links handed off by RCP's public share page or a team's /open page.
 //!
 //! A link names a team space, the host its access URL lives on, and an opaque
 //! token. The shell opens `/open#l=<token>` only on the saved connection whose

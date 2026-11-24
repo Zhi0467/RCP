@@ -2383,9 +2383,22 @@ target's branch key.
 
 ## Share links
 
-A share link lets a team member send one `https://` URL for an item. It has the
-form `<access_url>/open#l=<token>`. The token is opaque and holds no names. It
-rides in the fragment and in request bodies, never in a request path.
+A share link lets a team member send one `https://` URL for an item. A copied
+link points at RCP's public share page (`SHARE_LINK_PAGE` in
+[team access](../../src/rcp/team_access.py)) as
+`<page>#s=<space_id>&h=<access host>&l=<token>`, where the host drops a default
+port. Any browser can load the page, so a Mac member whose desktop app has this
+space saved opens the item with no network setup. Other devices still need to
+reach the access host. The page is `pages/open.html`, which
+`.github/workflows/pages.yml` publishes from `main`. It reads only the fragment,
+which never reaches the page's host. It runs one hash-pinned script and holds
+no data. In a Mac browser it shows "Open in RCP" and sets the location to the
+`rcp://open` handoff below. Every browser gets a link named "Open on <host>" to
+`https://<host>/open#l=<token>`. A malformed fragment shows that the link is
+incomplete. The team's own
+`<access_url>/open#l=<token>` page keeps serving older links and that fallback.
+The token is opaque and holds no names. It rides in fragments and request
+bodies, never in a request path.
 [Storage](projects-spaces-and-operations.md#share-link-storage) owns the rows.
 
 [Share-link routes](../../src/rcp/api/share_links.py) answer 404 in a personal
@@ -2418,7 +2431,8 @@ stays Copy reference. The same condition adds Copy link to the Paper file menu,
 the chat header menu, each comment thread card, and a Link button beside the
 time of each finished agent reply in the chat transcript. The clipboard write
 starts inside the click with the URL still pending, because WebKit drops a
-write made after an `await`. Drag keeps the reference URL.
+write made after an `await`. Drag keeps the reference URL. Inside the app, a clicked public-page link whose
+`s` is this space's id opens in place, like a same-origin `/open` link.
 
 **The /open page.** The token is read once at load, so a team sign-in in
 between keeps it. The page uses the team sign-in card. Signed in, it shows the
