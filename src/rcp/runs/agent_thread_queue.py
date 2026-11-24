@@ -7,10 +7,11 @@ import uuid
 from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from rcp.agents.agent_owner import chat_turn_kind
 from rcp.attachments import ChatAttachmentStore
+from rcp.comments.send import CommentSend, chat_turn_send
 from rcp.core.models import AuthorizedHuman
 from rcp.limits import (
     AGENT_HANDOFF_DELIVERY_TIMEOUT_SECONDS,
@@ -27,6 +28,7 @@ from rcp.storage.agents import AgentRecord
 
 if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks
+    from rcp.service import ArtifactContextRequest, ProjectService
 
 logger = logging.getLogger(__name__)
 
@@ -40,16 +42,79 @@ def queue_attachment_store(catalog: ProjectCatalog) -> ChatAttachmentStore:
     return ChatAttachmentStore(catalog.data_dir / "chat-attachments")
 
 
-def release_queued_files(
-    attachment_store: ChatAttachmentStore, row: AgentThreadQueueRecord
+def release_queued_message(
+    store: AppStore, attachment_store: ChatAttachmentStore, row: AgentThreadQueueRecord
 ) -> None:
-    """Return a removed or refused message's uploads to its set and drop its reference copies."""
+    """Reopen a removed or refused message's comment threads, return its uploads to their
+    set, and drop its reference copies."""
+    operation_id = queued_turn_operation_id(row.queue_id)
+    store.reopen_unsent_threads(row.picks.comment_thread_ids, operation_id, row.idempotency_key)
     if row.attachment_set_id is None:
         return
     try:
-        attachment_store.release(row.attachment_set_id, queued_turn_operation_id(row.queue_id))
+        attachment_store.release(row.attachment_set_id, operation_id)
     except (ValueError, OSError) as exc:
         logger.warning("Queued message %s kept its files: %s", row.queue_id, exc)
+
+
+class QueuedComments(NamedTuple):
+    """A queued turn's comment send, its text and context, and for artifact comments the
+    origin graph target's service."""
+
+    sent: CommentSend
+    text: str
+    context: ArtifactContextRequest | None
+    service: ProjectService | None
+
+
+def admit_queued_comments(
+    store: AppStore,
+    catalog: ProjectCatalog,
+    thread: AgentRecord,
+    user_id: str,
+    thread_ids: list[str],
+    key: str,
+    message: str,
+) -> QueuedComments:
+    """Admit a queued turn's comments at queue time and again at drain; under the queue's
+    key the threads render the snapshot the queue accepted."""
+    from rcp.api.dependencies import get_graph_service
+    from rcp.runs.artifact_edit_admission import (
+        admit_chat_artifact_comment,
+        admit_space_artifact_comment,
+    )
+    from rcp.service import RunRequest
+
+    latest = latest_agent_turn(store, thread.agent_id)
+    project_id = thread.project_id or store.space_id
+    sent = chat_turn_send(
+        store,
+        project_id,
+        user_id,
+        thread_ids,
+        key,
+        message=message,
+        chat_id=thread.agent_id,
+        paper=latest is not None and latest.request.get("focus") == "paper",
+    )
+    if sent.context is None:
+        return QueuedComments(sent, sent.text, None, None)
+    if thread.project_id is None:
+        private_thread = store.agent_thread(thread.agent_id)
+        assert private_thread is not None
+        context, text = admit_space_artifact_comment(store, private_thread, sent.context, sent.text)
+        return QueuedComments(sent, text, context, None)
+    origin = store.agent_task(sent.context.operation_id or "")
+    service = get_graph_service(catalog, project_id, origin and origin.graph_target.branch_id)
+    admitted = admit_chat_artifact_comment(
+        store,
+        service,
+        project_id,
+        RunRequest(chat_id=thread.agent_id, message=sent.text, artifact_context=sent.context),
+    )
+    if admitted.artifact_edit is not None:
+        raise ValueError("The artifact's chat takes no human turns now")
+    return QueuedComments(sent, admitted.message or "", admitted.artifact_context, service)
 
 
 def dispatch_thread_queue(
@@ -228,13 +293,22 @@ def _start_queued_turn(
         }
     )
     with project_admission(project_id) if thread.project_id else nullcontext():
-        service = (
-            get_graph_service(
+        sent, service = None, None
+        if row.picks.comment_thread_ids:
+            sent, text, context, service = admit_queued_comments(
+                store,
+                catalog,
+                thread,
+                row.user_id,
+                row.picks.comment_thread_ids,
+                row.idempotency_key,
+                row.message,
+            )
+            request = request.model_copy(update={"message": text, "artifact_context": context})
+        if service is None and thread.project_id:
+            service = get_graph_service(
                 catalog, project_id, previous.graph_target.branch_id if previous else None
             )
-            if thread.project_id
-            else None
-        )
         if service is not None:
             request = _resolved_graph_request(service, kind, request)
         admission = (
@@ -252,14 +326,19 @@ def _start_queued_turn(
                 operation_id=operation_id,
                 viewer_id=row.user_id,
             )
-            return background.start(
+            background.start(
                 project_id,
                 kind,
                 request,
                 operation_id=operation_id,
                 authorized_by=member,
                 queue_id=row.queue_id,
-            ).operation_id
+            )
+    if sent is not None:
+        store.mark_threads_sent(
+            sent.rendered_through, operation_id, row.idempotency_key, row.user_id
+        )
+    return operation_id
 
 
 def _defer(
@@ -282,4 +361,4 @@ def _refuse(
         row.queue_id, reason[:AGENT_THREAD_QUEUE_MAX_CHARS]
     )
     if refused is not None or store.agent_thread_queue_item(row.queue_id) is None:
-        release_queued_files(queue_attachment_store(catalog), row)
+        release_queued_message(store, queue_attachment_store(catalog), row)

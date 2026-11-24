@@ -16,6 +16,7 @@ import { projectAgentWindowEndpoints } from "../agentWindow/agentWindowEndpoints
 import { ProviderSwitchHint } from "./ProviderSwitchHint";
 import { ChatBranchPicker, ChatOriginLink } from "./ChatBranchPicker";
 import { ChatComposer, ComposerField } from "./ChatComposer";
+import { ChatArtifactsPane, useChatArtifacts } from "./ChatArtifactsPane";
 import { ChatHeaderMenu, type ChatHeaderAction } from "./ChatHeaderMenu";
 import { AgentHeader, AgentPickRow } from "./AgentHeader";
 import type { ChatAgentSetup, ChatOrigin } from "../core/types";
@@ -39,6 +40,7 @@ import { questionIsOpen } from "./questions";
 import { ExternalJobRow } from "../experiments/ExternalJobRow";
 import {
   CalendarClock,
+  Files,
   GitPullRequestArrow,
   ListPlus,
   LoaderCircle,
@@ -371,6 +373,11 @@ export function AgentChatView({
     [projectId, chatId],
   );
   const endpoints = feed?.endpoints ?? chatEndpoints!;
+  const listsArtifacts =
+    presentation === "workspace" && !feed && projectId !== null && profileName !== "paper_coach";
+  const chatArtifacts = useChatArtifacts(listsArtifacts ? projectId : null, chatId);
+  const [artifactsOpen, setArtifactsOpen] = useState(false);
+  const artifactsPane = listsArtifacts && chatArtifacts.length > 0;
   const questionApiBase = endpoints.questionsApiBase;
   const chatQuestions = useQuestions(
     questionApiBase ?? "",
@@ -1219,7 +1226,6 @@ export function AgentChatView({
       if (threads || queueing) setSubmitError(reason);
       return false;
     };
-    if (queueing && threads) return refuse("Comments wait until this thread is idle.");
     if (stop) return refuse("The running turn is stopping.");
     if (threads ? !canSendThreads : readOnly) return refuse("This chat cannot send comments.");
     if (dictating) {
@@ -1314,6 +1320,9 @@ export function AgentChatView({
             {
               message: submission.message.trim(),
               ...submission.attachments,
+              ...(submission.commentThreadIds?.length
+                ? { comment_thread_ids: [...submission.commentThreadIds] }
+                : {}),
               ...skillInvocationFields(
                 submission.skills ?? EMPTY_SKILL_SELECTION,
                 submission.providerSkillNames ?? [],
@@ -1550,6 +1559,17 @@ export function AgentChatView({
       <AgentStatusStrip tasks={statusTasks} />
       {watcherToggle}
       {replyComments.headerButton}
+      {artifactsPane && (
+        <button
+          className={`chat-watcher-count${artifactsOpen ? " is-open" : ""}`}
+          type="button"
+          aria-expanded={artifactsOpen}
+          aria-label="Artifacts"
+          onClick={() => setArtifactsOpen((open) => !open)}
+        >
+          <Files size={12} /> {chatArtifacts.length}
+        </button>
+      )}
     </>
   );
   const headerMenu = (
@@ -1634,30 +1654,27 @@ export function AgentChatView({
   const steerable = steeringTask && !(composer.staged && queue) ? steeringTask : null;
   const action: "Steer" | "Queue" | "Send" = steerable ? "Steer" : queueable ? "Queue" : "Send";
   const sendBlocked =
-    action === "Queue"
-      ? dockedCount > 0
-      : steerable
-        ? Boolean(composer.staged)
-        : attachmentsUnready ||
-          relatedActive ||
-          Boolean(repairingTaskId) ||
-          reviewPending ||
-          !providerReady;
+    action !== "Queue" &&
+    (steerable
+      ? Boolean(composer.staged)
+      : attachmentsUnready ||
+        relatedActive ||
+        Boolean(repairingTaskId) ||
+        reviewPending ||
+        !providerReady);
   const sendReason = submitting
     ? "Sending"
-    : action === "Queue" && dockedCount > 0
-      ? "Comments wait until this thread is idle"
-      : sendBlocked
-        ? steerable
-          ? "Attachments wait until this turn ends"
-          : relatedActive
-            ? "Wait until this turn ends"
-            : attachmentsUnready
-              ? "Attachments are still uploading"
-              : undefined
-        : !(draftSendable || dictating || dockedCount)
-          ? "Write a message"
-          : undefined;
+    : sendBlocked
+      ? steerable
+        ? "Attachments wait until this turn ends"
+        : relatedActive
+          ? "Wait until this turn ends"
+          : attachmentsUnready
+            ? "Attachments are still uploading"
+            : undefined
+      : !(draftSendable || dictating || dockedCount)
+        ? "Write a message"
+        : undefined;
   const sendDisabled =
     submitting || Boolean(stop) || sendBlocked || !(draftSendable || dictating || dockedCount);
   const stopSends =
@@ -1770,7 +1787,7 @@ export function AgentChatView({
   return (
     <div
       ref={dockRef}
-      className={`chat-dock ${presentation}`}
+      className={`chat-dock ${presentation}${artifactsPane && artifactsOpen ? " artifacts-open" : ""}`}
       role={presentation === "floating" ? "dialog" : "region"}
       aria-modal="false"
       aria-label={
@@ -1801,6 +1818,13 @@ export function AgentChatView({
           )
         }
       />
+      {artifactsPane && artifactsOpen && (
+        <ChatArtifactsPane
+          projectId={projectId!}
+          artifacts={chatArtifacts}
+          onClose={() => setArtifactsOpen(false)}
+        />
+      )}
       {watcherRows.length > 0 && watchersOpen && (
         <section className="chat-watchers" aria-label="Watchers">
           {watcherRows.map((watcher) => {
@@ -2218,14 +2242,8 @@ export function AgentChatView({
                   className="icon-button chat-queue-button"
                   type="button"
                   aria-label="Queue"
-                  title={
-                    dockedCount
-                      ? "Comments wait until this thread is idle"
-                      : !draftSendable
-                        ? "Write a message"
-                        : "Queue"
-                  }
-                  disabled={submitting || dockedCount > 0 || !draftSendable}
+                  title={draftSendable || dockedCount ? "Queue" : "Write a message"}
+                  disabled={submitting || !(draftSendable || dockedCount)}
                   onClick={() => void sendMessage(true)}
                 >
                   <ListPlus size={16} />

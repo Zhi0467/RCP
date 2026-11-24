@@ -291,6 +291,43 @@
   background: color-mix(in srgb, var(--cobalt) 20%, var(--sheet));
   border-color: var(--cobalt);
 }
+.chat-dock.workspace {
+  position: relative;
+}
+.chat-artifacts-pane {
+  animation: paper-pane-enter 160ms ease;
+  background: var(--surface);
+  border-left: 1px solid var(--line);
+  bottom: 0;
+  overflow-y: auto;
+  padding: 10px 16px;
+  position: absolute;
+  right: 0;
+  top: 52px;
+  width: 300px;
+  z-index: 3;
+}
+.chat-artifacts-pane > header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+/* On a desktop the chat narrows beside the pane under a full-width header;
+ * on a phone the pane covers the chat. */
+@media (min-width: 561px) {
+  .chat-dock.artifacts-open {
+    padding-right: 300px;
+  }
+  .chat-dock.artifacts-open > header {
+    margin-right: -300px;
+  }
+}
+@media (max-width: 560px) {
+  .chat-artifacts-pane {
+    border-left: 0;
+    width: 100%;
+  }
+}
 .chat-watchers {
   background: var(--paper-deep);
   border-bottom: 1px solid var(--line);

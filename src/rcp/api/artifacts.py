@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import UUID4, BaseModel, Field
 
+from rcp.api.agent_threads import QueuedMessageBody, accessible_agent, queue_message
 from rcp.api.dependencies import (
     get_attachment_store,
     get_background_tasks,
@@ -17,6 +18,7 @@ from rcp.api.dependencies import (
     get_graph_service,
     get_identity_access,
     get_store,
+    project_write_admission,
     require_project_membership,
     require_project_write_admission,
     require_registered_project,
@@ -46,13 +48,13 @@ from rcp.comments.send import artifact_thread_context
 from rcp.core.models import AuthorizedHuman
 from rcp.limits import ARTIFACT_CONTEXT_MAX_SELECTIONS
 from rcp.projects import ProjectCatalog
+from rcp.runs.agent_threads import agent_turn_busy
 from rcp.runs.artifact_edit_admission import (
     ArtifactEditAvailability,
     ArtifactFreshSessionRequired,
     admit_artifact_edit,
     artifact_edit_availability,
     artifact_send_chat_turn,
-    artifact_turn_chat,
     start_artifact_edit,
 )
 from rcp.service import RunRequest
@@ -65,6 +67,7 @@ from rcp.storage import (
     EpisodeRecord,
 )
 from rcp.storage.agent_threads import private_artifact_owner
+from rcp.storage.artifact_replies import artifact_chat_id, artifact_reply_origin
 from rcp.storage.artifacts import ArtifactDeleteRefused
 from rcp.storage.chat_names import chat_titles
 from rcp.storage.client_requests import ClientRequestConflict
@@ -484,7 +487,6 @@ class ArtifactViewerState(BaseModel):
     comment_unavailable_reason: str | None
     fresh_session_required: bool
     thread_href: str | None
-    origin_chat_id: str | None
     viewer_url: str | None
     download_url: str
     can_keep: bool
@@ -505,15 +507,6 @@ class RunArtifactEntry(BaseModel):
     origin_operation_id: str | None
     worker_label: str | None
     created_at: str
-
-
-def _origin_chat_id(store: AppStore, artifact: Artifact) -> str | None:
-    """The chat whose composer the viewer's saved comments dock at, if it takes turns."""
-    try:
-        chat = artifact_turn_chat(store, artifact)
-    except AgentTaskAdmissionConflict:
-        return None
-    return chat[2] if chat else None
 
 
 @router.get(
@@ -579,7 +572,6 @@ def stored_artifact_state(
         comment_unavailable_reason=availability.comment_unavailable_reason,
         fresh_session_required=availability.fresh_session_required,
         thread_href=_artifact_source_hrefs(catalog, store, project_id, [artifact]).get(artifact_id),
-        origin_chat_id=_origin_chat_id(store, artifact),
         viewer_url=f"{base}/viewer" if artifact_view(artifact.media_type) != "file" else None,
         download_url=f"{base}/download",
         can_keep=_temporary(store, artifact),
@@ -612,8 +604,7 @@ def run_artifacts(
     artifacts = [
         artifact
         for artifact in store.artifacts(project_id)
-        if artifact.episode_id in episode_ids
-        and (artifact.kept_at or artifact.expires_at is None or artifact.expires_at > now)
+        if artifact.episode_id in episode_ids and _unexpired(artifact, now)
     ]
     artifacts.sort(
         key=lambda artifact: (
@@ -652,19 +643,62 @@ def run_artifacts(
             label = "Orchestrator"
         if actor_id is not None:
             label = titles.get(actor_id, label)
-        entries.append(
-            RunArtifactEntry(
-                artifact_id=artifact.artifact_id,
-                name=artifact.display_title or artifact.source_name,
-                media_type=artifact.media_type,
-                view=artifact_view(artifact.media_type),
-                supplier=artifact.supplier,
-                origin_operation_id=artifact.origin_operation_id,
-                worker_label=label,
-                created_at=artifact.created_at,
-            )
-        )
+        entries.append(_run_artifact_entry(artifact, label))
     return entries
+
+
+def _unexpired(artifact: Artifact, now: str) -> bool:
+    return bool(artifact.kept_at or artifact.expires_at is None or artifact.expires_at > now)
+
+
+def _run_artifact_entry(artifact: Artifact, label: str | None = None) -> RunArtifactEntry:
+    return RunArtifactEntry(
+        artifact_id=artifact.artifact_id,
+        name=artifact.display_title or artifact.source_name,
+        media_type=artifact.media_type,
+        view=artifact_view(artifact.media_type),
+        supplier=artifact.supplier,
+        origin_operation_id=artifact.origin_operation_id,
+        worker_label=label,
+        created_at=artifact.created_at,
+    )
+
+
+def _resolved_chat_id(store: AppStore, artifact: Artifact) -> object:
+    try:
+        return artifact_chat_id(*artifact_reply_origin(store, artifact))
+    except AgentTaskAdmissionConflict:
+        return None
+
+
+@router.get(
+    "/api/projects/{project_id}/chats/{chat_id}/artifact-list",
+    response_model=list[RunArtifactEntry],
+)
+def chat_artifacts(
+    project_id: str,
+    chat_id: str,
+    request: Request,
+    *,
+    catalog: Annotated[ProjectCatalog, Depends(get_catalog)],
+    store: Annotated[AppStore, Depends(get_store)],
+    identity_access: Annotated[IdentityAccess, Depends(get_identity_access)],
+) -> list[RunArtifactEntry]:
+    require_registered_project(catalog, project_id)
+    user_id = identity_access.acting_user(request).user_id
+    if chat_id in store.private_chat_ids_except(user_id):
+        raise HTTPException(status_code=404, detail="Chat not found")
+    now = store.now()
+    with store.connection() as connection:
+        artifacts = [
+            artifact
+            for artifact in store.artifacts(project_id)
+            if _unexpired(artifact, now)
+            and _resolved_chat_id(store, artifact) == chat_id
+            and private_artifact_owner(connection, artifact) in {None, user_id}
+        ]
+    artifacts.sort(key=lambda artifact: (artifact.created_at, artifact.artifact_id), reverse=True)
+    return [_run_artifact_entry(artifact) for artifact in artifacts]
 
 
 @router.get("/api/projects/{project_id}/artifacts/{artifact_id}/content")
@@ -873,7 +907,6 @@ class ArtifactCommentBody(BaseModel):
 @router.post(
     "/api/projects/{project_id}/artifacts/{artifact_id}/comments",
     status_code=202,
-    dependencies=[Depends(require_project_write_admission)],
 )
 def comment_artifact(
     project_id: str,
@@ -887,9 +920,38 @@ def comment_artifact(
     background_tasks: Annotated[BackgroundAgentTasks, Depends(get_background_tasks)],
     attachment_store: Annotated[ChatAttachmentStore, Depends(get_attachment_store)],
     idempotency_key: Annotated[UUID4, Header()],
-):
+) -> dict[str, object]:
+    """Send or queue; a queued send drains only after the admission is released."""
     author = identity_access.require_patch_capable_identity(request)
-    key = str(idempotency_key)
+    with project_write_admission(project_id, request):
+        result = _send_artifact_comments(
+            project_id,
+            artifact_id,
+            body,
+            author,
+            str(idempotency_key),
+            catalog=catalog,
+            store=store,
+            background_tasks=background_tasks,
+            attachment_store=attachment_store,
+        )
+    if result.get("queued"):
+        request.app.state.reconcile_thread_handoffs()
+    return result
+
+
+def _send_artifact_comments(
+    project_id: str,
+    artifact_id: str,
+    body: ArtifactCommentBody,
+    author: AuthorizedHuman,
+    key: str,
+    *,
+    catalog: ProjectCatalog,
+    store: AppStore,
+    background_tasks: BackgroundAgentTasks,
+    attachment_store: ChatAttachmentStore,
+) -> dict[str, object]:
     sent = artifact_thread_context(
         store, project_id, author.user_id, body.thread_ids, key, artifact_id=artifact_id
     )
@@ -919,6 +981,28 @@ def comment_artifact(
                     catalog, project_id, origin.graph_target.branch_id, write=True
                 )
                 turn = artifact_send_chat_turn(store, artifact, context, message)
+                chat_id = str(turn[1]["chat_id"]) if turn is not None else ""
+                if turn is not None and (
+                    store.agent_thread_queue_for_key(chat_id, key)
+                    or agent_turn_busy(store, chat_id)
+                ):
+                    queued = queue_message(
+                        store,
+                        catalog,
+                        attachment_store,
+                        accessible_agent(store, chat_id, author.user_id),
+                        project_id,
+                        author.user_id,
+                        QueuedMessageBody(comment_thread_ids=body.thread_ids),
+                        key,
+                    )
+                    if queued.removed_at is not None or queued.refusal_reason is not None:
+                        raise HTTPException(status_code=409, detail="This send was removed.")
+                    return {
+                        "queued": True,
+                        "queue_id": queued.queue_id,
+                        "operation_id": queued.operation_id,
+                    }
                 if turn is not None:
                     record = start_ordinary_task(
                         project_id,

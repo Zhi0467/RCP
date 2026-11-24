@@ -3061,13 +3061,36 @@ test("Enter steers a steerable text-only run and otherwise queues behind the tur
     });
     assert.equal(served.posted[1].key, served.refusedKey);
 
+    await moss.locator(".chat-annotatable-answer").first().waitFor();
+    await moss.evaluate((element) => {
+      const answer = element.querySelector(".chat-annotatable-answer");
+      const node = document.createTreeWalker(answer, NodeFilter.SHOW_TEXT).nextNode();
+      const range = document.createRange();
+      range.setStart(node, 0);
+      range.setEnd(node, 4);
+      getSelection().removeAllRanges();
+      getSelection().addRange(range);
+    });
+    await page.locator(".chat-selection-comment").click();
+    await page.getByRole("textbox", { name: "Comment", exact: true }).fill("Compare to baseline");
+    await page
+      .getByRole("dialog", { name: "Comment" })
+      .getByRole("button", { name: "Comment", exact: true })
+      .click();
+    const docked = moss.getByRole("button", { name: "1 comment" });
+    await docked.waitFor();
+    await moss.getByRole("button", { name: "Queue", exact: true }).click();
+    await rows.nth(2).waitFor();
+    assert.equal(served.posted[2].body.comment_thread_ids.length, 1);
+    await docked.waitFor({ state: "detached" });
+
     task = settled("op-moss");
     await moveWatermark(page);
     await moss.locator(".agent-turn-live").waitFor({ state: "detached" });
     await box.fill("And summarize");
     await box.press("Enter");
-    await rows.nth(2).waitFor();
-    assert.deepEqual(served.posted[2].body, {
+    await rows.nth(3).waitFor();
+    assert.deepEqual(served.posted[3].body, {
       message: "And summarize",
       provider: "claude",
       model: "opus",

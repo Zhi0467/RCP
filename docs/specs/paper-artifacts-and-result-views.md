@@ -776,6 +776,21 @@ ordinary Work turns with the chat's profile. They can combine attachments and
 references, including in Experiments. A read-only lineage child takes them only
 as scratch edits, without references. Both paths can publish tracked next versions. Keep follows viewer state.
 
+### A chat's artifacts
+
+A workspace project chat lists its artifacts in a side pane, so they are not
+only cards scattered through the transcript. A header chip with the Files icon
+and the count opens and closes it. The chip shows only when the count is above
+zero, is pressed while the pane is open, and has "Artifacts" as its hover name.
+The pane is a 300px right column inside the conversation; at phone width it
+covers the chat. Each row shows the type icon and the name, newest first, with
+the time on hover. A click opens the artifact in the viewer and, at phone width,
+also closes the pane. Close and the chip close it, and the open state is not
+kept. The list comes from the
+[chat artifact route](api-web-and-desktop-projections.md#artifact-viewer-and-run-inventory)
+and refreshes on the project's artifacts watermark. The floating chat and Space
+threads keep only their inline cards.
+
 ### Selection and comments
 
 HTML, raster images, and SVG take gestures in comment mode, which starts off
@@ -787,17 +802,28 @@ they never take the page's clicks. Every viewable type takes whole-file
 comments; types available only for download take none. Comment saves a
 [shared thread](#shared-comments). Cancel or Escape discards the comment being
 written. Clicking elsewhere closes the window but retains the text for the next
-selection. The rail beside the artifact lists its threads. A saved comment or
-reply docks at the composer of the artifact's origin chat, which the viewer
-opens; that chat's next message sends it. Comments are never graph annotations.
+selection. The rail beside the artifact lists its threads. Saving a comment or
+reply only saves it, and the viewer stays where it is. Comments are never graph
+annotations.
 
-When the origin chat takes no human turns, `origin_chat_id` in the viewer state
-is null and the viewer sends a saved thread at once. Viewer Send names thread
-ids, never client-built selections. A refused Send changes no thread. Success
-marks the threads sent and reports the operation. Send needs a readable,
-unexpired artifact context. Only a chat that refuses human turns can require a
-fresh session. A later failure remains in `edit_failure` until replaced.
-The theme follows the app or the standalone preference.
+The rail's footer holds one Send button whenever the artifact has threads the
+member may send (`can_send`), teammates' open threads included. One click sends
+the oldest `maxSelections` of them, from the viewer config. When more are open,
+the button names the batch, as in "Send 50 of 60 to agent", and the rest stay
+open for the next click. The server's length limit refuses an oversize batch
+whole, and the refusal shows in the rail. One click is always one turn. A chat-less artifact's threads are never sendable, so it has no footer.
+
+Viewer Send names thread ids, never client-built selections, and posts them to
+the artifact's `/comments` route with one key per attempt. Only the server knows
+the artifact's chat, branch, node and latest profile, so it picks the route.
+Sent threads resolve under the sender's name. The footer then says Sent, or
+Queued when the chat was busy, with an Open chat link to the artifact's reply
+link; the in-app parent opens it. A refusal changes no thread and shows in the
+rail. A started turn, never a queued one, posts `rcp-artifact-edit-started`, so
+the parent marks the artifact as editing until polling ends it. Send needs a
+readable, unexpired artifact context. Only a chat that refuses human turns can
+require a fresh session. A later failure remains in `edit_failure` until
+replaced. The theme follows the app or the standalone preference.
 
 `ArtifactContextRequest` in [service models](../../src/rcp/service.py) owns bounded
 selection inputs; only sent threads produce selections.
@@ -821,7 +847,8 @@ URL-encoded embed of the tracked path. All input is untrusted.
 Admission freezes the version and route. Sent threads are ordinary Work
 turns with that chat's profile, session, scope, graph, compute, and worktree.
 Viewer Send uses the same Work path with the latest profile when the chat accepts
-human turns, queued or steered as Send is. This includes ordinary chats,
+human turns, and [queues](conversations-episodes-and-watchers.md#queued-comment-threads)
+while that chat runs a turn. This includes ordinary chats,
 Experiments, and ended orchestrators. The agent decides from each comment
 whether to edit. In a chat that refuses human turns, a running orchestrator or
 read-only child, a comment resumes the recorded master with a scratch-only edit
@@ -967,17 +994,18 @@ pin opens its thread. A notification or Inbox link runs the same path.
 Saving a comment or a reply on a thread the member may send (`can_send`) docks
 the thread at its chat's composer as an "N comments" count. The count opens a
 review list where each thread can be removed. The composer's next message,
-Enter or Send, carries the docked thread ids, and success clears the dock. A
-chat with no composer, such as a running orchestrator's, sends a saved artifact
-thread at once. Whole threads go with their quote and place. They ride the send
-path their target already uses:
+Enter or Send, carries the docked thread ids, and success clears the dock. The
+artifact viewer never docks; its own Send sends
+([viewer](#selection-and-comments)). Whole threads go with their quote and
+place. They ride the send path their target already uses:
 
 | Target | Entry point | Threads arrive as |
 | --- | --- | --- |
 | Chat reply or Paper file | the composer's new turn | message text |
 | Any, while a turn runs | the composer's steer | message text, without crops |
+| Any, while a turn runs | the composer's Queue | as on a new turn, when it starts |
 | One artifact of this chat | the composer's new turn | artifact context selections |
-| Artifact in the viewer | the origin chat's composer, else the viewer's Send | artifact context selections |
+| Artifact in the viewer | the viewer's Send, queued while the chat is busy | artifact context selections |
 
 Each thread must be open and belong to the sending chat: its replies, its
 artifacts, or Paper for a Paper chat. Otherwise the send answers 409. A composer send carries threads of

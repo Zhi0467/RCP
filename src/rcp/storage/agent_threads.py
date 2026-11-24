@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from pydantic import BaseModel, Field, model_validator
@@ -76,6 +77,21 @@ def thread_binds_task(thread: AgentThreadRecord, task: AgentTaskRecord, space_id
     )
 
 
+def space_thread_task(
+    store: AppStore, thread: AgentThreadRecord, operation_id: str
+) -> AgentTaskRecord | None:
+    """A visible turn of this Space thread."""
+    task = store.agent_task(operation_id)
+    if (
+        thread.project_id is not None
+        or task is None
+        or not task.visible
+        or not thread_binds_task(thread, task, store.space_id)
+    ):
+        return None
+    return task
+
+
 def bound_thread(store: AppStore, task: AgentTaskRecord) -> AgentThreadRecord | None:
     """The member thread this task is a turn of; callers add their own conditions."""
     chat_id = task.request.get("chat_id")
@@ -107,6 +123,7 @@ class QueuedTurnPicks(BaseModel):
     invoked_workflow_ids: list[str] = Field(default_factory=list)
     invoked_skill_ids: list[str] = Field(default_factory=list)
     invoked_provider_skill_names: list[str] = Field(default_factory=list)
+    comment_thread_ids: list[str] = Field(default_factory=list, exclude_if=lambda value: not value)
 
 
 class AgentThreadQueueRecord(BaseModel):
@@ -512,12 +529,17 @@ class AgentThreadStoreMixin(StoreMixinBase):
         attachment_count: int = 0,
         request_sha256: str,
         picks: QueuedTurnPicks | None = None,
+        rendered_through: Mapping[str, str] | None = None,
+        sent_operation_id: str = "",
     ) -> AgentThreadQueueRecord:
         """Store one member message for the thread's next free turn; a replayed key returns it.
 
         A removed message keeps its key, so a late retry of its request finds it removed.
+        Its comment threads resolve under the key and `sent_operation_id` in the same
+        transaction, or nothing is stored when another send already took one.
         """
         from rcp.limits import AGENT_THREAD_QUEUE_MAX_ITEMS
+        from rcp.storage.comments import claim_threads_sent_in
 
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -566,6 +588,15 @@ class AgentThreadStoreMixin(StoreMixinBase):
                     record.picks.model_dump_json(),
                 ),
             )
+            if rendered_through:
+                claim_threads_sent_in(
+                    connection,
+                    rendered_through,
+                    sent_operation_id,
+                    idempotency_key,
+                    user_id,
+                    record.created_at,
+                )
             return record
 
     def agent_thread_queue_for_key(
@@ -751,10 +782,19 @@ def claim_queued_turn(
 def _require_queued_turn(
     connection: sqlite3.Connection, row: sqlite3.Row, record: AgentTaskRecord
 ) -> None:
-    """The turn is the member's own ordinary Work turn on the open thread, with this text and files."""
+    """The turn is the member's own ordinary Work turn on the open thread, with this text and files.
+
+    A row with comment threads leads with its text; the drain renders the threads after it.
+    """
     from rcp.storage.agents import agent
 
     owner = agent(connection, row["thread_id"])
+    message = record.request.get("message")
+    same_text = (
+        isinstance(message, str) and message.startswith(row["message"].strip())
+        if json.loads(row["picks_json"] or "{}").get("comment_thread_ids")
+        else message == row["message"]
+    )
     closed = connection.execute(
         "SELECT closed_at FROM agent_threads WHERE thread_id=?", (row["thread_id"],)
     ).fetchone()
@@ -770,7 +810,7 @@ def _require_queued_turn(
         or request.get("mode") != "work"
         or request.get("trigger", "human") != "human"
         or request.get("source") is not None
-        or request.get("message") != row["message"]
+        or not same_text
         or request.get("attachment_batch_id") != row["attachment_set_id"]
     ):
         raise ValueError("Queued turn changed its member, thread or request")

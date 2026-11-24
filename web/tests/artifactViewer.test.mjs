@@ -10,7 +10,7 @@ import {
   toggleViewerFullscreen,
   collapseViewer,
   acceptsArtifactEditMessage,
-  artifactDockMessage,
+  artifactOpenChatMessage,
   artifactVersionChanged,
 } from "../src/artifacts/artifactViewerLayout.ts";
 
@@ -81,30 +81,25 @@ test("only a versioned edit message from this iframe and RCP origin is accepted"
     assert.equal(acceptsArtifactEditMessage(invalid, frame, origin, "a"), false);
   assert.equal(acceptsArtifactEditMessage({ ...event, source: null }, null, origin, "a"), false);
 });
-test("only well-formed docked threads from this iframe and RCP origin reach a composer", () => {
+test("only an in-app chat route from this iframe and RCP origin opens a chat", () => {
   const frame = {};
   const origin = "https://rcp.example";
-  const thread = { thread_id: "t", quote: "q", text: "x" };
-  const data = {
-    type: "rcp-artifact-comments-docked",
-    version: 1,
-    artifact_id: "a",
-    threads: [thread],
-  };
+  const href = "#/projects/p?chat=c";
+  const data = { type: "rcp-artifact-open-chat", version: 1, href };
   const event = { source: frame, origin, data };
-  assert.deepEqual(artifactDockMessage(event, frame, origin, "a"), [thread]);
+  assert.equal(artifactOpenChatMessage(event, frame, origin), href);
   for (const invalid of [
     { ...event, source: {} },
     { ...event, origin: "https://other.example" },
     ...[
       { ...data, version: 2 },
-      { ...data, artifact_id: "b" },
-      { ...data, threads: [] },
-      { ...data, threads: [thread, { thread_id: "", quote: "", text: "" }] },
-      { ...data, threads: "t" },
+      { ...data, type: "rcp-artifact-edit-started" },
+      { ...data, href: "https://other.example/#/projects/p" },
+      { ...data, href: "javascript:alert(1)" },
+      { ...data, href: 7 },
     ].map((data) => ({ ...event, data })),
   ])
-    assert.equal(artifactDockMessage(invalid, frame, origin, "a"), null);
+    assert.equal(artifactOpenChatMessage(invalid, frame, origin), null);
 });
 test("only a different current version requests a reload, including Undo", () => {
   assert.equal(artifactVersionChanged(null, "one"), false);

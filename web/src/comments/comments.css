@@ -46,8 +46,8 @@
     background 0.15s ease,
     box-shadow 0.15s ease;
 }
-.rcp-comments button:hover,
-.rcp-comment-composer button:hover {
+.rcp-comments button:not(.rcp-comment-primary):hover,
+.rcp-comment-composer button:not(.rcp-comment-primary):hover {
   background: var(--surface-cool, #eee3d3);
 }
 .rcp-comments button:disabled,
@@ -170,6 +170,10 @@
   background: var(--comment-accent);
   border-color: var(--comment-accent);
   color: var(--accent-ink, #fffaf0);
+}
+.rcp-comments .rcp-comment-primary:hover:not(:disabled),
+.rcp-comment-composer .rcp-comment-primary:hover:not(:disabled) {
+  filter: brightness(1.08);
 }
 .rcp-comments-footer {
   border-top: 1px solid var(--rule, #d8ccbb);

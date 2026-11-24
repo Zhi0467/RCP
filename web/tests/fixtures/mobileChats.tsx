@@ -1,6 +1,7 @@
 import { ResourceRuntime } from "./resourceRuntime";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { useArtifactViewerTarget } from "../../src/artifacts/artifactViewerModel";
 import { ChatsWorkspace } from "../../src/chat/ChatsWorkspace";
 import { buildGlossaryIndex } from "../../src/graph/glossary";
 import type { ChatConversation } from "../../src/chat/chatWorkspace";
@@ -137,8 +138,19 @@ function Fixture() {
   );
 }
 
+/** Records each artifact the chat asks the viewer to open. */
+function OpenedArtifact() {
+  const target = useArtifactViewerTarget();
+  useEffect(() => {
+    if (target?.kind === "artifact")
+      (window as unknown as { opened?: string }).opened = target.artifactId;
+  }, [target]);
+  return null;
+}
+
 createRoot(document.getElementById("root")!).render(
   <ResourceRuntime>
     <Fixture />
+    <OpenedArtifact />
   </ResourceRuntime>,
 );

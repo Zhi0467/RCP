@@ -96,7 +96,12 @@ from rcp.storage.branch_names import (
 )
 from rcp.storage.chat_display import ChatDisplayStoreMixin
 from rcp.storage.chat_forks import ChatForkStoreMixin
-from rcp.storage.comments import CommentStoreMixin, _reopen, delete_comments_by_target
+from rcp.storage.comments import (
+    CommentStoreMixin,
+    _reopen,
+    delete_comments_by_target,
+    mark_threads_sent_in,
+)
 from rcp.storage.compute_jobs import ComputeJobStoreMixin
 from rcp.storage.consolidation import ConsolidationStoreMixin
 from rcp.storage.conversation_worktrees import ConversationWorktreeStoreMixin
@@ -1029,7 +1034,7 @@ COMMENT_THREAD = Entry(
     writers=(
         CommentStoreMixin.create_comment_thread,
         CommentStoreMixin.resolve_comment_thread,
-        CommentStoreMixin.mark_threads_sent,
+        mark_threads_sent_in,
         _reopen,
         delete_comments_by_target,
     ),

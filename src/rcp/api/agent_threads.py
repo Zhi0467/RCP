@@ -82,7 +82,6 @@ from rcp.api.tasks import (
 from rcp.artifact_comments import supports_comments
 from rcp.artifact_views import ViewerPresentation
 from rcp.attachments import ChatAttachmentStore, ChatAttachmentUpload, ProjectReferenceSelector
-from rcp.comments.models import COMMENT_MEDIA_TYPES
 from rcp.comments.send import chat_turn_send
 from rcp.config import load_manifest
 from rcp.core.transition_models import GraphTargetRef
@@ -100,7 +99,11 @@ from rcp.providers import ProviderId
 from rcp.repository_preview import repository_for_path
 from rcp.runs.agent_names import DEFAULT_AGENT_NAMES
 from rcp.runs.agent_thread_commands import sent_thread_agent, store_thread_pick
-from rcp.runs.agent_thread_queue import queued_turn_operation_id, release_queued_files
+from rcp.runs.agent_thread_queue import (
+    admit_queued_comments,
+    queued_turn_operation_id,
+    release_queued_message,
+)
 from rcp.runs.agent_threads import (
     episode_watching,
     thread_projection,
@@ -108,7 +111,7 @@ from rcp.runs.agent_threads import (
     thread_scope_id,
 )
 from rcp.runs.approval_cards import ProposalCardView, draws_proposal_cards, proposal_cards
-from rcp.runs.artifact_edit_admission import _edit_version, artifact_comment_message
+from rcp.runs.artifact_edit_admission import admit_space_artifact_comment
 from rcp.runs.space_chat import admit_space_invocations, space_transcript_lock
 from rcp.runs.turn_attachments import claim_turn_attachments
 from rcp.service import (
@@ -125,12 +128,12 @@ from rcp.storage.agent_threads import (
     AgentThreadRecord,
     QueuedTurnPicks,
     private_artifact_owner,
-    thread_binds_task,
+    space_thread_task,
 )
 from rcp.storage.agents import AgentRecord
 from rcp.storage.chat_names import ChatNameError, chat_titles
 from rcp.storage.comments import CommentError
-from rcp.storage.models import EpisodeRecord, ProjectRecord
+from rcp.storage.models import AgentTaskAdmissionConflict, EpisodeRecord, ProjectRecord
 from rcp.storage.notifications import question_recipients
 from rcp.storage.question_models import QuestionRecord
 from rcp.transport.state import StateUnavailable
@@ -975,12 +978,22 @@ class QueuedMessageBody(BaseModel):
         max_length=AGENT_THREAD_QUEUE_MAX_INVOCATIONS,
         exclude_if=lambda value: not value,
     )
+    comment_thread_ids: list[str] = Field(
+        default_factory=list,
+        max_length=ARTIFACT_CONTEXT_MAX_SELECTIONS,
+        exclude_if=lambda value: not value,
+    )
 
     @model_validator(mode="after")
     def validate_content(self) -> Self:
         require_attachment_pair(self.attachment_set_id, self.attachment_client_id)
-        if not (self.message.strip() or self.attachment_set_id or self.references):
-            raise ValueError("A queued message needs text or files")
+        if not (
+            self.message.strip()
+            or self.attachment_set_id
+            or self.references
+            or self.comment_thread_ids
+        ):
+            raise ValueError("A queued message needs text, files, or comment threads")
         if self.provider is None and (self.model or self.reasoning):
             raise ValueError("A queued model or reasoning pick needs its provider")
         return self
@@ -1010,27 +1023,50 @@ def queue_thread_message(
     """Keep the member's message until the thread is free, then run one drain pass for it."""
     authorized = identity_access.require_patch_capable_identity(request)
     thread = accessible_agent(store, thread_id, authorized.user_id)
-    key = str(idempotency_key)
     with (
         project_write_admission(thread.project_id, request)
         if thread.project_id
         else nullcontext(store.space_id)
     ) as project_id:
-        if refusal := store.chat_turn_refusal(project_id, thread_id):
-            raise HTTPException(status_code=409, detail=refusal)
-        if thread.project_id is None and body.invoked_provider_skill_names:
-            raise HTTPException(status_code=422, detail="A Space turn takes no provider skills")
-        queued = store.agent_thread_queue_for_key(thread_id, key) or _queue_new_message(
-            store, catalog, attachment_store, thread, project_id, authorized.user_id, body, key
+        queued = queue_message(
+            store,
+            catalog,
+            attachment_store,
+            thread,
+            project_id,
+            authorized.user_id,
+            body,
+            str(idempotency_key),
         )
-    if queued.user_id != authorized.user_id or queued.request_sha256 != body.request_sha256():
-        raise HTTPException(status_code=422, detail="The key was used for another message")
     request.app.state.reconcile_thread_handoffs()
     current = store.agent_thread_queue_item(queued.queue_id)
     return {
         "queue_id": queued.queue_id,
         "operation_id": current.operation_id if current is not None else None,
     }
+
+
+def queue_message(
+    store: AppStore,
+    catalog: ProjectCatalog,
+    attachment_store: ChatAttachmentStore,
+    thread: AgentRecord,
+    project_id: str,
+    user_id: str,
+    body: QueuedMessageBody,
+    key: str,
+) -> AgentThreadQueueRecord:
+    """The thread's queued message for `key`, stored now or by an earlier try of it."""
+    if refusal := store.chat_turn_refusal(project_id, thread.agent_id):
+        raise HTTPException(status_code=409, detail=refusal)
+    if thread.project_id is None and body.invoked_provider_skill_names:
+        raise HTTPException(status_code=422, detail="A Space turn takes no provider skills")
+    queued = store.agent_thread_queue_for_key(thread.agent_id, key) or _queue_new_message(
+        store, catalog, attachment_store, thread, project_id, user_id, body, key
+    )
+    if queued.user_id != user_id or queued.request_sha256 != body.request_sha256():
+        raise HTTPException(status_code=422, detail="The key was used for another message")
+    return queued
 
 
 def _queue_new_message(
@@ -1046,6 +1082,17 @@ def _queue_new_message(
     """Claim the files for the queued turn's own id, then store the row, or release them."""
     queue_id = str(uuid.uuid4())
     operation_id = queued_turn_operation_id(queue_id)
+    sent = None
+    if body.comment_thread_ids:
+        try:
+            sent = admit_queued_comments(
+                store, catalog, thread, user_id, body.comment_thread_ids, key, body.message
+            ).sent
+        except CommentError:
+            raise
+        except ValueError as exc:
+            status = 409 if isinstance(exc, AgentTaskAdmissionConflict) else 422
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
     client_id = body.attachment_client_id or (str(uuid.uuid4()) if body.references else None)
     try:
         claimed, batch = claim_turn_attachments(
@@ -1079,10 +1126,14 @@ def _queue_new_message(
             attachment_count=len(claimed.attachments),
             request_sha256=body.request_sha256(),
             picks=body.picks(),
+            rendered_through=sent.rendered_through if sent is not None else None,
+            sent_operation_id=operation_id,
         )
     except (AgentThreadQueueFull, ValueError) as exc:
         if batch is not None:
             attachment_store.release(batch, operation_id)
+        if isinstance(exc, CommentError):
+            raise
         status = 409 if isinstance(exc, AgentThreadQueueFull) else 422
         raise HTTPException(status_code=status, detail=str(exc)) from exc
     if queued.queue_id != queue_id and batch is not None:
@@ -1115,7 +1166,7 @@ def remove_queued_message(
     if removed is None:
         raise HTTPException(status_code=409, detail="This message already started")
     if removed.refusal_reason is None:
-        release_queued_files(attachment_store, removed)
+        release_queued_message(store, attachment_store, removed)
     return {"queue_id": queue_id}
 
 
@@ -1190,42 +1241,17 @@ class SpaceTurnBody(BaseModel):
 def _space_artifact_comment(
     store: AppStore, thread: AgentThreadRecord, context: ArtifactContextRequest | None, text: str
 ) -> tuple[ArtifactContextRequest | None, str]:
-    """Admit comments on an artifact one of this thread's own turns produced."""
     if context is None:
         return None, text
     try:
-        if context.source != "task":
-            raise ValueError("A Space comment names a turn's artifact.")
-        task = _space_task(store, thread, context.operation_id)
-        descriptor = _agent_artifact_descriptor(task, context.artifact_id)
-        if not supports_comments(descriptor.media_type):
-            raise ValueError("The artifact type does not support comments.")
-        if any(
-            descriptor.media_type not in COMMENT_MEDIA_TYPES[selection.kind]
-            for selection in context.selections
-        ):
-            raise ValueError("This anchor is not supported by the artifact media type.")
-        artifact = store.artifact(context.artifact_id)
-        if artifact is None:
-            raise ValueError("The artifact is unavailable.")
-        context = context.model_copy(
-            update={"base_version": _edit_version(store, artifact, context), "fresh_session": False}
-        )
-        message = artifact_comment_message(text, context)
-    except (HTTPException, ValueError) as exc:
-        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
-        raise HTTPException(status_code=422, detail=detail) from exc
-    return context, message
+        return admit_space_artifact_comment(store, thread, context, text)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 def _space_task(store: AppStore, thread: AgentThreadRecord, operation_id: str) -> AgentTaskRecord:
-    task = store.agent_task(operation_id)
-    if (
-        thread.kind != "space"
-        or task is None
-        or not task.visible
-        or not thread_binds_task(thread, task, store.space_id)
-    ):
+    task = space_thread_task(store, thread, operation_id)
+    if task is None:
         raise HTTPException(status_code=404, detail="Agent task not found")
     return task
 

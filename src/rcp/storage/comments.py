@@ -358,12 +358,88 @@ def _save_post(
         raise CommentError("comment_thread_too_long", "This thread is full. Start a new thread.")
 
 
-def _reopen(connection: sqlite3.Connection, thread_id: str) -> None:
+def _reopen(
+    connection: sqlite3.Connection, thread_id: str, unsent: tuple[str, str] | None = None
+) -> None:
+    """Reopen the thread; with `unsent` (key, operation id), only while that send holds it."""
+    guard = " AND state='resolved' AND send_key=? AND sent_operation_id=?" if unsent else ""
     connection.execute(
         "UPDATE comment_threads SET state='open',closed_by=NULL,closed_at=NULL,"
-        "sent_operation_id=NULL WHERE thread_id=?",
-        (thread_id,),
+        "sent_operation_id=NULL WHERE thread_id=?" + guard,
+        (thread_id, *(unsent or ())),
     )
+
+
+def _queued_send_holds(connection: sqlite3.Connection, thread_id: str, key: str) -> bool:
+    """A queued message under `key` that has not started still sends this thread."""
+    return (
+        connection.execute(
+            "SELECT 1 FROM agent_thread_queue AS queued, "
+            "json_each(queued.picks_json, '$.comment_thread_ids') AS sent "
+            "WHERE queued.idempotency_key=? AND sent.value=? AND queued.operation_id IS NULL "
+            "AND queued.removed_at IS NULL AND queued.refusal_reason IS NULL",
+            (key, thread_id),
+        ).fetchone()
+        is not None
+    )
+
+
+def mark_threads_sent_in(
+    connection: sqlite3.Connection,
+    rendered_through: Mapping[str, str],
+    operation_id: str,
+    key: str,
+    actor: str,
+    now: str,
+) -> None:
+    """Record each open thread's send as `key` and the last post it rendered, so a
+    retry of `key` renders that same snapshot. Resolve the thread unless a newer post
+    arrived meanwhile; that thread stays open so its reply can still be sent."""
+    for thread_id, through in rendered_through.items():
+        connection.execute(
+            "UPDATE comment_threads SET send_key=?,sent_through=? "
+            "WHERE thread_id=? AND state='open'",
+            (key, through, thread_id),
+        )
+        connection.execute(
+            "UPDATE comment_threads SET state='resolved',sent_operation_id=?,"
+            "closed_by=?,closed_at=? WHERE thread_id=? AND state='open' AND NOT EXISTS "
+            "(SELECT 1 FROM comment_posts WHERE thread_id=? AND created_at>?)",
+            (operation_id, actor, now, thread_id, thread_id, through),
+        )
+
+
+def claim_threads_sent_in(
+    connection: sqlite3.Connection,
+    rendered_through: Mapping[str, str],
+    operation_id: str,
+    key: str,
+    actor: str,
+    now: str,
+) -> None:
+    """Mark the threads sent for a turn that starts later, refusing the whole send when
+    another send took one of them since it was rendered."""
+    for thread_id in rendered_through:
+        held = connection.execute(
+            "SELECT send_key FROM comment_threads WHERE thread_id=?", (thread_id,)
+        ).fetchone()
+        if (
+            held is not None
+            and held[0] not in {None, key}
+            and _queued_send_holds(connection, thread_id, held[0])
+        ):
+            raise CommentError(
+                "comment_thread_not_sendable", "Another send already took this thread.", 409
+            )
+    mark_threads_sent_in(connection, rendered_through, operation_id, key, actor, now)
+    for thread_id in rendered_through:
+        row = connection.execute(
+            "SELECT send_key FROM comment_threads WHERE thread_id=?", (thread_id,)
+        ).fetchone()
+        if row is None or row[0] != key:
+            raise CommentError(
+                "comment_thread_not_sendable", "Another send already took this thread.", 409
+            )
 
 
 class CommentStoreMixin(StoreMixinBase):
@@ -511,23 +587,17 @@ class CommentStoreMixin(StoreMixinBase):
     def mark_threads_sent(
         self, rendered_through: Mapping[str, str], operation_id: str, key: str, actor: str
     ) -> None:
-        """Record each open thread's send as `key` and the last post it rendered, so a
-        retry of `key` renders that same snapshot. Resolve the thread unless a newer post
-        arrived meanwhile; that thread stays open so its reply can still be sent."""
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            for thread_id, through in rendered_through.items():
-                connection.execute(
-                    "UPDATE comment_threads SET send_key=?,sent_through=? "
-                    "WHERE thread_id=? AND state='open'",
-                    (key, through, thread_id),
-                )
-                connection.execute(
-                    "UPDATE comment_threads SET state='resolved',sent_operation_id=?,"
-                    "closed_by=?,closed_at=? WHERE thread_id=? AND state='open' AND NOT EXISTS "
-                    "(SELECT 1 FROM comment_posts WHERE thread_id=? AND created_at>?)",
-                    (operation_id, actor, self.now(), thread_id, thread_id, through),
-                )
+            mark_threads_sent_in(connection, rendered_through, operation_id, key, actor, self.now())
+
+    def reopen_unsent_threads(self, thread_ids: list[str], operation_id: str, key: str) -> None:
+        """Reopen the threads a send resolved under `key` and `operation_id` when that
+        turn never started; a thread closed or sent another way stays as it is."""
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for thread_id in thread_ids:
+                _reopen(connection, thread_id, (key, operation_id))
 
     def sendable_threads(
         self, project_id: str, user_id: str, ids: list[str], key: str
@@ -546,6 +616,12 @@ class CommentStoreMixin(StoreMixinBase):
                         "comment_thread_not_sendable",
                         "This thread is resolved. Reopen it to send.",
                         409,
+                    )
+                if item["send_key"] not in {None, key} and _queued_send_holds(
+                    connection, thread_id, item["send_key"]
+                ):
+                    raise CommentError(
+                        "comment_thread_queued", "A queued send already holds this thread.", 409
                     )
                 until = item["sent_through"] if item["send_key"] == key else None
                 rendered = {

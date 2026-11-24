@@ -594,7 +594,6 @@ function viewerState(artifactId, version = 1) {
     comment_unavailable_reason: null,
     fresh_session_required: false,
     thread_href: "#/projects/project?view=chats&chat=plot-chat",
-    origin_chat_id: "plot-chat",
     viewer_url: `/viewer-shell/${artifactId}?version=${version}`,
     download_url: `/api/projects/project/artifacts/${artifactId}/download`,
     can_keep: true,
@@ -628,7 +627,7 @@ test("viewer persists placement and follows an edit through publication and Undo
     await page.route("**/viewer-shell/plot?*", (route) =>
       route.fulfill({
         contentType: "text/html",
-        body: `<button id="send" onclick="parent.postMessage({type:'rcp-artifact-edit-started', version:1, artifact_id:'plot', operation_id:'edit'}, location.origin)">Send</button><p>${new URL(route.request().url()).searchParams.get("version")}</p>`,
+        body: `<button id="send" onclick="parent.postMessage({type:'rcp-artifact-edit-started', version:1, artifact_id:'plot', operation_id:'edit'}, location.origin)">Send</button><button onclick="parent.postMessage({type:'rcp-artifact-open-chat', version:1, href:'#/projects/project?view=chats&amp;chat=plot-chat'}, location.origin)">Open chat</button><p>${new URL(route.request().url()).searchParams.get("version")}</p>`,
       }),
     );
     await page.goto(
@@ -699,6 +698,13 @@ test("viewer persists placement and follows an edit through publication and Undo
     await panel.getByRole("button", { name: "Undo" }).click();
     await page.frameLocator(".artifact-viewer iframe").getByText("1", { exact: true }).waitFor();
     await panel.getByRole("button", { name: "Undo" }).waitFor({ state: "detached" });
+    await page
+      .frameLocator(".artifact-viewer iframe")
+      .getByRole("button", { name: "Open chat" })
+      .click();
+    await page.waitForFunction(
+      () => location.hash === "#/projects/project?view=chats&chat=plot-chat",
+    );
     // A phone shows the viewer full screen, whatever its desktop placement.
     await page.setViewportSize({ width: 390, height: 844 });
     assert.deepEqual(await panel.boundingBox(), { x: 0, y: 0, width: 390, height: 844 });

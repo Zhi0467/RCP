@@ -123,6 +123,7 @@ export function queueThreadTurn(
     invoked_workflow_ids,
     invoked_skill_ids,
     invoked_provider_skill_names,
+    comment_thread_ids,
   }: Pick<
     AgentThreadTurnRequest,
     | "message"
@@ -135,6 +136,7 @@ export function queueThreadTurn(
     | "invoked_workflow_ids"
     | "invoked_skill_ids"
     | "invoked_provider_skill_names"
+    | "comment_thread_ids"
   >,
   requestId: string,
   request: Request = api,
@@ -154,6 +156,7 @@ export function queueThreadTurn(
         invoked_workflow_ids,
         invoked_skill_ids,
         invoked_provider_skill_names,
+        comment_thread_ids,
       }),
       headers: { "Idempotency-Key": requestId },
     },

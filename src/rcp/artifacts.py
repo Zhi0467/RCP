@@ -138,6 +138,21 @@ class AgentArtifactDescriptor(BaseModel):
         return self.kept_at is not None or self.kept_filename is not None
 
 
+def task_artifact_descriptor(
+    result: dict[str, object] | None, artifact_id: str
+) -> AgentArtifactDescriptor | None:
+    """The artifact a task's result lists under `artifact_id`, if any."""
+    artifacts = result.get("artifacts") if result else None
+    for raw in artifacts if isinstance(artifacts, list) else []:
+        try:
+            descriptor = AgentArtifactDescriptor.model_validate(raw)
+        except (TypeError, ValueError):
+            continue
+        if descriptor.artifact_id == artifact_id:
+            return descriptor
+    return None
+
+
 def kept_binding_is_complete(kept_filename: str | None, kept_at: str | None) -> bool:
     """The one rule every reader applies to a recorded Keep.
 

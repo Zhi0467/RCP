@@ -5,6 +5,7 @@ import { chromium } from "playwright";
 
 const artifactId = "a".repeat(24);
 const origin = "http://rcp.test";
+const secureOrigin = "https://rcp.test";
 const documents = JSON.parse(
   execFileSync(
     "uv",
@@ -157,3 +158,109 @@ for (const width of [1040, 390]) {
     }
   });
 }
+
+function sendableThread(index, extra = {}) {
+  const id = `t${String(index).padStart(3, "0")}`;
+  return {
+    ...threads[0],
+    thread_id: id,
+    anchor: { kind: "whole", comment: "" },
+    created_at: new Date(Date.UTC(2026, 10, 1, 12, 0, index)).toISOString(),
+    posts: [{ ...threads[0].posts[0], post_id: `post-${id}`, thread_id: id }],
+    ...extra,
+  };
+}
+
+async function openViewer(browser, list, answer) {
+  const page = await browser.newPage({ viewport: { width: 1040, height: 844 } });
+  const errors = [];
+  const sends = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  let current = list;
+  await page.route(`${secureOrigin}/**`, async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const rendered =
+      path === "/viewer" ? documents.shell : path === "/content" ? documents.content : null;
+    if (rendered) {
+      await route.fulfill({
+        contentType: "text/html",
+        headers: { "Content-Security-Policy": rendered[1] },
+        body: rendered[0],
+      });
+    } else if (path.endsWith("/state")) {
+      await route.fulfill({
+        json: { can_comment: true, fresh_session_required: false, thread_href: "#/projects/p" },
+      });
+    } else if (path.endsWith("/comment-threads")) {
+      await route.fulfill({ json: { threads: current } });
+    } else if (path.endsWith(`/artifacts/${artifactId}/comments`)) {
+      const body = request.postDataJSON();
+      sends.push({ body, key: request.headers()["idempotency-key"] });
+      const reply = answer(sends.length);
+      if (reply.status === 200) {
+        const sent = new Set(body.thread_ids);
+        current = current.map((thread) =>
+          sent.has(thread.thread_id) ? { ...thread, state: "resolved", can_send: false } : thread,
+        );
+      }
+      await route.fulfill(reply);
+    } else await route.fulfill({ status: 404 });
+  });
+  await page.goto(`${secureOrigin}/viewer`);
+  return { page, errors, sends };
+}
+
+const sendButton = (page) => page.locator(".rcp-comments-footer button");
+const sent = (page) => page.locator(".rcp-comments-sent");
+
+test("Send posts the oldest 50 sendable threads once and links the chat", async () => {
+  const browser = await chromium.launch();
+  try {
+    const list = Array.from({ length: 60 }, (_, index) => sendableThread(59 - index));
+    const { page, errors, sends } = await openViewer(browser, list, () => ({
+      status: 200,
+      json: { operation_id: "op" },
+    }));
+    await page.evaluate(() => {
+      window.posted = [];
+      window.addEventListener("message", (event) => window.posted.push(event.data.type));
+    });
+    await sendButton(page).click();
+    await sent(page).locator("a").click();
+    await page.waitForFunction(() => window.posted.includes("rcp-artifact-open-chat"));
+    assert.equal(sends.length, 1);
+    assert.deepEqual(
+      sends[0].body.thread_ids,
+      Array.from({ length: 50 }, (_, index) => sendableThread(index).thread_id),
+    );
+    assert.ok(await page.evaluate(() => window.posted.includes("rcp-artifact-edit-started")));
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("the footer hides with nothing sendable, and a queued Send starts no edit", async () => {
+  const browser = await chromium.launch();
+  try {
+    const idle = await openViewer(browser, [sendableThread(0, { can_send: false })], () => ({}));
+    await idle.page.locator('[data-thread-id="t000"]').waitFor();
+    assert.equal(await idle.page.locator(".rcp-comments-footer").count(), 0);
+    const { page, errors } = await openViewer(browser, [sendableThread(0)], () => ({
+      status: 200,
+      json: { queued: true, queue_id: "q", operation_id: "op" },
+    }));
+    await page.evaluate(() => {
+      window.posted = [];
+      window.addEventListener("message", (event) => window.posted.push(event.data.type));
+    });
+    await sendButton(page).click();
+    await sent(page).waitFor();
+    await sendButton(page).waitFor({ state: "detached" });
+    assert.ok(!(await page.evaluate(() => window.posted.includes("rcp-artifact-edit-started"))));
+    assert.deepEqual([...idle.errors, ...errors], []);
+  } finally {
+    await browser.close();
+  }
+});

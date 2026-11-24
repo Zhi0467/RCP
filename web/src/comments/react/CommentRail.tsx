@@ -74,6 +74,7 @@ export function CommentRail({
   onClose,
   commentMode,
   children,
+  footer,
   ...list
 }: CommentListProps & {
   className?: string;
@@ -82,6 +83,7 @@ export function CommentRail({
   commentMode?: { on: boolean; toggle: () => void };
   onClose?: () => void;
   children?: ReactNode;
+  footer?: ReactNode;
 }) {
   return (
     <aside className={`rcp-comments ${className}`} aria-label="Comments">
@@ -123,6 +125,7 @@ export function CommentRail({
       </header>
       {children}
       <CommentList {...list} />
+      {footer && <footer className="rcp-comments-footer">{footer}</footer>}
     </aside>
   );
 }
