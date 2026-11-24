@@ -366,6 +366,31 @@ def _reopen(connection: sqlite3.Connection, thread_id: str) -> None:
     )
 
 
+def mark_threads_sent_in(
+    connection: sqlite3.Connection,
+    rendered_through: Mapping[str, str],
+    operation_id: str,
+    key: str,
+    actor: str,
+    now: str,
+) -> None:
+    """Record each open thread's send as `key` and the last post it rendered, so a
+    retry of `key` renders that same snapshot. Resolve the thread unless a newer post
+    arrived meanwhile; that thread stays open so its reply can still be sent."""
+    for thread_id, through in rendered_through.items():
+        connection.execute(
+            "UPDATE comment_threads SET send_key=?,sent_through=? "
+            "WHERE thread_id=? AND state='open'",
+            (key, through, thread_id),
+        )
+        connection.execute(
+            "UPDATE comment_threads SET state='resolved',sent_operation_id=?,"
+            "closed_by=?,closed_at=? WHERE thread_id=? AND state='open' AND NOT EXISTS "
+            "(SELECT 1 FROM comment_posts WHERE thread_id=? AND created_at>?)",
+            (operation_id, actor, now, thread_id, thread_id, through),
+        )
+
+
 class CommentStoreMixin(StoreMixinBase):
     def comment_target_route(
         self, user_id: str, kind: str, target_id: str, *, project_id: str
@@ -511,23 +536,9 @@ class CommentStoreMixin(StoreMixinBase):
     def mark_threads_sent(
         self, rendered_through: Mapping[str, str], operation_id: str, key: str, actor: str
     ) -> None:
-        """Record each open thread's send as `key` and the last post it rendered, so a
-        retry of `key` renders that same snapshot. Resolve the thread unless a newer post
-        arrived meanwhile; that thread stays open so its reply can still be sent."""
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            for thread_id, through in rendered_through.items():
-                connection.execute(
-                    "UPDATE comment_threads SET send_key=?,sent_through=? "
-                    "WHERE thread_id=? AND state='open'",
-                    (key, through, thread_id),
-                )
-                connection.execute(
-                    "UPDATE comment_threads SET state='resolved',sent_operation_id=?,"
-                    "closed_by=?,closed_at=? WHERE thread_id=? AND state='open' AND NOT EXISTS "
-                    "(SELECT 1 FROM comment_posts WHERE thread_id=? AND created_at>?)",
-                    (operation_id, actor, self.now(), thread_id, thread_id, through),
-                )
+            mark_threads_sent_in(connection, rendered_through, operation_id, key, actor, self.now())
 
     def reopen_unsent_threads(self, thread_ids: list[str], operation_id: str, key: str) -> None:
         """Reopen the threads a send resolved under `key` and `operation_id` when that

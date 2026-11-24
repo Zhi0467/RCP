@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from pydantic import BaseModel, Field, model_validator
@@ -524,13 +525,16 @@ class AgentThreadStoreMixin(StoreMixinBase):
         attachment_count: int = 0,
         request_sha256: str,
         picks: QueuedTurnPicks | None = None,
-        comment_thread_ids: list[str] | None = None,
+        rendered_through: Mapping[str, str] | None = None,
+        sent_operation_id: str = "",
     ) -> AgentThreadQueueRecord:
         """Store one member message for the thread's next free turn; a replayed key returns it.
 
         A removed message keeps its key, so a late retry of its request finds it removed.
+        Its comment threads are marked sent as `sent_operation_id` in the same transaction.
         """
         from rcp.limits import AGENT_THREAD_QUEUE_MAX_ITEMS
+        from rcp.storage.comments import mark_threads_sent_in
 
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -560,7 +564,7 @@ class AgentThreadStoreMixin(StoreMixinBase):
                 request_sha256=request_sha256,
                 created_at=self.now(),
                 picks=picks or QueuedTurnPicks(),
-                comment_thread_ids=comment_thread_ids or [],
+                comment_thread_ids=list(rendered_through or {}),
             )
             connection.execute(
                 "INSERT INTO agent_thread_queue(queue_id,thread_id,user_id,idempotency_key,message,"
@@ -581,6 +585,15 @@ class AgentThreadStoreMixin(StoreMixinBase):
                     json.dumps(record.comment_thread_ids),
                 ),
             )
+            if rendered_through:
+                mark_threads_sent_in(
+                    connection,
+                    rendered_through,
+                    sent_operation_id,
+                    idempotency_key,
+                    user_id,
+                    record.created_at,
+                )
             return record
 
     def agent_thread_queue_for_key(

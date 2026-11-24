@@ -3164,10 +3164,18 @@ test("a busy thread queues a send that carries comments", async () => {
     await moss.locator(".chat-annotation-count").waitFor();
     const queue = moss.getByRole("button", { name: "Queue", exact: true });
     assert.equal(await queue.isDisabled(), false);
+    served.refuse = true;
+    await queue.click();
+    await moss.locator(".chat-composer [role='alert']").waitFor();
+    assert.equal(served.posted.length, 0);
+    const docked = moss.getByRole("button", { name: "1 comment" });
+    assert.equal(await docked.count(), 1);
     await queue.click();
     await moss.locator(".thread-queue-row").first().waitFor();
     assert.equal(served.posted.length, 1);
     assert.equal(served.posted[0].body.comment_thread_ids.length, 1);
+    assert.equal(served.posted[0].key, served.refusedKey);
+    await docked.waitFor({ state: "detached" });
     assert.equal(
       writes.filter((write) => write.path === "/api/agent-threads/moss/turns").length,
       0,

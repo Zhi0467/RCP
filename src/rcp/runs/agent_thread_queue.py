@@ -23,12 +23,12 @@ from rcp.runs.agent_thread_commands import _TRANSIENT_DELIVERY, _thread_request
 from rcp.runs.agent_threads import agent_turn_busy, latest_agent_turn
 from rcp.runs.turn_attachments import claim_turn_attachments
 from rcp.storage import AppStore
-from rcp.storage.agent_threads import AgentThreadQueueRecord, AgentThreadRecord
+from rcp.storage.agent_threads import AgentThreadQueueRecord
 from rcp.storage.agents import AgentRecord
 
 if TYPE_CHECKING:
     from rcp.background import BackgroundAgentTasks
-    from rcp.service import RunRequest
+    from rcp.service import ArtifactContextRequest, ProjectService, RunRequest
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +199,6 @@ def _start_queued_turn(
 ) -> str:
     from rcp.api.dependencies import get_graph_service
     from rcp.api.task_requests import _resolved_graph_request
-    from rcp.api.tasks import _admit_artifact_context_request
     from rcp.runs.chat_admission import admit_fresh_chat_turn
     from rcp.service import RunRequest
 
@@ -273,18 +272,17 @@ def _start_queued_turn(
         }
     )
     with project_admission(project_id) if thread.project_id else nullcontext():
-        service = (
-            get_graph_service(
-                catalog, project_id, previous.graph_target.branch_id if previous else None
+        if context is not None:
+            service, request = admit_queued_comment(store, catalog, thread, request)
+        else:
+            service = (
+                get_graph_service(
+                    catalog, project_id, previous.graph_target.branch_id if previous else None
+                )
+                if thread.project_id
+                else None
             )
-            if thread.project_id
-            else None
-        )
-        if service is not None and context is not None:
-            request = _admit_artifact_context_request(store, service, project_id, kind, request)
-            if request.artifact_edit is not None:
-                raise ValueError("The artifact's chat takes no human turns now")
-        elif service is not None:
+        if service is not None:
             request = _resolved_graph_request(service, kind, request)
         admission = (
             admit_fresh_chat_turn(service, store, project_id, request)
@@ -295,8 +293,8 @@ def _start_queued_turn(
             admission as request,
             store.artifact_lock(context.artifact_id) if context is not None else nullcontext(),
         ):
-            if context is not None:
-                request = _admitted_comment(store, private_thread, service is None, request)
+            if request.artifact_context is not None:
+                _require_commented_version(store, request.artifact_context)
             request, _ = claim_turn_attachments(
                 store,
                 catalog,
@@ -306,7 +304,7 @@ def _start_queued_turn(
                 operation_id=operation_id,
                 viewer_id=row.user_id,
             )
-            return background.start(
+            started = background.start(
                 project_id,
                 kind,
                 request,
@@ -314,23 +312,30 @@ def _start_queued_turn(
                 authorized_by=member,
                 queue_id=row.queue_id,
             ).operation_id
+    if sent is not None:
+        store.mark_threads_sent(sent.rendered_through, started, row.idempotency_key, row.user_id)
+    return started
 
 
-def _admitted_comment(
-    store: AppStore,
-    private_thread: AgentThreadRecord | None,
-    space: bool,
-    request: RunRequest,
-) -> RunRequest:
-    """Admit a Space turn's comments, then keep the commented version readable until the
-    turn is recorded, as a composer turn does under the same artifact lock."""
+def admit_queued_comment(
+    store: AppStore, catalog: ProjectCatalog, thread: AgentRecord, request: RunRequest
+) -> tuple[ProjectService | None, RunRequest]:
+    """Admit a queued turn's artifact comments, at queue time and again at drain.
+
+    A project chat's comments are checked on the artifact origin's graph target, as the
+    viewer's idle send is; the returned service is that target's.
+    """
     from fastapi import HTTPException
 
     from rcp.api.agent_threads import _space_artifact_comment
+    from rcp.api.dependencies import get_graph_service
+    from rcp.runs.artifact_edit_admission import admit_chat_artifact_comment
+    from rcp.storage.artifact_replies import artifact_reply_origin
 
     context = request.artifact_context
     assert context is not None
-    if space:
+    if thread.project_id is None:
+        private_thread = store.agent_thread(thread.agent_id)
         if private_thread is None:
             raise ValueError("A Space comment needs its thread")
         try:
@@ -339,14 +344,25 @@ def _admitted_comment(
             )
         except HTTPException as exc:
             raise ValueError(str(exc.detail)) from exc
-        request = request.model_copy(update={"artifact_context": comment, "message": message})
-        context = comment
-    assert context is not None
+        return None, request.model_copy(update={"artifact_context": comment, "message": message})
+    artifact = store.artifact(context.artifact_id)
+    if artifact is None:
+        raise ValueError("The artifact is unavailable.")
+    origin, _ = artifact_reply_origin(store, artifact)
+    service = get_graph_service(catalog, thread.project_id, origin.graph_target.branch_id)
+    admitted = admit_chat_artifact_comment(store, service, thread.project_id, request)
+    if admitted.artifact_edit is not None:
+        raise ValueError("The artifact's chat takes no human turns now")
+    return service, admitted
+
+
+def _require_commented_version(store: AppStore, context: ArtifactContextRequest) -> None:
+    """Keep the commented version readable until the turn is recorded, as a composer
+    turn does under the same artifact lock."""
     try:
         store.read_artifact_bytes(context.artifact_id, context.base_version)
     except (KeyError, OSError) as exc:
         raise ValueError("The commented artifact version is no longer available") from exc
-    return request
 
 
 def _defer(

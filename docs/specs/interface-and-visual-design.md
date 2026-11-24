@@ -600,8 +600,7 @@ bubble. In every chat and thread, selected reply text starts a
 [shared comment thread](paper-artifacts-and-result-views.md#shared-comments): a pin
 in the answer's right margin, level with the quote's last line, opens it, the header count lists the chat's reply and
 inline-artifact threads, and saved threads dock at the composer, whose next send
-carries them, a steer while a turn runs. A thread with docked comments refuses
-Queue. A project thread offers Work in a worktree in its + menu like a project
+carries them, a steer while a turn runs. Queue carries them too. A project thread offers Work in a worktree in its + menu like a project
 chat.
 A pending Experiment or Auto-research plan card sits in the chat's dock, in
 threads, shared chats and node chats alike; once settled it stays inside its

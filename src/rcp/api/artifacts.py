@@ -999,6 +999,10 @@ def comment_artifact(
                         QueuedMessageBody(comment_thread_ids=body.thread_ids),
                         key,
                     )
+                    if queued.removed_at is not None or queued.refusal_reason is not None:
+                        raise HTTPException(
+                            status_code=409, detail="This queued send was removed or refused."
+                        )
                     record = None
                 elif turn is not None:
                     record = start_ordinary_task(

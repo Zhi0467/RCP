@@ -196,6 +196,8 @@ refusing a message releases its files. A started message leaves the queue.
 The idempotency key binds the whole request by its SHA-256, so a replay with
 other text, files or references is refused. A removed message keeps its row as
 removed, so a late retry of its request finds it removed and queues nothing.
+A queued message can also carry comment threads
+([queued comment threads](#queued-comment-threads)).
 
 A thread wakes on a member message from the composer, voice, a queue or a handoff, and on
 a [schedule fire](graph-consolidation-and-lessons.md#private-agent-schedules).
@@ -315,6 +317,28 @@ marked `truncated`, so the tail is never empty. Summary calls use the fixed
 the thread's hidden-read policy, and charge usage to the same task under the old
 provider and model. Stop shares the turn's process fence and prevents the new
 provider from starting; an unconfirmed remote exit fences further execution.
+
+### Queued comment threads
+
+A queued message may carry `comment_thread_ids`, at most
+`ARTIFACT_CONTEXT_MAX_SELECTIONS`, so comments wait for a busy chat as text does.
+A message then needs text, files, or threads. Queueing checks the send at once
+with `chat_turn_send` under the queue's key and the thread's chat. A wrong chat
+or an oversize send is refused now, not at drain. The row stores the ids, and
+the threads resolve at once under the key and the queued turn's operation id.
+
+At drain, the queued turn runs `chat_turn_send` again with the same key. A
+resolved thread whose send key matches renders its frozen snapshot, so the turn
+carries the text and anchored `artifact_context` the queue accepted. The turn's
+message leads with the queued text, and the rendered threads follow it. A queued
+message that is removed or refused before its turn starts reopens its threads,
+but only those still resolved under its key and operation id.
+
+Two sends queue comments. A composer send while the chat is busy queues its
+docked comments with its text; steering still carries them as a steer. The
+artifact viewer's Send queues when the artifact's chat takes human turns and
+has an active turn, or when its key is already queued. That queued send carries
+only the threads and drops `fresh_session`, which only an origin-bound edit reads.
 
 ## Human notification observations
 

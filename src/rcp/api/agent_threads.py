@@ -101,6 +101,7 @@ from rcp.repository_preview import repository_for_path
 from rcp.runs.agent_names import DEFAULT_AGENT_NAMES
 from rcp.runs.agent_thread_commands import sent_thread_agent, store_thread_pick
 from rcp.runs.agent_thread_queue import (
+    admit_queued_comment,
     queued_comment_send,
     queued_turn_operation_id,
     release_queued_message,
@@ -134,7 +135,7 @@ from rcp.storage.agent_threads import (
 from rcp.storage.agents import AgentRecord
 from rcp.storage.chat_names import ChatNameError, chat_titles
 from rcp.storage.comments import CommentError
-from rcp.storage.models import EpisodeRecord, ProjectRecord
+from rcp.storage.models import AgentTaskAdmissionConflict, EpisodeRecord, ProjectRecord
 from rcp.storage.notifications import question_recipients
 from rcp.storage.question_models import QuestionRecord
 from rcp.transport.state import StateUnavailable
@@ -1106,6 +1107,24 @@ def _queue_new_message(
         if body.comment_thread_ids
         else None
     )
+    if sent is not None and sent.context is not None:
+        try:
+            admit_queued_comment(
+                store,
+                catalog,
+                thread,
+                RunRequest(
+                    chat_id=thread.agent_id,
+                    chat_scope="project",
+                    mode="work",
+                    message=sent.text,
+                    artifact_context=sent.context,
+                ),
+            )
+        except AgentTaskAdmissionConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     client_id = body.attachment_client_id or (str(uuid.uuid4()) if body.references else None)
     try:
         claimed, batch = claim_turn_attachments(
@@ -1139,18 +1158,16 @@ def _queue_new_message(
             attachment_count=len(claimed.attachments),
             request_sha256=body.request_sha256(),
             picks=body.picks(),
-            comment_thread_ids=body.comment_thread_ids,
+            rendered_through=sent.rendered_through if sent is not None else None,
+            sent_operation_id=operation_id,
         )
     except (AgentThreadQueueFull, ValueError) as exc:
         if batch is not None:
             attachment_store.release(batch, operation_id)
         status = 409 if isinstance(exc, AgentThreadQueueFull) else 422
         raise HTTPException(status_code=status, detail=str(exc)) from exc
-    if queued.queue_id != queue_id:
-        if batch is not None:
-            attachment_store.release(batch, operation_id)
-    elif sent is not None:
-        store.mark_threads_sent(sent.rendered_through, operation_id, key, user_id)
+    if queued.queue_id != queue_id and batch is not None:
+        attachment_store.release(batch, operation_id)
     return queued
 
 

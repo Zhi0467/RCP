@@ -2230,8 +2230,13 @@ The agent frame remains opaque with its existing CSP and sandbox restrictions.
 The shell is frameable only by its own RCP origin. It posts `thread_ids` (1 to
 50 saved comment threads) and `fresh_session`, with an `Idempotency-Key`, to
 `POST /api/projects/{project_id}/artifacts/{artifact_id}/comments`, which
-returns 202. A conflict keeps the comments filed; success sends `rcp-artifact-edit-started` protocol
-version 1 to the same-origin parent with the artifact and operation ids.
+returns 202. It returns the started task, or `{queued: true, queue_id,
+operation_id}` when the artifact's chat has an active turn
+([queued comment threads](conversations-episodes-and-watchers.md#queued-comment-threads)).
+A conflict keeps the comments filed. A started turn sends `rcp-artifact-edit-started`
+protocol version 1 to the same-origin parent with the artifact and operation
+ids. The rail's Open chat link sends `rcp-artifact-open-chat` version 1 with an
+in-app `#/` href, which the parent opens.
 
 ### Inline artifact presentation
 
@@ -2273,6 +2278,24 @@ reports, with the queried episode's report first, then creation order. Worker an
 orchestrator labels follow the [canonical agent-name rule](conversations-episodes-and-watchers.md#agent-names).
 Missing worker names use the instruction heading, or Worker. Both routes enforce project
 membership, and the inventory rejects an episode from another project.
+
+`GET /api/projects/{project_id}/chats/{chat_id}/artifact-list` returns
+`RunArtifactEntry[]` for one chat, newest first. It lists the project's
+unexpired or kept artifacts whose chat is `chat_id`. An artifact's chat is
+`artifact_chat_id(*artifact_reply_origin(...))` in
+[artifact replies](../../src/rcp/storage/artifact_replies.py), the same resolver
+that sends the artifact's comments, so a row and its Send agree:
+
+| Origin | Chat |
+| --- | --- |
+| node or project chat turn | its `chat_id` |
+| Auto-research reply chain | the origin's `graph_target.branch_id` |
+| Experiment report whose parent has no chat | the latest `experiment_loop` task's chat |
+| task outside any chat, such as ingestion | none, so the route skips it |
+
+The route scans the project's artifacts in memory, as the episode inventory
+does, and caches task and episode reads within the request. Another member's
+private chat answers 404, and each artifact must pass `private_artifact_owner`.
 
 ## Bulletin channels
 
@@ -2603,10 +2626,10 @@ Every agent's waiting work, the Space thread's included, lives at
 closed thread gets 404
 ([behavior](conversations-episodes-and-watchers.md#private-agent-threads)).
 `POST` takes the project send's `{message, attachment_set_id?,
-attachment_client_id?, references?}` with a UUID4 `Idempotency-Key`, needs a
+attachment_client_id?, references?, comment_thread_ids?}` with a UUID4 `Idempotency-Key`, needs a
 patch-capable identity, plus write admission for a project agent, and returns 202
 `{queue_id, operation_id}`. It runs one drain pass, so `operation_id` is set
-when that pass started the turn. It returns 422 for no text and no files, text
+when that pass started the turn. It returns 422 for no text, files or comment threads, text
 over `AGENT_THREAD_QUEUE_MAX_CHARS`, unclaimable files, or a key reused with
 another message, and 409 for an archived or refused thread or a thread holding
 `AGENT_THREAD_QUEUE_MAX_ITEMS` unstarted messages. `DELETE .../queue/{queue_id}`

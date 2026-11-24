@@ -172,6 +172,19 @@ def test_viewer_send_queues_while_the_chat_turn_runs(edit_origin, monkeypatch):
     running = _task(store, task.project_id, request=task.request, status="running")
     thread_id = _thread(client, task.project_id, artifact)
     url = f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}/comments"
+    dropped = _thread(client, task.project_id, artifact, "Drop")
+    dropped_key = str(uuid.uuid4())
+    dropped_send = client.post(
+        url, json={"thread_ids": [dropped]}, headers={"Idempotency-Key": dropped_key}
+    )
+    assert dropped_send.status_code == 202, dropped_send.text
+    base = f"/api/agent-threads/{task.request['chat_id']}/queue"
+    assert client.delete(f"{base}/{dropped_send.json()['queue_id']}").status_code == 200
+    assert store.get_comment_thread(task.project_id, dropped)["state"] == "open"
+    retry = client.post(
+        url, json={"thread_ids": [dropped]}, headers={"Idempotency-Key": dropped_key}
+    )
+    assert retry.status_code == 409, retry.text
     key = str(uuid.uuid4())
     response = client.post(url, json={"thread_ids": [thread_id]}, headers={"Idempotency-Key": key})
     assert response.status_code == 202, response.text
@@ -222,6 +235,7 @@ def test_composer_queue_carries_comment_threads_and_removal_reopens(edit_origin,
     assert client.delete(f"{base}/{removed['queue_id']}").status_code == 200
     assert store.get_comment_thread(task.project_id, dropped)["state"] == "open"
     assert store.get_comment_thread(task.project_id, kept)["state"] == "resolved"
+    store.reopen_comment_thread(task.project_id, kept, user_id=store.local_owner.user_id)
 
     store.complete_agent_task(running.operation_id, applied_revision=None, result={})
     app.state.reconcile_thread_handoffs()
@@ -231,4 +245,37 @@ def test_composer_queue_carries_comment_threads_and_removal_reopens(edit_origin,
     assert turn.request["message"].startswith("Also check")
     (selection,) = turn.request["artifact_context"]["selections"]
     assert "Keep" in selection["comment"]
-    assert store.get_comment_thread(task.project_id, kept)["sent_operation_id"] == operation_id
+    thread = store.get_comment_thread(task.project_id, kept)
+    assert (thread["state"], thread["sent_operation_id"]) == ("resolved", operation_id)
+
+
+def test_queue_refuses_an_unadmittable_artifact_comment_at_once(edit_origin, monkeypatch):
+    from rcp.runs import artifact_edit_admission
+    from rcp.storage.models import AgentTaskAdmissionConflict
+
+    app, store, task = edit_origin
+    artifact = _stored_artifact(app, task.operation_id, "report.md", b"Original")
+    artifact = store.artifact(artifact.artifact_id)
+    client = signed_in_client(app)
+    fake_launch_admitted(monkeypatch, app.state.background_tasks)
+    _task(store, task.project_id, request=task.request, status="running")
+    thread_id = _thread(client, task.project_id, artifact)
+
+    def expired(*_args, **_kwargs):
+        raise AgentTaskAdmissionConflict("The artifact has expired.")
+
+    monkeypatch.setattr(artifact_edit_admission, "admit_chat_artifact_comment", expired)
+    for url, body in (
+        (
+            f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}/comments",
+            {"thread_ids": [thread_id]},
+        ),
+        (
+            f"/api/agent-threads/{task.request['chat_id']}/queue",
+            {"comment_thread_ids": [thread_id]},
+        ),
+    ):
+        response = client.post(url, json=body, headers={"Idempotency-Key": str(uuid.uuid4())})
+        assert response.status_code == 409, response.text
+    assert store.get_comment_thread(task.project_id, thread_id)["state"] == "open"
+    assert store.agent_thread_queue(task.request["chat_id"]) == []
