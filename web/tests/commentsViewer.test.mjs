@@ -19,6 +19,7 @@ from rcp.artifact_comments import comment_panel, selection_frame_addon
 from rcp.artifact_views import artifact_viewer_document
 source = '''<style>body{margin:0;min-height:2200px}#first,#second{position:absolute;left:20px;width:100px;height:40px;background:tan}#first{top:100px}#second{top:1000px}</style><div id="first">First anchor</div><div id="second">Second anchor</div><script>
 window.clicks=0;document.getElementById('second').addEventListener('click',()=>window.clicks++);
+setTimeout(()=>{const late=document.createElement('div');late.id='late';late.textContent='Late anchor';late.style.cssText='position:absolute;left:20px;top:1600px;width:100px;height:40px';document.body.append(late);},2500);
 window.attack=async()=>{
   const forged={type:'rcp-artifact-position',version:1,id:'first',rect:{x:1,y:1,width:1,height:1}};
   parent.postMessage(forged,'*');
@@ -280,7 +281,14 @@ test("a comment link outlines its anchor after a slow artifact loads, and the ou
     const page = await browser.newPage({ viewport: { width: 1040, height: 844 } });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    const resolved = threads.map((thread) => ({ ...thread, state: "resolved" }));
+    const resolved = [
+      ...threads,
+      {
+        ...threads[0],
+        thread_id: "late",
+        anchor: { kind: "element", path: "#late", label: "late", text: "", comment: "" },
+      },
+    ].map((thread) => ({ ...thread, state: "resolved" }));
     await page.route(`${origin}/**`, async (route) => {
       const path = new URL(route.request().url()).pathname;
       if (path === "/content") await new Promise((resolve) => setTimeout(resolve, 1500));
@@ -313,6 +321,13 @@ test("a comment link outlines its anchor after a slow artifact loads, and the ou
     await page.waitForTimeout(200);
     const next = await outline.boundingBox();
     assert.ok(Math.abs(next.y - moved.y) < 1);
+    await page.locator('[data-thread-id="late"] .rcp-comment-quote').click();
+    await artifact.locator("#late").waitFor();
+    await page.waitForTimeout(300);
+    const late = await artifact.locator("#late").boundingBox();
+    const outlined = await outline.boundingBox();
+    assert.ok(late.y >= 0 && late.y + late.height <= 844);
+    assert.ok(Math.abs(outlined.y - late.y) < 1);
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();

@@ -346,7 +346,8 @@ function installArtifactSelection(surface, publish, isActive = () => true) {
           borderRadius: "4px",
           boxShadow: "0 0 0 1.5px rgba(189,91,54,.55)",
           background: "rgba(189,91,54,.06)",
-          transition: "left .12s ease-out, top .12s ease-out, width .12s ease-out, height .12s ease-out",
+          transition:
+            "left .12s ease-out, top .12s ease-out, width .12s ease-out, height .12s ease-out",
         });
         doc.documentElement.appendChild(hover);
       }
@@ -431,6 +432,7 @@ function installArtifactLocator(doc, publish) {
   let scheduled = false;
   let mark = null;
   let focused = null;
+  let pending = null;
   function textRange(anchor) {
     if (typeof anchor.text !== "string" || !anchor.text || anchor.text.length > 6144) return null;
     const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
@@ -572,32 +574,8 @@ function installArtifactLocator(doc, publish) {
       height: `${rect.height}px`,
     });
   }
-  function refresh() {
-    if (scheduled) return;
-    scheduled = true;
-    view.requestAnimationFrame(() => {
-      scheduled = false;
-      for (const [id, anchor] of tracked) report(id, anchor);
-      place();
-    });
-  }
-  view.addEventListener("scroll", refresh, true);
-  view.addEventListener("resize", refresh);
-  const observer = new ResizeObserver(refresh);
-  observer.observe(doc.documentElement);
-  return (request) => {
-    if (!request || typeof request.id !== "string" || request.id.length > 128) return;
-    const { id, anchor } = request;
-    if (anchor === null) {
-      tracked.delete(id);
-      if (focused?.id === id) focused = null;
-      place();
-      return;
-    }
-    if (!anchor || !["whole", "text", "element", "box"].includes(anchor.kind)) return;
-    tracked.set(id, anchor);
-    const found = report(id, anchor);
-    if (!request.scroll || !found) return;
+  // Scroll every enclosing scroller, then the page, to the anchor, and outline it.
+  function reveal(id, anchor, found) {
     for (
       let element = found.element;
       element && element !== doc.body && element !== doc.documentElement;
@@ -638,5 +616,53 @@ function installArtifactLocator(doc, publish) {
     report(id, anchor);
     focused = { id, anchor };
     place();
+  }
+  function refresh() {
+    if (scheduled) return;
+    scheduled = true;
+    view.requestAnimationFrame(() => {
+      scheduled = false;
+      for (const [id, anchor] of tracked) report(id, anchor);
+      const waiting = pending && find(pending.anchor);
+      if (waiting) {
+        const { id, anchor } = pending;
+        pending = null;
+        reveal(id, anchor, waiting);
+      }
+      place();
+    });
+  }
+  view.addEventListener("scroll", refresh, true);
+  view.addEventListener("resize", refresh);
+  const observer = new ResizeObserver(refresh);
+  observer.observe(doc.documentElement);
+  new MutationObserver(() => pending && refresh()).observe(doc.documentElement, {
+    childList: true,
+    subtree: true,
+  });
+  return (request) => {
+    if (!request || typeof request.id !== "string" || request.id.length > 128) return;
+    const { id, anchor } = request;
+    if (anchor === null) {
+      tracked.delete(id);
+      if (focused?.id === id) focused = null;
+      if (pending?.id === id) pending = null;
+      place();
+      return;
+    }
+    if (!anchor || !["whole", "text", "element", "box"].includes(anchor.kind)) return;
+    tracked.set(id, anchor);
+    const found = report(id, anchor);
+    if (!request.scroll) return;
+    if (found) {
+      pending = null;
+      reveal(id, anchor, found);
+    } else {
+      // An anchor the page has not rendered yet is revealed once it appears.
+      pending = { id, anchor };
+      focused = null;
+      place();
+      refresh();
+    }
   };
 }
