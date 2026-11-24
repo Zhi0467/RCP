@@ -2,6 +2,7 @@ import {
   ArrowLeftRight,
   ArrowUpDown,
   ExternalLink,
+  Info,
   LoaderCircle,
   Plus,
   RotateCcw,
@@ -351,6 +352,7 @@ function ProviderPanel({
     <SignInTray
       key="own"
       tray="own"
+      rank={ownFirst ? 1 : 2}
       title="Personal sign-ins"
       hover="Only you can use these sign-ins."
     >
@@ -361,6 +363,7 @@ function ProviderPanel({
     <SignInTray
       key="shared"
       tray="shared"
+      rank={ownFirst ? 2 : 1}
       title={`Shared on ${machineName}`}
       hover="Any member can use, add or remove these."
     >
@@ -387,7 +390,7 @@ function ProviderPanel({
           type="button"
           data-sign-ins-swap=""
           aria-label="Swap sign-in order"
-          title="Swap sign-in order"
+          title={ownFirst ? "Swap: try shared first" : "Swap: try personal first"}
           disabled={!settingsReady}
           onClick={() => write(ownFirst ? "shared_then_own" : "own_then_shared")}
         >
@@ -415,15 +418,22 @@ function ProviderPanel({
 
 interface TrayProps {
   tray: Tray;
+  rank: 1 | 2;
   title: string;
   hover: string;
   children: ReactNode;
 }
 
-function SignInTray({ tray, title, hover, children }: TrayProps) {
+function SignInTray({ tray, rank, title, hover, children }: TrayProps) {
   return (
-    <section className="sign-ins-tray" data-tray={tray}>
+    <section className="sign-ins-tray" data-tray={tray} data-rank={rank}>
       <header>
+        <span
+          className="sign-ins-rank"
+          title={rank === 1 ? "Tried first" : "Tried when the first has no usable sign-in"}
+        >
+          {rank}
+        </span>
         <strong title={hover}>{title}</strong>
       </header>
       <div className="sign-ins-cards">{children}</div>
@@ -652,15 +662,17 @@ export function SignInCard({
           target="_blank"
           rel="noreferrer"
           title={signIn.verification_url!}
+          aria-label="Open sign-in"
         >
           <ExternalLink size={14} />
-          Open Google sign-in
+          <span className="sign-in-open-label">Open sign-in</span>
         </a>
         <input
           type="password"
           autoComplete="off"
           autoFocus
           aria-label={`${row.label} code`}
+          placeholder="Paste the code"
           value={token}
           disabled={disabled}
           onChange={(event) => setToken(event.target.value)}
@@ -679,12 +691,15 @@ export function SignInCard({
     ) : showsDeviceCode(signIn, viewerUserId) ? (
       <span className="sign-in-device" role="status">
         <a
+          className="button compact"
           href={signIn.verification_url!}
           target="_blank"
           rel="noreferrer"
           title={signIn.verification_url!}
+          aria-label="Open sign-in"
         >
-          {signIn.verification_url}
+          <ExternalLink size={14} />
+          <span className="sign-in-open-label">Open sign-in</span>
         </a>
         <code>{signIn.user_code}</code>
         {cancelSignIn}
@@ -718,19 +733,31 @@ export function SignInCard({
             });
           }}
         >
-          <input
-            type="password"
-            autoComplete="off"
-            autoFocus
-            aria-label={`${row.label} token`}
-            title={row.token_instructions ?? undefined}
-            value={token}
-            disabled={disabled}
-            onChange={(event) => setToken(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") onEntering(false);
-            }}
-          />
+          <span className="sign-in-token-field">
+            <input
+              type="password"
+              autoComplete="off"
+              autoFocus
+              aria-label={`${row.label} token`}
+              placeholder="Paste the token"
+              value={token}
+              disabled={disabled}
+              onChange={(event) => setToken(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") onEntering(false);
+              }}
+            />
+            {row.token_instructions ? (
+              <Info
+                size={14}
+                className="sign-in-token-info"
+                role="img"
+                aria-label={row.token_instructions}
+              >
+                <title>{row.token_instructions}</title>
+              </Info>
+            ) : null}
+          </span>
           <button
             className="icon-button compact"
             type="submit"

@@ -4188,6 +4188,25 @@ button.agent-provider-label {
   gap: 6px;
   min-width: 0;
 }
+.sign-ins-rank {
+  align-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+  color: var(--muted);
+  display: inline-flex;
+  flex: none;
+  font-size: var(--type-3xs);
+  font-weight: 700;
+  height: 16px;
+  justify-content: center;
+  margin-right: 6px;
+  width: 16px;
+}
+.sign-ins-tray[data-rank="1"] .sign-ins-rank {
+  background: var(--teal);
+  border-color: var(--teal);
+  color: var(--accent-ink);
+}
 .sign-ins-swap:focus-visible {
   outline: 2px solid var(--cobalt);
   outline-offset: 2px;
@@ -4310,14 +4329,34 @@ button.agent-provider-label {
   gap: 6px;
   min-width: 0;
 }
+.sign-in-token-field {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  position: relative;
+}
+.sign-in-token .sign-in-token-field input {
+  padding-right: 26px;
+  text-overflow: ellipsis;
+}
+.sign-in-token-info {
+  color: var(--muted);
+  pointer-events: auto;
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+}
 .sign-in-token input {
+  align-self: stretch;
   background: var(--aqua-field, var(--paper));
   border: 1px solid var(--line-strong);
   border-radius: 5px;
   box-shadow: var(--aqua-inset, none);
   flex: 1 1 auto;
   font: var(--type-3xs) var(--mono);
-  height: 28px;
+  height: auto;
+  min-height: 28px;
   min-width: 0;
   padding: 0 8px;
   width: 0;

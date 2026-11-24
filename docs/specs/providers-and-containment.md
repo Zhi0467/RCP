@@ -1600,7 +1600,9 @@ While another turn holds the same provider session on the same host, Runs shows
 agent activity and recommends waiting. Task settlement retries answer delivery.
 
 Provider discovery uses PATH, the OS account's `~/.local/bin`, then profile-owned
-native paths, locally or in the remote interactive login shell. An explicit path
+native paths, locally or in the remote interactive login shell. That shell prints a
+start line just before the provider runs; probes read only the stdout after it, so a
+login banner never reaches a parsed answer. An explicit path
 fails as given, without choosing another installation. Successful absolute paths
 preserve symlinks for native updates; home is the OS home, not inherited `HOME`.
 

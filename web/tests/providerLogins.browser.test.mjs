@@ -407,7 +407,7 @@ test("paste-code starts, fits a phone, submits once and clears the input", async
   if (shots) await page.screenshot({ path: `${shots}/sign-ins-paste-phone.png`, fullPage: true });
   assert.equal(await input.getAttribute("type"), "password");
   assert.equal(
-    await added.getByRole("link", { name: "Open Google sign-in" }).getAttribute("title"),
+    await added.getByRole("link", { name: "Open sign-in" }).getAttribute("title"),
     attempt.verification_url,
   );
   const bounds = await added.locator("form > :not(a)").evaluateAll((elements) =>

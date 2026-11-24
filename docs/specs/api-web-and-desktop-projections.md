@@ -1786,20 +1786,21 @@ it, two sunken trays, "Personal sign-ins" and "Shared on <machine>", hold raised
 cards. The personal tray title explains on hover, "Only you can use these sign-ins."
 The first tray is the member's preferred group. If that group has no
 usable login, work tries the other group. At phone width the trays stack in
-the same order. The swap button between them reverses the order and saves it
-immediately. A ＋ slot ends the Shared tray, and the personal tray offers a ＋
+the same order. Each tray title carries its rank, 1 filled and 2 outlined. The swap
+button between them reverses the order and saves it immediately. A ＋ slot ends the Shared tray, and the personal tray offers a ＋
 while the member has no own login. Adding starts the provider's sign-in flow
 or opens token entry on the new card. The built-in card is named "Shared sign-in".
 An added shared card shows who added it, with the date on hover. The viewer's
 own card is unnamed, and a Members card is named by its owner. A card shows, first match wins, Being removed,
-signing in (device code and link only to the starter; others see who), Signed out
+signing in (an Open sign-in button and any device code only to the starter; others see who), Signed out
 (flat and dashed, with no label; a Sign in button on the viewer's own and shared
 cards), Usage limit (amber edge; a limited login is still used
 when nothing else is free), or Ready. A failed action marks the card or panel
 with a red edge and one Retry icon whose hover is the error. Only the viewer's own and shared cards act: apart from Sign in, their actions sit
 behind a ⋯
 shown on hover and always on touch screens and at phone width, hidden while the
-card signs in, drains or takes a token. Explanations are hover text only.
+card signs in, drains or takes a token. Explanations are hover text only. An open token
+field keeps the provider's token instructions on an info icon inside it.
 Personal and team spaces draw the same fold; a provider whose login RCP does not
 manage, such as OpenCode, shows only its machine sign-in card, without state or
 actions. A collapsed Members row, shown when the space has other members, counts

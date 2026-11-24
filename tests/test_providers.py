@@ -696,7 +696,7 @@ def test_remote_recorded_path_probe_quotes_the_path_as_one_argument() -> None:
     outer = shlex.split(remote_command)
 
     assert outer[:2] == ["bash", "-lic"]
-    assert shlex.split(outer[2]) == ["python3", "-c", _REMOTE_PATH_PROBE, binary]
+    assert shlex.split(outer[2])[-4:] == ["python3", "-c", _REMOTE_PATH_PROBE, binary]
 
 
 def test_remote_recorded_path_probe_reports_missing_and_non_executable(

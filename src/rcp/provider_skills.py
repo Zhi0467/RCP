@@ -17,7 +17,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from rcp.agents.credential_gate import ProviderCredentialGate, remaining_startup_hold
-from rcp.agents.launcher import AgentLauncher, ProviderReadiness
+from rcp.agents.launcher import AgentLauncher, ProviderReadiness, remote_provider_stdout
 from rcp.agents.provider_accounts import ProviderAccounts, record_provider_failure
 from rcp.agents.provider_environment import ProviderProcessEnvironment
 from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
@@ -407,7 +407,7 @@ class ProviderSkillInventoryManager:
                 if result.returncode:
                     detail = result.stderr.strip() or f"skill probe exited {result.returncode}"
                     raise ValueError(detail)
-                return result.stdout
+                return remote_provider_stdout(result.stdout) if host else result.stdout
             return self._run_jsonrpc(
                 arguments,
                 requests=probe.messages,
