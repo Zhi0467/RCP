@@ -775,6 +775,7 @@ It starts docked on the right at full height. Dragging its left edge resizes it.
 Dragging its title floats it. Double-clicking the title or pressing focused Enter
 or Space toggles fullscreen and restores placement.
 Dock places it beside node windows. Restoring the panel docks it.
+A stored artifact's header always offers Download, whatever its preview.
 Settings and setup hide it until the user returns to the project.
 Placement is remembered per origin and stays reachable after resizing.
 There is no row of mode buttons.

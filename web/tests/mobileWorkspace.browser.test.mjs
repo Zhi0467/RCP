@@ -155,6 +155,11 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       const paneBox = await pane.boundingBox();
       assert.deepEqual([paneBox.x, paneBox.width], [0, viewport.width]);
       assert.deepEqual(await page.evaluate(sidewaysScrollers), []);
+      assert.equal(await pane.getByRole("button", { name: /^Copy (link|reference)$/ }).count(), 2);
+      assert.match(
+        await pane.getByRole("link", { name: "Download plot.html" }).getAttribute("href"),
+        /\/plot\/download$/,
+      );
       await pane.getByRole("button", { name: "Open plot.html" }).click();
       assert.equal(await page.evaluate(() => window.opened), "plot");
       await pane.waitFor({ state: "detached" });

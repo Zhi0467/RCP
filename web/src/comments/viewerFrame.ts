@@ -7,6 +7,7 @@ type LocatedThread = { thread_id: string; anchor: CommentAnchor };
 export function createFrameLocator(frame: HTMLIFrameElement, changed: () => void) {
   const anchors = new Map<string, CommentAnchor>();
   const positions = new Map<string, CommentRect | null>();
+  let located: LocatedThread | null = null;
   const request = (id: string, anchor: CommentAnchor | null, scroll = false) =>
     frame.contentWindow?.postMessage(
       { type: "rcp-artifact-locate", version: 1, id, anchor, scroll },
@@ -19,6 +20,7 @@ export function createFrameLocator(frame: HTMLIFrameElement, changed: () => void
         if (current.has(id)) continue;
         anchors.delete(id);
         positions.delete(id);
+        if (located?.thread_id === id) located = null;
         request(id, null);
       }
       for (const { thread_id: id, anchor } of threads) {
@@ -31,9 +33,11 @@ export function createFrameLocator(frame: HTMLIFrameElement, changed: () => void
     reload() {
       positions.clear();
       for (const [id, anchor] of anchors) request(id, anchor);
+      if (located) request(located.thread_id, located.anchor, true);
       changed();
     },
     locate(thread: LocatedThread) {
+      located = thread;
       request(thread.thread_id, thread.anchor, true);
     },
     receive(event: MessageEvent) {

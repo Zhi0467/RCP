@@ -400,7 +400,8 @@ at module load, so a team sign-in in between still continues to it.
 A reference link opens the current item: an artifact opens its viewer, a node
 opens on its source target, and the paper opens in Paper. A comment link reads
 its thread, opens the artifact, Paper file, or chat reply it sits on, and
-scrolls to its anchor. A chat link opens the Chats view on that chat. A reply
+scrolls to its anchor. An HTML artifact repeats that once its page loads and keeps
+the anchor outlined until another thread is chosen. A chat link opens the Chats view on that chat. A reply
 link reads its task, opens its chat with `turn=<operation_id>`, and the
 transcript scrolls to that reply and flashes it. A reply whose chat is unknown
 opens the Chats view alone. Copy reference writes the full URL. The chat

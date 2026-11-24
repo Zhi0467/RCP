@@ -790,10 +790,11 @@ is not kept.
 
 Each row is a card, newest first: a type icon tile (table for CSV, image,
 text, or file), the title, and a quiet line with the kind, any worker label,
-and the relative time, with the full time on hover. The whole card opens the
-artifact in the viewer. A file, or a PDF outside the desktop app, opens
-nowhere and shows a Download action instead. A project agent's card drags as
-an artifact reference.
+and the relative time, with the full time on hover. Every card ends in a
+Download action, and a project agent's card adds Copy reference before it. The
+rest of the card opens the artifact in the viewer. A file, or a PDF outside the
+desktop app, opens nowhere and offers only those actions. A project agent's
+card drags as an artifact reference.
 
 The list comes from the
 [agent artifact route](api-web-and-desktop-projections.md#artifact-viewer-and-run-inventory).
