@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { MessageSquarePlus, PanelRightClose, X } from "lucide-react";
+import { MessageSquarePlus, PanelRight, X } from "lucide-react";
 import { railState } from "../model.ts";
 import type { CommentThread } from "../types.ts";
 import { CommentThreadCard } from "./CommentThreadCard";
@@ -122,7 +122,7 @@ export function CommentRail({
               title="Hide comments"
               onClick={onFold}
             >
-              <PanelRightClose size={14} />
+              <PanelRight size={14} />
             </button>
           )}
           {onClose && (

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { PanelRightOpen } from "lucide-react";
+import { PanelRight } from "lucide-react";
 import { ApiError } from "../core/api.ts";
 import { createCommentsClient, fetchRequest } from "./api.ts";
 import { findAnchor } from "./anchors.ts";
@@ -488,7 +488,7 @@ function ViewerComments({ config }: { config: ViewerConfig }) {
           title="Show comments"
           onClick={() => setFolded(false)}
         >
-          <PanelRightOpen size={14} />
+          <PanelRight size={14} />
           {openCount > 0 && <span>{openCount}</span>}
         </button>
       )}
