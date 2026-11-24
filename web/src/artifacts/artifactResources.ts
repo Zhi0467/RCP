@@ -69,3 +69,16 @@ export function runArtifactsProfile(
       ),
   };
 }
+export function chatArtifactsProfile(
+  projectId: string,
+  chatId: string,
+): ResourceProfile<RunArtifactEntry[]> {
+  return {
+    key: projectResourceKey(projectId, "artifacts", { query: `chat:${chatId}` }),
+    fetch: (signal) =>
+      api(
+        `/api/projects/${encodeURIComponent(projectId)}/chats/${encodeURIComponent(chatId)}/artifact-list`,
+        { signal },
+      ),
+  };
+}

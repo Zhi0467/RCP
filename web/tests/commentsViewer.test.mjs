@@ -178,7 +178,6 @@ async function openViewer(browser, list, answer, width = 1040) {
   const sends = [];
   page.on("pageerror", (error) => errors.push(error.message));
   let current = list;
-  // A secure origin, as the app's own, gives the page crypto.randomUUID for send keys.
   await page.route(`${secureOrigin}/**`, async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;

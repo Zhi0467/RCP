@@ -16,6 +16,7 @@ import { projectAgentWindowEndpoints } from "../agentWindow/agentWindowEndpoints
 import { ProviderSwitchHint } from "./ProviderSwitchHint";
 import { ChatBranchPicker, ChatOriginLink } from "./ChatBranchPicker";
 import { ChatComposer, ComposerField } from "./ChatComposer";
+import { ChatArtifactsPane, useChatArtifacts } from "./ChatArtifactsPane";
 import { ChatHeaderMenu, type ChatHeaderAction } from "./ChatHeaderMenu";
 import { AgentHeader, AgentPickRow } from "./AgentHeader";
 import type { ChatAgentSetup, ChatOrigin } from "../core/types";
@@ -39,6 +40,7 @@ import { questionIsOpen } from "./questions";
 import { ExternalJobRow } from "../experiments/ExternalJobRow";
 import {
   CalendarClock,
+  Files,
   GitPullRequestArrow,
   ListPlus,
   LoaderCircle,
@@ -371,6 +373,10 @@ export function AgentChatView({
     [projectId, chatId],
   );
   const endpoints = feed?.endpoints ?? chatEndpoints!;
+  const listsArtifacts = presentation === "workspace" && !feed && projectId !== null;
+  const chatArtifacts = useChatArtifacts(listsArtifacts ? projectId : null, chatId);
+  const [artifactsOpen, setArtifactsOpen] = useState(false);
+  const artifactsPane = listsArtifacts && chatArtifacts.length > 0;
   const questionApiBase = endpoints.questionsApiBase;
   const chatQuestions = useQuestions(
     questionApiBase ?? "",
@@ -1552,6 +1558,18 @@ export function AgentChatView({
       <AgentStatusStrip tasks={statusTasks} />
       {watcherToggle}
       {replyComments.headerButton}
+      {artifactsPane && (
+        <button
+          className="icon-button chat-artifacts-count"
+          type="button"
+          aria-pressed={artifactsOpen}
+          aria-label="Artifacts"
+          title="Artifacts"
+          onClick={() => setArtifactsOpen((open) => !open)}
+        >
+          <Files size={15} /> {chatArtifacts.length}
+        </button>
+      )}
     </>
   );
   const headerMenu = (
@@ -1770,7 +1788,7 @@ export function AgentChatView({
   return (
     <div
       ref={dockRef}
-      className={`chat-dock ${presentation}`}
+      className={`chat-dock ${presentation}${artifactsPane && artifactsOpen ? " artifacts-open" : ""}`}
       role={presentation === "floating" ? "dialog" : "region"}
       aria-modal="false"
       aria-label={
@@ -1801,6 +1819,14 @@ export function AgentChatView({
           )
         }
       />
+      {artifactsPane && (
+        <ChatArtifactsPane
+          projectId={projectId!}
+          artifacts={chatArtifacts}
+          open={artifactsOpen}
+          onClose={() => setArtifactsOpen(false)}
+        />
+      )}
       {watcherRows.length > 0 && watchersOpen && (
         <section className="chat-watchers" aria-label="Watchers">
           {watcherRows.map((watcher) => {
