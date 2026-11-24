@@ -187,19 +187,29 @@ the open card. `WORK_POLICY_VERSION` is bumped.
 
 ### One card for the plan's life
 
-A plan card stays the plan's card from proposal to result:
-Needs you → Parked → Running → Ended.
+The plan card and the run stay separate stored records: the approval card, and the
+episode it starts. The web shows them as **one card component** from proposal to result:
+Needs you → Parked → Running → Needs you (the run asks) → Ended.
 
-- **Starting.** On Start, the card in its turn becomes the run's live card. It keeps the
-  plan's title and shows the run's state ("Running · turn 4 of 30") with **Open agent**.
-  Its menu holds the run controls that the dock row has today: Stop and the task actions.
-  The card reads the run through the card result's episode id, the same projection that
-  `RunningRunRow` uses.
-- **Ending.** When the run ends, the card shows its outcome ("Ended: completed") and links
-  to the run's report. A start that fails keeps today's failed line.
-- **Pane.** The pane's Running row is that run. Clicking the row scrolls the chat to the
-  card. A run with no plan card, such as one started from the node page, appears only in
-  the pane.
+- **Join.** The card finds its run through the episode id in the card's result. One shared
+  projection, `experimentCardView(card?, run?)`, gives the phase, the title, the state
+  line, and the actions. Views never compare statuses themselves.
+- **Replacements.** The component is built on `ApprovalCardShell`. It replaces the plan
+  card's settled line, `EpisodeRunCard`, and `RunningRunRow`. Run controls (Stop, task
+  actions, Continue) come from the existing `EpisodeControls`.
+- **Running.** The card shows the run's health ("Running · turn 4 of 30") with **Open
+  agent**. Its menu holds the run controls.
+- **Ended.** The card shows the outcome ("Ended: completed") and the turns used, with
+  **Open report**. A start that fails keeps today's failed line.
+- **Runs without a plan card.** A run started from the node page has no plan card. It
+  gets the same component from Running onward.
+- **Where it appears.** A card-started run stays in its turn, and the pane shows the same
+  card. A node-started run has no turn, so it appears only in the pane.
+
+Proposed phases on episodes were considered and rejected for now. Many readers take an
+existing episode to mean an admitted run: Start's retry, recovery, latest-run selection,
+health, transfer, and power. Merging the records would move the plan logic rather than
+remove it.
 
 **No second plan while a run is live.** An Experiment allows one live episode per graph
 target. When the agent asks for a plan for a node whose run is live, the `episode`
@@ -209,22 +219,23 @@ end or ask the member to stop it. No card is raised. Auto-research keeps its own
 ### Agent pane
 
 One header button is always shown. Its count is the number of running runs, parked
-plans, and artifacts. It opens one pane with up to three sections in this order:
-**Running**, **Parked plans**, and **Artifacts**. Empty sections are hidden. An empty
-pane shows only its header.
+plans, and artifacts. It opens one pane with up to four sections in this order:
+**Running**, **Parked**, **Ended**, and **Artifacts**. Empty sections are hidden, and
+an empty pane shows only its header. Each section header folds its section and shows the
+count while folded. The fold state is remembered per section on this device.
 
-- **Running** replaces the dock's "N runs in progress" strip. Each row is a live run,
-  and a row that has a plan card scrolls to it. `RunningRunRow` and its run
-  state move from `ApprovalCardStack` into a shared module that the pane uses. Runs that
-  need the member's action stay in the dock.
-- **Parked plans** lists the chat's parked cards, newest first. Each row shows the title
-  and "Parked · <time>" (the time it was parked or last revised). Clicking a row scrolls
-  the chat to the card and expands it.
+- **Running** lists the chat's live runs as the experiment card in its compact form:
+  one line with the title, the state, and a menu. Clicking the line expands the card in
+  place. It replaces the dock's "N runs in progress" strip. Runs that need the member
+  stay in the dock as well, as today.
+- **Parked** lists the chat's parked plan cards, newest first, in the same compact form.
+- **Ended** lists the chat's ended runs, newest first, each with Open report.
 - **Artifacts** is the existing list, with Copy link and Download on each row.
 
-`useArtifactsPaneLayout` becomes the pane's layout hook. It no longer depends on the chat
-having artifacts. The pane sits beside the chat on a wide window and covers the chat on a
-narrow one, full width at 390px.
+A compact card that has a turn offers "Show in chat", which scrolls to it.
+`useArtifactsPaneLayout` becomes the pane's layout hook, and it no longer depends on the
+chat having artifacts. The pane sits beside the chat on a wide window and covers the
+chat on a narrow one, full width at 390px.
 
 ## Data and routes
 
@@ -273,7 +284,8 @@ narrow one, full width at 390px.
 - The pane button shows with no artifacts.
 - The pane holds at 390px. Reduced motion is respected.
 
-- A started card shows the live run, then its outcome. A plan request for a node with
+- A started card shows the live run, then its outcome. A node-started run shows in
+  the pane. Pane sections fold. A plan request for a node with
   a live run is refused.
 
 **Served-app drive:** a real Codex Work turn raises a plan. The member parks it, the
