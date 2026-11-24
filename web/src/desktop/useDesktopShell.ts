@@ -145,8 +145,10 @@ export function useDesktopShell(desktop: boolean) {
     setUpdateError(null);
     try {
       const identity = await verifyIdentity();
-      if (!identity.ok) return;
-      const hasActiveWork = activeTask || identity.activeAgentTasks > 0;
+      const activeAgentTasks = identity.ok
+        ? identity.activeAgentTasks
+        : desktopUpdate.active_agent_tasks;
+      const hasActiveWork = activeTask || activeAgentTasks > 0;
       if (hasActiveWork && !updateExpanded) {
         setExpandedUpdateVersion(desktopUpdate.version ?? "");
         return;

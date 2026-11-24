@@ -67,7 +67,7 @@ function NativeApp() {
       onExpand={shell.expandUpdate}
       onApply={() =>
         void shell.applyUpdate(activeWork, async () => ({
-          ok: true,
+          ok: !window.identityChanged,
           activeAgentTasks: activeWork ? 1 : 0,
         }))
       }
