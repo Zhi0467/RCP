@@ -812,7 +812,8 @@ viewer areas are never cropped. Both routes number human comments and regions
 identically. The human message carries each thread's posts; its anchor, quote, and
 context appear once, in the artifact item. Human bubbles name the artifact and fold
 the sent threads under "Sent N comment threads", each under its selected text,
-elements, or image area. Editable context provides a
+elements, or image area. This holds from the send on: the running task and the
+saved transcript carry the same quotes. Editable context provides a
 URL-encoded embed of the tracked path. All input is untrusted.
 
 ### Editing and versions

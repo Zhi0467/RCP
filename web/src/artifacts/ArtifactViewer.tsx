@@ -409,9 +409,13 @@ export function ArtifactViewer({ onMerge }: { onMerge?: BranchMergeRequest }) {
           </button>
         )}
         {state?.thread_href && (
-          <a className="artifact-viewer-control" href={state.thread_href} aria-label="Source chat">
+          <a
+            className="artifact-viewer-control"
+            href={state.thread_href}
+            aria-label="Source chat"
+            title="Source chat"
+          >
             <MessageCircle size={16} />
-            <span className="artifact-viewer-label">Source chat</span>
           </a>
         )}
         {target.kind === "artifact" && state?.can_delete && (

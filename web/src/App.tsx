@@ -2265,18 +2265,23 @@ function MemberApp({
   }, [backendSessionReady]);
   // Each signed-in visit keeps the server's phone record in step with this browser.
   const teamSpace = verifiedHealth?.space_kind === "team";
+  const teamSpaceIdentity = verifiedHealth?.space_id ?? null;
   useEffect(() => {
     if (!teamSpace || !backendSessionReady) return;
     let live = true;
     void api<{ access_url: string | null }>("/api/team/space")
       .then((space) => {
-        if (live) setTeamAccessOrigin(space.access_url ? new URL(space.access_url).origin : null);
+        if (live)
+          setTeamAccessOrigin(
+            space.access_url ? new URL(space.access_url).origin : null,
+            teamSpaceIdentity,
+          );
       })
       .catch(() => undefined);
     return () => {
       live = false;
     };
-  }, [teamSpace, backendSessionReady]);
+  }, [teamSpace, teamSpaceIdentity, backendSessionReady]);
   const openLinkUnavailable = useCallback(() => {
     window.history.replaceState(null, "", "/");
     settleShareLink();

@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlsplit
 
 import pytest
 
@@ -11,7 +11,7 @@ from rcp.core.models import AuthorizedHuman, GraphBranchMetadata
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.storage import AgentTaskRecord, EpisodeRecord
 from rcp.storage.artifact_models import Artifact
-from rcp.team_access import TEAM_ACCESS_URL_ENV
+from rcp.team_access import SHARE_LINK_PAGE, TEAM_ACCESS_URL_ENV
 from rcp.transfer.records import TRANSFER_EXCLUDED_PROJECT_TABLES
 from rcp.transport import StateUnavailable
 from tests.helpers import (
@@ -120,10 +120,12 @@ def _copy(client, project: str, kind: str, item_id: str, graph_target: str = "ma
 
 def _token(response) -> str:
     assert response.status_code == 200, response.text
-    url = response.json()["url"]
-    prefix = f"{ACCESS_URL}/open#l="
-    assert url.startswith(prefix)
-    return url.removeprefix(prefix)
+    page, _, fragment = response.json()["url"].partition("#")
+    assert page == SHARE_LINK_PAGE
+    link = parse_qs(fragment)
+    assert link["h"] == [urlsplit(ACCESS_URL).netloc]
+    assert str(uuid.UUID(link["s"][0])) == link["s"][0]
+    return link["l"][0]
 
 
 def _resolve(client, token: str):

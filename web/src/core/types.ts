@@ -2504,6 +2504,7 @@ export interface AgentStatus {
 export interface AgentTask {
   /** Answer delivery identity for task-only transcript reconstruction. */
   question_id?: string | null;
+  artifact_comments?: ChatArtifactComments | null;
   /** Local command feedback; never sent to the backend. */
   action_error?: string;
   action_error_action?: "pause" | "resume" | "retry" | "stop";

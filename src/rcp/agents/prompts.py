@@ -836,6 +836,8 @@ def _attachment_items(attachments: list[dict[str, object]] | None) -> str:
             "  Once you change it in place, you can show it in your reply with Markdown "
             f"image syntax: `![Short title]({quote(str(item['path']), safe='/')})`."
         )
+        if item.get("current_version"):
+            lines.append(f"  Current version: {item['current_version']}")
         selections = item.get("selections")
         for index, selection in enumerate(selections if isinstance(selections, list) else [], 1):
             anchor = TypeAdapter(CommentAnchor).validate_python(
@@ -846,8 +848,6 @@ def _attachment_items(attachments: list[dict[str, object]] | None) -> str:
                 }
             )
             lines.append(f"  Comment {index}: {render_anchor(anchor)}")
-            if item.get("current_version"):
-                lines.append(f"  Current version: {item['current_version']}")
             if selection.get("drawn_version_missing"):
                 lines.append("  Drawn version bytes are unavailable; no crop is attached.")
             if isinstance(selection.get("crop_path"), str):
