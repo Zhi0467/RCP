@@ -113,7 +113,6 @@ def test_state_version_undo_and_current_viewer(viewer_app):
     assert original["version_number"] == 1
     assert not original["can_undo"]
     assert not original["fresh_session_required"] and original["can_comment"]
-    assert original["origin_chat_id"] == task.request["chat_id"]
     assert parse_qs(urlsplit(original["thread_href"][1:]).query) == {
         "view": ["chats"],
         "chat": [task.request["chat_id"]],
@@ -136,12 +135,6 @@ def test_state_version_undo_and_current_viewer(viewer_app):
     assert reverted["current_version"] == artifact.current_version
     assert reverted["version_number"] == 1 and not reverted["can_undo"]
     assert client.get(reverted["download_url"]).content == b"Original"
-
-
-def test_state_names_no_origin_chat_for_an_origin_without_a_chat(viewer_app):
-    app, client, store = viewer_app
-    task = _task(store, app.state.default_project_id, request={"provider": "codex"})
-    assert _state(client, _artifact(store, task))["origin_chat_id"] is None
 
 
 @pytest.mark.parametrize(

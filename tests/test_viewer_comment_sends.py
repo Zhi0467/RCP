@@ -7,6 +7,7 @@ from fastapi import HTTPException
 
 from tests.helpers import fake_launch_admitted, signed_in_client
 from tests.test_artifact_edit_admission import edit_origin as edit_origin
+from tests.test_artifact_viewer_state import _task
 from tests.test_unified_artifacts import _stored_artifact
 
 
@@ -157,3 +158,24 @@ def test_viewer_replay_cannot_mark_a_different_thread(edit_origin, monkeypatch):
     response = client.post(url, json={"thread_ids": [other]}, headers=headers)
     assert response.status_code == 409, response.text
     assert store.get_comment_thread(task.project_id, other)["state"] == "open"
+
+
+def test_viewer_send_is_admitted_while_the_chat_turn_runs(edit_origin, monkeypatch):
+    app, store, task = edit_origin
+    artifact = _stored_artifact(app, task.operation_id, "report.md", b"Original")
+    artifact = store.artifact(artifact.artifact_id)
+    client = signed_in_client(app)
+    fake_launch_admitted(monkeypatch, app.state.background_tasks)
+    running = _task(store, task.project_id, request=task.request, status="running")
+    thread_id = _thread(client, task.project_id, artifact)
+    response = client.post(
+        f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}/comments",
+        json={"thread_ids": [thread_id]},
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert response.status_code == 202, response.text
+    sent = store.agent_task(response.json()["operation_id"])
+    assert sent.operation_id != running.operation_id
+    assert sent.request["chat_id"] == task.request["chat_id"]
+    assert store.agent_task(running.operation_id).status == "running"
+    assert store.get_comment_thread(task.project_id, thread_id)["state"] == "resolved"

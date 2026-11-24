@@ -115,15 +115,38 @@ Invariant 10g holds: the retry is the existing explicit retry.
   - One click is one turn, never a split.
 - Send posts the batch's thread ids to `/comments`, with one idempotency key per
   attempt and the existing `fresh_session` retry.
-- A Send while the chat's agent is mid-turn is admitted, as a composer send is
-  (admission refuses only archived or closed chats). A check covers it.
+- A Send while the chat's agent is mid-turn queues, like a composer message
+  sent while the agent works. See **Queued comments** below.
 - Saving a comment only saves it.
 - After a send, the sent threads resolve and leave the open list. The rail
-  notice says "Sent" and links "Open chat", built from the thread's `chat_id`,
+  notice says "Sent" (or "Queued" when the chat was busy) and links "Open chat", built from the thread's `chat_id`,
   so the reader knows where the turn runs. The viewer keeps posting
   `rcp-artifact-edit-started`. The parent marks the artifact as editing, and
   polling ends that mark.
 - A refusal shows in the rail notice.
+
+**Queued comments.** The agent-thread queue
+(`POST /api/agent-threads/{thread_id}/queue`) already holds composer messages
+while a turn runs and drains them when it ends. It now carries comment threads.
+
+- `QueuedMessageBody` gains `comment_thread_ids` (at most
+  `ARTIFACT_CONTEXT_MAX_SELECTIONS`). A body needs text, files, or threads.
+- At queue time the route runs `chat_turn_send` with the queue's idempotency
+  key and the thread's chat, so a wrong chat or an oversize send is refused
+  now, not at drain. It stores the ids on the row and marks the threads sent
+  under that key and the queued turn's operation id. They resolve at once.
+- At drain, `_start_queued_turn` runs `chat_turn_send` again with the same key.
+  A resolved thread whose `send_key` matches renders its frozen snapshot, so the
+  turn gets the same text and the same anchored `artifact_context` the queue
+  accepted.
+- A queued item that is removed or refused before its turn starts reopens its
+  threads (those still resolved under its key and operation id).
+- `comment_artifact`: when the send is a chat turn and the chat has an active
+  turn, it queues through the same helper and returns
+  `{"queued": true, "queue_id", "operation_id"}` instead of a task record.
+- The composer stops refusing comments while busy ("Comments wait until this
+  thread is idle" goes away): a busy composer send with comments queues them.
+  Steering keeps taking text only.
 
 **Deleted.**
 
@@ -187,7 +210,8 @@ commit as Send, so comments never lose their way out.
     notice links the chat;
   - with more than 50 threads, or text over the limit, the button names a
     batch that fits and the rest stay;
-  - a Send while the chat is mid-turn is admitted;
+  - a Send while the chat is mid-turn queues, and the queued turn carries the
+    anchored selections when it starts;
   - a save does not navigate;
   - the footer hides with no sendable threads.
 - **Served journey on a data copy:** send from an episode report viewer and see
