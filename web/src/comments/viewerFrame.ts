@@ -20,6 +20,7 @@ export function createFrameLocator(frame: HTMLIFrameElement, changed: () => void
         if (current.has(id)) continue;
         anchors.delete(id);
         positions.delete(id);
+        if (located?.thread_id === id) located = null;
         request(id, null);
       }
       for (const { thread_id: id, anchor } of threads) {

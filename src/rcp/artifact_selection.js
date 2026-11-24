@@ -574,6 +574,7 @@ function installArtifactLocator(doc, publish) {
       height: `${rect.height}px`,
     });
   }
+  const visible = (found) => (found?.rect.width > 0 && found.rect.height > 0 ? found : null);
   // Scroll every enclosing scroller, then the page, to the anchor, and outline it.
   function reveal(id, anchor, found) {
     for (
@@ -623,7 +624,7 @@ function installArtifactLocator(doc, publish) {
     view.requestAnimationFrame(() => {
       scheduled = false;
       for (const [id, anchor] of tracked) report(id, anchor);
-      const waiting = pending && find(pending.anchor);
+      const waiting = pending && visible(find(pending.anchor));
       if (waiting) {
         const { id, anchor } = pending;
         pending = null;
@@ -637,6 +638,7 @@ function installArtifactLocator(doc, publish) {
   const observer = new ResizeObserver(refresh);
   observer.observe(doc.documentElement);
   new MutationObserver(() => pending && refresh()).observe(doc.documentElement, {
+    attributes: true,
     childList: true,
     subtree: true,
   });
@@ -652,7 +654,7 @@ function installArtifactLocator(doc, publish) {
     }
     if (!anchor || !["whole", "text", "element", "box"].includes(anchor.kind)) return;
     tracked.set(id, anchor);
-    const found = report(id, anchor);
+    const found = visible(report(id, anchor));
     if (!request.scroll) return;
     if (found) {
       pending = null;

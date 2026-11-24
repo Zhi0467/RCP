@@ -19,7 +19,7 @@ from rcp.artifact_comments import comment_panel, selection_frame_addon
 from rcp.artifact_views import artifact_viewer_document
 source = '''<style>body{margin:0;min-height:2200px}#first,#second{position:absolute;left:20px;width:100px;height:40px;background:tan}#first{top:100px}#second{top:1000px}</style><div id="first">First anchor</div><div id="second">Second anchor</div><script>
 window.clicks=0;document.getElementById('second').addEventListener('click',()=>window.clicks++);
-setTimeout(()=>{const late=document.createElement('div');late.id='late';late.textContent='Late anchor';late.style.cssText='position:absolute;left:20px;top:1600px;width:100px;height:40px';document.body.append(late);},2500);
+setTimeout(()=>{const late=document.createElement('div');late.id='late';late.textContent='Late anchor';late.style.cssText='position:absolute;left:20px;top:1600px;width:100px;height:40px;display:none';document.body.append(late);setTimeout(()=>late.style.display='block',400);},2500);
 window.attack=async()=>{
   const forged={type:'rcp-artifact-position',version:1,id:'first',rect:{x:1,y:1,width:1,height:1}};
   parent.postMessage(forged,'*');
@@ -322,7 +322,7 @@ test("a comment link outlines its anchor after a slow artifact loads, and the ou
     const next = await outline.boundingBox();
     assert.ok(Math.abs(next.y - moved.y) < 1);
     await page.locator('[data-thread-id="late"] .rcp-comment-quote').click();
-    await artifact.locator("#late").waitFor();
+    await artifact.locator("#late").waitFor({ state: "visible" });
     await page.waitForTimeout(300);
     const late = await artifact.locator("#late").boundingBox();
     const outlined = await outline.boundingBox();
