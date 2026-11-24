@@ -49,7 +49,7 @@ test("pins share refresh, mount only the active version, open native nodes, and 
     await page.route("**/api/projects/project/artifacts/*/viewer", (route) => {
       return route.fulfill({
         contentType: "text/html",
-        body: '<button onclick=\'parent.postMessage({type:"rcp-open-node",version:1,artifact_id:"a",node_id:"n"},location.origin)\'>Open</button>',
+        body: '<button onclick=\'parent.postMessage({type:"rcp-open-node",version:1,artifact_id:"a",node_id:"n"},location.origin)\'>Open</button><button onclick=\'parent.postMessage({type:"rcp-artifact-open-chat",version:1,href:"#/projects/project?view=chats&chat=c"},location.origin)\'>Agent</button>',
       });
     });
     await page.goto("http://127.0.0.1:8433/tests/fixtures/pinnedViews.html");
@@ -57,8 +57,10 @@ test("pins share refresh, mount only the active version, open native nodes, and 
     await tabs.first().waitFor();
     assert.equal(await page.locator("iframe").count(), 0);
     await tabs.first().click();
-    await page.frameLocator(".pinned-view iframe").locator("button").click();
+    await page.frameLocator(".pinned-view iframe").getByText("Open").click();
     await page.waitForFunction(() => document.body.dataset.node === "n");
+    await page.frameLocator(".pinned-view iframe").getByText("Agent").click();
+    await page.waitForFunction(() => location.hash === "#/projects/project?view=chats&chat=c");
     assert.equal(await page.locator("iframe").count(), 1);
     for (const next of ["v2", "v1"]) {
       await page.evaluate(
@@ -75,7 +77,7 @@ test("pins share refresh, mount only the active version, open native nodes, and 
       await page.waitForFunction(
         () => document.querySelector(".pinned-view iframe") !== window.previousFrame,
       );
-      await page.frameLocator(".pinned-view iframe").locator("button").waitFor();
+      await page.frameLocator(".pinned-view iframe").getByText("Open").waitFor();
     }
     const layout = await page.evaluate(() => {
       const strip = document.querySelector(".artifacts-subnav");

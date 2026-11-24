@@ -412,8 +412,8 @@ export function ArtifactViewer({ onMerge }: { onMerge?: BranchMergeRequest }) {
           <a
             className="artifact-viewer-control"
             href={state.thread_href}
-            aria-label="Source chat"
-            title="Source chat"
+            aria-label="Source agent"
+            title="Source agent"
           >
             <MessageCircle size={16} />
           </a>
