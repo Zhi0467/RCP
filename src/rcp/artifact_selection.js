@@ -429,8 +429,8 @@ function installArtifactLocator(doc, publish) {
   const view = doc.defaultView;
   const tracked = new Map();
   let scheduled = false;
-  let flash = null;
-  let flashTimer;
+  let mark = null;
+  let focused = null;
   function textRange(anchor) {
     if (typeof anchor.text !== "string" || !anchor.text || anchor.text.length > 6144) return null;
     const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
@@ -545,12 +545,40 @@ function installArtifactLocator(doc, publish) {
     publish({ kind: "rcp-artifact-position", id, rect });
     return found;
   }
+  // The located anchor stays outlined until another thread is located.
+  function place() {
+    const rect = focused && find(focused.anchor)?.rect;
+    if (!rect) {
+      mark?.remove();
+      mark = null;
+      return;
+    }
+    if (!mark) {
+      mark = doc.createElement("div");
+      mark.dataset.rcpSelection = "locate";
+      Object.assign(mark.style, {
+        position: "fixed",
+        pointerEvents: "none",
+        zIndex: "2147483647",
+        background: "rgba(189,91,54,.12)",
+        outline: "2px solid #bd5b36",
+      });
+      doc.documentElement.appendChild(mark);
+    }
+    Object.assign(mark.style, {
+      left: `${rect.x}px`,
+      top: `${rect.y}px`,
+      width: `${rect.width}px`,
+      height: `${rect.height}px`,
+    });
+  }
   function refresh() {
     if (scheduled) return;
     scheduled = true;
     view.requestAnimationFrame(() => {
       scheduled = false;
       for (const [id, anchor] of tracked) report(id, anchor);
+      place();
     });
   }
   view.addEventListener("scroll", refresh, true);
@@ -562,6 +590,8 @@ function installArtifactLocator(doc, publish) {
     const { id, anchor } = request;
     if (anchor === null) {
       tracked.delete(id);
+      if (focused?.id === id) focused = null;
+      place();
       return;
     }
     if (!anchor || !["whole", "text", "element", "box"].includes(anchor.kind)) return;
@@ -605,28 +635,8 @@ function installArtifactLocator(doc, publish) {
             : 0,
         behavior: "instant",
       });
-    const current = report(id, anchor);
-    if (!current) return;
-    flash?.remove();
-    clearTimeout(flashTimer);
-    flash = doc.createElement("div");
-    flash.dataset.rcpSelection = "locate";
-    const rect = current.rect;
-    Object.assign(flash.style, {
-      position: "fixed",
-      pointerEvents: "none",
-      zIndex: "2147483647",
-      left: `${rect.x}px`,
-      top: `${rect.y}px`,
-      width: `${rect.width}px`,
-      height: `${rect.height}px`,
-      background: "rgba(189,91,54,.2)",
-      outline: "2px solid #bd5b36",
-    });
-    doc.documentElement.appendChild(flash);
-    flashTimer = setTimeout(() => {
-      flash?.remove();
-      flash = null;
-    }, 1100);
+    report(id, anchor);
+    focused = { id, anchor };
+    place();
   };
 }

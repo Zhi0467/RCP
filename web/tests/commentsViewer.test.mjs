@@ -273,3 +273,48 @@ test("the footer hides with nothing sendable, and a queued Send starts no edit",
     await browser.close();
   }
 });
+
+test("a comment link outlines its anchor after a slow artifact loads, and the outline stays", async () => {
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage({ viewport: { width: 1040, height: 844 } });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const resolved = threads.map((thread) => ({ ...thread, state: "resolved" }));
+    await page.route(`${origin}/**`, async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/content") await new Promise((resolve) => setTimeout(resolve, 1500));
+      const rendered =
+        path === "/viewer" ? documents.shell : path === "/content" ? documents.content : null;
+      if (rendered) {
+        await route.fulfill({
+          contentType: "text/html",
+          headers: { "Content-Security-Policy": rendered[1] },
+          body: rendered[0],
+        });
+      } else if (path.endsWith("/state")) {
+        await route.fulfill({ json: { can_comment: true, fresh_session_required: false } });
+      } else if (path.endsWith("/comment-threads")) {
+        await route.fulfill({ json: { threads: resolved } });
+      } else await route.fulfill({ status: 404 });
+    });
+    await page.goto(`${origin}/viewer#comment=second`);
+    const artifact = page.frameLocator("#preview").frameLocator("#artifact");
+    const outline = artifact.locator('[data-rcp-selection="locate"]');
+    await outline.waitFor({ state: "attached" });
+    await page.waitForTimeout(1500);
+    const box = await outline.boundingBox();
+    const target = await artifact.locator("#second").boundingBox();
+    assert.ok(box && target);
+    assert.ok(Math.abs(box.y - target.y) < 1 && Math.abs(box.x - target.x) < 1);
+    assert.ok(target.y >= 0 && target.y + target.height <= 844);
+    await page.locator('[data-thread-id="first"] .rcp-comment-quote').click();
+    const moved = await artifact.locator("#first").boundingBox();
+    await page.waitForTimeout(200);
+    const next = await outline.boundingBox();
+    assert.ok(Math.abs(next.y - moved.y) < 1);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
