@@ -241,35 +241,6 @@ test("Send posts the oldest 50 sendable threads once and links the chat", async 
   }
 });
 
-test("a length refusal drops the newest thread from the next Send", async () => {
-  const browser = await chromium.launch();
-  try {
-    const { page, errors, sends } = await openViewer(
-      browser,
-      [0, 1, 2].map((index) => sendableThread(index)),
-      (count) =>
-        count === 1
-          ? { status: 400, json: { detail: { code: "comment_send_too_long", message: "Long" } } }
-          : { status: 200, json: { operation_id: "op" } },
-    );
-    await sendButton(page).click();
-    await page.locator(".rcp-comments-notice:not(:empty)").waitFor();
-    await sendButton(page).click();
-    await sent(page).waitFor();
-    assert.deepEqual(
-      sends.map((send) => send.body.thread_ids),
-      [
-        ["t000", "t001", "t002"],
-        ["t000", "t001"],
-      ],
-    );
-    assert.notEqual(sends[1].key, sends[0].key);
-    assert.deepEqual(errors, []);
-  } finally {
-    await browser.close();
-  }
-});
-
 test("the footer hides with nothing sendable, and a queued Send starts no edit", async () => {
   const browser = await chromium.launch();
   try {

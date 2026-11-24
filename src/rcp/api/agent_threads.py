@@ -82,7 +82,6 @@ from rcp.api.tasks import (
 from rcp.artifact_comments import supports_comments
 from rcp.artifact_views import ViewerPresentation
 from rcp.attachments import ChatAttachmentStore, ChatAttachmentUpload, ProjectReferenceSelector
-from rcp.comments.models import COMMENT_MEDIA_TYPES
 from rcp.comments.send import chat_turn_send
 from rcp.config import load_manifest
 from rcp.core.transition_models import GraphTargetRef
@@ -112,7 +111,7 @@ from rcp.runs.agent_threads import (
     thread_scope_id,
 )
 from rcp.runs.approval_cards import ProposalCardView, draws_proposal_cards, proposal_cards
-from rcp.runs.artifact_edit_admission import _edit_version, artifact_comment_message
+from rcp.runs.artifact_edit_admission import admit_space_artifact_comment
 from rcp.runs.space_chat import admit_space_invocations, space_transcript_lock
 from rcp.runs.turn_attachments import claim_turn_attachments
 from rcp.service import (
@@ -129,7 +128,7 @@ from rcp.storage.agent_threads import (
     AgentThreadRecord,
     QueuedTurnPicks,
     private_artifact_owner,
-    thread_binds_task,
+    space_thread_task,
 )
 from rcp.storage.agents import AgentRecord
 from rcp.storage.chat_names import ChatNameError, chat_titles
@@ -1086,9 +1085,9 @@ def _queue_new_message(
     sent = None
     if body.comment_thread_ids:
         try:
-            sent, *_ = admit_queued_comments(
+            sent = admit_queued_comments(
                 store, catalog, thread, user_id, body.comment_thread_ids, key, body.message
-            )
+            ).sent
         except CommentError:
             raise
         except ValueError as exc:
@@ -1242,42 +1241,17 @@ class SpaceTurnBody(BaseModel):
 def _space_artifact_comment(
     store: AppStore, thread: AgentThreadRecord, context: ArtifactContextRequest | None, text: str
 ) -> tuple[ArtifactContextRequest | None, str]:
-    """Admit comments on an artifact one of this thread's own turns produced."""
     if context is None:
         return None, text
     try:
-        if context.source != "task":
-            raise ValueError("A Space comment names a turn's artifact.")
-        task = _space_task(store, thread, context.operation_id)
-        descriptor = _agent_artifact_descriptor(task, context.artifact_id)
-        if not supports_comments(descriptor.media_type):
-            raise ValueError("The artifact type does not support comments.")
-        if any(
-            descriptor.media_type not in COMMENT_MEDIA_TYPES[selection.kind]
-            for selection in context.selections
-        ):
-            raise ValueError("This anchor is not supported by the artifact media type.")
-        artifact = store.artifact(context.artifact_id)
-        if artifact is None:
-            raise ValueError("The artifact is unavailable.")
-        context = context.model_copy(
-            update={"base_version": _edit_version(store, artifact, context), "fresh_session": False}
-        )
-        message = artifact_comment_message(text, context)
-    except (HTTPException, ValueError) as exc:
-        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
-        raise HTTPException(status_code=422, detail=detail) from exc
-    return context, message
+        return admit_space_artifact_comment(store, thread, context, text)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 def _space_task(store: AppStore, thread: AgentThreadRecord, operation_id: str) -> AgentTaskRecord:
-    task = store.agent_task(operation_id)
-    if (
-        thread.kind != "space"
-        or task is None
-        or not task.visible
-        or not thread_binds_task(thread, task, store.space_id)
-    ):
+    task = space_thread_task(store, thread, operation_id)
+    if task is None:
         raise HTTPException(status_code=404, detail="Agent task not found")
     return task
 

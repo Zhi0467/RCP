@@ -51,15 +51,3 @@ export function surroundingText(text: string, start: number, end: number, pad = 
 
 /** The quote as a text anchor keeps it: trimmed and within the anchor's bound. */
 export const MAX_QUOTE_CHARS = 4000;
-
-/** One Send: the oldest sendable threads, at most `limit`. The server's length
- *  refusal lowers `limit` until the batch fits. */
-export function sendBatch(
-  threads: readonly CommentThread[],
-  limit: number,
-): { batch: CommentThread[]; sendable: number } {
-  const sendable = threads
-    .filter((thread) => thread.state === "open" && thread.can_send)
-    .sort((a, b) => a.created_at.localeCompare(b.created_at));
-  return { batch: sendable.slice(0, limit), sendable: sendable.length };
-}

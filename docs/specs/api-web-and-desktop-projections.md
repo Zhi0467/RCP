@@ -2284,18 +2284,12 @@ membership, and the inventory rejects an episode from another project.
 unexpired or kept artifacts whose chat is `chat_id`. An artifact's chat is
 `artifact_chat_id(*artifact_reply_origin(...))` in
 [artifact replies](../../src/rcp/storage/artifact_replies.py), the same resolver
-that sends the artifact's comments, so a row and its Send agree:
-
-| Origin | Chat |
-| --- | --- |
-| node or project chat turn | its `chat_id` |
-| Auto-research reply chain | the origin's `graph_target.branch_id` |
-| Experiment report whose parent has no chat | the latest `experiment_loop` task's chat |
-| task outside any chat, such as ingestion | none, so the route skips it |
+that sends the artifact's comments, so a row and its Send agree. An artifact
+outside any chat is skipped.
 
 The route scans the project's artifacts in memory, as the episode inventory
-does, and caches task and episode reads within the request. Another member's
-private chat answers 404, and each artifact must pass `private_artifact_owner`.
+does. Another member's private chat answers 404, and each artifact must pass
+`private_artifact_owner`.
 
 ## Bulletin channels
 

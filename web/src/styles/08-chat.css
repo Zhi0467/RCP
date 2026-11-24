@@ -294,13 +294,6 @@
 .chat-dock.workspace {
   position: relative;
 }
-/* The open pane takes the dock's right 300px; the header keeps its full width. */
-.chat-dock.artifacts-open {
-  padding-right: 300px;
-}
-.chat-dock.artifacts-open > header {
-  margin-right: -300px;
-}
 .chat-artifacts-pane {
   animation: paper-pane-enter 160ms ease;
   background: var(--surface);
@@ -318,6 +311,22 @@
   align-items: center;
   display: flex;
   justify-content: space-between;
+}
+/* On a desktop the chat narrows beside the pane under a full-width header;
+ * on a phone the pane covers the chat. */
+@media (min-width: 561px) {
+  .chat-dock.artifacts-open {
+    padding-right: 300px;
+  }
+  .chat-dock.artifacts-open > header {
+    margin-right: -300px;
+  }
+}
+@media (max-width: 560px) {
+  .chat-artifacts-pane {
+    border-left: 0;
+    width: 100%;
+  }
 }
 .chat-watchers {
   background: var(--paper-deep);

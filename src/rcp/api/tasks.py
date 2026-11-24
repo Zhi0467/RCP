@@ -51,6 +51,7 @@ from rcp.artifacts import (
     ArtifactView,
     artifact_view,
     classify_artifact_bytes,
+    task_artifact_descriptor,
 )
 from rcp.artifacts import (
     artifact_id as scoped_artifact_id,
@@ -1645,16 +1646,10 @@ def _agent_artifact_descriptor(
     record: AgentTaskRecord,
     artifact_id: str,
 ) -> AgentArtifactDescriptor:
-    artifacts = record.result.get("artifacts") if record.result else None
-    if isinstance(artifacts, list):
-        for raw in artifacts:
-            try:
-                descriptor = AgentArtifactDescriptor.model_validate(raw)
-            except (TypeError, ValueError):
-                continue
-            if descriptor.artifact_id == artifact_id:
-                return descriptor
-    raise HTTPException(status_code=404, detail="Artifact not found")
+    descriptor = task_artifact_descriptor(record.result, artifact_id)
+    if descriptor is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return descriptor
 
 
 def _admit_artifact_context_request(

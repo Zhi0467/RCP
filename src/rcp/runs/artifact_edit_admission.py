@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Literal
 
 from rcp.artifact_comments import supports_comments
+from rcp.artifacts import task_artifact_descriptor
 from rcp.comments.models import COMMENT_MEDIA_TYPES
 from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
 from rcp.providers import profile_for
@@ -21,6 +22,7 @@ from rcp.service import (
     RunRequest,
 )
 from rcp.storage import AgentTaskAdmissionConflict, AgentTaskRecord, AppStore, Artifact
+from rcp.storage.agent_threads import AgentThreadRecord, space_thread_task
 from rcp.storage.artifact_replies import artifact_chat_id, artifact_reply_origin
 from rcp.storage.request_compat import persisted_request_roundtrips
 from rcp.transport import RemoteRunStage
@@ -142,6 +144,34 @@ def _origin_master(store: AppStore, project_id: str, origin: AgentTaskRecord, *,
         raise AgentTaskAdmissionConflict("The artifact's recorded master is corrupt.")
     _require_master_owner(store.agent_task(found[0]))
     return found, content
+
+
+def admit_space_artifact_comment(
+    store: AppStore, thread: AgentThreadRecord, context: ArtifactContextRequest, text: str
+) -> tuple[ArtifactContextRequest, str]:
+    """Admit comments on an artifact one of this Space thread's own turns produced."""
+    if context.source != "task":
+        raise ValueError("A Space comment names a turn's artifact.")
+    task = space_thread_task(store, thread, context.operation_id)
+    if task is None:
+        raise ValueError("Agent task not found")
+    descriptor = task_artifact_descriptor(task.result, context.artifact_id)
+    if descriptor is None:
+        raise ValueError("Artifact not found")
+    if not supports_comments(descriptor.media_type):
+        raise ValueError("The artifact type does not support comments.")
+    if any(
+        descriptor.media_type not in COMMENT_MEDIA_TYPES[selection.kind]
+        for selection in context.selections
+    ):
+        raise ValueError("This anchor is not supported by the artifact media type.")
+    artifact = store.artifact(context.artifact_id)
+    if artifact is None:
+        raise ValueError("The artifact is unavailable.")
+    context = context.model_copy(
+        update={"base_version": _edit_version(store, artifact, context), "fresh_session": False}
+    )
+    return context, artifact_comment_message(text, context)
 
 
 def artifact_comment_message(message: str | None, context: ArtifactContextRequest) -> str:

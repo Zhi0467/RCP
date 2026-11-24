@@ -77,6 +77,21 @@ def thread_binds_task(thread: AgentThreadRecord, task: AgentTaskRecord, space_id
     )
 
 
+def space_thread_task(
+    store: AppStore, thread: AgentThreadRecord, operation_id: str
+) -> AgentTaskRecord | None:
+    """A visible turn of this Space thread."""
+    task = store.agent_task(operation_id)
+    if (
+        thread.kind != "space"
+        or task is None
+        or not task.visible
+        or not thread_binds_task(thread, task, store.space_id)
+    ):
+        return None
+    return task
+
+
 def bound_thread(store: AppStore, task: AgentTaskRecord) -> AgentThreadRecord | None:
     """The member thread this task is a turn of; callers add their own conditions."""
     chat_id = task.request.get("chat_id")

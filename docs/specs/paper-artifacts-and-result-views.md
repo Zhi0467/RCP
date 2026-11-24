@@ -808,12 +808,10 @@ annotations.
 
 The rail's footer holds one Send button whenever the artifact has threads the
 member may send (`can_send`), teammates' open threads included. One click sends
-the oldest of them that fit one turn: at most `maxSelections` threads whose
-rendered text fits `maxChars`, both from the viewer config. When some do not
-fit, the button names the batch, as in "Send 12 of 30 to agent", and the rest
-stay open for the next click. A `comment_send_too_long` refusal drops the
-newest thread from the batch, so the next click fits. One click is always one
-turn. A chat-less artifact's threads are never sendable, so it has no footer.
+the oldest `maxSelections` of them, from the viewer config. When more are open,
+the button names the batch, as in "Send 50 of 60 to agent", and the rest stay
+open for the next click. The server's length limit refuses an oversize batch
+whole, and the refusal shows in the rail. One click is always one turn. A chat-less artifact's threads are never sendable, so it has no footer.
 
 Viewer Send names thread ids, never client-built selections, and posts them to
 the artifact's `/comments` route with one key per attempt. Only the server knows

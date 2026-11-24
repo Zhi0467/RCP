@@ -603,8 +603,7 @@ def run_artifacts(
     artifacts = [
         artifact
         for artifact in store.artifacts(project_id)
-        if artifact.episode_id in episode_ids
-        and (artifact.kept_at or artifact.expires_at is None or artifact.expires_at > now)
+        if artifact.episode_id in episode_ids and _unexpired(artifact, now)
     ]
     artifacts.sort(
         key=lambda artifact: (
@@ -643,47 +642,30 @@ def run_artifacts(
             label = "Orchestrator"
         if actor_id is not None:
             label = titles.get(actor_id, label)
-        entries.append(
-            RunArtifactEntry(
-                artifact_id=artifact.artifact_id,
-                name=artifact.display_title or artifact.source_name,
-                media_type=artifact.media_type,
-                view=artifact_view(artifact.media_type),
-                supplier=artifact.supplier,
-                origin_operation_id=artifact.origin_operation_id,
-                worker_label=label,
-                created_at=artifact.created_at,
-            )
-        )
+        entries.append(_run_artifact_entry(artifact, label))
     return entries
 
 
-class _CachedReplyOrigins:
-    def __init__(self, store: AppStore) -> None:
-        self._store = store
-        self._tasks: dict[str, AgentTaskRecord | None] = {}
-        self._episodes: dict[str, EpisodeRecord | None] = {}
-        self._episode_tasks: dict[str, list[AgentTaskRecord]] = {}
-
-    def agent_task(self, operation_id: str) -> AgentTaskRecord | None:
-        if operation_id not in self._tasks:
-            self._tasks[operation_id] = self._store.agent_task(operation_id)
-        return self._tasks[operation_id]
-
-    def episode(self, episode_id: str) -> EpisodeRecord | None:
-        if episode_id not in self._episodes:
-            self._episodes[episode_id] = self._store.episode(episode_id)
-        return self._episodes[episode_id]
-
-    def episode_tasks(self, episode_id: str) -> list[AgentTaskRecord]:
-        if episode_id not in self._episode_tasks:
-            self._episode_tasks[episode_id] = self._store.episode_tasks(episode_id)
-        return self._episode_tasks[episode_id]
+def _unexpired(artifact: Artifact, now: str) -> bool:
+    return bool(artifact.kept_at or artifact.expires_at is None or artifact.expires_at > now)
 
 
-def _resolved_chat_id(reader: _CachedReplyOrigins, artifact: Artifact) -> object:
+def _run_artifact_entry(artifact: Artifact, label: str | None = None) -> RunArtifactEntry:
+    return RunArtifactEntry(
+        artifact_id=artifact.artifact_id,
+        name=artifact.display_title or artifact.source_name,
+        media_type=artifact.media_type,
+        view=artifact_view(artifact.media_type),
+        supplier=artifact.supplier,
+        origin_operation_id=artifact.origin_operation_id,
+        worker_label=label,
+        created_at=artifact.created_at,
+    )
+
+
+def _resolved_chat_id(store: AppStore, artifact: Artifact) -> object:
     try:
-        return artifact_chat_id(*artifact_reply_origin(reader, artifact))
+        return artifact_chat_id(*artifact_reply_origin(store, artifact))
     except AgentTaskAdmissionConflict:
         return None
 
@@ -706,29 +688,16 @@ def chat_artifacts(
     if chat_id in store.private_chat_ids_except(user_id):
         raise HTTPException(status_code=404, detail="Chat not found")
     now = store.now()
-    reader = _CachedReplyOrigins(store)
     with store.connection() as connection:
         artifacts = [
             artifact
             for artifact in store.artifacts(project_id)
-            if (artifact.kept_at or artifact.expires_at is None or artifact.expires_at > now)
-            and _resolved_chat_id(reader, artifact) == chat_id
+            if _unexpired(artifact, now)
+            and _resolved_chat_id(store, artifact) == chat_id
             and private_artifact_owner(connection, artifact) in {None, user_id}
         ]
     artifacts.sort(key=lambda artifact: (artifact.created_at, artifact.artifact_id), reverse=True)
-    return [
-        RunArtifactEntry(
-            artifact_id=artifact.artifact_id,
-            name=artifact.display_title or artifact.source_name,
-            media_type=artifact.media_type,
-            view=artifact_view(artifact.media_type),
-            supplier=artifact.supplier,
-            origin_operation_id=artifact.origin_operation_id,
-            worker_label=None,
-            created_at=artifact.created_at,
-        )
-        for artifact in artifacts
-    ]
+    return [_run_artifact_entry(artifact) for artifact in artifacts]
 
 
 @router.get("/api/projects/{project_id}/artifacts/{artifact_id}/content")

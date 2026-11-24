@@ -358,11 +358,15 @@ def _save_post(
         raise CommentError("comment_thread_too_long", "This thread is full. Start a new thread.")
 
 
-def _reopen(connection: sqlite3.Connection, thread_id: str) -> None:
+def _reopen(
+    connection: sqlite3.Connection, thread_id: str, unsent: tuple[str, str] | None = None
+) -> None:
+    """Reopen the thread; with `unsent` (key, operation id), only while that send holds it."""
+    guard = " AND state='resolved' AND send_key=? AND sent_operation_id=?" if unsent else ""
     connection.execute(
         "UPDATE comment_threads SET state='open',closed_by=NULL,closed_at=NULL,"
-        "sent_operation_id=NULL WHERE thread_id=?",
-        (thread_id,),
+        "sent_operation_id=NULL WHERE thread_id=?" + guard,
+        (thread_id, *(unsent or ())),
     )
 
 
@@ -567,12 +571,7 @@ class CommentStoreMixin(StoreMixinBase):
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             for thread_id in thread_ids:
-                connection.execute(
-                    "UPDATE comment_threads SET state='open',closed_by=NULL,closed_at=NULL,"
-                    "sent_operation_id=NULL WHERE thread_id=? AND state='resolved' "
-                    "AND send_key=? AND sent_operation_id=?",
-                    (thread_id, key, operation_id),
-                )
+                _reopen(connection, thread_id, (key, operation_id))
 
     def sendable_threads(
         self, project_id: str, user_id: str, ids: list[str], key: str

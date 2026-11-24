@@ -11,7 +11,7 @@ import { CommentComposer, type CommentOffer } from "./react/CommentComposer";
 import { CommentPins } from "./react/CommentPins";
 import { CommentRail } from "./react/CommentRail";
 import { useCommentActions } from "./react/useCommentActions";
-import { sendBatch, sendKeys } from "./react/threadModel";
+import { sendKeys } from "./react/threadModel";
 import type { CommentAnchor, CommentMember, CommentRect, CommentThread } from "./types.ts";
 
 interface ViewerConfig {
@@ -264,7 +264,6 @@ function mountSurface(
   };
 }
 
-/** The chat runs in the app, so the parent opens it. */
 const openChat = (href: string) => (event: { preventDefault(): void }) => {
   event.preventDefault();
   window.parent.postMessage({ type: "rcp-artifact-open-chat", version: 1, href }, location.origin);
@@ -312,9 +311,10 @@ function ViewerComments({ config }: { config: ViewerConfig }) {
   const keys = useRef(sendKeys());
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState<{ queued: boolean } | null>(null);
-  /** Lowered by the server's length refusal, so the next click fits. */
-  const [cap, setCap] = useState(Infinity);
-  const { batch, sendable } = sendBatch(threads, Math.min(cap, config.maxSelections));
+  const sendable = threads
+    .filter((thread) => thread.state === "open" && thread.can_send)
+    .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  const batch = sendable.slice(0, config.maxSelections);
   const send = async () => {
     const ids = batch.map((thread) => thread.thread_id);
     if (sending || !ids.length) return;
@@ -331,7 +331,6 @@ function ViewerComments({ config }: { config: ViewerConfig }) {
       const result = await client.sendArtifact(config.artifactId, ids, attempt.current.fresh, key);
       keys.current.done();
       freshRequired.current = false;
-      setCap(Infinity);
       setSent({ queued: Boolean(result.queued) });
       if (!result.queued && result.operation_id)
         window.parent.postMessage(
@@ -347,8 +346,6 @@ function ViewerComments({ config }: { config: ViewerConfig }) {
       keys.current.failed(error);
       if (error instanceof ApiError && error.code === "fresh_session_required")
         freshRequired.current = true;
-      if (error instanceof ApiError && error.code === "comment_send_too_long")
-        setCap(Math.max(1, ids.length - 1));
       failRef.current(error);
     } finally {
       setSending(false);
@@ -489,7 +486,7 @@ function ViewerComments({ config }: { config: ViewerConfig }) {
         }
         onWhole={() => offerAt({ kind: "whole", comment: "" })}
         footer={
-          sendable > 0 || sent ? (
+          sendable.length > 0 || sent ? (
             <>
               {sent && (
                 <span className="rcp-comments-sent" role="status">
@@ -501,15 +498,15 @@ function ViewerComments({ config }: { config: ViewerConfig }) {
                   )}
                 </span>
               )}
-              {sendable > 0 && (
+              {sendable.length > 0 && (
                 <button
                   type="button"
                   className="rcp-comment-primary"
                   disabled={sending || comments.busy}
                   onClick={() => void send()}
                 >
-                  {batch.length < sendable
-                    ? `Send ${batch.length} of ${sendable} to agent`
+                  {batch.length < sendable.length
+                    ? `Send ${batch.length} of ${sendable.length} to agent`
                     : "Send to agent"}
                 </button>
               )}

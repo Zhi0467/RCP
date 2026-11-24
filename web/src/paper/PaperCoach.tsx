@@ -190,7 +190,6 @@ export function PaperCoach({
           presentation="workspace"
           profileName="paper_coach"
           fixedConversation
-          listsArtifacts={false}
           onStartTask={startTask}
           onInspectTask={actions.onInspectTask}
           onOpenInbox={actions.onOpenInbox}

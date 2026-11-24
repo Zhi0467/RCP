@@ -198,8 +198,6 @@ interface Props {
   chatId: string;
   presentation?: "floating" | "workspace";
   fixedConversation?: boolean;
-  /** Whether the server lists this chat's artifacts; a Paper coach chat is not a workspace chat. */
-  listsArtifacts?: boolean;
   readOnly?: boolean;
   archived?: boolean;
   onRestore?: () => void;
@@ -312,7 +310,6 @@ export function AgentChatView({
   chatId,
   presentation = "floating",
   fixedConversation = false,
-  listsArtifacts: artifactListing = true,
   readOnly: requestedReadOnly = false,
   archived = false,
   onRestore,
@@ -377,7 +374,7 @@ export function AgentChatView({
   );
   const endpoints = feed?.endpoints ?? chatEndpoints!;
   const listsArtifacts =
-    artifactListing && presentation === "workspace" && !feed && projectId !== null;
+    presentation === "workspace" && !feed && projectId !== null && profileName !== "paper_coach";
   const chatArtifacts = useChatArtifacts(listsArtifacts ? projectId : null, chatId);
   const [artifactsOpen, setArtifactsOpen] = useState(false);
   const artifactsPane = listsArtifacts && chatArtifacts.length > 0;
@@ -1657,15 +1654,14 @@ export function AgentChatView({
   const steerable = steeringTask && !(composer.staged && queue) ? steeringTask : null;
   const action: "Steer" | "Queue" | "Send" = steerable ? "Steer" : queueable ? "Queue" : "Send";
   const sendBlocked =
-    action === "Queue"
-      ? false
-      : steerable
-        ? Boolean(composer.staged)
-        : attachmentsUnready ||
-          relatedActive ||
-          Boolean(repairingTaskId) ||
-          reviewPending ||
-          !providerReady;
+    action !== "Queue" &&
+    (steerable
+      ? Boolean(composer.staged)
+      : attachmentsUnready ||
+        relatedActive ||
+        Boolean(repairingTaskId) ||
+        reviewPending ||
+        !providerReady);
   const sendReason = submitting
     ? "Sending"
     : sendBlocked
