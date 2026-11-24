@@ -419,6 +419,18 @@ def claim_threads_sent_in(
 ) -> None:
     """Mark the threads sent for a turn that starts later, refusing the whole send when
     another send took one of them since it was rendered."""
+    for thread_id in rendered_through:
+        held = connection.execute(
+            "SELECT send_key FROM comment_threads WHERE thread_id=?", (thread_id,)
+        ).fetchone()
+        if (
+            held is not None
+            and held[0] not in {None, key}
+            and _queued_send_holds(connection, thread_id, held[0])
+        ):
+            raise CommentError(
+                "comment_thread_not_sendable", "Another send already took this thread.", 409
+            )
     mark_threads_sent_in(connection, rendered_through, operation_id, key, actor, now)
     for thread_id in rendered_through:
         row = connection.execute(

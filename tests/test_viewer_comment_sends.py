@@ -5,6 +5,7 @@ import uuid
 import pytest
 from fastapi import HTTPException
 
+from rcp.storage.comments import CommentError, claim_threads_sent_in
 from tests.helpers import fake_launch_admitted, signed_in_client
 from tests.test_artifact_edit_admission import edit_origin as edit_origin
 from tests.test_artifact_viewer_state import _task
@@ -323,5 +324,9 @@ def test_a_reply_does_not_free_a_queued_thread_for_another_send(edit_origin, mon
     )
     second = client.post(base, json=body, headers={"Idempotency-Key": str(uuid.uuid4())})
     assert second.status_code == 409, second.text
+    with store.connection() as connection, pytest.raises(CommentError):
+        claim_threads_sent_in(
+            connection, {thread_id: store.now()}, "stale", "stale-key", "member", store.now()
+        )
     turn = _drained(edit_origin, running, first.json()["queue_id"])
     assert "Revise" in turn.request["artifact_context"]["selections"][0]["comment"]
