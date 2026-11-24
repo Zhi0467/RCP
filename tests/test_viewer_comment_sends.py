@@ -290,3 +290,38 @@ def test_a_queued_send_cannot_take_a_thread_another_send_took(edit_origin, monke
     assert refused.value.status_code == 409
     assert [row.idempotency_key for row in store.agent_thread_queue(chat_id)] == ["first"]
     assert _state(store, task, thread_id) == ("resolved", "first-turn")
+
+
+def test_viewer_queued_send_drains_when_the_turn_settled_before_it_queued(edit_origin, monkeypatch):
+    from rcp.api import artifacts as artifact_routes
+    from rcp.runs.agent_thread_queue import queued_turn_operation_id
+    from tests.helpers import wait_until
+
+    _app, store, task = edit_origin
+    client, artifact, running, (thread_id,) = _busy_chat(edit_origin, monkeypatch, "Revise")
+    store.complete_agent_task(running.operation_id, applied_revision=None, result={})
+    monkeypatch.setattr(artifact_routes, "agent_turn_busy", lambda *_: True)
+    response = client.post(
+        f"/api/projects/{task.project_id}/artifacts/{artifact.artifact_id}/comments",
+        json={"thread_ids": [thread_id]},
+        headers={"Idempotency-Key": str(uuid.uuid4())},
+    )
+    assert response.status_code == 202, response.text
+    operation_id = queued_turn_operation_id(response.json()["queue_id"])
+    assert wait_until(lambda: store.agent_task(operation_id)).request["artifact_context"]
+
+
+def test_a_reply_does_not_free_a_queued_thread_for_another_send(edit_origin, monkeypatch):
+    _app, store, task = edit_origin
+    client, _artifact, running, (thread_id,) = _busy_chat(edit_origin, monkeypatch, "Revise")
+    base = f"/api/agent-threads/{task.request['chat_id']}/queue"
+    body = {"comment_thread_ids": [thread_id]}
+    first = client.post(base, json=body, headers={"Idempotency-Key": str(uuid.uuid4())})
+    assert first.status_code == 202, first.text
+    store.add_comment_post(
+        task.project_id, thread_id, user_id=store.local_owner.user_id, text="One more"
+    )
+    second = client.post(base, json=body, headers={"Idempotency-Key": str(uuid.uuid4())})
+    assert second.status_code == 409, second.text
+    turn = _drained(edit_origin, running, first.json()["queue_id"])
+    assert "Revise" in turn.request["artifact_context"]["selections"][0]["comment"]

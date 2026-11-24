@@ -18,6 +18,7 @@ from rcp.api.dependencies import (
     get_graph_service,
     get_identity_access,
     get_store,
+    project_write_admission,
     require_project_membership,
     require_project_write_admission,
     require_registered_project,
@@ -906,7 +907,6 @@ class ArtifactCommentBody(BaseModel):
 @router.post(
     "/api/projects/{project_id}/artifacts/{artifact_id}/comments",
     status_code=202,
-    dependencies=[Depends(require_project_write_admission)],
 )
 def comment_artifact(
     project_id: str,
@@ -920,9 +920,38 @@ def comment_artifact(
     background_tasks: Annotated[BackgroundAgentTasks, Depends(get_background_tasks)],
     attachment_store: Annotated[ChatAttachmentStore, Depends(get_attachment_store)],
     idempotency_key: Annotated[UUID4, Header()],
-):
+) -> dict[str, object]:
+    """Send or queue; a queued send drains only after the admission is released."""
     author = identity_access.require_patch_capable_identity(request)
-    key = str(idempotency_key)
+    with project_write_admission(project_id, request):
+        result = _send_artifact_comments(
+            project_id,
+            artifact_id,
+            body,
+            author,
+            str(idempotency_key),
+            catalog=catalog,
+            store=store,
+            background_tasks=background_tasks,
+            attachment_store=attachment_store,
+        )
+    if result.get("queued"):
+        request.app.state.reconcile_thread_handoffs()
+    return result
+
+
+def _send_artifact_comments(
+    project_id: str,
+    artifact_id: str,
+    body: ArtifactCommentBody,
+    author: AuthorizedHuman,
+    key: str,
+    *,
+    catalog: ProjectCatalog,
+    store: AppStore,
+    background_tasks: BackgroundAgentTasks,
+    attachment_store: ChatAttachmentStore,
+) -> dict[str, object]:
     sent = artifact_thread_context(
         store, project_id, author.user_id, body.thread_ids, key, artifact_id=artifact_id
     )

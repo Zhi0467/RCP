@@ -370,6 +370,20 @@ def _reopen(
     )
 
 
+def _queued_send_holds(connection: sqlite3.Connection, thread_id: str, key: str) -> bool:
+    """A queued message under `key` that has not started still sends this thread."""
+    return (
+        connection.execute(
+            "SELECT 1 FROM agent_thread_queue AS queued, "
+            "json_each(queued.picks_json, '$.comment_thread_ids') AS sent "
+            "WHERE queued.idempotency_key=? AND sent.value=? AND queued.operation_id IS NULL "
+            "AND queued.removed_at IS NULL AND queued.refusal_reason IS NULL",
+            (key, thread_id),
+        ).fetchone()
+        is not None
+    )
+
+
 def mark_threads_sent_in(
     connection: sqlite3.Connection,
     rendered_through: Mapping[str, str],
@@ -590,6 +604,12 @@ class CommentStoreMixin(StoreMixinBase):
                         "comment_thread_not_sendable",
                         "This thread is resolved. Reopen it to send.",
                         409,
+                    )
+                if item["send_key"] not in {None, key} and _queued_send_holds(
+                    connection, thread_id, item["send_key"]
+                ):
+                    raise CommentError(
+                        "comment_thread_queued", "A queued send already holds this thread.", 409
                     )
                 until = item["sent_through"] if item["send_key"] == key else None
                 rendered = {

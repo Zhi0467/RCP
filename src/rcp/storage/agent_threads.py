@@ -83,7 +83,7 @@ def space_thread_task(
     """A visible turn of this Space thread."""
     task = store.agent_task(operation_id)
     if (
-        thread.kind != "space"
+        thread.project_id is not None
         or task is None
         or not task.visible
         or not thread_binds_task(thread, task, store.space_id)
