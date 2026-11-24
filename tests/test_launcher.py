@@ -5,6 +5,7 @@ import json
 import shlex
 import signal
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -19,7 +20,7 @@ import pytest
 from rcp.agents import AgentEvent, AgentLauncher, AgentProcessControl, ProviderReadiness
 from rcp.agents.command_mailbox import serve_command_mailbox, stage_command_mailbox
 from rcp.agents.command_protocol import CommandResponse, staged_command_broker_source
-from rcp.agents.launcher import REMOTE_PROVIDER_START_LINE
+from rcp.agents.launcher import REMOTE_PROVIDER_START_LINE, remote_provider_stdout
 from rcp.agents.staged_command_client import _broker_socket_path
 from rcp.agents.write_scope import ProjectWriteScope, WritableRepositoryRoot
 from rcp.limits import PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS
@@ -1480,10 +1481,29 @@ def test_claude_launch_names_its_tools_without_host_session_tools(capability) ->
     assert not {"CronCreate", "ScheduleWakeup", "RemoteTrigger", "SendMessage", "Artifact"} & tools
 
 
-def test_remote_provider_command_uses_login_shell_path() -> None:
-    command = AgentLauncher._remote_login_command(["codex", "login", "status"])
+def test_remote_provider_stdout_reads_the_login_path_past_a_login_banner(
+    tmp_path: Path,
+) -> None:
+    tools = tmp_path / "login-tools"
+    tools.mkdir()
+    probe = tools / "provider-probe"
+    probe.write_text('#!/bin/sh\necho \'{"status":"SUCCESS"}\'\n')
+    probe.chmod(0o755)
+    (tmp_path / ".bash_profile").write_text(
+        f"echo '*** Security alerts ***'\nexport PATH={shlex.quote(str(tools))}:$PATH\n"
+    )
+    command = AgentLauncher._remote_login_command(["provider-probe"])
 
-    assert shlex.split(command) == ["bash", "-lic", "codex login status"]
+    result = subprocess.run(
+        ["sh", "-c", command],
+        capture_output=True,
+        text=True,
+        env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert remote_provider_stdout(result.stdout) == '{"status":"SUCCESS"}\n'
 
 
 def test_remote_provider_launch_keeps_the_recorded_absolute_argv_zero() -> None:

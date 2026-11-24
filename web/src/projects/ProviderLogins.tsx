@@ -1,7 +1,8 @@
 import {
-  ArrowLeftRight,
-  ArrowUpDown,
+  ArrowDown,
+  ArrowRight,
   ExternalLink,
+  Info,
   LoaderCircle,
   Plus,
   RotateCcw,
@@ -387,12 +388,16 @@ function ProviderPanel({
           type="button"
           data-sign-ins-swap=""
           aria-label="Swap sign-in order"
-          title="Swap sign-in order"
+          title={
+            ownFirst
+              ? "Personal sign-ins first, then shared. Click to swap."
+              : "Shared sign-ins first, then personal. Click to swap."
+          }
           disabled={!settingsReady}
           onClick={() => write(ownFirst ? "shared_then_own" : "own_then_shared")}
         >
-          <ArrowLeftRight size={15} className="sign-ins-swap-wide" aria-hidden="true" />
-          <ArrowUpDown size={15} className="sign-ins-swap-narrow" aria-hidden="true" />
+          <ArrowRight size={15} className="sign-ins-swap-wide" aria-hidden="true" />
+          <ArrowDown size={15} className="sign-ins-swap-narrow" aria-hidden="true" />
         </button>
         {ownFirst ? sharedTray : ownTray}
       </div>
@@ -652,9 +657,10 @@ export function SignInCard({
           target="_blank"
           rel="noreferrer"
           title={signIn.verification_url!}
+          aria-label="Open sign-in"
         >
           <ExternalLink size={14} />
-          Open Google sign-in
+          <span className="sign-in-open-label">Open sign-in</span>
         </a>
         <input
           type="password"
@@ -679,12 +685,15 @@ export function SignInCard({
     ) : showsDeviceCode(signIn, viewerUserId) ? (
       <span className="sign-in-device" role="status">
         <a
+          className="button compact"
           href={signIn.verification_url!}
           target="_blank"
           rel="noreferrer"
           title={signIn.verification_url!}
+          aria-label="Open sign-in"
         >
-          {signIn.verification_url}
+          <ExternalLink size={14} />
+          <span className="sign-in-open-label">Open sign-in</span>
         </a>
         <code>{signIn.user_code}</code>
         {cancelSignIn}
@@ -718,19 +727,31 @@ export function SignInCard({
             });
           }}
         >
-          <input
-            type="password"
-            autoComplete="off"
-            autoFocus
-            aria-label={`${row.label} token`}
-            title={row.token_instructions ?? undefined}
-            value={token}
-            disabled={disabled}
-            onChange={(event) => setToken(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") onEntering(false);
-            }}
-          />
+          <span className="sign-in-token-field">
+            <input
+              type="password"
+              autoComplete="off"
+              autoFocus
+              aria-label={`${row.label} token`}
+              placeholder={`Paste a token from ${row.login_command}`}
+              value={token}
+              disabled={disabled}
+              onChange={(event) => setToken(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") onEntering(false);
+              }}
+            />
+            {row.token_instructions ? (
+              <Info
+                size={14}
+                className="sign-in-token-info"
+                role="img"
+                aria-label={row.token_instructions}
+              >
+                <title>{row.token_instructions}</title>
+              </Info>
+            ) : null}
+          </span>
           <button
             className="icon-button compact"
             type="submit"

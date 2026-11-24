@@ -4295,6 +4295,11 @@ button.agent-provider-label {
 .sign-in-device a.button {
   flex-shrink: 0;
 }
+@media (max-width: 560px) {
+  .sign-in-open-label {
+    display: none;
+  }
+}
 .sign-in-device code {
   flex: none;
   border: 1px solid var(--line-strong);
@@ -4307,8 +4312,27 @@ button.agent-provider-label {
 .sign-in-token {
   display: flex;
   flex: 1 1 160px;
+  flex-wrap: wrap;
   gap: 6px;
   min-width: 0;
+}
+.sign-in-token-field {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  position: relative;
+}
+.sign-in-token .sign-in-token-field input {
+  padding-right: 26px;
+  text-overflow: ellipsis;
+}
+.sign-in-token-info {
+  color: var(--muted);
+  pointer-events: auto;
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
 }
 .sign-in-token input {
   background: var(--aqua-field, var(--paper));

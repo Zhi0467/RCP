@@ -65,11 +65,9 @@ class ClaudeAuthentication(ProviderAuthentication):
     # nothing about which machine to run it on, which account it mints for, or
     # that Claude's other sign-in is the one that breaks a shared account.
     token_instructions = (
-        "Run claude setup-token on any machine with a browser, signed in as the Claude "
-        "account this login should use. The token is not tied to the machine that made "
-        "it, so paste it here. Do not use claude auth login for an account other people "
-        "share: that credential rotates on every process start, and one lost write signs "
-        "out every member."
+        "Run claude setup-token on any computer with a browser, signed in as the Claude "
+        "account to use, and paste the token here. Don't use claude auth login for a "
+        "shared account: it signs every member out."
     )
     # Where to go is the surface's sentence, not this one; saying it twice made
     # the signed-out notice read as two instructions.

@@ -2219,7 +2219,7 @@ class AgentLauncher:
             )
             arguments = ssh_arguments(host, remote)
         try:
-            return subprocess.run(
+            result = subprocess.run(
                 arguments,
                 capture_output=True,
                 text=True,
@@ -2237,6 +2237,9 @@ class AgentLauncher:
             )
         except OSError as exc:
             return _ProbeNoVerdict(arguments, 255, "", f"ssh could not start: {exc}")
+        if host:
+            result.stdout = remote_provider_stdout(result.stdout)
+        return result
 
     @staticmethod
     def _remote_login_command(
@@ -2268,13 +2271,13 @@ class AgentLauncher:
             # setsid to fork. Wait for that child so SSH owns the provider's
             # lifetime and exit status rather than the short-lived wrapper.
             payload = shlex.join(["setsid", "--wait", "sh", "-c", child])
-        elif cwd is not None:
-            # asyncio's cwd= only reaches the local ssh client, so a remote run
-            # would otherwise start in $HOME. Codex is additionally pinned by
-            # --cd; Claude has no equivalent flag and depends on this entirely.
-            payload = f"cd {shlex.quote(str(cwd))} && {command_payload}"
         else:
-            payload = command_payload
+            payload = f"echo {shlex.quote(REMOTE_PROVIDER_START_LINE)} && {command_payload}"
+            if cwd is not None:
+                # asyncio's cwd= only reaches the local ssh client, so a remote run
+                # would otherwise start in $HOME. Codex is additionally pinned by
+                # --cd; Claude has no equivalent flag and depends on this entirely.
+                payload = f"cd {shlex.quote(str(cwd))} && {payload}"
         if prefix:
             # The provider's environment is prepared inside the same login shell,
             # so the credential is read on the remote account and never travels
@@ -2286,6 +2289,13 @@ class AgentLauncher:
 #: The remote wrapper prints this line just before it execs the provider, so
 #: the launcher can tell provider time from the SSH handshake before it.
 REMOTE_PROVIDER_START_LINE = "rcp-remote-provider-start"
+
+
+def remote_provider_stdout(stdout: str) -> str:
+    """The provider's own stdout from a remote run, without the login shell's startup output."""
+    _, start, provider = stdout.partition(f"{REMOTE_PROVIDER_START_LINE}\n")
+    return provider if start else stdout
+
 
 # `_remote_login_command` runs the provider under `bash -lic`, and interactive
 # bash on a non-tty always writes these two lines to stderr. They are emitted by

@@ -345,7 +345,7 @@ test("paste-code form shows Google's link, protected input and cancel only to it
     const mine = draw("u-me");
     assert.match(mine, /<form class="sign-in-token sign-in-device"/);
     assert.match(mine, /title="https:\/\/accounts.google.com\/o\/oauth2\/auth\?state=example"/);
-    assert.match(mine, />Open Google sign-in<\/a>/);
+    assert.match(mine, /<a [^>]*aria-label="Open sign-in"/);
     assert.match(mine, /type="password"[^>]*aria-label="Antigravity code"/);
     assert.match(mine, /title="Submit code"/);
     assert.equal(count(mine, /data-sign-in-action="cancel"/g), 1);
