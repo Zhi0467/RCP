@@ -576,6 +576,31 @@ test("a started card's first paint is its run, and the chat stays at its bottom 
     });
 });
 
+test("a started card waits through a failed run list read and paints its run after the retry", async () => {
+  await withPage(WIDE, async (page, url) => {
+    const state = fullPane();
+    state.questions = [started()];
+    await serveTaskCards(page, state);
+    let reads = 0;
+    await page.route("**/api/projects/p/chats/chat/cards", (route) =>
+      ++reads === 1 ? route.fulfill({ status: 500, json: { detail: "down" } }) : route.fallback(),
+    );
+    await page.addInitScript((selector) => {
+      window.cardBadges = [];
+      new MutationObserver(() => {
+        const badge = document.querySelector(`${selector} .question-state`)?.textContent;
+        if (badge && window.cardBadges.at(-1) !== badge) window.cardBadges.push(badge);
+      }).observe(document, { subtree: true, childList: true, characterData: true });
+    }, CARD);
+    await page.goto(url);
+    await page.locator(CARD).waitFor();
+    assert.ok(reads >= 2);
+    assert.deepEqual(await page.evaluate(() => window.cardBadges), [
+      state.episodes[0].episode.presentation.state_line,
+    ]);
+  });
+});
+
 test("the pane lists four sections that fold and stay folded, at phone width too", async () => {
   for (const viewport of [WIDE, PHONE])
     await withPage(viewport, async (page, url) => {
