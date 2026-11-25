@@ -90,7 +90,7 @@ test("chat question answers stay separate from steering and resolved cards enter
     await multi.getByRole("button", { name: "b", exact: true }).click();
     assert.equal(mutations.length, 1);
     await multi.getByRole("textbox").fill("detail");
-    await multi.getByRole("button", { name: "Answer", exact: true }).click();
+    await multi.getByRole("textbox").press("ControlOrMeta+Enter");
     await page.locator('.agent-chat-view-lines [data-question-id="multiple"]').waitFor();
     await page
       .locator('[data-question-id="dismiss"]')

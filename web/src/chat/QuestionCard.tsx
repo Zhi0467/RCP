@@ -44,6 +44,7 @@ export function QuestionCard({
   const parsedTurns = Number(turns);
   const turnsValid = Number.isSafeInteger(parsedTurns) && parsedTurns >= 1;
   const answerBlocked = question.answer_continues === "ending" || (addsTurns && !turnsValid);
+  const submitBlocked = busy || answerBlocked || !canSubmitQuestion(question, text, choices);
   const disabled = busy || !question.can_answer;
   async function resolve(action: "answer" | "dismiss", selection = choices) {
     if (
@@ -156,6 +157,16 @@ export function QuestionCard({
               value={text}
               disabled={disabled}
               onChange={(event) => setText(event.target.value)}
+              onKeyDown={(event) => {
+                if (
+                  event.key !== "Enter" ||
+                  !(event.metaKey || event.ctrlKey) ||
+                  event.nativeEvent.isComposing
+                )
+                  return;
+                event.preventDefault();
+                if (!submitBlocked) void resolve("answer");
+              }}
             />
             {addsTurns && (
               <label className="question-turns">
@@ -171,11 +182,7 @@ export function QuestionCard({
                 />
               </label>
             )}
-            <button
-              className="button primary compact"
-              type="submit"
-              disabled={busy || answerBlocked || !canSubmitQuestion(question, text, choices)}
-            >
+            <button className="button primary compact" type="submit" disabled={submitBlocked}>
               {continueChat
                 ? question.capability === "discuss"
                   ? "Answer and continue Discuss"
