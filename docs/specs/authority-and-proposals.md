@@ -467,8 +467,9 @@ turn, which supplies the truth scope and graph target the card shows.
 A member revision (**Save**, and the draft step of **Park for later**) uses the
 same method with the hash the member's draft started from. It writes only the
 member's run fields into the action, keeps the stored pins and the revising
-turn, issues a new request id, and returns the new hash for the saving tab to
-adopt. Live pins that differ settle the card `stale`, as a Start would. It never
+turn, and, when those fields change the action, issues a new request id and
+returns the new hash for the saving tab to adopt; otherwise the stored hash
+stands. Live pins that differ settle the card `stale`, as a Start would. It never
 takes the Start claim, so crash recovery never sees it.
 
 **Park for later** sets `shelved_at` in that same transaction and appends an

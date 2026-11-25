@@ -21,8 +21,9 @@ Human authorization bounds autonomous episodes and nightly consolidation.
 Episode branches, human-dispatched merges, and optional repository worktrees have
 separate owners. See [Auto-research](specs/auto-research-and-branch-merge.md) and
 [consolidation](specs/graph-consolidation-and-lessons.md). Ordinary conversations
-hold no episode authority of their own, except that a member's Work turn may start
-the Experiments and Auto-research episodes the member asks for, then stop, pause,
+hold no episode authority of their own, except that a member's Work turn may raise plan
+cards for the Experiments and Auto-research episodes the member asks for, which
+start only on the member's Start, then stop, pause,
 resume or extend only the episodes that chat started, and message the Auto-research
 ones, as that member's Runs controls would.
 An Experiment that ended to wait for its human may also resume from the chat it
