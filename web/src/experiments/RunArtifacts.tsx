@@ -3,9 +3,8 @@ import { setReferenceDrag } from "../core/projectReferences";
 import type { GraphTargetRef } from "../core/types";
 import { useState } from "react";
 import { RotateCw } from "lucide-react";
-import { isDesktopRuntime, openDesktopArtifactPdf } from "../core/desktopRuntime";
 import { errorMessage } from "../core/errors";
-import { openArtifact } from "../artifacts/artifactViewerModel";
+import { artifactDownloadOnly, openArtifactEntry } from "../artifacts/artifactViewerModel";
 import type { RunArtifactEntry } from "../core/types";
 import { ArtifactDownload, storedArtifactSave } from "../artifacts/ArtifactDownload";
 import "../styles/runArtifacts.css";
@@ -59,7 +58,7 @@ export function RunArtifacts({
                 })
               }
             >
-              {artifact.view === "file" || (artifact.view === "pdf" && !isDesktopRuntime()) ? (
+              {artifactDownloadOnly(artifact.view) ? (
                 <>
                   <span>{artifact.name}</span>
                   <ArtifactDownload
@@ -82,12 +81,11 @@ export function RunArtifacts({
                   className="run-artifact-open"
                   onClick={() => {
                     setOpenError(null);
-                    if (artifact.view === "pdf") {
-                      void openDesktopArtifactPdf({
-                        projectId,
-                        artifactId: artifact.artifact_id,
-                      }).catch((failure) => setOpenError(errorMessage(failure)));
-                    } else openArtifact({ projectId, artifactId: artifact.artifact_id });
+                    void openArtifactEntry({
+                      projectId,
+                      artifactId: artifact.artifact_id,
+                      view: artifact.view,
+                    }).catch((failure) => setOpenError(errorMessage(failure)));
                   }}
                 >
                   {artifact.name}

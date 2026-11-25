@@ -133,7 +133,9 @@ import { worktreeRepositoryChoices } from "./chat/worktreeRepositories";
 import {
   bindArtifactResourceStore,
   closeArtifactViewer,
+  artifactDownloadOnly,
   openArtifact,
+  openArtifactEntry,
   openEpisodeReport,
   setArtifactViewerHidden,
   useDockedArtifact,
@@ -182,7 +184,6 @@ import {
   setDesktopWebviewZoom,
   isDesktopRuntime,
   listenDesktopEvent,
-  openDesktopArtifactPdf,
   ADD_TEAM_SPACE_HASH,
   returnDesktopToPersonal,
   reverifyBackendIdentity,
@@ -817,17 +818,16 @@ function MemberApp({
   >(null);
   const showWebMcpArtifactViewer = useCallback(
     async (record: ProjectArtifactRecord, projectId: string) => {
-      if (record.view === "pdf") {
-        // The panel's own path: the desktop's system PDF viewer; a browser offers Download.
-        if (!isDesktopRuntime() || !record.artifact_id) return false;
-        await openDesktopArtifactPdf({
+      if (artifactDownloadOnly(record.view, Boolean(record.artifact_id))) return false;
+      if (record.view === "pdf" && record.artifact_id) {
+        await openArtifactEntry({
           projectId,
           artifactId: record.artifact_id,
-          ...(record.task_id ? { taskId: record.task_id } : {}),
+          view: record.view,
+          taskId: record.task_id,
         });
         return true;
       }
-      if (record.view === "file") return false;
       const response = await fetch(record.content_url, {
         method: "HEAD",
         cache: "no-store",

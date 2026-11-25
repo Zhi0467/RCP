@@ -120,6 +120,21 @@ test("Artifacts lists durable entries, refreshes and retries failures", async ()
     await artifactsChanged(page, "listed");
     await page.getByRole("link", { name: "Open Validation report" }).waitFor();
     await page.getByRole("link", { name: "Open originating chat for Validation report" }).waitFor();
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText: async (text) => void (window.copiedReference = text) },
+      });
+    });
+    await page
+      .locator(".artifact-entry", { hasText: "Validation report" })
+      .getByRole("button", { name: "Copy reference", exact: true })
+      .click();
+    await page.waitForFunction(() => window.copiedReference);
+    assert.equal(
+      new URL(await page.evaluate(() => window.copiedReference)).hash,
+      "#/projects/project/targets/branch-one/artifact/report-old",
+    );
 
     assert.equal(await page.locator(".artifacts-list time").count(), 0);
     assert.equal(

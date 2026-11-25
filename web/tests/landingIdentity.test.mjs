@@ -15,15 +15,12 @@ const server = await createServer({
 const { ProjectActionsMenu, ProjectDeleteDialog, ProjectLanding } = await server.ssrLoadModule(
   "/src/projects/ProjectLanding.tsx",
 );
-const {
-  LandingIdentityMenu,
-  IdentityProvenanceSlip,
-  TeamDevicePairingCard,
-  TeamSessionList,
-  copyIdentityId,
-} = await server.ssrLoadModule("/src/projects/LandingIdentityMenu.tsx");
+const { LandingIdentityMenu, IdentityProvenanceSlip, TeamDevicePairingCard, TeamSessionList } =
+  await server.ssrLoadModule("/src/projects/LandingIdentityMenu.tsx");
 
 after(() => server.close());
+
+const idleCopy = { state: "idle", copy() {}, reset() {} };
 
 beforeEach(() => {
   globalThis.localStorage = {
@@ -119,18 +116,14 @@ test("an unnamed personal identity presents the landing sign-in action", () => {
   assert.doesNotMatch(html, /data-identity-record="provenance-slip"/);
 });
 
-test("the identity slip delegates Edit and Copy without changing identity state", async () => {
+test("the identity slip delegates Edit and copies the user ID through its copy control", () => {
   let edits = 0;
-  let copyClicks = 0;
-  let clipboardValue = null;
+  const copied = [];
   const tree = IdentityProvenanceSlip({
     identity,
     identityError: null,
     teamNoticeId: "team-status",
-    copyStatus: "idle",
-    onCopy() {
-      copyClicks += 1;
-    },
+    copy: { ...idleCopy, copy: (text) => copied.push(text) },
     onEdit() {
       edits += 1;
     },
@@ -141,16 +134,10 @@ test("the identity slip delegates Edit and Copy without changing identity state"
   assert.ok(edit);
   assert.ok(copy);
   edit.props.onClick();
-  copy.props.onClick();
-  await copyIdentityId(userId, {
-    async writeText(value) {
-      clipboardValue = value;
-    },
-  });
+  copy.props.control.copy(copy.props.text);
 
   assert.equal(edits, 1);
-  assert.equal(copyClicks, 1);
-  assert.equal(clipboardValue, userId);
+  assert.deepEqual(copied, [userId]);
   assert.equal(identity.user.user_id, userId);
 });
 
@@ -160,8 +147,7 @@ test("the personal identity panel opens the desktop Add team space flow", () => 
       identity,
       identityError: null,
       teamNoticeId: "team-status",
-      copyStatus: "idle",
-      onCopy() {},
+      copy: idleCopy,
       onEdit() {},
       onAddTeamSpace() {},
     }),
@@ -244,8 +230,7 @@ test("the identity record names the team spaces already saved on this desktop", 
       identity,
       identityError: null,
       teamNoticeId: "team-status",
-      copyStatus: "idle",
-      onCopy() {},
+      copy: idleCopy,
       onEdit() {},
       onAddTeamSpace() {},
       teamSpaces: [
@@ -267,8 +252,7 @@ test("a desktop with no saved team space still offers only the Add action", () =
       identity,
       identityError: null,
       teamNoticeId: "team-status",
-      copyStatus: "idle",
-      onCopy() {},
+      copy: idleCopy,
       onEdit() {},
       onAddTeamSpace() {},
     }),
@@ -403,8 +387,7 @@ test("the team identity panel exposes Devices beside invitations", () => {
       identity: { ...identity, space_kind: "team" },
       identityError: null,
       teamNoticeId: "team-status",
-      copyStatus: "idle",
-      onCopy() {},
+      copy: idleCopy,
       onEdit() {},
     }),
   );

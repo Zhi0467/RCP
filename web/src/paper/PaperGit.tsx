@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, Copy, GitBranch, Github, Plus, RefreshCw, Unlink, X } from "lucide-react";
-import { copyText } from "../core/MarkdownCodeBlock";
+import { Check, GitBranch, Github, Plus, RefreshCw, Unlink, X } from "lucide-react";
+import { CopyButton } from "../core/CopyButton";
 import { useLayerDismiss } from "../core/useLayerDismiss";
 import { popoverPlacement, type PopoverPlacement } from "../ui/popoverPlacement";
 import "../graph/GraphPicker.css";
@@ -269,7 +269,6 @@ function LinkDialog({ git, onClose }: { git: PaperGitState; onClose: () => void 
   const [repositoryInput, setRepositoryInput] = useState("");
   const repository = repositoryFromInput(repositoryInput);
   const [branch, setBranch] = useState("");
-  const [copied, setCopied] = useState(false);
   return (
     <PaperDialog label="Paper Git" className="paper-box paper-git-dialog" onClose={onClose}>
       <header className="paper-bar">
@@ -343,21 +342,13 @@ function LinkDialog({ git, onClose }: { git: PaperGitState; onClose: () => void 
           <div className="paper-git-actions">
             {failure && <Failure text={failure} />}
             {!status.key_source && (
-              <button
+              <CopyButton
                 className="button"
-                onClick={() =>
-                  void copyText(status.public_key).then(
-                    () => {
-                      setCopied(true);
-                      setTimeout(() => setCopied(false), 1500);
-                    },
-                    (error) => git.setFailure(String(error)),
-                  )
-                }
+                text={status.public_key}
+                onError={(error) => git.setFailure(String(error))}
               >
-                {copied ? <Check size={14} /> : <Copy size={14} />}
                 Copy key
-              </button>
+              </CopyButton>
             )}
             <button
               className="button primary"

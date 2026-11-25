@@ -21,7 +21,7 @@ import { copyShareLink, useShareLinks } from "../core/shareLinks";
 import type { PaperFile } from "../core/types";
 import { OverflowMenu, type OverflowMenuItem } from "../ui/OverflowMenu";
 import { PaperConfirm } from "./PaperConfirm";
-import { downloadPaper, type PaperDownload } from "./paperDownload";
+import { downloadPaper, type StoredPaperItem } from "./paperDownloadModel";
 
 type TreeFolder = { path: string; name: string; children: (TreeFolder | PaperFile)[] };
 /** A new or renamed file (`file` null for new), or a new or renamed folder (`from` null for new). */
@@ -247,7 +247,7 @@ export function PaperFiles({
   // An empty folder exists only in this browser, so it has nothing to download.
   const entryItems = (
     rename: PathEdit,
-    download: PaperDownload | null,
+    download: StoredPaperItem | null,
     name: string,
     remove: () => Promise<void>,
     fileId: string | null = null,

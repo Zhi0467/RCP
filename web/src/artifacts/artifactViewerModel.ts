@@ -1,7 +1,10 @@
 import { useSyncExternalStore } from "react";
 import type { ResourceStore } from "../core/resourceStore";
 import { runArtifactsProfile } from "./artifactResources";
-import type { RunArtifactEntry } from "../core/types";
+import { isDesktopRuntime, openDesktopArtifactPdf } from "../core/desktopRuntime";
+import { graphTargetFromHash } from "../core/graphTarget";
+import { parseProjectHash } from "../experiments/experimentBoardModel";
+import type { ArtifactView, GraphTargetRef, RunArtifactEntry } from "../core/types";
 
 export type ArtifactViewerTarget =
   | { kind: "artifact"; projectId: string; artifactId: string }
@@ -18,6 +21,43 @@ function publish(next: ArtifactViewerTarget | null) {
 export function openArtifact(input: { projectId: string; artifactId: string }): void {
   publish({ kind: "artifact", ...input });
 }
+
+/**
+ * Opens a row of a run's or a chat's artifact list: the desktop's system PDF
+ * viewer for a PDF, the viewer panel for everything else.
+ */
+export async function openArtifactEntry(input: {
+  projectId: string;
+  artifactId: string;
+  view: ArtifactView;
+  taskId?: string | null;
+}): Promise<void> {
+  const { projectId, artifactId } = input;
+  if (input.view === "pdf" && isDesktopRuntime())
+    await openDesktopArtifactPdf({
+      projectId,
+      artifactId,
+      ...(input.taskId ? { taskId: input.taskId } : {}),
+    });
+  else openArtifact({ projectId, artifactId });
+}
+
+/**
+ * Whether such a row offers only Download: a plain file always, and a PDF
+ * wherever no desktop PDF viewer can reach it as a stored project artifact.
+ */
+export function artifactDownloadOnly(view: ArtifactView, stored = true): boolean {
+  return view === "file" || (view === "pdf" && !(stored && isDesktopRuntime()));
+}
+
+/**
+ * The graph an artifact belongs to, read from its chat link. An experiment
+ * run's link names its branch in the route, which a plain chat link does not.
+ */
+export function artifactGraphTarget(chatHref: string): GraphTargetRef {
+  return parseProjectHash(chatHref).experimentRoute?.graph_target ?? graphTargetFromHash(chatHref);
+}
+
 export function openSpaceArtifact(input: { viewerUrl: string; name: string }): void {
   publish({ kind: "space-artifact", ...input });
 }

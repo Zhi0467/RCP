@@ -11,6 +11,7 @@ import {
   compactionAnchors,
   contextFraction,
   formatTokens,
+  nextTaskAction,
 } from "../src/chat/agentStatusModel.ts";
 
 function status(overrides = {}) {
@@ -224,4 +225,26 @@ test("a compaction divider anchors before the reply, or after a lone human line"
       ["b:h", "after"],
     ],
   );
+});
+
+test("an agent card's one-press action is Resume, else a Retry that needs no composer", () => {
+  const turn = (overrides = {}) => ({
+    kind: "project_chat",
+    request: { mode: "work" },
+    can_resume: false,
+    can_retry: false,
+    ...overrides,
+  });
+  const next = (state, latest, refuses = false) => nextTaskAction({ state, latest }, refuses);
+
+  for (const state of ["failed", "stopped"]) {
+    assert.equal(next(state, turn({ can_resume: true, can_retry: true })), "resume");
+    assert.equal(next(state, turn({ can_retry: true })), "retry");
+    assert.equal(next(state, turn({ can_retry: true, request: { mode: "discuss" } })), null);
+    assert.equal(next(state, turn()), null);
+    assert.equal(next(state, turn({ can_resume: true }), true), null);
+    assert.equal(next(state, null), null);
+  }
+  for (const state of ["working", "done", "unread", "draft"])
+    assert.equal(next(state, turn({ can_resume: true, can_retry: true })), null);
 });
