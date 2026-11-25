@@ -378,13 +378,15 @@ a card that did not exist.
 
 Only the thread's member can resolve a card, except a
 [plan card](#episode-plan-cards) in a shared or node chat. The tap checks membership in the
-action's project, claims once, compares the presented hash and live pins, and invokes the existing human
+action's project, claims once and only while the card still carries the presented hash,
+compares the live pins, and invokes the existing human
 handler with its normal write admission. Direct Python calls enter the transfer
 fence and Experiment lock only when the handler does not acquire them itself.
-A tap settles `stale` only when the presented hash or the live pins no longer
+A tap settles `stale` only when the live pins no longer
 match, their target is gone, or the merge handler reports changed heads; it
-executes nothing and uses the card up. A mismatched presented hash settles
-`stale` even for Decline. A Proposal card decides through the Inbox's own Sync
+executes nothing and uses the card up. A presented hash the card no longer
+carries claims nothing and returns `409 plan_revised`, for every decision, so a
+tap on a plan the agent or another tab revised leaves the card open. A Proposal card decides through the Inbox's own Sync
 (`sync_graph`) on the Proposal's graph, main or its branch, so a branch Proposal
 gets the branch's edit admission and pins its branch content. That Sync appends
 only at the graph revision its live pins were read from, so the append lock rechecks them in the transition
@@ -427,7 +429,7 @@ receipt, the Proposal's decided status, or the repository's requested truth
 membership. Otherwise it fails as interrupted. When the graph cannot be read,
 the claim is released and a later tap rechecks the pins.
 
-Cards expire after `APPROVAL_CARD_TTL_HOURS`. Tap, list, a startup sweep, and
+Cards expire after `APPROVAL_CARD_TTL_HOURS`, except a parked plan card. Tap, list, a startup sweep, and
 the sweep after every watcher poll settle due cards and cards of closed threads, and restore expires every pending
 card. A list reads cards without a write lock unless one is due. The Web shows
 the server's card state, never the device clock. Expiry answers the question with `expired`. Other results
@@ -445,9 +447,39 @@ answers `card_pending`. When the turn succeeds and its Patch lands, RCP creates
 one `experiment_start` card on the raising turn from the settled graph, so the
 agent may write the node in the same turn. A failed turn gets no card. A node
 that is missing or not an Experiment, or a kickoff a later turn already
-proposed, gets no card and a task event. A newer card for
-the node in the same chat settles the older one `stale`. Kickoff is the only
+proposed, gets no card and a task event. Kickoff is the only
 creator: `ask` refuses this kind with `experiment_start_uses_episode`.
+
+**Revision in place.** A request for a node, or for Auto-research, that already
+has an open card in the same chat revises that card instead of raising another
+(`revise_approval_card`). The card may be pending or parked and keeps its
+question id. One transaction, conditioned on the card being unclaimed and
+unsettled, rewrites the action, pins, hash and question text, records the
+revising turn, time and reviser, renews a pending card's expiry, writes the
+turn's raised receipt, and issues a new request id, so a Start never returns an
+episode started for the plan before the revision. When several open cards match,
+the newest is revised and the rest settle `stale`. A card already claimed for
+Start is not revised: the request raises a new card. "A later turn already
+proposed it" compares against the turn that last revised a card, so recovery of
+an older request never overwrites a newer revision. Start runs from the revising
+turn, which supplies the truth scope and graph target the card shows.
+
+A member revision (**Save**, and the draft step of **Park for later**) uses the
+same method with the hash the member's draft started from. It writes only the
+member's run fields into the action, keeps the stored pins and the revising
+turn, issues a new request id, and returns the new hash for the saving tab to
+adopt. Live pins that differ settle the card `stale`, as a Start would. It never
+takes the Start claim, so crash recovery never sees it.
+
+**Park for later** sets `shelved_at` in that same transaction and appends an
+inactive attention event; it sends the agent nothing. A parked card never
+expires: the expiry sweep and the claim skip it, and only its thread closing
+settles it `expired`. Nothing un-parks a card; Start or Delete (decline) settles
+it. Attention and digest counts, the docks, and `list_questions(open_only=True)`
+treat a parked card as inactive. The agent's question snapshot marks it
+`shelved: true` and sorts it after every other pending item, so a backlog of
+parked plans never crowds out a newer question. The state is named `shelved` in
+storage because `parked` already names a question waiting on a settled turn.
 
 The card follows its chat. Anyone who can read the chat sees it. In a private
 chat only its owner acts; in a shared or node chat any Patch-capable member with
@@ -458,7 +490,8 @@ type, the graph target, and every governing Decision with its decided option
 (none while undecided), never the node's revision, so the card shows later
 edits live. A changed governing link settles the next tap `stale`.
 
-**Start** goes through the card's tap route with the human's own goal, limit,
+**Start** goes through the card's tap route with the human's own handoff (the
+action's `goal`, the text the run starts with), limit,
 profile and the node revision the card showed. Under the project lock, a moved
 revision or changed governing links answer `plan_changed` and keep the card
 pending, as do a missing start (`experiment_start_required`), a limit above the
@@ -466,13 +499,30 @@ node's (`invocation_ceiling_above_node`), and a blank or oversized goal
 (`goal_invalid`). A node that is not ready, an admission conflict, or another
 refusal settles it `failed`. The episode id derives from the
 card's request, the tapping member authorizes it, and its root names the raising
-turn, so that chat may later resume, extend or stop it. **Don't run this now**
+turn, so that chat may later resume, extend or stop it. **Delete**
 settles `declined`. Outcomes reach the agent through ordinary answer delivery.
 The Auto-research orchestrator starts its own children without cards.
 
+**Run here** is an Experiment card's third decision and starts no episode. After
+the same pin and node-revision checks as Start, it queues one message to the
+card's own chat as the tapping member, through the chat's ordinary message queue
+under the card's request id, so a busy chat keeps it and the member authorizes
+it as any message they send. The message carries the card's handoff and the
+node's design and completion criteria. The card settles `run_here` with that
+turn's operation id, and the answer is recorded as received by that turn, so no
+follow-up turn repeats it. The card reads `running_here` while the turn is
+queued or running and `ran_here` after. A message queued under a claimed card's
+request id settles an interrupted Run here at startup. Auto-research cards
+refuse it with `decision_not_available`. The web's staged-change check and node
+Sync run before the tap; the server's part of that order is the node revision.
+
+An Experiment allows one live episode per graph target, so a kickoff for a node
+whose run is live is refused with `experiment_run_live` and its `episode_id`,
+and raises no card.
+
 Auto-research kickoff records the same `card_pending` receipt and raises an
-`auto_research` card after the turn succeeds. One pending Auto-research card per
-chat is kept; a newer one settles the older one `stale`. Only the main graph
+`auto_research` card after the turn succeeds. One open Auto-research card per
+chat is kept; a newer request revises it in place. Only the main graph
 target is pinned, so Settings edits do not stale it. Start rechecks readiness
 and accepts the human's instruction, branch name, code worktree and repository,
 orchestrator profile, and turn budget. Both kinds use one discriminated `start`

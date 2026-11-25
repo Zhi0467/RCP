@@ -39,13 +39,15 @@ from rcp.history import PatchRejected, ReplayHalted
 from rcp.limits import AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES
 from rcp.projects import ProjectCatalog
 from rcp.runs.approval_cards import (
+    PLAN_RUN_HERE,
     action_graph,
     approval_pins,
     approved_receipt,
     plan_card_actor,
     plan_card_episode_id,
+    run_here_receipt,
 )
-from rcp.runs.experiment_admission import experiment_node
+from rcp.runs.experiment_admission import experiment_node, run_here_message
 from rcp.service import ProjectService
 from rcp.storage import AppStore
 from rcp.storage.approval_cards import card_sha256
@@ -69,10 +71,16 @@ class DecideProposalBody(BaseModel):
 
 
 class ResolveApprovalBody(BaseModel):
+    """`park`, `save` and `run_here` are plan card decisions; `run_here` is an Experiment's."""
+
     model_config = ConfigDict(extra="forbid", strict=True)
-    decision: Literal["approve", "decline"]
+    decision: Literal["approve", "decline", "park", "save", "run_here"]
     pinned_sha256: str
     start: PlanStartOverrides | None = None
+
+
+_PLAN_KINDS = frozenset({"experiment_start", "auto_research"})
+_OPEN_STATES = frozenset({"pending", "parked"})
 
 
 def _sync_proposal(
@@ -306,7 +314,10 @@ def _require_seen_plan(
         raise _NotNow(409, {"code": "plan_changed"})
     if overrides.invocation_ceiling > node.invocation_ceiling:
         raise _NotNow(422, {"code": "invocation_ceiling_above_node"})
-    goal = overrides.goal
+    _require_goal(overrides.goal)
+
+
+def _require_goal(goal: str) -> None:
     if not goal.strip() or len(goal.encode()) > AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES:
         raise _NotNow(422, {"code": "goal_invalid"})
 
@@ -323,6 +334,35 @@ def _reason(detail: Any) -> str:
     return str(detail)
 
 
+def _live_state(
+    card: dict[str, Any],
+    action: ApprovalAction,
+    service: ProjectService,
+    store: AppStore,
+    human: AuthorizedHuman,
+) -> tuple[GraphState, dict[str, Any]] | None:
+    """The graph state and live pins while they still match the card; None means stale.
+
+    Stale covers a pinned target that no longer exists or no longer applies. An
+    outage raises `_NotNow` before any write.
+    """
+    try:
+        graph = (
+            action_graph(service, action)
+            if isinstance(action, ProposalAction | ExperimentStartAction)
+            else service
+        )
+        state = graph.history.state()
+        pinned = approval_pins(service, store, action, human, state=state)
+    except (KeyError, ValueError):
+        return None
+    except (StateUnavailable, OSError) as exc:
+        raise _NotNow(503, str(exc)) from exc
+    if card_sha256(card["action"], pinned) != card["pinned_sha256"]:
+        return None
+    return state, pinned
+
+
 def _resolve(
     card: dict[str, Any],
     question: QuestionRecord,
@@ -333,9 +373,11 @@ def _resolve(
     identity_access: IdentityAccess,
     human: AuthorizedHuman,
 ) -> dict[str, Any]:
-    """Stale only when live pins differ; outages raise `_NotNow` before any write."""
-    if body.pinned_sha256 != card["pinned_sha256"]:
-        return {"outcome": "stale"}
+    """Stale only when live pins differ; outages raise `_NotNow` before any write.
+
+    The claim already proved the presented hash is the card's. A Start runs from the
+    turn that last revised the plan, which supplies its truth scope and graph target.
+    """
     action = TypeAdapter(ApprovalAction).validate_python(card["action"])
     if body.decision == "decline" and action.kind != "auto_research":
         return {"outcome": "declined"}
@@ -343,22 +385,10 @@ def _resolve(
         raise _NotNow(422, {"code": "start_kind_mismatch"})
     with ExitStack() as admission:
         service = _admit(admission, action, request, store, catalog)
-        try:
-            graph = (
-                action_graph(service, action)
-                if action.kind in {"proposal", "experiment_start"}
-                else service
-            )
-            state = graph.history.state()
-            pinned_revision = state.revision
-            pinned = approval_pins(service, store, action, human, state=state)
-        except (KeyError, ValueError):
-            # The pinned target no longer exists or no longer applies.
+        live = _live_state(card, action, service, store, human)
+        if live is None:
             return {"outcome": "stale"}
-        except (StateUnavailable, OSError) as exc:
-            raise _NotNow(503, str(exc)) from exc
-        if card_sha256(card["action"], pinned) != card["pinned_sha256"]:
-            return {"outcome": "stale"}
+        state, pinned = live
         if body.decision == "decline":
             return {"outcome": "declined"}
         if action.kind == "auto_research" and body.start is None:
@@ -366,6 +396,11 @@ def _resolve(
         if action.kind == "experiment_start":
             assert body.start is None or isinstance(body.start, ExperimentStartOverrides)
             _require_seen_plan(state, action, body.start)
+            if body.decision == "run_here":
+                assert body.start is not None
+                return _run_here(
+                    state, action, body.start, card["request_id"], question, request, store, human
+                )
         if isinstance(body.start, AutoResearchStartOverrides):
             from rcp.api.episodes import StartEpisodeBody
 
@@ -387,13 +422,121 @@ def _resolve(
                 identity_access,
                 pinned,
                 service,
-                pinned_revision,
+                state.revision,
                 human,
-                question.origin.operation_id,
+                card["revised_operation_id"] or question.origin.operation_id,
                 body.start,
             ),
             card["request_id"],
         )
+
+
+def _run_here(
+    state: GraphState,
+    action: ExperimentStartAction,
+    overrides: ExperimentStartOverrides,
+    request_id: str,
+    question: QuestionRecord,
+    request: Request,
+    store: AppStore,
+    human: AuthorizedHuman,
+) -> dict[str, Any]:
+    """Send the plan to its own chat as the tapping member's message; start no episode.
+
+    The message goes through the chat's ordinary queue under the card's request id, so a
+    busy chat keeps it and a repeated tap names the same turn.
+    """
+    from rcp.api.agent_threads import QueuedMessageBody, queue_message
+    from rcp.api.dependencies import get_attachment_store
+    from rcp.limits import AGENT_THREAD_QUEUE_MAX_CHARS
+
+    node = experiment_node(state, action.node_id)
+    assert node is not None
+    message = run_here_message(node, overrides.goal)
+    if len(message) > AGENT_THREAD_QUEUE_MAX_CHARS:
+        raise _NotNow(422, {"code": "run_here_too_long"})
+    agent = store.agent(question.origin.owner_id)
+    if agent is None or agent.project_id is None:
+        raise _NotNow(409, {"code": "run_here_chat_unavailable"})
+    try:
+        with project_write_admission(agent.project_id, request) as project_id:
+            queued = queue_message(
+                store,
+                get_catalog(request),
+                get_attachment_store(request),
+                agent,
+                project_id,
+                human.user_id,
+                QueuedMessageBody(message=message),
+                request_id,
+            )
+    except HTTPException as exc:
+        raise _NotNow(exc.status_code, exc.detail) from exc
+    return {"outcome": PLAN_RUN_HERE, "result": run_here_receipt(queued.queue_id)}
+
+
+def _revise(
+    card: dict[str, Any],
+    question: QuestionRecord,
+    body: ResolveApprovalBody,
+    request: Request,
+    store: AppStore,
+    catalog: ProjectCatalog,
+    human: AuthorizedHuman,
+) -> dict[str, Any]:
+    """Save the member's run fields into the plan card, and park it for `park`.
+
+    One conditional write on the hash the member saw; it never takes the Start claim.
+    Live pins that differ settle the card `stale`, as a Start would.
+    """
+    action = TypeAdapter(ApprovalAction).validate_python(card["action"])
+    if body.start is not None and body.start.kind != action.kind:
+        raise _NotNow(422, {"code": "start_kind_mismatch"})
+    if body.decision == "save" and body.start is None:
+        raise _NotNow(422, {"code": "start_required"})
+    question_id = question.question_id
+    if card["state"] not in _OPEN_STATES or card["pinned_sha256"] != body.pinned_sha256:
+        raise _conflict(store, question_id, body.pinned_sha256)
+    revised = card["action"]
+    if body.start is not None:
+        if isinstance(body.start, ExperimentStartOverrides):
+            _require_goal(body.start.goal)
+        revised = {
+            **revised,
+            **body.start.model_dump(mode="json", exclude={"kind", "node_rev"}),
+        }
+    with ExitStack() as admission:
+        service = _admit(admission, action, request, store, catalog)
+        if _live_state(card, action, service, store, human) is None:
+            if not store.claim_approval_card(question_id, body.pinned_sha256):
+                raise _conflict(store, question_id, body.pinned_sha256)
+            return {"outcome": "stale"}
+    digest = store.revise_approval_card(
+        question_id,
+        revised_by={"kind": "member", "user_id": human.user_id, "name": human.display_name},
+        action=revised,
+        expected_sha256=body.pinned_sha256,
+        shelve=body.decision == "park",
+    )
+    if digest is None:
+        raise _conflict(store, question_id, body.pinned_sha256)
+    return {
+        "outcome": "parked" if body.decision == "park" else "saved",
+        "pinned_sha256": digest,
+    }
+
+
+def _conflict(store: AppStore, question_id: str, presented_sha256: str) -> HTTPException:
+    """Why a tap could not act on the card: revised since the member read it, or taken."""
+    card = store.approval_card(question_id)
+    revised = (
+        card is not None
+        and card["state"] in _OPEN_STATES
+        and card["pinned_sha256"] != presented_sha256
+    )
+    return HTTPException(
+        status_code=409, detail={"code": "plan_revised" if revised else "card_taken"}
+    )
 
 
 def _admit(
@@ -586,18 +729,44 @@ def resolve_approval_card(
 ):
     human = identity_access.require_patch_capable_identity(request)
     question, card = _owned_card(store, question_id, request, human)
-    if not store.claim_approval_card(question_id):
+    if body.decision in {"park", "save", "run_here"} and card["kind"] not in (
+        {"experiment_start"} if body.decision == "run_here" else _PLAN_KINDS
+    ):
+        raise HTTPException(status_code=422, detail={"code": "decision_not_available"})
+    if body.decision == "run_here" and body.start is None:
+        raise HTTPException(status_code=422, detail={"code": "experiment_start_required"})
+    if body.decision in {"park", "save"}:
+        try:
+            result = _revise(card, question, body, request, store, catalog, human)
+        except _NotNow as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+        if result["outcome"] != "stale":
+            return result
+        store.settle_approval_card(question_id, result, resolved_by=human)
+        _deliver(request, question)
+        return result
+    if not store.claim_approval_card(question_id, body.pinned_sha256):
         store.approval_card(question_id)  # Expiry may have passed since the first read.
         if store.take_expired_approval_card(question_id):
             return {"outcome": "expired"}
-        raise HTTPException(status_code=409, detail={"code": "card_taken"})
+        raise _conflict(store, question_id, body.pinned_sha256)
+    card = store.approval_card(question_id) or card
     try:
         result = _resolve(card, question, body, request, store, catalog, identity_access, human)
     except _NotNow as exc:
         # An outage or closed admission is not the member's answer; keep the card open.
         store.release_approval_card(question_id)
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-    store.settle_approval_card(question_id, result, resolved_by=human)
+    store.settle_approval_card(
+        question_id,
+        result,
+        resolved_by=human,
+        received_by_operation_id=(
+            result["result"]["operation_id"] if result["outcome"] == PLAN_RUN_HERE else None
+        ),
+    )
+    if result["outcome"] == PLAN_RUN_HERE:
+        request.app.state.reconcile_thread_handoffs()
     try:
         action = TypeAdapter(ApprovalAction).validate_python(card["action"])
         if (
@@ -610,8 +779,14 @@ def resolve_approval_card(
                 store.record_declined_rejection(question_id, rejection)
             result = {**result, **rejection}
     finally:
-        try:
-            request.app.state.reconcile_question_answers(question.origin.project_id)
-        except Exception:
-            logger.exception("Approval card %s settled; immediate delivery failed", question_id)
+        _deliver(request, question)
     return result
+
+
+def _deliver(request: Request, question: QuestionRecord) -> None:
+    try:
+        request.app.state.reconcile_question_answers(question.origin.project_id)
+    except Exception:
+        logger.exception(
+            "Approval card %s settled; immediate delivery failed", question.question_id
+        )

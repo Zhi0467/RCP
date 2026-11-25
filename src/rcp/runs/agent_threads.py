@@ -12,6 +12,7 @@ from rcp.runs.provider_usage import record_provider_usage
 from rcp.storage import AppStore
 from rcp.storage.agent_tasks import SESSION_TASK_KINDS
 from rcp.storage.agent_threads import AgentThreadRecord, bound_thread
+from rcp.storage.digest import PARKED_CARD_SQL
 from rcp.storage.watchers import _OPEN
 
 if TYPE_CHECKING:
@@ -113,7 +114,8 @@ def thread_projections(
             (row["project_id"], row["owner_id"])
             for row in connection.execute(
                 "SELECT DISTINCT project_id, owner_id FROM questions WHERE owner_kind='chat' "
-                f"AND owner_id IN ({ids}) AND state='pending' AND withdrawn_readonly=0",
+                f"AND owner_id IN ({ids}) AND state='pending' AND withdrawn_readonly=0 "
+                f"AND NOT {PARKED_CARD_SQL}",
                 thread_ids,
             )
         }

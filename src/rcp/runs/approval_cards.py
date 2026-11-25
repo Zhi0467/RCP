@@ -256,10 +256,18 @@ def settle_interrupted_approval_cards(
 
     The action's durable effect proves it committed: a request-id receipt for
     episode start and merges, or the live Proposal status or truth membership.
+    A message queued under the card's request id is a Run here that committed.
     Without one the card fails as interrupted. When the graph cannot be read the
     claim is released, so a later tap rechecks the pins instead.
     """
     for card in store.interrupted_approval_cards(claimed_before):
+        if (ran_here := _run_here_receipt(store, card)) is not None:
+            store.settle_approval_card(
+                card["question_id"],
+                {"outcome": PLAN_RUN_HERE, "result": ran_here},
+                received_by_operation_id=ran_here["operation_id"],
+            )
+            continue
         try:
             receipt = committed_receipt(store, service_for, card)
         except (StateUnavailable, ReplayHalted, OSError, KeyError):
@@ -271,6 +279,20 @@ def settle_interrupted_approval_cards(
             if receipt is not None
             else {"outcome": "failed", "reason": "interrupted"},
         )
+
+
+def run_here_receipt(queue_id: str) -> dict[str, Any]:
+    """The member turn a Run here sent, named before it starts."""
+    from rcp.runs.agent_thread_queue import queued_turn_operation_id
+
+    return {"operation_id": queued_turn_operation_id(queue_id), "queue_id": queue_id}
+
+
+def _run_here_receipt(store: AppStore, card: dict[str, Any]) -> dict[str, Any] | None:
+    if card["action"]["kind"] != "experiment_start":
+        return None
+    queued = store.agent_thread_queue_for_key(card["chat_id"], card["request_id"])
+    return run_here_receipt(queued.queue_id) if queued is not None else None
 
 
 def committed_receipt(
@@ -350,6 +372,14 @@ APPROVAL_OUTCOMES: dict[ApprovalOutcome, str] = {
     "failed": "the action was refused or interrupted; the answer carries the reason. "
     "Fix the cause and raise it again with a new key.",
 }
+
+
+PLAN_RUN_HERE = "run_here"
+PLAN_RUN_HERE_MEANING = (
+    "the human chose to run this plan in this chat instead of as an episode. No episode "
+    "started; their message with the handoff, design and done-when follows, so do that work "
+    "in this chat."
+)
 
 
 def _action_usage(model: type[BaseModel]) -> str:

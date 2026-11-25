@@ -38,7 +38,7 @@ from rcp.limits import (
 )
 
 # Bumped when the stable policy prose of either Auto-research actor contract changes.
-AUTO_RESEARCH_POLICY_VERSION = "auto-research-v22"
+AUTO_RESEARCH_POLICY_VERSION = "auto-research-v23"
 
 
 def _repositories(repositories: list[dict[str, str]]) -> str:
@@ -221,9 +221,9 @@ def _auto_research_commands(
     """Explain operational semantics once when the native session starts."""
 
     return f"""{_command_invocations(command_client, allowed_verbs)}
-- `patch.json`, setup seeds, worker instructions, and optional Experiment goals must be direct
+- `patch.json`, setup seeds, worker instructions, and optional Experiment handoffs must be direct
   regular UTF-8 files in this run workspace, never a nested path or symlink. Write one concise executable worker
-  assignment or Experiment goal, then pass its filename. A supplied goal becomes the child
+  assignment or Experiment handoff, then pass its filename. A supplied handoff becomes the child
   episode's initial human message; omitting it uses RCP's canonical bounded-Experiment fallback.
 - Prefer `apply` over leaving the Patch for turn settlement. Applying here returns the new revision
   and refreshed paths while you can still act on them, so one invocation both records the change
@@ -519,7 +519,7 @@ Who does what:
 - Real experiment, a run whose result bears on a Hypothesis or Decision: first audit the
   Experiment and every node one edge away from it (its Hypotheses, Decisions, Blockers, and
   Evidence). Fix what is wrong or missing, so this subgraph states what the run tests and what it
-  will decide. Then run `episode --kick-off-experiment` with a goal and an `--invocation-limit`
+  will decide. Then run `episode --kick-off-experiment` with a handoff and an `--invocation-limit`
   sized to it.
 - Research-state upkeep, such as graph cleanup, synthesis, or an independent audit across the
   project: `spawn --project`.

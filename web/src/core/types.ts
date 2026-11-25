@@ -4259,9 +4259,33 @@ export interface ApprovalCard {
   pinned: Record<string, unknown>;
   pinned_sha256: string;
   expires_at: string;
-  state: "pending" | "running" | "expired";
+  /**
+   * The server's card state, in this precedence: expired, then a Run here's `running_here`
+   * (its turn is queued or running) or `ran_here`, then running (claimed for Start, or
+   * settled by it), then parked, then pending.
+   */
+  state: ApprovalCardState;
   /** The settled outcome, once a tap or expiry resolved the card. */
   result?: Pick<ApprovalCardResult, "outcome" | "reason" | "rejected"> | null;
+  /** When a member parked the plan; a parked card never expires. */
+  shelved_at?: string | null;
+  /** The last in-place revision, by the agent's later request or a member's Save or Park. */
+  revised_at?: string | null;
+  revised_by?: ApprovalCardReviser | null;
+  /** The agent turn that last revised the plan; the card renders in that turn. */
+  revised_operation_id?: string | null;
+  /** The member turn a Run here sent to this chat. */
+  run_here_operation_id?: string | null;
+}
+
+export type ApprovalCardState =
+  "pending" | "parked" | "running" | "expired" | "running_here" | "ran_here";
+
+export interface ApprovalCardReviser {
+  kind: "agent" | "member";
+  /** The member's display name, or the chat's title for an agent when it has one. */
+  name: string | null;
+  user_id?: string;
 }
 
 export interface ExperimentStartOverrides {
@@ -4288,17 +4312,28 @@ export interface AutoResearchStartOverrides {
 }
 
 export interface ApprovalCardDecision {
-  decision: "approve" | "decline";
+  /**
+   * `park` and `save` are plan card decisions and write the member's `start` fields into
+   * the card; `run_here` is an Experiment plan card's and requires `start`.
+   */
+  decision: "approve" | "decline" | "park" | "save" | "run_here";
+  /** The hash the member saw; a card revised since answers `409 plan_revised`. */
   pinned_sha256: string;
   start?: ExperimentStartOverrides | AutoResearchStartOverrides;
 }
 
 export interface ApprovalCardResult {
-  outcome: "approved" | "declined" | "stale" | "failed" | "expired";
+  outcome: "approved" | "declined" | "stale" | "failed" | "expired" | "run_here";
   result?: unknown;
   reason?: string | null;
   /** Set on a declined approve-Proposal card: whether its Proposal was then rejected. */
   rejected?: boolean;
+}
+
+/** A Park or Save reply: the card stays open under the hash the saving tab adopts. */
+export interface ApprovalCardRevision {
+  outcome: "parked" | "saved";
+  pinned_sha256: string;
 }
 
 /** A pending Proposal that a turn of the member's own project thread raised, drawn live. */
