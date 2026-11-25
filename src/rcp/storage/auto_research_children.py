@@ -798,7 +798,7 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
         worker_id: str,
         message_ids: list[str],
     ) -> AgentTaskRecord | None:
-        """Spend B and claim one exact worker-mail prefix on its saved route."""
+        """Claim one exact worker-mail prefix on its saved route; workers spend no invocation."""
 
         return self._create_auto_research_child_work_wake_task(
             record, worker_id=worker_id, message_ids=message_ids, watcher_ids=[]

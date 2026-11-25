@@ -1046,10 +1046,10 @@ wait for its human is also open to the chat the Experiment runs in, as before.
   Experiment reads it in its first continued turn, and an orchestrator receives it
   as the member's mail.
 - `episode --message <id> --body-file <file>` mails a running episode, read at its
-  next turn. The result's `read_at` is `after_added_turns` when the episode is on
-  its final turn, so the chat adds turns with a note instead, and `delivered` once
-  the mail was claimed. An older form that continued an ended orchestrator with
-  `--invocation-limit` still replays but is no longer offered.
+  next turn. The result's `read_at` is `next_turn`, `after_added_turns` when the
+  episode is on its final turn, so the chat adds turns with a note instead, or
+  `delivered` once the mail was claimed. An older form that continued an ended
+  orchestrator with `--invocation-limit` is still accepted but no longer offered.
 
 The chat picks the control from the episode's state: message, pause or stop a
 running one, resume a paused one, add turns to an ended one. A correction names

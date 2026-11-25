@@ -624,7 +624,7 @@ stream-JSON input and output and stdin left open, so a follow-up is a queued
 user line. agy answers each user line with one `result`, and results carry no
 input ids, so the local turn and the remote fence count results against inputs
 in order. A follow-up counts as delivered once written. The first non-`SUCCESS`
-result ends the turn.
+result, or any result with `denied_actions`, ends the turn.
 
 Each launch passes `--settings` with `agentMode: ""`, `request-review`,
 `allowNonWorkspaceAccess` on for Work and orchestrate (so a path outside the
@@ -670,7 +670,7 @@ agent, so artifact edits on agy (`resume_keeps_tools`) always start a recorded
 fresh session instead of resuming the master. agy has no fork; branching an agy
 chat starts a fresh session with the tail-transcript fallback. agy history is
 SQLite, so RCP indexes no agy sessions, and session summaries refuse because
-agy launches are never `enforced`. agy has no shell-timeout or auto-compact
+the profile does not support that capability. agy has no shell-timeout or auto-compact
 lever, so the machine card shows neither field for it. Usage is read from each
 completed `agent_response` step, never from `result.usage`, which is cumulative
 over the whole conversation.
@@ -1319,7 +1319,7 @@ RCP shows the URL to the member who started the attempt, and
 `POST /api/providers/{provider}/logins/sign-in/{attempt_id}/code` writes their
 code to the process once. Exit 0 means the CLI took the code; the sign-in counts
 after `agy -p /usage` succeeds. On the backend machine, a missing native Antigravity
-credential makes the shared sign-in available immediately, including after a previously
+credential makes the shared sign-in unavailable immediately, including after a previously
 verified credential disappears. Sign-out deletes the home's token file, since
 agy's own logout is interactive only. Tokens travel through
 stdin/private environment, never argv, events, responses, receipts, logs or
