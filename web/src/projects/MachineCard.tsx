@@ -523,7 +523,9 @@ function ProviderPathRow({
         data-machine-setting="provider_path"
         disabled={writesDisabled || path.saving}
       />
-      <span className={`provider-path-state ${state.kind}`}>{state.label}</span>
+      <span className={`provider-path-state ${state.kind}`} title={state.note}>
+        {state.label}
+      </span>
       <button
         type="button"
         data-machine-action="resolve-provider"

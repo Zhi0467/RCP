@@ -1077,6 +1077,20 @@ test("provider path state distinguishes a stale recorded executable", () => {
   );
 });
 
+test("a failed automatic CLI update shows on a usable provider", () => {
+  const state = providerPathPresentation(
+    { path_state: "resolved", update_warning: "the updater exited 1" },
+    "/home/rcp/.local/bin/codex",
+    "/home/rcp/.local/bin/codex",
+  );
+  assert.equal(state.kind, "warning");
+  assert.equal(state.note, "the updater exited 1");
+  assert.equal(
+    providerPathPresentation({ path_state: "resolved" }, "/bin/codex", "/bin/codex").kind,
+    "ready",
+  );
+});
+
 const orchestratorOnClaude = {
   ...project,
   agent_profiles: {

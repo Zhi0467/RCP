@@ -718,16 +718,10 @@ def _fence_service_stopped_disabled(unit: str) -> None:
         )
 
 
-def _run_as_account(
-    account: pwd.struct_passwd,
-    argv: tuple[str, ...],
-    *,
-    cwd: Path | None = None,
-    environment: dict[str, str] | None = None,
-    timeout: float,
-    capture_output: bool = True,
-    input_text: str | None = None,
-) -> subprocess.CompletedProcess[str]:
+def _account_environment_argv(
+    account: pwd.struct_passwd, environment: dict[str, str] | None = None
+) -> tuple[str, ...]:
+    """The `env -i` prefix that gives a command the account's own clean environment."""
     explicit_environment = {
         "HOME": account.pw_dir,
         "USER": account.pw_name,
@@ -741,10 +735,29 @@ def _run_as_account(
     }
     if environment:
         explicit_environment.update(environment)
-    env_argv = tuple(f"{name}={value}" for name, value in explicit_environment.items())
+    return ("env", "-i", *(f"{name}={value}" for name, value in explicit_environment.items()))
+
+
+def _run_as_account(
+    account: pwd.struct_passwd,
+    argv: tuple[str, ...],
+    *,
+    cwd: Path | None = None,
+    environment: dict[str, str] | None = None,
+    timeout: float,
+    capture_output: bool = True,
+    input_text: str | None = None,
+) -> subprocess.CompletedProcess[str]:
     options = {} if input_text is None else {"input_text": input_text}
     return _run_process(
-        ("runuser", "--user", account.pw_name, "--", "env", "-i", *env_argv, *argv),
+        (
+            "runuser",
+            "--user",
+            account.pw_name,
+            "--",
+            *_account_environment_argv(account, environment),
+            *argv,
+        ),
         cwd=cwd or Path(account.pw_dir),
         timeout=timeout,
         capture_output=capture_output,
