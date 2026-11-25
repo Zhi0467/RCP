@@ -1123,7 +1123,7 @@ class ExperimentStoreMixin(StoreMixinBase):
             "stage_root": record.stage_root,
             "chat_id": request.get("chat_id"),
             "model": request.get("model"),
-            "reasoning": request.get("reasoning"),
+            "reasoning": _optional_str(request.get("reasoning")),
         }
         actual = {
             "project_id": episode["project_id"],
@@ -1135,7 +1135,7 @@ class ExperimentStoreMixin(StoreMixinBase):
             "stage_root": episode["stage_root"],
             "chat_id": episode["chat_id"],
             "model": binding_request.get("model"),
-            "reasoning": binding_request.get("reasoning"),
+            "reasoning": _optional_str(binding_request.get("reasoning")),
         }
         mismatched = sorted(key for key, value in expected.items() if actual[key] != value)
         if mismatched:
