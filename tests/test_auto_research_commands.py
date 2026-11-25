@@ -1110,6 +1110,12 @@ def test_an_orchestrator_cannot_use_a_members_episode_actions(tmp_path) -> None:
             {"action": "kick_off_auto_research", "goal_file": "goal.md", "invocation_limit": 2},
             {"action": "pause", "episode_id": auto_research.episode_id},
             {"action": "add_turns", "episode_id": auto_research.episode_id, "invocation_limit": 2},
+            {
+                "action": "message",
+                "episode_id": auto_research.episode_id,
+                "body_file": "note.md",
+                "invocation_limit": 2,
+            },
         )
     ):
         response = dispatcher.dispatch(
@@ -1126,6 +1132,47 @@ def test_an_orchestrator_cannot_use_a_members_episode_actions(tmp_path) -> None:
             "invalid",
             "episode_action_not_granted",
         )
+
+
+def test_an_old_recorded_child_stop_still_replays(tmp_path) -> None:
+    store, auto_research, root = _setup_auto_research(tmp_path)
+    effects = _Effects(store, auto_research, root)
+    dispatcher = _dispatcher(store, effects.bundle())
+    key = "old-child-stop"
+    arguments = {"action": "stop", "episode_id": "old-child"}
+    recorded_result = {"disposition": "stopped", "episode_id": "old-child", "status": "stopped"}
+    store.start_agent_command(
+        operation_id=root.operation_id,
+        command_id="old-stop-command",
+        episode_id=auto_research.episode_id,
+        verb="episode",
+        idempotency_key=key,
+        payload={
+            "request_id": "old-stop-command",
+            "arguments": arguments,
+            "planned_episode_effect_id": _effect_id(auto_research.episode_id, "episode", key),
+        },
+    )
+    store.finish_agent_command(
+        "old-stop-command",
+        status="ok",
+        payload={"result": recorded_result},
+        message="Experiment episode is stopped.",
+    )
+
+    replay = dispatcher.dispatch(
+        root.operation_id,
+        _request(
+            EpisodeCommandRequest,
+            request_id="9" * 32,
+            verb="episode",
+            idempotency_key=key,
+            arguments=arguments,
+        ),
+    )
+
+    assert (replay.status, replay.result) == ("ok", recorded_result)
+    assert effects.episode_effect_ids == []
 
 
 def test_stop_intent_fences_new_mutating_commands_before_effect_execution(tmp_path) -> None:

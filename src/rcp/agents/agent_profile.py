@@ -323,16 +323,28 @@ def _message_usage(profile: AgentProfile, context: UsageContext) -> str:
 
 def _episode_usage(profile: AgentProfile, context: UsageContext) -> str:
     if _auto_research(profile):
-        from rcp.agents.staged_command_client import experiment_kickoff_usage
+        from rcp.agents.staged_command_client import (
+            EPISODE_BODY,
+            EPISODE_MESSAGE,
+            episode_control_usage,
+            experiment_kickoff_usage,
+        )
 
-        return _bullets(
-            context,
+        message = episode_control_usage(EPISODE_MESSAGE, required=(EPISODE_BODY,))
+        return "\n".join(
             (
-                "episode --key <key> "
-                + experiment_kickoff_usage(goal_required=False, child_targets=True),
-                "episode --key <key> --stop <episode-id>",
-                "episode --key <key> --resume <episode-id>",
-            ),
+                _bullets(
+                    context,
+                    (
+                        "episode --key <key> "
+                        + experiment_kickoff_usage(goal_required=False, child_targets=True),
+                        "episode --key <key> --stop <episode-id>",
+                        "episode --key <key> --resume <episode-id>",
+                    ),
+                ),
+                f"- `{context.client} {message}` messages your own running child Experiment. "
+                "It reads the mail at its next turn. Mail grants no graph authority.",
+            )
         )
     from rcp.agents.auto_research_prompt import render_child_profile_choices
     from rcp.runs.auto_research_admission import auto_research_child_profile_choices

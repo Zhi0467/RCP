@@ -17,6 +17,7 @@ from rcp.agents.command_protocol import (
     EpisodeControlArguments,
     ExperimentKickoffArguments,
     StatusArguments,
+    WorkEpisodeControlArguments,
 )
 from rcp.api.episodes import serialize_episode
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
@@ -58,6 +59,7 @@ from rcp.storage import (
 from tests.helpers import unchecked_write_authority
 
 from .helpers import (
+    CommandFileMailbox,
     async_wait_until,
     fabricated_authorizer,
     record_launched_experiment_turn,
@@ -1641,3 +1643,94 @@ def test_child_profile_pick_and_catalog_use_authorizer_added_login(manifest, tmp
     catalogs = auto_research_child_seat_profile_choices(service, member_id=human.user_id)
     assert catalogs == {seat: {"codex": {"added-model": ["high"]}} for seat in ("node", "project")}
     assert ("codex", "") not in seen
+
+
+def test_orchestrator_messages_only_its_own_running_child_experiment(
+    manifest: Manifest, tmp_path: Path
+) -> None:
+    from .test_auto_research_commands import _worker
+
+    release = threading.Event()
+
+    async def child_stream(_project_id, _kind, _request, _execution):
+        await async_wait_until(release.is_set)
+        yield _sse(AgentEvent(event="done"))
+
+    setup = _setup(manifest, tmp_path, child_stream=child_stream)
+    service, store, background, _coordinator, parent_id, root_id = setup
+    context, effects = _command_effects(*setup)
+    files = {"note.md": "Try the smaller batch first.\n"}
+
+    def read(name: str, _max_bytes: int | None) -> str:
+        if name not in files:
+            raise FileNotFoundError(name)
+        return files[name]
+
+    dispatcher = AutoResearchCommandDispatcher(store, effects, mailbox=CommandFileMailbox(read))
+    worker = _worker(store, context.episode, context.task, "orchestrated-worker")
+
+    def send(target: str, key: str, request_id: str):
+        return dispatcher.dispatch(
+            root_id,
+            EpisodeCommandRequest(
+                mailbox_id="a" * 32,
+                request_id=request_id,
+                credential="b" * 64,
+                verb="episode",
+                idempotency_key=key,
+                arguments=WorkEpisodeControlArguments(
+                    action="message", episode_id=target, body_file="note.md"
+                ),
+            ),
+        )
+
+    _admit(
+        store,
+        parent_episode_id=parent_id,
+        child_episode_id=CHILD_EXPLICIT,
+        admission_id=CHILD_EXPLICIT,
+    )
+    child = effects.episode(
+        context,
+        ExperimentKickoffArguments(action="kick_off_experiment", node_id=EXPERIMENT_ID),
+        CHILD_EXPLICIT,
+    )
+    main = background.start(
+        PROJECT_ID,
+        "node_chat",
+        _human_experiment_request(service, HUMAN_PREDECESSOR),
+        authorized_by=context.episode.authorized_by,
+    )
+    try:
+        sent = send(CHILD_EXPLICIT, "steer", "1" * 32)
+        assert sent.status == "ok", sent.message
+        [mail] = store.pending_episode_mail("episode", CHILD_EXPLICIT)
+        assert mail.message_id == sent.result["message_id"]
+        assert (mail.sender_role, mail.sender_task_id, mail.body) == (
+            "orchestrator",
+            root_id,
+            "Try the smaller batch first.",
+        )
+        assert send(CHILD_EXPLICIT, "steer", "2" * 32).result == sent.result
+        files["note.md"] = "Use the larger batch.\n"
+        conflict = send(CHILD_EXPLICIT, "steer", "3" * 32)
+        assert (conflict.status, conflict.result["code"]) == ("invalid", "message_key_conflict")
+        for index, target in enumerate((HUMAN_PREDECESSOR, worker.operation_id)):
+            refused = send(target, f"outside-{index}", f"{index + 4}" * 32)
+            assert (refused.status, refused.result["code"]) == (
+                "invalid",
+                "episode_not_owned_child",
+            )
+        assert store.pending_episode_mail("episode", HUMAN_PREDECESSOR) == []
+        effects.episode(
+            context, EpisodeControlArguments(action="stop", episode_id=CHILD_EXPLICIT), "stop"
+        )
+        ended = send(CHILD_EXPLICIT, "after-stop", "6" * 32)
+        assert (ended.status, ended.result["code"]) == ("invalid", "child_experiment_ended")
+        assert len(store.pending_episode_mail("episode", CHILD_EXPLICIT)) == 1
+    finally:
+        release.set()
+    wait_for_task(store, main.operation_id, expect="succeeded")
+    operation_id = child.result["operation_id"]
+    assert isinstance(operation_id, str)
+    wait_for_task(store, operation_id, expect="succeeded")

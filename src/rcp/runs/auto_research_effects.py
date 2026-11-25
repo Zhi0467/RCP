@@ -23,6 +23,7 @@ from rcp.agents.command_protocol import (
     SpawnArguments,
     StatusArguments,
     StopCommandRequest,
+    WorkEpisodeControlArguments,
 )
 from rcp.core.models import GraphState
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
@@ -54,6 +55,7 @@ from rcp.runs.auto_research_delivery import (
 from rcp.runs.auto_research_experiments import (
     AutoResearchExperimentCoordinator,
     AutoResearchExperimentLimitInvalid,
+    AutoResearchMessageConflict,
 )
 from rcp.service import GraphUpdateResult, RunRequest
 from rcp.storage import (
@@ -476,11 +478,15 @@ def auto_research_command_effects(
 
     def episode(
         context: AutoResearchCommandContext,
-        arguments: ExperimentKickoffArguments | EpisodeControlArguments,
+        arguments: ExperimentKickoffArguments
+        | EpisodeControlArguments
+        | WorkEpisodeControlArguments,
         planned_episode_effect_id: str,
     ) -> AutoResearchCommandEffectResult:
         if experiment_coordinator is None:
             raise AutoResearchCommandUnavailable("Experiment episode control is unavailable.")
+        if isinstance(arguments, WorkEpisodeControlArguments):
+            return child_message(context, arguments, planned_episode_effect_id)
         if isinstance(arguments, ExperimentKickoffArguments):
             snapshot = context.command_file
             if arguments.goal_file is not None:
@@ -580,6 +586,60 @@ def auto_research_command_effects(
             status=status,
             message=message,
             result=result,
+        )
+
+    def child_message(
+        context: AutoResearchCommandContext,
+        arguments: WorkEpisodeControlArguments,
+        message_id: str,
+    ) -> AutoResearchCommandEffectResult:
+        assert experiment_coordinator is not None
+        snapshot = context.command_file
+        if (
+            arguments.action != "message"
+            or arguments.invocation_limit is not None
+            or snapshot is None
+            or snapshot.kind != "instruction"
+            or snapshot.filename != arguments.body_file
+        ):
+            raise AutoResearchCommandUnavailable(
+                "A child message lost its immutable body snapshot."
+            )
+        try:
+            saved = experiment_coordinator.message(
+                context.episode.episode_id,
+                arguments.episode_id,
+                message_id=message_id,
+                sender_task_id=context.task.operation_id,
+                body=snapshot.text,
+            )
+        except EpisodeNotRunning:
+            return AutoResearchCommandEffectResult(
+                status="invalid",
+                message=(
+                    "This child Experiment has ended and takes no more mail. "
+                    "Kick off a new child Experiment instead."
+                ),
+                result={"code": "child_experiment_ended", "episode_id": arguments.episode_id},
+            )
+        except AutoResearchMessageConflict as exc:
+            return AutoResearchCommandEffectResult(
+                status="invalid", message=str(exc), result={"code": "message_key_conflict"}
+            )
+        except ValueError as exc:
+            return AutoResearchCommandEffectResult(
+                status="invalid",
+                message=f"{exc} Only your own child Experiments take episode mail.",
+                result={"code": "episode_not_owned_child", "episode_id": arguments.episode_id},
+            )
+        return AutoResearchCommandEffectResult(
+            message="The message waits for the child Experiment's next turn.",
+            result={
+                "disposition": "sent",
+                "message_id": saved.message_id,
+                "episode_id": saved.episode_id,
+                "delivered": saved.delivered_at is not None,
+            },
         )
 
     def finish(
