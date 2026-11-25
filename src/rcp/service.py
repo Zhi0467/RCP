@@ -2918,20 +2918,24 @@ class ProjectService:
         launcher: AgentLauncher,
         profile: AgentSurfaceConfig,
     ) -> AgentSurfaceConfig:
-        """Fill an unnamed model with the first model the provider CLI vendors on that machine.
+        """Fill an unnamed model with the first model the provider CLI vendors on that machine,
+        and drop an effort that a named catalogued model does not take.
 
         There is no "provider default" choice: a profile or request that names no
         model runs the head of the catalog the readiness probe already collected.
         Only an already-cached probe is consulted, so admission never launches a
         CLI; an unknown catalog leaves the model empty and the CLI picks its own.
         """
-        if profile.model:
-            return profile
         readiness = launcher.cached_readiness(
             LoginKey(profile.provider, manifest.base_machine, MACHINE_LOGIN_ID),
             binary=launcher.provider_binary(profile.provider, manifest.base_machine),
         )
         if readiness is None or not readiness.models:
+            return profile
+        if profile.model:
+            named = next((m for m in readiness.models if m.id == profile.model), None)
+            if named is not None and not named.reasoning and profile.reasoning:
+                return profile.model_copy(update={"reasoning": ""})
             return profile
         head: ModelChoice = readiness.models[0]
         filled: dict[str, object] = {"model": head.id}
