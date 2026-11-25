@@ -1954,13 +1954,8 @@ Artifact, report, and repository-file previews open in one panel inside the main
 RCP window. The desktop has no native preview-window commands, and same-origin
 popups create no window: a recognised artifact or report URL opens in the main
 panel, and any other popup is dropped and logged. Native downloads resolve
-through shell-controlled destinations. A PDF artifact opens in the system PDF
-viewer through one main-window command that takes only project, task, and
-artifact ids, fetches the artifact's Download route itself, checks that the
-bytes are a bounded PDF, and writes them to a private app-owned temporary
-directory; failed opens are removed at once and copies older than the named
-one-day `PDF_PREVIEW_RETENTION` are pruned on startup and each open. It
-never opens an arbitrary path or URL and remains restricted to the main window.
+through shell-controlled destinations. Every surface opens a PDF artifact in the
+in-app viewer.
 
 In personal project setup, every local repository path has a native folder
 action in the desktop shell. Selecting a folder fills its absolute path;

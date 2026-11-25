@@ -805,17 +805,11 @@ test("desktop reports download and run PDFs open by stored identity without a pr
       ]);
     });
     await page.getByRole("button", { name: "Results.pdf" }).click();
-    await page.waitForFunction(() =>
-      window.nativeCalls.some((call) => call.command === "open_artifact_pdf"),
-    );
-    assert.deepEqual(
-      await page.evaluate(() =>
-        window.nativeCalls.find((call) => call.command === "open_artifact_pdf"),
-      ),
-      {
-        command: "open_artifact_pdf",
-        args: { projectId: "project", artifactId: "pdf" },
-      },
+    await page.waitForTimeout(200);
+    assert.ok(
+      !(await page.evaluate(() =>
+        window.nativeCalls.some((call) => call.command === "open_artifact_pdf"),
+      )),
     );
     assert.deepEqual(errors, []);
   } finally {

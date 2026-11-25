@@ -135,7 +135,6 @@ import {
   closeArtifactViewer,
   artifactDownloadOnly,
   openArtifact,
-  openArtifactEntry,
   openEpisodeReport,
   setArtifactViewerHidden,
   useDockedArtifact,
@@ -820,12 +819,7 @@ function MemberApp({
     async (record: ProjectArtifactRecord, projectId: string) => {
       if (artifactDownloadOnly(record.view, Boolean(record.artifact_id))) return false;
       if (record.view === "pdf" && record.artifact_id) {
-        await openArtifactEntry({
-          projectId,
-          artifactId: record.artifact_id,
-          view: record.view,
-          taskId: record.task_id,
-        });
+        openArtifact({ projectId, artifactId: record.artifact_id });
         return true;
       }
       const response = await fetch(record.content_url, {

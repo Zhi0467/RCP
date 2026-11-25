@@ -12,13 +12,12 @@ import type { AgentWindowEndpoints } from "../agentWindow/agentWindowEndpoints";
 import { chatArtifactsProfile } from "../artifacts/artifactResources";
 import {
   artifactDownloadOnly,
-  openArtifactEntry,
+  openArtifact,
   openSpaceArtifact,
 } from "../artifacts/artifactViewerModel";
 import { ArtifactDownload, storedArtifactSave } from "../artifacts/ArtifactDownload";
 import { DeleteArtifactButton } from "../artifacts/DeleteArtifactButton";
 import { CopyReferenceButton } from "../core/CopyReferenceButton";
-import { errorMessage } from "../core/errors";
 import { setReferenceDrag } from "../core/projectReferences";
 import type { GraphTargetRef, RunArtifactEntry } from "../core/types";
 import { resourceKeyId } from "../core/resourceStore";
@@ -96,9 +95,7 @@ export function ChatArtifactsPane({
   onClose: () => void;
 }) {
   const projectId = endpoints.projectId;
-  const [openError, setOpenError] = useState<string | null>(null);
   const open = (artifact: RunArtifactEntry) => {
-    setOpenError(null);
     if (projectId === null)
       openSpaceArtifact({
         viewerUrl: endpoints.artifactUrl(
@@ -108,12 +105,7 @@ export function ChatArtifactsPane({
         ),
         name: artifact.name,
       });
-    else
-      void openArtifactEntry({
-        projectId,
-        artifactId: artifact.artifact_id,
-        view: artifact.view,
-      }).catch((failure) => setOpenError(errorMessage(failure)));
+    else openArtifact({ projectId, artifactId: artifact.artifact_id });
     onOpened();
   };
   return (
@@ -124,7 +116,6 @@ export function ChatArtifactsPane({
           <X size={15} />
         </button>
       </header>
-      {openError && <div role="alert">{openError}</div>}
       <ul>
         {artifacts.map((artifact) => {
           const downloadOnly = artifactDownloadOnly(artifact.view, projectId !== null);

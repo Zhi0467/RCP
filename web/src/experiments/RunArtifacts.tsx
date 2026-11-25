@@ -1,10 +1,8 @@
 import { MAIN_GRAPH } from "../core/graphTarget";
 import { setReferenceDrag } from "../core/projectReferences";
 import type { GraphTargetRef } from "../core/types";
-import { useState } from "react";
 import { RotateCw } from "lucide-react";
-import { errorMessage } from "../core/errors";
-import { artifactDownloadOnly, openArtifactEntry } from "../artifacts/artifactViewerModel";
+import { artifactDownloadOnly, openArtifact } from "../artifacts/artifactViewerModel";
 import type { RunArtifactEntry } from "../core/types";
 import { ArtifactDownload, storedArtifactSave } from "../artifacts/ArtifactDownload";
 import "../styles/runArtifacts.css";
@@ -24,11 +22,9 @@ export function RunArtifacts({
   loading?: boolean;
   onRetry?: () => void;
 }) {
-  const [openError, setOpenError] = useState<string | null>(null);
   if (!artifacts.length && !error && !loading) return null;
   return (
     <div className="run-artifacts" aria-busy={loading || undefined}>
-      {openError && <div role="alert">{openError}</div>}
       {/* A failed read is one red retry mark; its reason is the hover. */}
       {error && onRetry ? (
         <button
@@ -80,12 +76,7 @@ export function RunArtifacts({
                   type="button"
                   className="run-artifact-open"
                   onClick={() => {
-                    setOpenError(null);
-                    void openArtifactEntry({
-                      projectId,
-                      artifactId: artifact.artifact_id,
-                      view: artifact.view,
-                    }).catch((failure) => setOpenError(errorMessage(failure)));
+                    openArtifact({ projectId, artifactId: artifact.artifact_id });
                   }}
                 >
                   {artifact.name}

@@ -1,7 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { ResourceStore } from "../core/resourceStore";
 import { runArtifactsProfile } from "./artifactResources";
-import { isDesktopRuntime, openDesktopArtifactPdf } from "../core/desktopRuntime";
 import { graphTargetFromHash } from "../core/graphTarget";
 import { parseProjectHash } from "../experiments/experimentBoardModel";
 import type { ArtifactView, GraphTargetRef, RunArtifactEntry } from "../core/types";
@@ -22,32 +21,9 @@ export function openArtifact(input: { projectId: string; artifactId: string }): 
   publish({ kind: "artifact", ...input });
 }
 
-/**
- * Opens a row of a run's or a chat's artifact list: the desktop's system PDF
- * viewer for a PDF, the viewer panel for everything else.
- */
-export async function openArtifactEntry(input: {
-  projectId: string;
-  artifactId: string;
-  view: ArtifactView;
-  taskId?: string | null;
-}): Promise<void> {
-  const { projectId, artifactId } = input;
-  if (input.view === "pdf" && isDesktopRuntime())
-    await openDesktopArtifactPdf({
-      projectId,
-      artifactId,
-      ...(input.taskId ? { taskId: input.taskId } : {}),
-    });
-  else openArtifact({ projectId, artifactId });
-}
-
-/**
- * Whether such a row offers only Download: a plain file always, and a PDF
- * wherever no desktop PDF viewer can reach it as a stored project artifact.
- */
+/** Whether such a row offers only Download: a plain file, or a PDF with no stored viewer. */
 export function artifactDownloadOnly(view: ArtifactView, stored = true): boolean {
-  return view === "file" || (view === "pdf" && !(stored && isDesktopRuntime()));
+  return view === "file" || (view === "pdf" && !stored);
 }
 
 /**

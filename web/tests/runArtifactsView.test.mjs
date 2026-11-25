@@ -29,21 +29,8 @@ function render(entry = artifact) {
     React.createElement(RunArtifacts, { projectId: "project", artifacts: [entry] }),
   );
 }
-test("browser run PDFs expose a download and no preview action", () => {
-  const markup = render();
-  assert.match(markup, /download="results.pdf"/);
-  assert.match(markup, /href="\/api\/projects\/project\/artifacts\/pdf-one\/download"/);
-  assert.doesNotMatch(markup, /<button|target="_blank"|\/viewer/);
-});
-test("desktop run PDFs retain a system-viewer action", () => {
-  const previous = globalThis.window;
-  globalThis.window = { __TAURI_INTERNALS__: {} };
-  try {
-    assert.match(render(), /<button[^>]+class="run-artifact-open"/);
-  } finally {
-    if (previous === undefined) delete globalThis.window;
-    else globalThis.window = previous;
-  }
+test("run PDFs open in the viewer in a browser too", () => {
+  assert.match(render(), /<button[^>]+class="run-artifact-open"/);
 });
 
 test("desktop stored files with no producing task expose a native download button", () => {

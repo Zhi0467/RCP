@@ -702,7 +702,7 @@ without rereading the artifact or changing its digest or outcome. A missing titl
 appears as Report. One origin resolver verifies the transcript and exact target
 for the inventory and viewer, including edits and children. Orchestrator outputs
 link to Runs. Unverifiable origins retain viewing without source links.
-Unsupported files download. Desktop PDFs can open in the system viewer.
+Unsupported files download. PDFs open in the viewer.
 
 ## Unified artifact viewer
 
@@ -795,8 +795,8 @@ text, or file), the title, and a quiet line with the kind, any worker label,
 and the relative time, with the full time on hover. Every card ends in a
 Download action, and a project agent's card adds Copy reference before it and
 Delete after it when the backend offers `can_delete`. The rest of the card opens
-the artifact in the viewer. A file, or a PDF outside the
-desktop app, opens nowhere and offers only those actions. A project agent's
+the artifact in the viewer. A file, or a Space agent's PDF, opens nowhere and
+offers only those actions. A project agent's
 card drags as an artifact reference.
 
 The list comes from the
