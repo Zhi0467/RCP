@@ -1726,8 +1726,7 @@ test("handoff results read as one row and browser loss shows on its turn", async
     await page.goto(`${base}#/agent/moss`);
     const moss = page.getByRole("region", { name: "Moss" });
     await moss.getByRole("button", { name: "Approve" }).waitFor();
-    const notices = moss.locator("[data-browser-status]");
-    assert.ok((await notices.count()) > 0);
+    await moss.locator("[data-browser-status]").first().waitFor();
     assert.deepEqual(errors, []);
   });
 });
