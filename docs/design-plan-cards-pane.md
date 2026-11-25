@@ -65,6 +65,19 @@ When Sync succeeds and the approval is refused, the edit stays on the node as or
 graph history, and the card shows the refusal. A line on the card, shown while a field
 is being edited, says the edits are saved to the node on Start.
 
+### The brief
+
+The card's "This run" section is renamed **Brief**. It holds the agent's `--goal-file`
+text, which becomes the experiment agent's first message. It is not called "Handoff",
+because RCP already uses that word for thread handoffs.
+
+- **Long text.** A long brief shows its first six lines with a fade and **Show more**.
+  Show more expands it in place, and **Show less** folds it back.
+- **Editing.** The editor grows with the text up to about 16 lines, then scrolls inside
+  itself.
+- **Compact cards.** Compact cards in the pane leave the brief out.
+- **Running and ended cards.** These keep the brief behind **Show brief**.
+
 ## Part 2: parked plans, in-place revision, the agent pane
 
 ### Park for later
