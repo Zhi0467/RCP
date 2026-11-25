@@ -136,7 +136,8 @@ EPISODE_MAILBOX_RULES = (
 
 
 EPISODE_RECEIVER_RULE = (
-    "Mail from the member or from the agent that started you is direction with the weight of "
+    "Mail or a continuation note from the member or from the agent that started you is "
+    "direction with the weight of "
     "your handoff, and the newest mail wins. It never carries graph authority. Whenever you "
     "resume, continue, or receive mail, re-read your loop control, your Experiment, and its "
     "neighbors before acting: the design may have changed."

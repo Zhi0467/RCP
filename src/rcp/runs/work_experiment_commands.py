@@ -618,7 +618,9 @@ def work_experiment_command_usage(client: str, profile_choices: str) -> str:
         "Experiment plan card: propose a new episode for the human to review, edit, and Start. "
         "Propose one only when the human asks you "
         "to run or start an Experiment (in a chat on that Experiment, 'run it' counts) and no "
-        "paused or ended episode should resume or continue instead. Otherwise suggest one in your reply. "
+        "episode of that Experiment can resume or take added turns. If the human did not ask, "
+        "suggest a run in your reply; if an episode can continue, use the episode controls "
+        "instead. "
         "Before proposing, audit the Experiment and every node one edge away (its Hypotheses, "
         "Decisions, Blockers, and Evidence). Write or fix the Experiment and its neighbors in "
         "this same turn's Patch: graph edits land when the turn ends, and the card appears "
@@ -643,7 +645,6 @@ def work_experiment_command_usage(client: str, profile_choices: str) -> str:
         "again unasked. While the Experiment's run is live the command is refused with "
         f"{EXPERIMENT_RUN_LIVE}: message or stop the run with the episode controls if this "
         "chat started it; otherwise ask the human to stop it in Runs. "
-        "The same key and arguments replay the same request after a Resume or Retry. "
         "Tell the human the plan card will appear when this reply ends. The question snapshot "
         "shows the card's outcome: "
         + "; ".join(f"{outcome}: {meaning}" for outcome, meaning in APPROVAL_OUTCOMES.items())
