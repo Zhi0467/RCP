@@ -521,6 +521,7 @@ export function useAgentCards(source: CardSource, revision: string | null) {
     scope: string | null;
     list: AgentCardList | null;
   } | null>(null);
+  const [readScope, setReadScope] = useState<string | null>(null);
   const [kept, setKept] = useState<ReadonlyMap<string, Kept>>(() => new Map());
   const [answered, setAnswered] = useState<ReadonlySet<string>>(() => new Set());
   const latest = useRef(0);
@@ -546,6 +547,7 @@ export function useAgentCards(source: CardSource, revision: string | null) {
       );
     }
     setLoaded({ scope, list });
+    if (list) setReadScope(scope);
     setKept((known) => {
       const listed = new Set([
         ...(list?.proposal_cards ?? []).map(proposalCardKey),
@@ -658,6 +660,8 @@ export function useAgentCards(source: CardSource, revision: string | null) {
     episodes,
     questions,
     loading: scope !== null && loaded?.scope !== scope,
+    /** No read for this source has succeeded yet. */
+    unread: scope !== null && readScope !== scope,
     unavailable: loaded?.scope === scope && loaded.list === null,
     decisionOf,
     markDecided,
