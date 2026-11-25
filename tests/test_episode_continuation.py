@@ -610,12 +610,13 @@ def test_a_note_on_continuing_an_ended_experiment_reaches_its_first_turn(
         background_tasks=tasks,
     )
     assert (again.episode_id, replayed) == (continuation.episode_id, True)
-    with pytest.raises(HTTPException) as changed:
-        continue_episode_once(
-            source,
-            body.model_copy(update={"note": "Run five seeds instead."}),
-            authorized_by=source.authorized_by,
-            catalog=app.state.catalog,
-            background_tasks=tasks,
-        )
-    assert changed.value.status_code == 409
+    for changed_note in ("Run five seeds instead.", None):
+        with pytest.raises(HTTPException) as changed:
+            continue_episode_once(
+                source,
+                body.model_copy(update={"note": changed_note}),
+                authorized_by=source.authorized_by,
+                catalog=app.state.catalog,
+                background_tasks=tasks,
+            )
+        assert changed.value.status_code == 409

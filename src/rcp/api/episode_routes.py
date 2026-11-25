@@ -957,7 +957,7 @@ def continue_episode_once(
 def require_replayed_note(store: AppStore, continuation: EpisodeRecord, note: str | None) -> None:
     """Refuse a replay that names a different note than its continuation carried."""
 
-    if note is not None and _continuation_note(store, continuation) != note:
+    if _continuation_note(store, continuation) != note:
         raise HTTPException(
             status_code=409,
             detail="This request id already continued the episode with a different note.",
