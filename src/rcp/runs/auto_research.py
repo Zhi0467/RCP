@@ -821,7 +821,11 @@ AutoResearchFinishCommand = Callable[
     [AutoResearchCommandContext, str], AutoResearchCommandEffectResult
 ]
 AutoResearchEpisodeCommand = Callable[
-    [AutoResearchCommandContext, ExperimentKickoffArguments | EpisodeControlArguments, str],
+    [
+        AutoResearchCommandContext,
+        ExperimentKickoffArguments | EpisodeControlArguments | WorkEpisodeControlArguments,
+        str,
+    ],
     AutoResearchCommandEffectResult,
 ]
 AutoResearchInboxCommand = Callable[
@@ -1034,9 +1038,27 @@ class AutoResearchCommandDispatcher:
         if isinstance(request, AskCommandRequest):
             return self._dispatch_ask(context, request)
 
-        if isinstance(request, EpisodeCommandRequest) and isinstance(
-            request.arguments,
-            (AutoResearchKickoffArguments, WorkEpisodeControlArguments, EpisodeAnswerArguments),
+        if (
+            isinstance(request, EpisodeCommandRequest)
+            and isinstance(request.arguments, WorkEpisodeControlArguments)
+            and request.arguments.action == "message"
+            and request.arguments.invocation_limit is not None
+        ):
+            return CommandResponse(
+                request_id=request.request_id,
+                status="invalid",
+                message=(
+                    "A child message cannot add turns. If the child has ended, "
+                    "kick off a new child Experiment."
+                ),
+                result={"code": "episode_action_not_granted"},
+            )
+        if isinstance(request, EpisodeCommandRequest) and (
+            isinstance(request.arguments, (AutoResearchKickoffArguments, EpisodeAnswerArguments))
+            or (
+                isinstance(request.arguments, WorkEpisodeControlArguments)
+                and request.arguments.action != "message"
+            )
         ):
             return CommandResponse(
                 request_id=request.request_id,
@@ -1576,6 +1598,17 @@ class AutoResearchCommandDispatcher:
                 AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES,
                 True,
             )
+        elif (
+            isinstance(request, EpisodeCommandRequest)
+            and isinstance(request.arguments, WorkEpisodeControlArguments)
+            and request.arguments.body_file is not None
+        ):
+            spec = (
+                "instruction",
+                request.arguments.body_file,
+                AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES,
+                True,
+            )
         if spec is None:
             return None
         return self._read_command_file(*spec)
@@ -1700,6 +1733,16 @@ class AutoResearchCommandDispatcher:
                 outcome = self._finish_original_unknown(prior.command_id, outcome)
             return self._finish(attempt.command_id, request.request_id, outcome)
 
+        if self._replayed_body_changed(recorded_request, prior):
+            return self._finish(
+                attempt.command_id,
+                request.request_id,
+                AutoResearchCommandEffectResult(
+                    status="invalid",
+                    message="This key already carries a different message; use a new key.",
+                    result={"code": "message_key_conflict"},
+                ),
+            )
         original_was_unknown = prior.exited_at is None
         if (
             isinstance(recorded_request, ApplyCommandRequest)
@@ -1869,7 +1912,7 @@ class AutoResearchCommandDispatcher:
             isinstance(request, EpisodeCommandRequest)
             and isinstance(
                 request.arguments,
-                (ExperimentKickoffArguments, EpisodeControlArguments),
+                (ExperimentKickoffArguments, EpisodeControlArguments, WorkEpisodeControlArguments),
             )
         )
 
@@ -1880,8 +1923,13 @@ class AutoResearchCommandDispatcher:
     ) -> AutoResearchCommandFile | None:
         requires_file = isinstance(request, (ApplyCommandRequest, SpawnCommandRequest)) or (
             isinstance(request, EpisodeCommandRequest)
-            and isinstance(request.arguments, ExperimentKickoffArguments)
-            and request.arguments.goal_file is not None
+            and (
+                (
+                    isinstance(request.arguments, ExperimentKickoffArguments)
+                    and request.arguments.goal_file is not None
+                )
+                or isinstance(request.arguments, WorkEpisodeControlArguments)
+            )
         )
         stored = self.store.auto_research_command_file(prior.command_id)
         if stored is None:
@@ -1937,6 +1985,27 @@ class AutoResearchCommandDispatcher:
                 "idempotency_key": prior.idempotency_key,
             }
         )
+
+    def _replayed_body_changed(
+        self,
+        request: CommandRequest,
+        prior: AgentCommandInvocationRecord,
+    ) -> bool:
+        """A child-message key replayed after its body file was rewritten is a conflict."""
+
+        if not (
+            isinstance(request, EpisodeCommandRequest)
+            and isinstance(request.arguments, WorkEpisodeControlArguments)
+        ):
+            return False
+        recorded = prior.start_payload.get("command_file")
+        if not isinstance(recorded, dict):
+            return False
+        try:
+            current = self._snapshot_command_file(request)
+        except (AutoResearchCommandInvalid, AutoResearchCommandUnavailable, OSError):
+            return False
+        return current is not None and recorded.get("sha256") != current.sha256
 
     def _completed_retry_outcome(
         self,
@@ -2368,7 +2437,8 @@ class AutoResearchCommandDispatcher:
         if request.verb == "episode":
             assert isinstance(request, EpisodeCommandRequest)
             assert isinstance(
-                request.arguments, (ExperimentKickoffArguments, EpisodeControlArguments)
+                request.arguments,
+                (ExperimentKickoffArguments, EpisodeControlArguments, WorkEpisodeControlArguments),
             )
             assert planned_episode_effect_id is not None
             return self.effects.episode(
