@@ -63,6 +63,9 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
     The ledger write comes first so a read-only store refuses before any DDL.
     """
     connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version>=49")
+    connection.execute("DROP INDEX IF EXISTS graph_runs_started_from_turn")
+    connection.execute("DROP INDEX IF EXISTS episodes_chain_root_run")
+    connection.execute("DROP INDEX IF EXISTS episodes_dock_node")
     downgrade_watchers(connection)
     for table in (
         "agent_threads",

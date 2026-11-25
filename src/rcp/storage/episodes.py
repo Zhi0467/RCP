@@ -235,82 +235,82 @@ class EpisodeStoreMixin(StoreMixinBase):
         """
 
         with self.connection() as connection:
-            candidates = [
-                self._episode_record(row)
-                for row in connection.execute(
-                    """
-                    SELECT * FROM episodes AS episode
-                    WHERE episode.project_id = ?
-                      AND NOT EXISTS (
-                          SELECT 1 FROM episodes AS successor
-                          WHERE successor.continues_episode_id = episode.episode_id
+            rows = connection.execute(
+                """
+                WITH RECURSIVE tips AS NOT MATERIALIZED (
+                    SELECT episode.* FROM episodes AS episode
+                    WHERE episode.project_id = :project AND NOT EXISTS (
+                        SELECT 1 FROM episodes AS next
+                        WHERE next.continues_episode_id = episode.episode_id
+                          AND next.project_id = episode.project_id
+                    )
+                ), chat_chain(episode_id) AS (
+                    SELECT episode.episode_id
+                    FROM episodes AS episode INDEXED BY episodes_chain_root_run
+                    WHERE episode.project_id = :project AND episode.continues_episode_id IS NULL
+                      AND episode.root_operation_id IN (
+                          SELECT root.operation_id FROM graph_runs AS source
+                          CROSS JOIN graph_runs AS root
+                          WHERE source.project_id = :project AND root.project_id = :project
+                            AND json_extract(source.request_json, '$.chat_id') = :chat
+                            AND CAST(json_extract(root.request_json, '$.started_from_operation_id')
+                                     AS TEXT) = source.operation_id
                       )
-                    ORDER BY episode.created_at DESC, episode.episode_id DESC
-                    """,
-                    (project_id,),
-                )
-            ]
-            started = self._episode_started_from_chats(
-                connection, [episode.episode_id for episode in candidates]
-            )
-            node_runs = (
-                self._node_started_episode_ids(
-                    connection,
-                    [
-                        episode.episode_id
-                        for episode in candidates
-                        if episode.control_node_id == node_id and episode.episode_id not in started
-                    ],
-                )
-                if node_id is not None
-                else set()
-            )
-        listed: list[tuple[EpisodeRecord, Literal["chat", "node"]]] = []
-        ended = 0
-        for episode in candidates:
-            source = started.get(episode.episode_id)
-            if source is not None and source.chat_id == chat_id:
-                origin: Literal["chat", "node"] = "chat"
-            elif episode.episode_id in node_runs:
-                origin = "node"
-            else:
-                continue
-            if episode.status in {"completed", "stopped", "failed"}:
-                ended += 1
-                if ended > ended_limit:
-                    continue
-            listed.append((episode, origin))
-        return listed
-
-    @staticmethod
-    def _node_started_episode_ids(
-        connection: sqlite3.Connection, episode_ids: Sequence[str]
-    ) -> set[str]:
-        """Those of ``episode_ids`` whose chain no Auto-research parent dispatched."""
-
-        if not episode_ids:
-            return set()
-        placeholders = ",".join("?" for _ in episode_ids)
-        return {
-            str(row[0])
-            for row in connection.execute(
-                f"""
-                WITH RECURSIVE chain(episode_id, member_id, continues_episode_id) AS (
-                    SELECT episode_id, episode_id, continues_episode_id FROM episodes
-                    WHERE episode_id IN ({placeholders})
+                      AND NOT EXISTS (SELECT 1 FROM auto_research_child_experiments
+                                      WHERE child_episode_id = episode.episode_id)
+                    UNION ALL
+                    SELECT next.episode_id FROM chat_chain
+                    CROSS JOIN episodes AS next ON next.continues_episode_id = chat_chain.episode_id
+                    WHERE next.project_id = :project
+                ), node_chain(tip_id, episode_id, parent_id) AS (
+                    SELECT episode_id, episode_id, continues_episode_id FROM tips
+                    WHERE control_node_id = :node
                     UNION
-                    SELECT chain.episode_id, member.episode_id, member.continues_episode_id
-                    FROM chain JOIN episodes AS member
-                      ON member.episode_id = chain.continues_episode_id
+                    SELECT chain.tip_id, parent.episode_id, parent.continues_episode_id
+                    FROM node_chain AS chain CROSS JOIN episodes AS parent ON parent.episode_id = chain.parent_id
+                    WHERE parent.project_id = :project AND NOT EXISTS (
+                        SELECT 1 FROM auto_research_child_experiments
+                        WHERE child_episode_id = chain.episode_id
+                    )
+                ), owned_tips(episode_id, origin) AS (
+                    SELECT tips.episode_id, 'chat' FROM chat_chain
+                    CROSS JOIN tips ON tips.episode_id = chat_chain.episode_id
+                    UNION ALL
+                    SELECT chain.tip_id, 'node' FROM node_chain AS chain
+                    CROSS JOIN episodes AS root_episode ON root_episode.episode_id = chain.episode_id
+                    LEFT JOIN graph_runs AS root ON root.operation_id = root_episode.root_operation_id
+                    LEFT JOIN graph_runs AS source ON source.operation_id =
+                        json_extract(root.request_json, '$.started_from_operation_id')
+                    WHERE chain.parent_id IS NULL AND json_extract(source.request_json, '$.chat_id') IS NULL
+                      AND NOT EXISTS (SELECT 1 FROM auto_research_child_experiments
+                                      WHERE child_episode_id = chain.episode_id)
+                ), latest AS MATERIALIZED (
+                    SELECT owned_tips.*, episode.created_at,
+                           episode.status IN ('completed', 'stopped', 'failed') AS ended
+                    FROM owned_tips CROSS JOIN episodes AS episode ON episode.episode_id = owned_tips.episode_id
+                ), ended AS (
+                    SELECT * FROM latest WHERE ended
+                    ORDER BY created_at DESC, episode_id DESC LIMIT :ended_limit
+                ), listed AS (
+                    SELECT * FROM latest WHERE NOT ended UNION ALL SELECT * FROM ended
                 )
-                SELECT episode_id FROM chain
-                GROUP BY episode_id
-                HAVING SUM(EXISTS (SELECT 1 FROM auto_research_child_experiments
-                                   WHERE child_episode_id = chain.member_id)) = 0
+                SELECT episode.*, listed.origin FROM listed
+                CROSS JOIN episodes AS episode ON episode.episode_id = listed.episode_id
+                ORDER BY listed.created_at DESC, listed.episode_id DESC
                 """,
-                list(episode_ids),
+                {
+                    "project": project_id,
+                    "chat": chat_id,
+                    "node": node_id,
+                    "ended_limit": ended_limit,
+                },
             )
-        }
+            listed: list[tuple[EpisodeRecord, Literal["chat", "node"]]] = []
+            for row in rows:
+                record = dict(row)
+                origin = cast("Literal['chat', 'node']", record.pop("origin"))
+                listed.append((self._episode_record(record), origin))
+            return listed
 
     @staticmethod
     def _episode_started_from_chats(
@@ -2751,7 +2751,7 @@ class EpisodeStoreMixin(StoreMixinBase):
         ).fetchone()
 
     @staticmethod
-    def _episode_record(row: sqlite3.Row) -> EpisodeRecord:
+    def _episode_record(row: sqlite3.Row | dict[str, object]) -> EpisodeRecord:
         data = dict(row)
         data["graph_target"] = json.loads(
             data.pop("graph_target_json", '{"kind":"main","branch_id":null}')

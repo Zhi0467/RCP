@@ -180,13 +180,6 @@ def test_restore_schema_registry_covers_a_database_that_upgraded_in_place(
         created = connection.execute(
             "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'graph_runs'"
         ).fetchone()[0]
-        indexes = [
-            row[0]
-            for row in connection.execute(
-                "SELECT sql FROM sqlite_schema "
-                "WHERE type = 'index' AND tbl_name = 'graph_runs' AND sql IS NOT NULL"
-            )
-        ]
         assert not connection.execute("SELECT 1 FROM graph_runs LIMIT 1").fetchall()
     assert "failure_kind" in created, "this test must start from the shape that has the column"
 
@@ -194,6 +187,13 @@ def test_restore_schema_registry_covers_a_database_that_upgraded_in_place(
     assert "failure_kind" not in previous
     with AppStore(database).connection() as connection:
         downgrade_resource_watermarks(connection)
+        indexes = [
+            row[0]
+            for row in connection.execute(
+                "SELECT sql FROM sqlite_schema "
+                "WHERE type = 'index' AND tbl_name = 'graph_runs' AND sql IS NOT NULL"
+            )
+        ]
         connection.execute("DROP TABLE graph_runs")
         connection.execute(previous)
         for statement in indexes:

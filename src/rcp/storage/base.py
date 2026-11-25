@@ -172,6 +172,7 @@ class AppStoreBase:
         (93, "agents_and_watcher_checks_v1"),
         (94, "agent_thread_queue_picks_v1"),
         (95, "plan_card_revisions_v1"),
+        (96, "chat_dock_run_indexes_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -1226,6 +1227,12 @@ class AppStoreBase:
             version=95,
             name="plan_card_revisions_v1",
             migration=migrate_plan_card_revisions,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=96,
+            name="chat_dock_run_indexes_v1",
+            migration=self._migrate_chat_dock_run_indexes,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -3481,6 +3488,23 @@ class AppStoreBase:
             "CREATE INDEX IF NOT EXISTS graph_runs_chat_turn "
             "ON graph_runs(project_id, json_extract(request_json, '$.chat_id'), "
             "created_at, operation_id)"
+        )
+
+    @staticmethod
+    def _migrate_chat_dock_run_indexes(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS graph_runs_started_from_turn ON graph_runs "
+            "(CAST(json_extract(request_json, '$.started_from_operation_id') AS TEXT)) "
+            "WHERE CAST(json_extract(request_json, '$.started_from_operation_id') AS TEXT) "
+            "IS NOT NULL"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS episodes_chain_root_run ON episodes(root_operation_id) "
+            "WHERE continues_episode_id IS NULL AND root_operation_id IS NOT NULL"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS episodes_dock_node ON episodes(project_id, "
+            "control_node_id) WHERE control_node_id IS NOT NULL"
         )
 
     @staticmethod

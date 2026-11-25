@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from datetime import datetime, timedelta
 from unittest.mock import Mock
 from uuid import uuid4
@@ -96,6 +97,71 @@ def test_chat_runs_follow_continuations_and_keep_long_ended_runs(tmp_path) -> No
     started = store.episode_started_from_chat("continued")
     assert started is not None and started.chat_id == "chat"
     assert store.episode_started_from_chat("elsewhere").chat_id == "other-chat"  # type: ignore[union-attr]
+
+
+def test_chat_dock_work_is_bounded_by_its_own_history(tmp_path, monkeypatch) -> None:
+    store = AppStore(tmp_path / "app.sqlite3")
+    _chat_turn(store, "project", "chat", "turn")
+    _chat_turn(store, "project", "other-chat", "other-turn")
+    for index in range(6):
+        owned = _child(store, "project", f"owned-{index}", started_from="turn")
+        _end(store, owned)
+    _child(store, "project", "still-live", started_from="turn")
+    _child(store, "project", "node-run", started_from=None, node_id="node")
+    records = Mock(wraps=store._episode_record)
+
+    def read_dock() -> int:
+        steps = 0
+
+        def count_step() -> int:
+            nonlocal steps
+            steps += 1
+            return 0
+
+        with store.connection() as connection, monkeypatch.context() as scope:
+            scope.setattr(store, "connection", lambda: nullcontext(connection))
+            scope.setattr(store, "_episode_record", records)
+            connection.execute("ANALYZE")
+            connection.set_progress_handler(count_step, 1)
+            result = store.chat_dock_episodes("project", "chat", node_id="node", ended_limit=1)
+            connection.set_progress_handler(None, 0)
+        assert {episode.episode_id for episode, _ in result} == {
+            "owned-5",
+            "still-live",
+            "node-run",
+        }
+        assert records.call_count == len(result)
+        records.reset_mock()
+        return steps
+
+    before = read_dock()
+    for index in range(64):
+        _child(store, "project", f"other-{index}", started_from="other-turn")
+    assert read_dock() < 2 * before
+
+
+def test_continuations_keep_dock_scope_at_the_project_and_current_node(tmp_path) -> None:
+    store = AppStore(tmp_path / "app.sqlite3")
+    _chat_turn(store, "project", "chat", "turn")
+    _child(store, "project", "chat-root", started_from="turn")
+    _end(store, "chat-root")
+    _child(store, "foreign", "foreign-child", started_from=None, continues="chat-root")
+    _child(store, "project", "page-root", started_from=None, node_id="previous-node")
+    _end(store, "page-root")
+    _child(store, "project", "page-tip", started_from=None, continues="page-root", node_id="node")
+    _end(store, "page-tip")
+    _child(store, "foreign", "foreign-tip", started_from=None, continues="page-tip", node_id="node")
+
+    def listed(node_id: str) -> set[tuple[str, str]]:
+        return {
+            (episode.episode_id, source)
+            for episode, source in store.chat_dock_episodes(
+                "project", "chat", node_id=node_id, ended_limit=2
+            )
+        }
+
+    assert listed("previous-node") == {("chat-root", "chat")}
+    assert listed("node") == {("chat-root", "chat"), ("page-tip", "node")}
 
 
 def test_node_chat_lists_runs_started_from_its_node_page(tmp_path) -> None:
