@@ -327,6 +327,7 @@ class Proposals:
         ApprovalCardStoreMixin.claim_approval_card,
         ApprovalCardStoreMixin.record_declined_rejection,
         ApprovalCardStoreMixin.release_approval_card,
+        ApprovalCardStoreMixin.revise_approval_card,
         ApprovalCardStoreMixin.take_expired_approval_card,
         _settle,
         insert_approval_card,
@@ -355,6 +356,10 @@ class Proposals:
     _DELIVERY = "answer delivery runs in reconcile_question_answers, which boot replaces"
     _EPISODE = "episode questions belong to Experiment episodes; the episode explorer drives them"
     unreached_writers = {
+        ApprovalCardStoreMixin.revise_approval_card: (
+            "only an Experiment or Auto-research plan card is revised or parked; the Work "
+            "kickoff tests drive it"
+        ),
         QuestionStoreMixin._resolve_question: (
             "a card is answered only by its tap; the route refuses a plain answer or dismissal"
         ),

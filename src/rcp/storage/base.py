@@ -171,6 +171,7 @@ class AppStoreBase:
         (92, "episode_mailbox_v1"),
         (93, "agents_and_watcher_checks_v1"),
         (94, "agent_thread_queue_picks_v1"),
+        (95, "plan_card_revisions_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -1217,6 +1218,14 @@ class AppStoreBase:
             version=94,
             name="agent_thread_queue_picks_v1",
             migration=migrate_agent_thread_queue_picks,
+        )
+        from rcp.storage.approval_cards import migrate_plan_card_revisions
+
+        self._run_storage_schema_migration(
+            connection,
+            version=95,
+            name="plan_card_revisions_v1",
+            migration=migrate_plan_card_revisions,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))

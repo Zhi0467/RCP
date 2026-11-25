@@ -37,7 +37,7 @@
   "src/rcp/api/agent_schedules.py": {"comment": 1},
   "src/rcp/api/agent_threads.py": {"comment": 1},
   "src/rcp/api/app.py": {"comment": 91},
-  "src/rcp/api/approval_cards.py": {"comment": 6},
+  "src/rcp/api/approval_cards.py": {"comment": 5},
   "src/rcp/api/artifacts.py": {"comment": 11},
   "src/rcp/api/chats.py": {"comment": 13},
   "src/rcp/api/client_events.py": {"comment": 2},

@@ -113,12 +113,21 @@ def plan(manifest, tmp_path: Path):
     )
 
 
-def _turn(plan, operation_id, *, chat_id, kind="project_chat", parent=None, authorized_by=None):
+def _turn(
+    plan,
+    operation_id,
+    *,
+    chat_id,
+    kind="project_chat",
+    parent=None,
+    authorized_by=None,
+    scope=("repo-a",),
+):
     """A running Work turn in `chat_id` and its command handler."""
 
     request = RunRequest(
         provider="codex",
-        run_truth_scope=["repo-a"],
+        run_truth_scope=list(scope),
         chat_scope="node" if kind == "node_chat" else "project",
         node_id=EXPERIMENT_ID if kind == "node_chat" else None,
         chat_id=chat_id,
@@ -183,7 +192,11 @@ def _plan_card(plan, chat_id="shared-chat", *, key="first", **turn):
     execution, call = _turn(plan, f"turn-{key}", chat_id=chat_id, **turn)
     assert call(_kickoff(key)).result["disposition"] == "card_pending"
     _land(plan, execution)
-    (card,) = [row for row in _cards(plan, chat_id) if row["operation_id"] == f"turn-{key}"]
+    (card,) = [
+        row
+        for row in _cards(plan, chat_id)
+        if f"turn-{key}" in (row["operation_id"], row["card"]["revised_operation_id"])
+    ]
     return card
 
 
@@ -233,6 +246,366 @@ def test_a_lost_older_card_never_replaces_a_later_turns_card(plan):
 
     (card,) = _cards(plan, "shared-chat")
     assert (card["question_id"], card["card"]["state"]) == (newer["question_id"], "pending")
+
+
+def _soon(plan):
+    from datetime import datetime, timedelta
+
+    return (datetime.fromisoformat(plan.store.now()) + timedelta(hours=1)).isoformat()
+
+
+def _tap(plan, card, decision, start=None, **overrides):
+    body = {"decision": decision, "pinned_sha256": card["card"]["pinned_sha256"]}
+    if start is not None:
+        node = plan.app.state.service.history.state().nodes[EXPERIMENT_ID]
+        body["start"] = {
+            "kind": "experiment_start",
+            "goal": start,
+            "invocation_ceiling": 2,
+            "node_rev": node.updated_rev,
+            **overrides,
+        }
+    return plan.client.post(f"/api/approval-cards/{card['question_id']}", json=body)
+
+
+def _reread(plan, card, chat_id="shared-chat"):
+    return next(row for row in _cards(plan, chat_id) if row["question_id"] == card["question_id"])
+
+
+def _private_thread(plan):
+    thread = str(uuid.uuid4())
+    with plan.store.connection() as connection:
+        connection.execute(
+            "INSERT INTO agent_threads(thread_id,user_id,kind,project_id,created_at) "
+            "VALUES (?,?,?,?,?)",
+            (thread, plan.human.user_id, "project", plan.project_id, plan.store.now()),
+        )
+    return thread
+
+
+def test_a_claimed_card_is_not_revised(plan):
+    claimed = _plan_card(plan, key="older")
+    assert plan.store.claim_approval_card(claimed["question_id"])
+
+    newer = _plan_card(plan, key="newer")
+
+    assert newer["question_id"] != claimed["question_id"]
+    assert newer["card"]["state"] == "pending"
+    untouched = _reread(plan, claimed)["card"]
+    assert (untouched["state"], untouched["revised_operation_id"]) == ("running", None)
+    assert untouched["pinned_sha256"] == claimed["card"]["pinned_sha256"]
+
+
+def test_a_tap_with_the_hash_from_before_a_revision_leaves_the_card_open(plan):
+    seen = _plan_card(plan, key="older")
+    (plan.workspace / "goal.md").write_text("A revised handoff.", encoding="utf-8")
+    revised = _plan_card(plan, key="newer")
+
+    for decision in ("approve", "decline", "park", "save", "run_here"):
+        late = _tap(plan, seen, decision, start="Member text.")
+        assert (late.status_code, late.json()["detail"]) == (409, {"code": "plan_revised"})
+    assert _reread(plan, seen)["card"]["state"] == "pending"
+    assert _experiment_loops(plan) == []
+    assert _tap(plan, revised, "decline").json()["outcome"] == "declined"
+
+
+def test_start_after_a_revision_runs_from_the_revising_turn(plan):
+    _plan_card(plan, key="older")
+    revised = _plan_card(plan, key="newer", scope=("repo-a", "repo-b"))
+
+    assert _start(plan, revised).json()["outcome"] == "approved"
+    episode = plan.store.episode(started_episode(plan, revised))
+    root = plan.store.agent_task(episode.root_operation_id)
+    assert root.request["started_from_operation_id"] == "turn-newer"
+    assert root.request["run_truth_scope"] == ["repo-a", "repo-b"]
+    wait_for_task(plan.store, root.operation_id)
+
+
+def test_recovery_of_an_older_request_leaves_a_newer_revision_alone(plan):
+    _plan_card(plan, key="first")
+    _crash_before_card(plan, "lost")
+    (plan.workspace / "goal.md").write_text("The newest handoff.", encoding="utf-8")
+    newest = _plan_card(plan, key="newest")
+
+    _startup_pass(plan)
+
+    (card,) = _cards(plan, "shared-chat")
+    assert card["card"]["revised_operation_id"] == "turn-newest"
+    assert card["card"]["pinned_sha256"] == newest["card"]["pinned_sha256"]
+    assert plan.store.pending_experiment_card_tasks() == []
+
+
+def test_park_saves_the_members_fields_and_start_runs_the_parked_card(plan):
+    card = _plan_card(plan)
+    before = resource_watermark_tokens(plan.client, plan.project_id, {"name": "questions"})
+
+    parked = _tap(plan, card, "park", start="The member's handoff.", invocation_ceiling=1)
+
+    assert parked.status_code == 200, parked.text
+    assert parked.json()["outcome"] == "parked"
+    assert resource_watermark_tokens(plan.client, plan.project_id, {"name": "questions"}) != before
+    shown = _reread(plan, card)
+    stored = shown["card"]
+    assert (stored["state"], bool(stored["shelved_at"])) == ("parked", True)
+    assert (
+        stored["pinned_sha256"] == parked.json()["pinned_sha256"] != card["card"]["pinned_sha256"]
+    )
+    assert (stored["action"]["goal"], stored["action"]["invocation_ceiling"]) == (
+        "The member's handoff.",
+        1,
+    )
+    assert stored["pinned"] == card["card"]["pinned"]
+    assert stored["revised_operation_id"] is None
+    assert stored["revised_by"]["name"] == plan.human.display_name
+    assert plan.store.get_question(card["question_id"]).state == "pending"
+    plan.app.state.reconcile_question_answers.assert_not_called()
+    assert _tap(plan, card, "approve", start="x").json()["detail"] == {"code": "plan_revised"}
+
+    saved = _tap(plan, shown, "save", start="Saved while parked.")
+    assert saved.json()["outcome"] == "saved"
+    shown = _reread(plan, card)
+    assert shown["card"]["state"] == "parked"
+    assert shown["card"]["pinned_sha256"] == saved.json()["pinned_sha256"]
+
+    assert _start(plan, shown).json()["outcome"] == "approved"
+    episode = plan.store.episode(started_episode(plan, shown))
+    assert episode is not None
+    wait_for_task(plan.store, episode.root_operation_id or "")
+
+
+def test_a_parked_card_can_be_deleted(plan):
+    card = _plan_card(plan)
+    assert _tap(plan, card, "park").json()["outcome"] == "parked"
+    assert _tap(plan, card, "decline").json()["outcome"] == "declined"
+    assert plan.store.get_question(card["question_id"]).answer == "declined"
+
+
+def test_park_after_a_pin_change_settles_the_card_stale(plan, monkeypatch):
+    from rcp.runs import approval_cards
+
+    card = _plan_card(plan)
+    monkeypatch.setattr(
+        approval_cards, "governing_links", lambda _state, _node_id: (("dec/schedule", "cosine"),)
+    )
+
+    assert _tap(plan, card, "park", start="Member text.").json()["outcome"] == "stale"
+    settled = _reread(plan, card)["card"]
+    assert (settled["result"], settled["shelved_at"]) == ({"outcome": "stale"}, None)
+
+
+def test_a_parked_card_outlives_its_expiry_in_a_shared_chat(plan):
+    parked = _plan_card(plan, key="parked")
+    waiting = _plan_card(plan, "elsewhere", key="waiting")
+    assert _tap(plan, parked, "park").json()["outcome"] == "parked"
+    with plan.store.connection() as connection:
+        connection.execute("UPDATE approval_cards SET expires_at=?", (plan.store.now(),))
+
+    plan.store.expire_approval_cards()
+
+    assert _reread(plan, parked)["card"]["state"] == "parked"
+    assert _reread(plan, waiting, "elsewhere")["card"]["state"] == "expired"
+    assert _start(plan, _reread(plan, parked)).json()["outcome"] == "approved"
+    wait_for_task(
+        plan.store, plan.store.episode(started_episode(plan, parked)).root_operation_id or ""
+    )
+
+
+def test_closing_a_thread_settles_its_parked_card(plan):
+    thread = _private_thread(plan)
+    card = _plan_card(plan, thread)
+    assert _tap(plan, card, "park").json()["outcome"] == "parked"
+    with plan.store.connection() as connection:
+        connection.execute("UPDATE agent_threads SET closed_at=?", (plan.store.now(),))
+
+    plan.store.expire_approval_cards()
+
+    assert plan.store.approval_card(card["question_id"])["state"] == "expired"
+
+
+def test_a_parked_card_is_quiet_and_sorts_last_for_the_agent(plan):
+    import json
+
+    from rcp.api.agent_threads import chat_dock
+    from rcp.runs.question_snapshots import question_snapshot
+
+    card = _plan_card(plan)
+    later = plan.store.create_or_get_question(
+        origin=plan.store.get_question(card["question_id"]).origin,
+        key="later",
+        question="Which seed?",
+        choices=[],
+    )
+    docked = lambda: chat_dock(  # noqa: E731
+        plan.store,
+        plan.app.state.catalog,
+        plan.human.user_id,
+        plan.project_id,
+        "shared-chat",
+        relay_project=False,
+    )["asked_cards"]
+    assert [row["question_id"] for row in docked()] == [card["question_id"]]
+
+    assert _tap(plan, card, "park").json()["outcome"] == "parked"
+
+    assert docked() == []
+    open_ids = [
+        item.question_id
+        for item in plan.store.list_questions(project_id=plan.project_id, open_only=True)
+    ]
+    assert open_ids == [later.question_id]
+    with plan.store.connection() as connection:
+        events = [
+            json.loads(row[0])["active"]
+            for row in connection.execute(
+                "SELECT payload_json FROM digest_events WHERE kind='question_attention' "
+                "AND item_id=? ORDER BY seq",
+                (card["question_id"],),
+            )
+        ]
+    assert events == [True, False]
+    snapshot = json.loads(
+        question_snapshot(
+            plan.store,
+            project_id=plan.project_id,
+            owner_kind="chat",
+            owner_ids=["shared-chat"],
+            operation_id="turn-first",
+        ).text
+    )["questions"]
+    assert [item["question_id"] for item in snapshot] == [later.question_id, card["question_id"]]
+    assert snapshot[1]["card"]["shelved"] is True and "card" not in snapshot[0]
+
+
+def test_a_plan_for_a_node_with_a_live_run_is_refused(plan):
+    card = _plan_card(plan)
+    assert _start(plan, card).json()["outcome"] == "approved"
+    episode_id = started_episode(plan, card)
+
+    execution, call = _turn(plan, "turn-again", chat_id="shared-chat")
+    refused = call(_kickoff("again"))
+
+    assert refused.status == "invalid"
+    assert refused.result == {
+        "code": "experiment_run_live",
+        "episode_id": episode_id,
+        "node_id": EXPERIMENT_ID,
+    }
+    _land(plan, execution)
+    assert len(_cards(plan, "shared-chat")) == 1
+    wait_for_task(plan.store, plan.store.episode(episode_id).root_operation_id or "")
+
+
+def test_run_here_sends_the_plan_as_one_member_turn_and_starts_no_episode(plan, monkeypatch):
+    from tests.helpers import fake_launch_admitted
+
+    fake_launch_admitted(monkeypatch, plan.app.state.background_tasks)
+    execution, call = _turn(plan, "turn-first", chat_id="shared-chat")
+    assert call(_kickoff("first")).result["disposition"] == "card_pending"
+    _land(plan, execution)
+    _turn(plan, "turn-busy", chat_id="shared-chat")
+    (card,) = _cards(plan, "shared-chat")
+
+    ran = _tap(plan, card, "run_here", start="Pilot at lr 1e-4 only.")
+
+    assert ran.status_code == 200, ran.text
+    assert ran.json()["outcome"] == "run_here"
+    shown = _reread(plan, card)["card"]
+    turn_id = shown["run_here_operation_id"]
+    assert (shown["state"], shown["result"]) == ("running_here", {"outcome": "run_here"})
+    assert plan.store.agent_task(turn_id) is None
+    (queued,) = plan.store.agent_thread_queue("shared-chat")
+    assert queued.user_id == plan.human.user_id
+    node = plan.app.state.service.history.state().nodes[EXPERIMENT_ID]
+    for field in ("Pilot at lr 1e-4 only.", node.design, *node.completion_criteria):
+        assert field in queued.message
+    asked = plan.store.get_question(card["question_id"])
+    assert (asked.answer, asked.client_receipt_operation_id) == ("run_here", turn_id)
+    assert _tap(plan, card, "run_here", start="Again.").json()["detail"] == {"code": "card_taken"}
+
+    plan.store.complete_agent_task("turn-busy", applied_revision=None, result={"messages": []})
+    plan.app.state.reconcile_thread_handoffs()
+
+    task = plan.store.agent_task(turn_id)
+    assert task.authorized_by == plan.human and task.request["message"] == queued.message
+    assert task.episode_id is None
+    assert plan.store.agent_thread_queue("shared-chat") == []
+    assert _reread(plan, card)["card"]["state"] == "running_here"
+    plan.store.complete_agent_task(turn_id, applied_revision=None, result={"messages": []})
+    assert _reread(plan, card)["card"]["state"] == "ran_here"
+    assert _experiment_loops(plan) == []
+
+
+def test_an_interrupted_run_here_settles_from_its_queued_message(plan):
+    card = _plan_card(plan)
+    _turn(plan, "turn-busy", chat_id="shared-chat")
+    request_id = plan.store.approval_card(card["question_id"])["request_id"]
+    assert plan.store.claim_approval_card(card["question_id"])
+    plan.store.queue_agent_thread_message(
+        queue_id="queued",
+        thread_id="shared-chat",
+        user_id=plan.human.user_id,
+        idempotency_key=request_id,
+        message="The plan.",
+        attachment_set_id=None,
+        attachment_client_id=None,
+        attachment_count=0,
+        request_sha256="hash",
+    )
+
+    settle_interrupted_approval_cards(
+        plan.store, service_for=plan.app.state.catalog.open, claimed_before=plan.store.now()
+    )
+
+    settled = plan.store.approval_card(card["question_id"])
+    assert (settled["state"], settled["result"]["outcome"]) == ("running_here", "run_here")
+
+
+def test_run_here_is_an_experiment_cards_decision_only(plan):
+    card = _auto_plan_card(plan)
+    refused = plan.client.post(
+        f"/api/approval-cards/{card['question_id']}",
+        json={"decision": "run_here", "pinned_sha256": card["card"]["pinned_sha256"]},
+    )
+    assert (refused.status_code, refused.json()["detail"]) == (
+        422,
+        {"code": "decision_not_available"},
+    )
+    assert plan.store.approval_card(card["question_id"])["state"] == "pending"
+
+
+def test_an_auto_research_card_parks_and_is_revised_in_place(plan):
+    card = _auto_plan_card(plan)
+    parked = plan.client.post(
+        f"/api/approval-cards/{card['question_id']}",
+        json={"decision": "park", "pinned_sha256": card["card"]["pinned_sha256"]},
+    )
+    assert parked.json() == {"outcome": "parked", "pinned_sha256": card["card"]["pinned_sha256"]}
+
+    revised = _auto_plan_card(plan, key="again")
+
+    assert revised["question_id"] == card["question_id"]
+    assert (revised["card"]["state"], revised["card"]["revised_operation_id"]) == (
+        "parked",
+        "turn-again",
+    )
+
+
+def test_a_card_row_from_before_parking_reads_open_and_settles(plan):
+    from rcp.storage import AppStore
+
+    card = _plan_card(plan)
+    with plan.store.connection() as connection:
+        for column in ("shelved_at", "revised_operation_id", "revised_at", "revised_by_json"):
+            connection.execute(f"ALTER TABLE approval_cards DROP COLUMN {column}")
+        connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version=95")
+
+    reopened = AppStore(plan.store.path)
+
+    old = reopened.approval_card(card["question_id"])
+    assert (old["state"], old["shelved_at"], old["revised_at"]) == ("pending", None, None)
+    assert (old["revised_by"], old["revised_operation_id"]) == (None, None)
+    assert old["pinned_sha256"] == card["card"]["pinned_sha256"]
+    assert _tap(plan, card, "decline").json()["outcome"] == "declined"
 
 
 def _start(plan, card, **overrides):
@@ -308,13 +681,25 @@ def test_a_card_waits_for_the_node_its_turn_writes(plan):
     assert any(event.level == "warning" for event in plan.store.agent_task_events(WORK_TURN))
 
 
-def test_a_newer_card_for_the_node_settles_the_older_one_stale(plan):
+def test_a_later_request_revises_the_open_card_in_place(plan):
     older = _plan_card(plan, key="older")
+    with plan.store.connection() as connection:
+        connection.execute("UPDATE approval_cards SET expires_at=?", (_soon(plan),))
+    (plan.workspace / "goal.md").write_text("Compare three schedules.", encoding="utf-8")
     newer = _plan_card(plan, key="newer")
     other_chat = _plan_card(plan, "elsewhere", key="other")
-    cards = {row["question_id"]: row for row in _cards(plan, "shared-chat")}
-    assert cards[older["question_id"]]["card"]["result"] == {"outcome": "stale"}
-    assert cards[newer["question_id"]]["card"]["state"] == "pending"
+
+    assert [row["question_id"] for row in _cards(plan, "shared-chat")] == [older["question_id"]]
+    assert newer["operation_id"] == "turn-older"
+    revised, before = newer["card"], older["card"]
+    assert revised["state"] == "pending"
+    assert revised["action"]["goal"] == "Compare three schedules."
+    assert revised["revised_operation_id"] == "turn-newer"
+    assert revised["revised_by"]["kind"] == "agent" and revised["revised_at"]
+    assert revised["pinned_sha256"] != before["pinned_sha256"]
+    assert revised["request_id"] != before["request_id"]
+    assert revised["expires_at"] > _soon(plan)
+    assert plan.store.pending_experiment_card_tasks() == []
     assert _cards(plan, "elsewhere")[0]["card"]["state"] == "pending"
 
     with plan.store.connection() as connection:
@@ -386,13 +771,7 @@ def _start_directly(plan, source, episode_id, goal, node_rev=None, governing=Non
 
 
 def test_start_in_a_private_chat_runs_the_members_edited_plan(plan):
-    thread = str(uuid.uuid4())
-    with plan.store.connection() as connection:
-        connection.execute(
-            "INSERT INTO agent_threads(thread_id,user_id,kind,project_id,created_at) "
-            "VALUES (?,?,?,?,?)",
-            (thread, plan.human.user_id, "project", plan.project_id, plan.store.now()),
-        )
+    thread = _private_thread(plan)
     card = _plan_card(plan, thread)
 
     moved = _start(plan, card, node_rev=card_node_rev(plan) + 1)

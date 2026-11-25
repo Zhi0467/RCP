@@ -19,7 +19,12 @@ from rcp.agents.staged_command_client import (
 )
 from rcp.approval_actions import AutoResearchAction, ExperimentStartAction
 from rcp.limits import EPISODE_TEXT_MAX_LENGTH
-from rcp.runs.approval_cards import APPROVAL_OUTCOMES, approval_pins
+from rcp.runs.approval_cards import (
+    APPROVAL_OUTCOMES,
+    PLAN_RUN_HERE,
+    PLAN_RUN_HERE_MEANING,
+    approval_pins,
+)
 from rcp.runs.experiment_admission import (
     WorkExperimentResume,
     WorkExperimentResumer,
@@ -40,6 +45,7 @@ from rcp.runs.work_episode_controls import (
     turn_lineage,
 )
 from rcp.service import ProjectService
+from rcp.storage.approval_cards import PLAN_CARD_RAISED_RECEIPT
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -47,14 +53,14 @@ if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution
     from rcp.projects import ProjectCatalog
     from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord
-    from rcp.storage.question_models import QuestionRecord
+    from rcp.storage.question_models import QuestionOrigin
     from rcp.transport.workspace_mailbox import RunStageMailbox
 
 logger = logging.getLogger(__name__)
 
 _RECEIPT = "work_experiment_kickoff"
 _RESUME_RECEIPT = "work_experiment_resume"
-_RAISED_RECEIPT = "work_experiment_card_raised"
+EXPERIMENT_RUN_LIVE = "experiment_run_live"
 
 
 def work_experiment_allowed(execution: AgentTaskExecution | None) -> bool:
@@ -256,7 +262,7 @@ def _handle_work_experiment_kickoff(
         return CommandResponse(
             request_id=request.request_id,
             status="invalid",
-            message="An Experiment plan card from Work requires --goal-file.",
+            message="An Experiment plan card from Work requires --handoff-file.",
         )
     return record_plan_card_request(execution, mailbox, request, arguments)
 
@@ -293,9 +299,9 @@ def record_plan_card_request(
         )
     assert arguments.goal_file is not None
     try:
-        goal = read_workspace_text(mailbox, arguments.goal_file, "Goal file")
+        goal = read_workspace_text(mailbox, arguments.goal_file, "Handoff file")
         if auto and len(goal) > EPISODE_TEXT_MAX_LENGTH:
-            raise ValueError(f"Goal exceeds {EPISODE_TEXT_MAX_LENGTH} characters.")
+            raise ValueError(f"Handoff exceeds {EPISODE_TEXT_MAX_LENGTH} characters.")
     except ValueError as exc:
         return refuse(str(exc), "goal_invalid")
     store = execution.store
@@ -331,6 +337,24 @@ def record_plan_card_request(
                 "invocation_limit": episode.invocation_ceiling,
             },
         )
+    if previous is None and isinstance(arguments, ExperimentKickoffArguments):
+        task = store.agent_task(execution.operation_id)
+        assert task is not None
+        runtime = store.experiment_loop_runtime(
+            task.project_id, arguments.node_id, graph_target=task.graph_target
+        )
+        if runtime.episode_live:
+            return CommandResponse(
+                request_id=request.request_id,
+                status="invalid",
+                message="This Experiment's run is live. Wait for it to end, or ask the human "
+                "to stop it, before proposing another plan.",
+                result={
+                    "code": EXPERIMENT_RUN_LIVE,
+                    "episode_id": runtime.episode_id,
+                    **subject,
+                },
+            )
     if previous_receipt(store, (execution.operation_id,), category, kickoff_id=kickoff_id) is None:
         options = (
             {
@@ -367,8 +391,9 @@ def record_plan_card_request(
 def raise_plan_cards(execution: AgentTaskExecution, catalog: ProjectCatalog) -> None:
     """Raise the plan cards a finished Work turn's kickoffs asked for, from the settled graph.
 
-    Only a succeeded turn raises them. A new card replaces this chat's older pending
-    card for the same node, or its older Auto-research plan.
+    Only a succeeded turn raises them. A request whose node, or Auto-research, already
+    has an open card in this chat revises that card in place, pending or parked. A card
+    claimed for Start is not revised, so the request raises a new one.
     """
 
     store = execution.store
@@ -378,7 +403,7 @@ def raise_plan_cards(execution: AgentTaskExecution, catalog: ProjectCatalog) -> 
     raised = {
         receipt.payload["kickoff_id"]
         for receipt in store.agent_task_receipts_by_category(
-            execution.operation_id, _RAISED_RECEIPT
+            execution.operation_id, PLAN_CARD_RAISED_RECEIPT
         )
     }
     requests = {
@@ -454,20 +479,70 @@ def raise_plan_cards(execution: AgentTaskExecution, catalog: ProjectCatalog) -> 
                 }
             )
             title = node.title
-        key_prefix = "experiment-start" if kind == "experiment_start" else "auto-research"
-        question = store.create_or_get_question(
-            origin=origin,
-            key=f"{key_prefix}:{kickoff_id}",
-            question=f"Start {title}?",
-            choices=["Approve", "Decline"],
-            card={
-                "action": action.model_dump(mode="json"),
-                "pinned": approval_pins(service, store, action, task.authorized_by, state=state),
-            },
+        card = {
+            "action": action.model_dump(mode="json"),
+            "pinned": approval_pins(service, store, action, task.authorized_by, state=state),
+        }
+        text = f"Start {title}?"
+        open_cards = _open_cards(store, origin, subject)
+        kept = None
+        if open_cards and (
+            store.revise_approval_card(
+                open_cards[-1][0],
+                revised_by={"kind": "agent", "name": _agent_name(store, origin.owner_id)},
+                action=card["action"],
+                pinned=card["pinned"],
+                question=text,
+                operation_id=execution.operation_id,
+                raised_kickoff_id=kickoff_id,
+            )
+            is not None
+        ):
+            kept = open_cards[-1][0]
+            store.record_agent_task_event(
+                execution.operation_id, f"Plan card revised for {subject}."
+            )
+        else:
+            key_prefix = "experiment-start" if kind == "experiment_start" else "auto-research"
+            kept = store.create_or_get_question(
+                origin=origin,
+                key=f"{key_prefix}:{kickoff_id}",
+                question=text,
+                choices=["Approve", "Decline"],
+                card=card,
+            ).question_id
+            _mark_raised(store, execution.operation_id, kickoff_id)
+            store.record_agent_task_event(
+                execution.operation_id, f"Plan card raised for {subject}."
+            )
+        for question_id, pinned_sha256 in open_cards:
+            if question_id != kept and store.claim_approval_card(question_id, pinned_sha256):
+                store.settle_approval_card(question_id, {"outcome": "stale"})
+
+
+def _open_cards(store: AppStore, origin: QuestionOrigin, subject: str) -> list[tuple[str, str]]:
+    """This chat's open cards for the node or Auto-research, pending or parked, oldest
+    first, each with the hash it carries."""
+    pending = [
+        item.question_id
+        for item in store.list_questions(
+            project_id=origin.project_id, owner_kind="chat", owner_id=origin.owner_id
         )
-        _settle_replaced_cards(store, question, subject)
-        _mark_raised(store, execution.operation_id, kickoff_id)
-        store.record_agent_task_event(execution.operation_id, f"Plan card raised for {subject}.")
+        if item.state == "pending"
+    ]
+    cards = store.approval_cards(pending)
+    return [
+        (question_id, cards[question_id]["pinned_sha256"])
+        for question_id in pending
+        if question_id in cards
+        and cards[question_id]["state"] in {"pending", "parked"}
+        and _card_subject(cards[question_id]["action"]) == subject
+    ]
+
+
+def _agent_name(store: AppStore, chat_id: str) -> str | None:
+    agent = store.agent(chat_id)
+    return agent.title if agent is not None else None
 
 
 def _card_subject(action: dict[str, object]) -> str | None:
@@ -478,18 +553,19 @@ def _card_subject(action: dict[str, object]) -> str | None:
 
 def _mark_raised(store: AppStore, operation_id: str, kickoff_id: str) -> None:
     store.record_agent_task_receipt(
-        operation_id, _RAISED_RECEIPT, {"kickoff_id": kickoff_id}, tier="diagnostic"
+        operation_id, PLAN_CARD_RAISED_RECEIPT, {"kickoff_id": kickoff_id}, tier="diagnostic"
     )
 
 
 def _newer_card_for(store: AppStore, task: AgentTaskRecord, chat_id: str, subject: str) -> bool:
-    """Whether a later turn already raised a card for this node or Auto-research."""
+    """Whether a later turn already raised or revised a card for this node or Auto-research."""
     with store.connection() as connection:
         return (
             connection.execute(
                 "SELECT 1 FROM questions q "
                 "JOIN approval_cards c ON c.question_id=q.question_id "
-                "JOIN graph_runs r ON r.operation_id=json_extract(q.origin_json,'$.operation_id') "
+                "JOIN graph_runs r ON r.operation_id="
+                "coalesce(c.revised_operation_id,json_extract(q.origin_json,'$.operation_id')) "
                 "WHERE q.project_id=? AND q.owner_kind='chat' AND q.owner_id=? "
                 "AND r.created_at>? AND ("
                 "(json_extract(c.action_json,'$.kind')='auto_research' AND ?='auto_research') "
@@ -522,20 +598,6 @@ def raise_pending_experiment_cards(
             )
 
 
-def _settle_replaced_cards(store: AppStore, newest: QuestionRecord, subject: str) -> None:
-    origin = newest.origin
-    older = [
-        item.question_id
-        for item in store.list_questions(
-            project_id=origin.project_id, owner_kind="chat", owner_id=origin.owner_id
-        )
-        if item.question_id != newest.question_id and item.state == "pending"
-    ]
-    for question_id, card in store.approval_cards(older).items():
-        if _card_subject(card["action"]) == subject and store.claim_approval_card(question_id):
-            store.settle_approval_card(question_id, {"outcome": "stale"})
-
-
 def work_experiment_command_usage(client: str, profile_choices: str) -> str:
     """The Experiment plan card and human-pause resume usage of a Work turn granted ``episode``."""
 
@@ -561,21 +623,30 @@ def work_experiment_command_usage(client: str, profile_choices: str) -> str:
         "then gets no card and a task event.\n"
         f"`{client} episode --key <key> "
         f"{experiment_kickoff_usage(goal_required=True, child_targets=False)}`\n"
-        "Write the goal first as a direct regular UTF-8 file in this run workspace, beside "
-        "the Patch, never a nested path or symlink: what the human asked to run and the "
-        "specifics from this chat (settings, data, what to compare). How this episode runs "
-        "(who builds what, which agent, receipts to collect) goes in the goal, never in the "
+        "Write the handoff first as a direct regular UTF-8 file in this run workspace, beside "
+        "the Patch, never a nested path or symlink. The handoff is what you hand to the "
+        "experiment agent, and the run starts with it as that agent's first message: what the "
+        "human asked to run and the specifics from this chat (settings, data, what to "
+        "compare). How this episode runs (who builds what, which agent, receipts to collect) "
+        "goes in the handoff, never in the "
         "Experiment's fields, which state only its scientific design. The limit may not exceed "
         "the Experiment's own invocation limit; it defaults to that limit. Pick the provider, "
         "model, and effort that fit the work, or omit them for Settings. Ready profiles:\n"
         f"{profile_choices}\n"
         "The command only proposes: it answers card_pending and starts nothing. The run starts only when a human "
-        "presses Start on the card, after reviewing and possibly editing the goal, limit, and "
-        "profile. The same key and arguments replay the same request after a Resume or Retry. "
+        "presses Start on the card, after reviewing and possibly editing the handoff, limit, "
+        "and profile. The human may instead park the card for later, which the question "
+        "snapshot shows as shelved: a parked plan waits for the human, so do not raise it "
+        "again unasked. While the Experiment's run is live the command is refused with "
+        f"{EXPERIMENT_RUN_LIVE}: wait for the run to end, or ask the human to stop it. "
+        "The same key and arguments replay the same request after a Resume or Retry. "
         "Tell the human the plan card will appear when this reply ends. The question snapshot "
         "shows the card's outcome: "
         + "; ".join(f"{outcome}: {meaning}" for outcome, meaning in APPROVAL_OUTCOMES.items())
-        + " To revise the plan after the human comments, run the command again with a new key; the new card replaces the old one. Once the card is approved, "
-        "tell the human what started (node, goal, limit, profile). Its ending reaches this "
+        + f"; {PLAN_RUN_HERE}: {PLAN_RUN_HERE_MEANING}"
+        + " To revise the plan after the human comments, run the command again for the same "
+        "node with a new key: it revises the open card in place, pending or parked, and "
+        "raises no second card. Once the card is approved, "
+        "tell the human what started (node, handoff, limit, profile). Its ending reaches this "
         "chat through the episode mailbox."
     )

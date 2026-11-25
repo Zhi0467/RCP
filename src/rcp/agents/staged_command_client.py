@@ -69,7 +69,7 @@ SPAWN_SEAT_OPTIONS = (("seat_node", "--seat-node", "<node-id>"), ("project", "--
 CHILD_TARGET_OPTIONS = (("at", "--at", "<ref@R>"), ("target", "--target", "<branch>"))
 CHILD_SEED_OPTION = ("seed_file", "--seed-file", "<filename>")
 KICKOFF_NODE = ("node", "--node", "<node-id>")
-KICKOFF_GOAL = ("goal_file", "--goal-file", "<filename>")
+KICKOFF_GOAL = ("goal_file", "--handoff-file", "<filename>")
 KICKOFF_LIMIT = ("invocation_limit", "--invocation-limit", "<positive-int>")
 AUTO_RESEARCH_CODE_WORKTREE = ("code_worktree", "--code-worktree", "on|off")
 AUTO_RESEARCH_WORKTREE_REPOSITORY = (
@@ -503,7 +503,7 @@ def _parser():
     for dest, flag, value in EPISODE_CONTROLS:
         episode_action.add_argument(flag, dest=dest, metavar=value)
     episode.add_argument(KICKOFF_NODE[1])
-    episode.add_argument(KICKOFF_GOAL[1])
+    episode.add_argument(KICKOFF_GOAL[1], dest=KICKOFF_GOAL[0])
     episode.add_argument(KICKOFF_LIMIT[1], type=int)
     for dest, flag, value in (*AUTO_RESEARCH_OPTIONS, EPISODE_BODY, EPISODE_ANSWER_FILE):
         episode.add_argument(flag, dest=dest, metavar=value)
@@ -805,7 +805,7 @@ def _request_arguments(namespace, workspace):
                 if getattr(namespace, dest) is not None:
                     raise ClientInputError(f"{flag} is available only for Experiment kickoff")
             if namespace.goal_file is None:
-                raise ClientInputError("Auto-research kickoff requires --goal-file")
+                raise ClientInputError(f"Auto-research kickoff requires {KICKOFF_GOAL[1]}")
             if invocation_limit is None:
                 raise ClientInputError("Auto-research kickoff requires --invocation-limit")
             code_worktree = namespace.code_worktree
@@ -813,7 +813,7 @@ def _request_arguments(namespace, workspace):
                 raise ClientInputError("--code-worktree takes on or off")
             arguments = {
                 "action": "kick_off_auto_research",
-                "goal_file": _keyed_command_file(workspace, namespace.goal_file, "goal file"),
+                "goal_file": _keyed_command_file(workspace, namespace.goal_file, "handoff file"),
                 "invocation_limit": invocation_limit,
                 **({} if code_worktree is None else {"code_worktree": code_worktree == "on"}),
                 **{
@@ -832,7 +832,7 @@ def _request_arguments(namespace, workspace):
                 raise ClientInputError("Experiment kickoff requires --node")
             goal_file = namespace.goal_file
             if goal_file is not None:
-                goal_file = _keyed_command_file(workspace, goal_file, "goal file")
+                goal_file = _keyed_command_file(workspace, goal_file, "handoff file")
             arguments = {
                 "action": "kick_off_experiment",
                 **_child_target_arguments(namespace, workspace),
@@ -845,7 +845,7 @@ def _request_arguments(namespace, workspace):
             if namespace.node is not None:
                 raise ClientInputError("--node is available only for Experiment kickoff")
             if namespace.goal_file is not None:
-                raise ClientInputError("--goal-file is available only for kickoff")
+                raise ClientInputError(f"{KICKOFF_GOAL[1]} is available only for kickoff")
             for dest, flag, _ in (*CHILD_TARGET_OPTIONS, CHILD_SEED_OPTION):
                 if getattr(namespace, dest) is not None:
                     raise ClientInputError(f"{flag} is available only for Experiment kickoff")

@@ -600,7 +600,10 @@ def _asked_cards(
     store: AppStore, scope_id: str, chat_ids: Iterable[str], user_id: str
 ) -> list[dict[str, Any]]:
     """The answerable pending card questions of these chats under `scope_id`, each naming
-    the project its action acts on, and only while the member still belongs to it."""
+    the project its action acts on, and only while the member still belongs to it.
+
+    A parked plan waits in its turn and the pane, never in a dock.
+    """
     asked = []
     for chat_id in chat_ids:
         pending = [
@@ -611,7 +614,7 @@ def _asked_cards(
             if question.state == "pending"
         ]
         for row in _serialize_all(store, pending):
-            if row.card is None or not row.can_answer:
+            if row.card is None or not row.can_answer or row.card["state"] == "parked":
                 continue
             project_id = row.card["action"]["project_id"]
             project = store.project(project_id)

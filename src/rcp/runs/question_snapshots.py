@@ -96,13 +96,20 @@ def question_snapshot(
         )
     ]
     # A backlog of open questions must not crowd this launch's answer or a
-    # dismissal out of its bounded input forever.
+    # dismissal out of its bounded input forever; parked plans come last.
+    cards = {
+        item.question_id: card
+        for item in records
+        if (card := _card_entry(store, item.question_id)) is not None
+    }
     records.sort(
         key=lambda item: (
             0
             if item.followup_operation_id in delivery_operations
             else 1
             if item.state != "pending"
+            else 3
+            if cards.get(item.question_id, {}).get("shelved")
             else 2,
             item.created_at,
             item.question_id,
@@ -128,7 +135,7 @@ def question_snapshot(
                 answer=item.answer,
                 chosen_choices=item.chosen_choices,
             )
-        if card := _card_entry(store, item.question_id):
+        if card := cards.get(item.question_id):
             entry["card"] = card
         if item.state == "dismissed":
             dismissals.append(item.question_id)
@@ -162,6 +169,8 @@ def _card_entry(store: AppStore, question_id: str) -> dict[str, object] | None:
         entry["result"] = {
             key: value for key, value in card["result"].items() if key != "request_id"
         }
+    if card["state"] == "parked":
+        entry["shelved"] = True
     return entry
 
 

@@ -553,14 +553,25 @@ The strict request rejects additional fields.
 card only, and never wakes an owner.
 
 Approval questions add `card: {request_id, kind, action, pinned, pinned_sha256,
-expires_at, state, result}`, where state is pending, running or expired, and
+expires_at, state, result, shelved_at, revised_at, revised_by,
+revised_operation_id, run_here_operation_id}`. The server owns `state`, in this
+precedence: `expired`; `running_here` or `ran_here` for a card a Run here
+settled; `running` (claimed for Start, or settled by it); `parked`; `pending`.
+`revised_by` is `{kind: "agent" | "member", name}`, and
 `result` carries only `outcome`, `rejected` and `reason`. Ordinary answer and dismiss
 return `409 approval_card` for these questions. The owner, or for a shared-chat
 plan card any member `plan_card_actor` admits, resolves through
 `POST /api/approval-cards/{question_id}` with
-`{decision: "approve" | "decline", pinned_sha256, start?}`; approving a plan card
-requires `start`. The response is
-`{outcome: "approved" | "declined" | "stale" | "failed" | "expired", result?, reason?}`;
+`{decision: "approve" | "decline" | "park" | "save" | "run_here", pinned_sha256,
+start?}`; approving a plan card requires `start`. `park` and `save` are plan
+card decisions that write the member's `start` fields into the card without
+settling it and return `{outcome: "parked" | "saved", pinned_sha256}` with the
+new hash; `save` requires `start`. `run_here` is an Experiment plan card's and
+requires `start`. Another kind answers `422 decision_not_available`. Approve
+and decline accept parked cards. The response is
+`{outcome: "approved" | "declined" | "stale" | "failed" | "expired" | "run_here", result?, reason?}`.
+A presented hash the card no longer carries returns `409 plan_revised` and
+leaves the card open;
 a second tap returns `409 card_taken`. A declined card that approves a
 Proposal adds `rejected` (and `reason` when false) unless the Proposal was
 already decided. A derived Proposal card decides through
