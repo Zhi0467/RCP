@@ -56,6 +56,7 @@ from rcp.storage import (
     EpisodeNotRunning,
     EpisodeRecord,
 )
+from rcp.storage.request_compat import pinned_request_fields_match
 from rcp.transport import RemoteRunStage
 
 if TYPE_CHECKING:
@@ -2691,10 +2692,8 @@ def _validate_existing_child_work_wake(
         or request.patch_kind != "work"
         or (not watcher_wake and (request.message is not None or request.watcher_ids))
         or (watcher_wake and (not request.message or not watchers))
-        or any(
-            existing.request.get(field, False if field == "browser_requested" else None)
-            != parent.request.get(field, False if field == "browser_requested" else None)
-            for field in pinned_request_fields
+        or not pinned_request_fields_match(
+            RunRequest, existing.request, parent.request, pinned_request_fields
         )
         or (not watcher_wake and not messages)
         or any(

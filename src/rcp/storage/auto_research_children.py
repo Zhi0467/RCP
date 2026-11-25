@@ -37,6 +37,7 @@ from rcp.storage.models import (
     EpisodeReportConflict,
     _required_timestamp,
 )
+from rcp.storage.request_compat import pinned_request_fields_match
 from rcp.storage.watchers import _OPEN
 
 if TYPE_CHECKING:
@@ -893,6 +894,8 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                 current = self._agent_task_record(current_row)
                 if current.status != "succeeded":
                     return None
+                from rcp.service import RunRequest
+
                 pinned_request_fields = (
                     "provider",
                     "model",
@@ -929,9 +932,8 @@ class AutoResearchChildrenStoreMixin(StoreMixinBase):
                     or (not watcher_ids and record.request.get("watcher_ids") not in (None, []))
                     or record.graph_target != current.graph_target
                     or record.request.get("result_view") is not None
-                    or any(
-                        record.request.get(field) != current.request.get(field)
-                        for field in pinned_request_fields
+                    or not pinned_request_fields_match(
+                        RunRequest, record.request, current.request, pinned_request_fields
                     )
                 ):
                     raise ValueError(
