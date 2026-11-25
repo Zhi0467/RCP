@@ -99,7 +99,8 @@ Overlapping or canonical-state repository roots are refused.
 The launched profile must prove that each write root is writable and each
 protected path exists, refuses writes and has a read-only mount (`findmnt`).
 Only its readiness marker admits the PTY. Unsupported properties fail visibly.
-Both backends use the repository cwd, `env -i`, and no startup scripts or saved
+Both backends use the repository cwd, `env -i`, a PATH of the account's
+`~/.local/bin` then the system directories, and no startup scripts or saved
 history; cooperative sessions perform no mount preflight.
 
 systemd 254 or newer receives `--expand-environment=no`; older versions refuse
