@@ -435,7 +435,13 @@ def handle_work_episode_controls(
             message_id=sent.message_id,
             episode_id=sent.episode_id,
             delivered=sent.delivered_at is not None,
-            read_at="after_added_turns" if last_turn else "next_turn",
+            read_at=(
+                "delivered"
+                if sent.delivered_at is not None
+                else "after_added_turns"
+                if last_turn
+                else "next_turn"
+            ),
         )
 
     return _attempt(request, "episode_message_refused", message)

@@ -236,6 +236,10 @@ def test_a_work_chat_starts_pauses_resumes_steers_stops_and_extends_its_auto_res
     assert continuation.authorized_by == member.human
     again = act("more", more)
     assert (again.status, again.result["episode_id"]) == ("ok", continuation.episode_id)
+    (member.workspace / "note.md").write_text("Use the larger batch instead.", encoding="utf-8")
+    changed = act("more", more)
+    assert changed.status == "invalid"
+    (member.workspace / "note.md").write_text("Try the smaller batch first.", encoding="utf-8")
     restopped = act("stop-again", {"action": "stop", "episode_id": episode_id})
     assert restopped.status == "ok", restopped.message
     assert restopped.result["episode_id"] == continuation.episode_id

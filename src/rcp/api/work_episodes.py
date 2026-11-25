@@ -13,6 +13,7 @@ from rcp.api.episode_routes import (
     _newest_chain_member,
     _resolved_auto_research_start_request,
     continue_episode_once,
+    require_replayed_note,
     send_episode_message_as,
     start_auto_research_episode,
     stop_episode_as,
@@ -240,6 +241,16 @@ class MemberEpisodeControls:
         store = self.tasks().store
         while (newer := store.episode_continuation(episode.episode_id)) is not None:
             if newer.continuation_request_id == request_id:
+                try:
+                    require_replayed_note(
+                        store,
+                        newer,
+                        ContinueEpisodeBody(
+                            invocation_ceiling=invocation_ceiling, request_id=request_id, note=note
+                        ).note,
+                    )
+                except HTTPException as exc:
+                    raise _refused(exc, "episode_not_continuable") from exc
                 return newer
             episode = newer
         with self._admitted(episode.project_id, authorizer):

@@ -650,7 +650,13 @@ def auto_research_command_effects(
                 "message_id": saved.message_id,
                 "episode_id": saved.episode_id,
                 "delivered": saved.delivered_at is not None,
-                "read_at": "after_added_turns" if final_turn else "next_turn",
+                "read_at": (
+                    "delivered"
+                    if saved.delivered_at is not None
+                    else "after_added_turns"
+                    if final_turn
+                    else "next_turn"
+                ),
             },
         )
 
