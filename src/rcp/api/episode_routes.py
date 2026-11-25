@@ -923,11 +923,11 @@ def continue_episode_once(
     authorized_by: AuthorizedHuman,
     catalog: ProjectCatalog,
     background_tasks: BackgroundAgentTasks,
-    note: str | None = None,
 ) -> tuple[EpisodeRecord, bool]:
     """Continue an ended episode, or replay the continuation this request id made.
 
-    ``note`` is the human's word to the continued agent, read before its first turn.
+    The body's optional note is the human's word to the continued agent, read
+    before its first turn. A replay with a different note is refused.
 
     Returns the continuation and whether it was a replay. Raises the HTTP refusal.
     """
@@ -939,6 +939,11 @@ def continue_episode_once(
     if existing is not None:
         if existing.continuation_request_id != body.request_id:
             raise HTTPException(status_code=409, detail="This episode has already been continued.")
+        if body.note is not None and _continuation_note(store, existing) != body.note:
+            raise HTTPException(
+                status_code=409,
+                detail="This request id already continued the episode with a different note.",
+            )
         return existing, True
     continuation = continue_ended_episode(
         source,
@@ -948,9 +953,31 @@ def continue_episode_once(
         catalog=catalog,
         store=store,
         background_tasks=background_tasks,
-        note=note,
+        note=body.note,
     )
     return continuation, False
+
+
+def _continuation_note(store: AppStore, continuation: EpisodeRecord) -> str | None:
+    """The note a continuation carried: its first turn's message or its first mail."""
+
+    if continuation.control_node_id is None:
+        if continuation.continuation_request_id is None:
+            return None
+        message_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"rcp:{continuation.project_id}:{continuation.continuation_request_id}",
+            )
+        )
+        saved = store.auto_research_message(message_id)
+        return saved.body if saved is not None else None
+    root = (
+        store.agent_task(continuation.root_operation_id) if continuation.root_operation_id else None
+    )
+    message = str(root.request.get("message") or "") if root is not None else ""
+    _, separator, note = message.partition("\n\n")
+    return note if separator else None
 
 
 def continue_ended_episode(

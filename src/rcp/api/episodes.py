@@ -117,6 +117,12 @@ class ContinueEpisodeBody(BaseModel):
 
     invocation_ceiling: int = Field(ge=1)
     request_id: str = Field(min_length=1, max_length=120)
+    note: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=EPISODE_TEXT_MAX_LENGTH,
+        exclude_if=lambda v: v is None,
+    )
 
     @field_validator("request_id")
     @classmethod
@@ -125,6 +131,13 @@ class ContinueEpisodeBody(BaseModel):
             uuid.UUID(value)
         except ValueError as exc:
             raise ValueError("the continuation request id must be a UUID") from exc
+        return value
+
+    @field_validator("note", mode="before")
+    @classmethod
+    def trim_note(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip() or None
         return value
 
 

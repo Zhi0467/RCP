@@ -247,12 +247,11 @@ class MemberEpisodeControls:
                 continuation, _ = continue_episode_once(
                     episode,
                     ContinueEpisodeBody(
-                        invocation_ceiling=invocation_ceiling, request_id=request_id
+                        invocation_ceiling=invocation_ceiling, request_id=request_id, note=note
                     ),
                     authorized_by=authorizer,
                     catalog=self.catalog,
                     background_tasks=self.tasks(),
-                    note=note,
                 )
             except HTTPException as exc:
                 raise _refused(exc, "episode_not_continuable") from exc

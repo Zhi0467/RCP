@@ -13,9 +13,7 @@ from rcp.agents.command_protocol import (
     ExperimentKickoffArguments,
 )
 from rcp.agents.staged_command_client import (
-    EPISODE_ADD_TURNS,
     EPISODE_RESUME,
-    KICKOFF_LIMIT,
     episode_control_usage,
     experiment_kickoff_usage,
 )
@@ -611,13 +609,12 @@ def work_experiment_command_usage(client: str, profile_choices: str) -> str:
         f"`{client} {episode_control_usage(EPISODE_RESUME)}` with the loop status's "
         "episode_id. Never tell the human to press a button for it: the episode resumes its "
         "own session with its unused turns once this reply ends, after your Patch lands. Say "
-        "so in your reply. To change an Experiment and run it again, stop it, fix the "
-        "Experiment in your Patch, and propose it again on a new plan card in a later turn once "
-        "the loop status shows it stopped.\n"
-        "Experiment continue: when the human wants more turns on an ended episode (completed, "
-        "stopped, failed, or needs_action) and the design stays the same, add turns to it "
-        f"with `{client} {episode_control_usage(EPISODE_ADD_TURNS, required=(KICKOFF_LIMIT,))}` "
-        "instead of proposing a plan card. The human's message is the authorization.\n"
+        "so in your reply.\n"
+        "Experiment change or continue: when the human wants more turns or a changed design "
+        "for an Experiment this chat ran, fix the Experiment in your Patch if the design "
+        "changes, then use the episode controls above in a later turn: message it while it "
+        "runs, or add turns with a note once it has ended. The human's message is the "
+        "authorization.\n"
         "Experiment plan card: propose a new episode for the human to review, edit, and Start. "
         "Propose one only when the human asks you "
         "to run or start an Experiment (in a chat on that Experiment, 'run it' counts) and no "
@@ -644,7 +641,8 @@ def work_experiment_command_usage(client: str, profile_choices: str) -> str:
         "and profile. The human may instead park the card for later, which the question "
         "snapshot shows as shelved: a parked plan waits for the human, so do not raise it "
         "again unasked. While the Experiment's run is live the command is refused with "
-        f"{EXPERIMENT_RUN_LIVE}: wait for the run to end, or ask the human to stop it. "
+        f"{EXPERIMENT_RUN_LIVE}: message or stop the run with the episode controls if this "
+        "chat started it; otherwise ask the human to stop it in Runs. "
         "The same key and arguments replay the same request after a Resume or Retry. "
         "Tell the human the plan card will appear when this reply ends. The question snapshot "
         "shows the card's outcome: "

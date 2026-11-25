@@ -1039,12 +1039,25 @@ wait for its human is also open to the chat the Experiment runs in, as before.
   **Resume** stays offered. A paused Experiment tells its human to reply in its
   chat once the pause is resolved, and an Experiment-node chat's loop status
   carries the episode's ending.
-- `episode --add-turns <id> --invocation-limit <n>` is **Add N turns** on an
-  ended episode of either mode. The continuation keeps the branch, code worktree
-  and session, so it is how the chat restarts an episode on the same branch.
-- `episode --message <id> --body-file <file>` is the member's message to an
-  Auto-research orchestrator. An ended orchestrator needs `--invocation-limit`,
-  which continues it with that message.
+- `episode --add-turns <id> --invocation-limit <n> [--body-file <note>]` is
+  **Add N turns** on an ended episode of either mode. The continuation keeps the
+  branch, code worktree and session, so it is how the chat restarts an episode on
+  the same branch. The optional note reaches the continued agent first: an
+  Experiment reads it in its first continued turn, and an orchestrator receives it
+  as the member's mail.
+- `episode --message <id> --body-file <file>` mails a running episode, read at its
+  next turn. The result's `read_at` is `after_added_turns` when an Experiment is on
+  its final turn. An older form that continued an ended orchestrator with
+  `--invocation-limit` still replays but is no longer offered.
+
+The chat picks the control from the episode's state: message, pause or stop a
+running one, resume a paused one, add turns to an ended one. A correction names
+what changed and which node to re-read. A correction that cannot wait for the
+next turn stops the episode and adds turns with a note. The Bulletin is broadcast,
+not a steering channel. The receiving agent treats mail from the member or from
+the agent that started it as direction with the weight of its handoff, the newest
+winning, and re-reads its loop control, Experiment and neighbors on every resume,
+continuation or mail.
 
 **Parent/child mailbox.** A direct child sends its questions, pauses and endings
 to the chat that started the chain. Continuations retain the first episode's
@@ -1117,15 +1130,15 @@ questions and cards from the same turn stay open.
 `episode --message <id> --body-file <file>` also accepts a running Experiment
 chain. Its mail waits for the next invocation, which claims it in the episode's
 saved session and stage under the Stop fence. It never steers an active provider
-invocation. An ended or stopping Experiment refuses with `episode_not_running`.
+invocation. An ended or stopping Experiment refuses with `episode_not_running`
+and points to adding turns with a note.
 
 Add-turns and message requests derive their request ids from the turn and key,
 so a replay returns the same continuation or message. Pause and resume record a
-receipt, so a replay answers with the turn they already controlled. When the
-member wants more turns on an ended Experiment with the same design, the agent
-adds turns to that episode rather than raising a plan card. To change
-and rerun an Experiment, the agent stops it, fixes it in its Patch, and starts a
-new episode in a later turn once it shows stopped.
+receipt, so a replay answers with the turn they already controlled. To change
+an Experiment's design, the agent fixes it in its Patch, then in a later turn
+messages the running episode or adds turns with a note to the ended one. A new
+plan card is only for an Experiment with no continuable episode.
 
 **Why:** the member's Work message is the authorization a Runs click would be.
 An Experiment node's limit, which only a visible graph edit changes, still bounds

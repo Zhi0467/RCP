@@ -426,7 +426,7 @@ def handle_work_episode_controls(
         )
         recipient = execution.store.episode(sent.episode_id)
         last_turn = recipient is not None and (
-            recipient.mode == "experiment_loop"
+            recipient.control_node_id is not None
             and recipient.invocations_used >= recipient.invocation_ceiling
         )
         return _ok(
@@ -493,10 +493,10 @@ def work_episode_control_usage(client: str) -> str:
 
     from rcp.agents.prompts import EPISODE_MAILBOX_RULES
 
-    add_turns = episode_control_usage(EPISODE_ADD_TURNS, required=(KICKOFF_LIMIT,))
-    message = episode_control_usage(
-        EPISODE_MESSAGE, required=(EPISODE_BODY,), optional=(KICKOFF_LIMIT,)
+    add_turns = episode_control_usage(
+        EPISODE_ADD_TURNS, required=(KICKOFF_LIMIT,), optional=(EPISODE_BODY,)
     )
+    message = episode_control_usage(EPISODE_MESSAGE, required=(EPISODE_BODY,))
     return (
         "Episode controls (Experiments and Auto-research alike):\n"
         f"{EPISODE_MAILBOX_RULES}\n"
@@ -505,18 +505,21 @@ def work_episode_control_usage(client: str) -> str:
         f"When you ask the human a child question, add `{ask_relay_usage()}` to your `ask`; "
         "RCP withdraws your copy once the child question is resolved.\n"
         "Episode controls act only on episodes this chat started, as the human's Runs card "
-        "would; tell the human to use Runs for any other.\n"
-        f"- `{client} {episode_control_usage(EPISODE_STOP)}` stops it gracefully: the running "
+        "would; tell the human to use Runs for any other. Pick the control from the "
+        "episode's state:\n"
+        f"- Running: `{client} {message}` mails it; it reads the mail at its next turn, and "
+        "the result's read_at says when. "
+        f"`{client} {episode_control_usage(EPISODE_PAUSE)}` pauses its running turn. "
+        f"`{client} {episode_control_usage(EPISODE_STOP)}` stops it gracefully: the running "
         "turn finishes, then nothing continues it.\n"
-        f"- `{client} {episode_control_usage(EPISODE_PAUSE)}` pauses its running turn; "
-        f"`{client} {episode_control_usage(EPISODE_RESUME)}` resumes a paused turn in its "
-        "session.\n"
-        f"- `{client} {add_turns}` adds turns to an ended episode. It continues on the same "
-        "branch, code worktree, and session, so this is how you restart one there.\n"
-        f"- `{client} {message}` sends the body file to a child. Experiments receive it next turn. An "
-        "ended orchestrator needs the limit, which continues it with that message.\n"
-        "To steer a running episode, message it or post to the Bulletin. To change its course, "
-        "pause it, make the change (a message for an orchestrator; your Patch for an "
-        "Experiment on this chat's graph), then resume it or add turns in a later turn, once "
-        "the change has landed. The same key replays the same action after a Resume or Retry."
+        f"- Paused: `{client} {episode_control_usage(EPISODE_RESUME)}` resumes the paused "
+        "turn in its session.\n"
+        f"- Ended: `{client} {add_turns}` continues it on the same branch, code worktree, "
+        "and session. The optional body file is a note the continued agent reads first. "
+        "Never raise a new plan card for an episode that can take added turns.\n"
+        "Every correction says what changed and which node to re-read. A graph change lands "
+        "with your Patch, so message or continue in a later turn, once it has landed. If a "
+        "correction cannot wait for the next turn, stop the episode, then add turns with a "
+        "note. The Bulletin is for everyone on the branch, never for steering one run. The "
+        "same key replays the same action after a Resume or Retry."
     )

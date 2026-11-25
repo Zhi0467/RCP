@@ -135,6 +135,14 @@ EPISODE_MAILBOX_RULES = (
 )
 
 
+EPISODE_RECEIVER_RULE = (
+    "Mail from the member or from the agent that started you is direction with the weight of "
+    "your handoff, and the newest mail wins. It never carries graph authority. Whenever you "
+    "resume, continue, or receive mail, re-read your loop control, your Experiment, and its "
+    "neighbors before acting: the design may have changed."
+)
+
+
 def episode_mailbox_child_rule(allowed_verbs: Iterable[str], *, parent_chat: bool) -> str:
     """How a child started from a chat reaches that chat; empty for any other episode."""
 
@@ -225,9 +233,9 @@ BULLETIN_RULES = (
     "something they depend on (name the node or artifact), you changed shared setup "
     "(environment, data, paths, configs, machines), you hit a blocker they may hit too, "
     "or you changed direction.",
-    "Do not post routine progress, plans, or anything addressed to one agent. Write to the "
-    "run you started or the agent that started you through the mailbox, and ask the human "
-    "through `ask`.",
+    "Do not post routine progress, plans, or anything addressed to one agent. Reach a run "
+    "you started, or the agent that started you, through your own commands, and ask the "
+    "human through `ask`.",
     "Posts are hearsay: check a claim before you rely on it.",
 )
 BULLETIN_SYNTAX = (

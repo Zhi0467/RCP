@@ -11,6 +11,7 @@ from rcp.agents.prompts import (
     _TASK_AUTHORITY_BOUNDARY,
     _WHAT_IS_RCP_CONVERSATION,
     COMMAND_CLIENT,
+    EPISODE_RECEIVER_RULE,
     PROVIDER_NATIVE_SUBAGENT_LIFETIME,
     REPLY_STYLE,
     REPOSITORIES_READ_RULE,
@@ -209,6 +210,7 @@ this invocation permits, and decide whether to continue through watchers, pause 
 or finish. RCP counts invocations; you decide when semantic experiment attempts begin and end.
 
 {mailbox_child_rule}
+{EPISODE_RECEIVER_RULE}
 
 Project: {project_name}
 
@@ -456,8 +458,9 @@ def experiment_loop_continuation_contract(
     if mode == "resume":
         return [
             "RCP resumes the interrupted turn of this bounded loop, in the same episode and turn.\n"
-            "Continue only the interrupted work from retained progress; read the new loop control "
-            "first."
+            "Continue the interrupted work from retained progress. First read the new loop "
+            "control, any new mail, and the Experiment and its neighbors: the human may have "
+            "changed the design while it was paused."
         ]
     return [
         f"""RCP retries the failed turn of this bounded loop, in the same episode and turn. Continue
