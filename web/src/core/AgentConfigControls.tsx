@@ -14,6 +14,7 @@ import {
   providerOptions,
   reasoningOptions,
   runtimeOptions,
+  takesNoEffort,
 } from "../projects/providers";
 import type {
   AgentProfile,
@@ -127,6 +128,9 @@ export function AgentConfigChip({
     readiness?.label ||
     project.registry?.find((item) => item.provider === value.provider)?.label ||
     value.provider;
+  const shownModel = value.model || effectiveModel;
+  const models = providerModels(project, value.run_on, value.provider);
+  const effort = takesNoEffort(models, shownModel) ? "" : value.reasoning;
   return (
     <button
       ref={ref}
@@ -139,7 +143,7 @@ export function AgentConfigChip({
       onClick={onToggle}
     >
       <span className="agent-config-chip-text">
-        {[providerName, value.model || effectiveModel, value.reasoning].filter(Boolean).join(" · ")}
+        {[providerName, shownModel, effort].filter(Boolean).join(" · ")}
       </span>
       {optionCount ? <strong className="agent-config-chip-count">{optionCount}</strong> : null}
       {readiness === undefined ? (

@@ -80,6 +80,32 @@ test("a model that takes no effort drops the current one", () => {
   assert.deepEqual(reasoningOptions(models, "opencode/big-pickle", ""), []);
 });
 
+/** Shaped like a real `agy models` probe: each model id already names its effort. */
+const AGY_MODELS = [
+  { id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)", reasoning: [] },
+  { id: "gemini-3.8-flash-low", label: "Gemini 3.8 Flash (Low)", reasoning: [] },
+];
+
+test("a catalog whose models take no effort offers no effort, even a saved one", () => {
+  assert.deepEqual(reasoningOptions(AGY_MODELS, "gemini-3.8-flash-low", "medium"), []);
+  assert.deepEqual(reasoningOptions(AGY_MODELS, "", "medium"), []);
+  assert.deepEqual(modelChange(AGY_MODELS, "", "medium"), { model: "", reasoning: "" });
+  assert.deepEqual(providerChange(AGY_MODELS, "agy", "high"), {
+    provider: "agy",
+    model: "gemini-3.8-flash-high",
+    reasoning: "",
+  });
+});
+
+test("an unlisted model keeps its saved effort", () => {
+  assert.deepEqual(reasoningOptions(AGY_MODELS, "gemini-next-preview", "medium"), [
+    { id: "medium", label: "medium" },
+  ]);
+  assert.deepEqual(modelChange(AGY_MODELS, "gemini-next-preview", "medium"), {
+    model: "gemini-next-preview",
+  });
+});
+
 test("an effort the new model still accepts is left alone", () => {
   assert.deepEqual(modelChange(CODEX.models, "gpt-5.5", "high"), { model: "gpt-5.5" });
 });
