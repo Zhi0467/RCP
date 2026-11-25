@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import uuid
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -169,6 +170,7 @@ class _AgyStreamTurn(ProviderTurn):
         self.results = 0
         self.ready = False
         self.completed = False
+        self._held_text: tuple[object, str] | None = None
 
     def initial_input(self) -> bytes:
         return self._input(self.prompt)
@@ -203,6 +205,14 @@ class _AgyStreamTurn(ProviderTurn):
             return ProviderRuntimeStep(events=(ProviderStreamEvent(event="raw", text=line),))
         event = self.profile.decode_event(value, line)
         if isinstance(value, dict):
+            released = self._hold_text(value)
+            if released:
+                event = replace(
+                    event,
+                    status=(event.status or AgentStatusDelta()).model_copy(
+                        update={"message": released}
+                    ),
+                )
             if value.get("event") == "init":
                 self.ready = True
             if value.get("event") == "result":
@@ -216,6 +226,32 @@ class _AgyStreamTurn(ProviderTurn):
             explicit_terminal=self.completed,
             stop_process=event.event == "error",
         )
+
+    def _hold_text(self, value: dict[str, object]) -> str | None:
+        """Response text is an in-between message once the agent acts after it; held text answers.
+
+        Antigravity streams one response step as text deltas sharing its step index.
+        """
+
+        if value.get("event") == "result":
+            self._held_text = None
+            return None
+        step = value.get("step_update")
+        if value.get("event") != "step_update" or not isinstance(step, dict):
+            return None
+        held = self._held_text
+        released: str | None = None
+        if step.get("step_type") == "agent_response":
+            index = step.get("step_index")
+            if held is not None and held[0] != index:
+                released, held = held[1], None
+            delta = step.get("text_delta")
+            if isinstance(delta, str) and delta:
+                held = (index, f"{held[1]}{delta}" if held else delta)
+        elif held is not None:
+            released, held = held[1], None
+        self._held_text = held
+        return released if released and released.strip() else None
 
 
 class _AgyStreamRuntime(ProviderRuntime):
@@ -431,8 +467,8 @@ class AgyProfile(ProviderProfile):
         if kind == "step_update" and step.get("step_type") == "agent_response":
             usage = self.decode_usage(value, raw)
             return ProviderStreamEvent(
-                event="message",
-                text=str(step.get("text_delta") or ""),
+                event="raw",
+                text=raw,
                 usage=usage,
                 status=AgentStatusDelta(context_tokens=usage.processed_input_tokens)
                 if usage

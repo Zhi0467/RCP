@@ -81,7 +81,13 @@ export function reasoningFor(models: ModelChoice[], model: string): string[] {
   return [...new Set(models.flatMap((item) => item.reasoning))];
 }
 
+/** Whether the catalog says this model runs without an effort, so none is offered or kept. */
+export function takesNoEffort(models: ModelChoice[], model: string): boolean {
+  return models.length > 0 && reasoningFor(models, model).length === 0;
+}
+
 export function reasoningOptions(models: ModelChoice[], model: string, saved: string): Option[] {
+  if (takesNoEffort(models, model)) return [];
   return withSaved(
     reasoningFor(models, model).map((id) => ({ id, label: id })),
     saved,
@@ -113,11 +119,8 @@ export function modelChange(
   model: string,
   reasoning: string,
 ): { model: string; reasoning?: string } {
+  if (takesNoEffort(models, model)) return { model, reasoning: "" };
   const accepted = reasoningFor(models, model);
-  // A catalogued model with no efforts takes none; an old one would only be ignored.
-  if (models.some((item) => item.id === model) && accepted.length === 0) {
-    return { model, reasoning: "" };
-  }
   if (accepted.length === 0 || accepted.includes(reasoning)) return { model };
   // The catalog's default is trusted only when the model's own list contains it.
   const fallback = models.find((item) => item.id === model)?.default_reasoning ?? "";
