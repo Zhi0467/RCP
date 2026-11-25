@@ -259,9 +259,7 @@ class EpisodeStoreMixin(StoreMixinBase):
                     [
                         episode.episode_id
                         for episode in candidates
-                        if episode.control_node_id == node_id
-                        and episode.mode == "experiment_loop"
-                        and episode.episode_id not in started
+                        if episode.control_node_id == node_id and episode.episode_id not in started
                     ],
                 )
                 if node_id is not None

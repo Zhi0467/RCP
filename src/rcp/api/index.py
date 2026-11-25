@@ -1242,7 +1242,7 @@ def experiment_run_presentations(
 
     grouped: dict[str, list[EpisodeResponse]] = defaultdict(list)
     for episode in episodes:
-        if episode.mode == "experiment_loop" and episode.control_node_id is not None:
+        if episode.control_node_id is not None:
             grouped[episode.graph_target.key].append(episode)
     shown: dict[str, RunPresentation] = {}
     for group in grouped.values():

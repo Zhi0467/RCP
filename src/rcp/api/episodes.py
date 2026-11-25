@@ -596,9 +596,7 @@ def serialize_episode(
 def episode_run_title(episode: EpisodeRecord) -> str:
     """A run's title without the graph: Auto-research by name, an Experiment by node id."""
 
-    if episode.mode == "auto_research":
-        return "Auto-research"
-    return episode.control_node_id or "Experiment history"
+    return episode.control_node_id or "Auto-research"
 
 
 def listed_episodes(

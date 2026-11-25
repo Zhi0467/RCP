@@ -1,9 +1,12 @@
 """One pass that keeps the backend account's own provider CLIs current.
 
 The backend runs as the account that installed the CLIs, so each native update
-runs without root. A provider is updated only when its executable lives in the
-account's home and no backend turn using it is running or queued; otherwise it
-waits for the next pass. A failed update leaves the installed version in use
+runs without root. The executable is the backend machine's configured one, else
+the account's discovered one. A provider is updated only when that executable
+lives in the account's home and no backend turn using it is running or queued;
+otherwise it waits for the next pass. While it updates, the launcher holds back
+new local launches of that provider, so no turn starts between the check and the
+update. A failed update leaves the installed version in use
 and is recorded as that provider's update warning on the backend machine card.
 """
 
@@ -56,10 +59,11 @@ def auto_update_providers(
     for provider in PROVIDER_IDS:
         if stop.is_set():
             return
-        binary = installed_provider(account, provider)
+        configured = launcher.provider_binary(provider, BACKEND_MACHINE_ID)
+        binary = Path(configured) if configured else installed_provider(account, provider)
         if binary is None or not binary.is_relative_to(home):
             continue
-        with guard():
+        with guard(), launcher.provider_update(provider):
             if backend_turns_using(store.path, provider, queued=True):
                 logger.info("Provider update deferred, %s has backend turns", provider)
                 continue
@@ -75,6 +79,6 @@ def auto_update_providers(
         logger.info("Provider %s updated from %s to %s", provider, change.before, change.after)
         launcher.readiness(
             LoginKey(provider, BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
-            binary=store.backend_space_machine().provider_paths.get(provider),
+            binary=configured,
             refresh=True,
         )

@@ -12,9 +12,9 @@ import stat
 import subprocess
 import threading
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
 from concurrent.futures import Future
-from contextlib import aclosing, suppress
+from contextlib import aclosing, contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial
@@ -43,6 +43,7 @@ from rcp.limits import (
     PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS,
     PROVIDER_SETUP_TIMEOUT_SECONDS,
     PROVIDER_STDERR_DRAIN_TIMEOUT_SECONDS,
+    PROVIDER_UPDATE_LAUNCH_POLL_SECONDS,
     REMOTE_PROVIDER_KILL_WAIT_SECONDS,
     REMOTE_PROVIDER_PID_WAIT_SECONDS,
     REMOTE_PROVIDER_STOP_POLL_SECONDS,
@@ -748,6 +749,7 @@ class AgentLauncher:
         self._readiness_probes: dict[tuple[str, str, str | None, str, bool], _ReadinessProbe] = {}
         self._readiness_generations: dict[tuple[str, str, str | None, str], int] = {}
         self._update_warnings: dict[tuple[str, str], str] = {}
+        self._updating_providers: set[str] = set()
         #: Shared so every process that can rotate this login is staggered,
         #: not only task turns.
         self.credential_gate = ProviderCredentialGate()
@@ -796,6 +798,18 @@ class AgentLauncher:
                 source="probe",
             )
         return profile_for(login.provider).credential_failure(evidence)
+
+    @contextmanager
+    def provider_update(self, provider: str) -> Iterator[None]:
+        """Hold back new local launches of `provider` while its CLI is updated."""
+
+        with self._readiness_lock:
+            self._updating_providers.add(provider)
+        try:
+            yield
+        finally:
+            with self._readiness_lock:
+                self._updating_providers.discard(provider)
 
     def set_update_warning(self, provider: str, machine_id: str, warning: str | None) -> None:
         """Record or clear why the last automatic CLI update on the machine failed."""
@@ -1599,6 +1613,8 @@ class AgentLauncher:
                 credential_hold.release()
                 raise
         try:
+            while not host and provider in self._updating_providers:
+                await asyncio.sleep(PROVIDER_UPDATE_LAUNCH_POLL_SECONDS)
             process = await asyncio.create_subprocess_exec(
                 *command,
                 cwd=local_cwd,

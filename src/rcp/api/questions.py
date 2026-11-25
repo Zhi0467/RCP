@@ -23,6 +23,7 @@ from rcp.api.identity import IdentityAccess
 from rcp.background import BackgroundAgentTasks
 from rcp.core.models import AuthorizedHuman
 from rcp.projects import ProjectCatalog
+from rcp.runs.approval_cards import PLAN_CARD_KINDS
 from rcp.runs.auto_research_delivery import deliver_pending_auto_research_mail
 from rcp.runs.auto_research_questions import record_auto_research_question_answer
 from rcp.storage import AppStore
@@ -154,7 +155,6 @@ def _serialize_all(
 
 
 _SHOWN_RESULT_FIELDS = ("outcome", "rejected", "reason")
-_PLAN_CARD_KINDS = frozenset({"experiment_start", "auto_research"})
 
 
 def _card_response(store: AppStore, card: dict[str, Any]) -> dict[str, Any]:
@@ -170,7 +170,7 @@ def _card_response(store: AppStore, card: dict[str, Any]) -> dict[str, Any]:
             {key: result[key] for key in _SHOWN_RESULT_FIELDS if key in result} if result else None
         ),
     }
-    if card["kind"] in _PLAN_CARD_KINDS:
+    if card["kind"] in PLAN_CARD_KINDS:
         receipt = result.get("result") if result else None
         started = receipt.get("episode_id") if isinstance(receipt, dict) else None
         episode = store.episode(started) if isinstance(started, str) else None

@@ -41,6 +41,7 @@ PROPOSAL_CARD_SHOWN = "proposal_card_shown"
 AUTO_RESEARCH_USES_EPISODE = "auto_research_uses_episode_verb"
 """A new Auto-research ask's refusal; stored Auto-research cards still render and settle."""
 EXPERIMENT_START_USES_EPISODE = "experiment_start_uses_episode"
+PLAN_CARD_KINDS = frozenset({"experiment_start", "auto_research"})
 
 
 class ProposalCardView(BaseModel):
@@ -324,7 +325,7 @@ def _request_receipt(store: AppStore, card: dict[str, Any]) -> dict[str, Any] | 
 
     action, request_id = card["action"], card["request_id"]
     project_id = action["project_id"]
-    if action["kind"] in {"experiment_start", "auto_research"}:
+    if action["kind"] in PLAN_CARD_KINDS:
         episode = store.episode(plan_card_episode_id(request_id, action["kind"]))
         if episode is not None:
             return {"episode_id": episode.episode_id}

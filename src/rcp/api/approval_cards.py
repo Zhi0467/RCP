@@ -39,6 +39,7 @@ from rcp.history import PatchRejected, ReplayHalted
 from rcp.limits import AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES
 from rcp.projects import ProjectCatalog
 from rcp.runs.approval_cards import (
+    PLAN_CARD_KINDS,
     PLAN_RUN_HERE,
     action_graph,
     approval_pins,
@@ -79,7 +80,6 @@ class ResolveApprovalBody(BaseModel):
     start: PlanStartOverrides | None = None
 
 
-_PLAN_KINDS = frozenset({"experiment_start", "auto_research"})
 _OPEN_STATES = frozenset({"pending", "parked"})
 
 
@@ -730,7 +730,7 @@ def resolve_approval_card(
     human = identity_access.require_patch_capable_identity(request)
     question, card = _owned_card(store, question_id, request, human)
     if body.decision in {"park", "save", "run_here"} and card["kind"] not in (
-        {"experiment_start"} if body.decision == "run_here" else _PLAN_KINDS
+        {"experiment_start"} if body.decision == "run_here" else PLAN_CARD_KINDS
     ):
         raise HTTPException(status_code=422, detail={"code": "decision_not_available"})
     if body.decision == "run_here" and body.start is None:

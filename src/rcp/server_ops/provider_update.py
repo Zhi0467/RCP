@@ -166,20 +166,15 @@ def update_installed_provider(
     binary: Path,
     runner: ProviderProcessRunner,
 ) -> ProviderVersionChange:
-    """Run the native update of an installed provider and prove the result.
+    """Run the native update of `binary` and prove the result on that same executable.
 
     Raises `ProviderUpdateRefused` or `OSError` when the update or either
     version probe fails.
     """
     before = _provider_version(account, provider, binary, runner)
     _update_provider(account, provider, binary, runner)
-    after_path = _discover_provider(account, provider)
-    if after_path is None:
-        raise ProviderUpdateRefused(
-            "The updater completed but no provider executable is discoverable."
-        )
     return ProviderVersionChange(
-        before=before, after=_provider_version(account, provider, after_path, runner)
+        before=before, after=_provider_version(account, provider, binary, runner)
     )
 
 

@@ -373,6 +373,17 @@ def test_park_saves_the_members_fields_and_start_runs_the_parked_card(plan):
     wait_for_task(plan.store, episode.root_operation_id or "")
 
 
+def test_a_change_to_only_the_park_columns_moves_the_question_list(plan):
+    card = _plan_card(plan)
+    before = resource_watermark_tokens(plan.client, plan.project_id, {"name": "questions"})
+    with plan.store.connection() as connection:
+        connection.execute(
+            "UPDATE approval_cards SET shelved_at=?, revised_at=? WHERE question_id=?",
+            (plan.store.now(), plan.store.now(), card["question_id"]),
+        )
+    assert resource_watermark_tokens(plan.client, plan.project_id, {"name": "questions"}) != before
+
+
 def test_a_parked_card_can_be_deleted(plan):
     card = _plan_card(plan)
     assert _tap(plan, card, "park").json()["outcome"] == "parked"
@@ -595,6 +606,9 @@ def test_a_card_row_from_before_parking_reads_open_and_settles(plan):
 
     card = _plan_card(plan)
     with plan.store.connection() as connection:
+        for suffix in ("agent_threads", "questions"):
+            for event in ("insert", "update", "delete"):
+                connection.execute(f"DROP TRIGGER resource_approval_cards_{suffix}_{event}")
         for column in ("shelved_at", "revised_operation_id", "revised_at", "revised_by_json"):
             connection.execute(f"ALTER TABLE approval_cards DROP COLUMN {column}")
         connection.execute("DELETE FROM storage_schema_migrations WHERE migration_version=95")

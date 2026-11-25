@@ -125,3 +125,21 @@ def test_a_cli_installed_outside_the_account_home_is_left_alone(tmp_path, monkey
     backend.run_pass()
 
     assert backend.calls == []
+
+
+def test_the_backends_configured_executable_is_the_one_updated(tmp_path, monkeypatch) -> None:
+    backend = _Backend(tmp_path, monkeypatch)
+    configured = backend.layout.service_home / ".local" / "bin" / "opencode"
+    configured.parent.mkdir(parents=True)
+    configured.write_text("#!/bin/sh\n", encoding="utf-8")
+    configured.chmod(0o755)
+    monkeypatch.setattr(
+        backend.launcher,
+        "provider_binary",
+        lambda provider, _machine: str(configured) if provider == "opencode" else None,
+    )
+
+    backend.run_pass()
+
+    assert backend.upgrades == 1
+    assert all(str(configured) in " ".join(call) for call in backend.calls)

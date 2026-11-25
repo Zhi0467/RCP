@@ -19,6 +19,17 @@ from rcp.storage.resource_versions import (
     install_project_question_version,
 )
 
+_CARD_THREAD_OWNER = (
+    "SELECT t.user_id FROM questions q JOIN agent_threads t ON t.thread_id=q.owner_id "
+    "WHERE q.question_id=ROW.question_id AND q.owner_kind='chat' "
+    "AND q.project_id=coalesce(t.project_id, (SELECT space_id FROM space_identity WHERE singleton=1))"
+)
+_CARD_SHARED_CHAT_PROJECT = (
+    "(SELECT q.project_id FROM questions q WHERE q.question_id=ROW.question_id "
+    "AND q.owner_kind='chat' AND NOT EXISTS "
+    "(SELECT 1 FROM agent_threads t WHERE t.thread_id=q.owner_id))"
+)
+
 
 def migrate_approval_cards(connection: sqlite3.Connection) -> None:
     connection.execute("""CREATE TABLE approval_cards (
@@ -33,11 +44,7 @@ def migrate_approval_cards(connection: sqlite3.Connection) -> None:
         "WHERE result_json IS NULL AND running_since IS NULL"
     )
 
-    install_agent_thread_version(
-        connection,
-        "approval_cards",
-        "SELECT t.user_id FROM questions q JOIN agent_threads t ON t.thread_id=q.owner_id WHERE q.question_id=ROW.question_id AND q.owner_kind='chat' AND q.project_id=coalesce(t.project_id, (SELECT space_id FROM space_identity WHERE singleton=1))",
-    )
+    install_agent_thread_version(connection, "approval_cards", _CARD_THREAD_OWNER)
 
 
 def migrate_shared_chat_card_versions(connection: sqlite3.Connection) -> None:
@@ -45,19 +52,24 @@ def migrate_shared_chat_card_versions(connection: sqlite3.Connection) -> None:
 
     for event in ("insert", "update", "delete"):
         connection.execute(f"DROP TRIGGER IF EXISTS resource_approval_cards_questions_{event}")
-    install_project_question_version(
-        connection,
-        "approval_cards",
-        "(SELECT q.project_id FROM questions q WHERE q.question_id=ROW.question_id "
-        "AND q.owner_kind='chat' AND NOT EXISTS "
-        "(SELECT 1 FROM agent_threads t WHERE t.thread_id=q.owner_id))",
-    )
+    install_project_question_version(connection, "approval_cards", _CARD_SHARED_CHAT_PROJECT)
 
 
 def migrate_plan_card_revisions(connection: sqlite3.Connection) -> None:
-    """A null `shelved_at` reads as an open card, and null revision columns as never revised."""
+    """A null `shelved_at` reads as an open card, and null revision columns as never revised.
+
+    The version triggers are rebuilt because they compare only the columns that existed
+    when they were made, so a park or revision would not move the question lists.
+    """
+    existing = {row[1] for row in connection.execute("PRAGMA table_info(approval_cards)")}
     for column in ("shelved_at", "revised_operation_id", "revised_at", "revised_by_json"):
-        connection.execute(f"ALTER TABLE approval_cards ADD COLUMN {column} TEXT")
+        if column not in existing:
+            connection.execute(f"ALTER TABLE approval_cards ADD COLUMN {column} TEXT")
+    for suffix in ("agent_threads", "questions"):
+        for event in ("insert", "update", "delete"):
+            connection.execute(f"DROP TRIGGER IF EXISTS resource_approval_cards_{suffix}_{event}")
+    install_agent_thread_version(connection, "approval_cards", _CARD_THREAD_OWNER)
+    install_project_question_version(connection, "approval_cards", _CARD_SHARED_CHAT_PROJECT)
 
 
 PLAN_CARD_RAISED_RECEIPT = "work_experiment_card_raised"
