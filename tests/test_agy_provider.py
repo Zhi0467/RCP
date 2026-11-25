@@ -417,3 +417,46 @@ def test_staged_tools_are_names_the_custom_agent_registry_accepts():
     accepted = set(json.loads((FIXTURES / "agent_registry_tools.json").read_text()))
     for capability in ("work_auto", "orchestrate", "discuss"):
         assert set(_tools(capability)) <= accepted
+
+
+def _injected_two_turns() -> list[str]:
+    """The recorded two-turn stream, with text streamed before its command runs."""
+
+    lines = (FIXTURES / "success_two_turns.jsonl").read_text().splitlines()
+    first = json.loads(lines[2])["step_update"]
+    chunk = {**first, "state": "ACTIVE", "text_delta": "Counting "}
+    del chunk["usage"], chunk["duration_seconds"]
+    more = {**chunk, "text_delta": "bytes."}
+    return [
+        *lines[:2],
+        json.dumps({"event": "step_update", "step_update": chunk}),
+        json.dumps({"event": "step_update", "step_update": more}),
+        *lines[2:],
+    ]
+
+
+def test_response_text_is_an_in_between_message_once_a_tool_follows(tmp_path):
+    turn = AGY.runtime(AGY.legacy_runtime_id).turn(request(tmp_path))
+    turn.adopt_recorded_inputs(["prompt", "steer"], {})
+    events = [event for line in _injected_two_turns() for event in turn.receive_line(line).events]
+    said = [event.status.message for event in events if event.status and event.status.message]
+    assert said == ["Counting bytes."]
+    released = next(event for event in events if event.status and event.status.message)
+    assert released.event == "raw" and "run_command" in released.text
+    assert [event.text for event in events if event.event == "answer"] == [
+        "The byte count for [a.txt](file:///work/a.txt) is **6**.\n",
+        "DONE.\n",
+    ]
+    assert not [event for event in events if event.event == "message"]
+    contexts = [event.status.context_tokens for event in events if event.status]
+    assert [tokens for tokens in contexts if tokens is not None] == [4288, 4424, 4595]
+    assert turn.completed
+
+
+def test_a_response_without_a_following_tool_stays_only_the_answer(tmp_path):
+    turn = AGY.runtime(AGY.legacy_runtime_id).turn(request(tmp_path))
+    turn.adopt_recorded_inputs(["prompt", "steer"], {})
+    lines = (FIXTURES / "success_two_turns.jsonl").read_text().splitlines()
+    events = [event for line in lines for event in turn.receive_line(line).events]
+    assert not [event for event in events if event.status and event.status.message]
+    assert len([event for event in events if event.event == "answer"]) == 2
