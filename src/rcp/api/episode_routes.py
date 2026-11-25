@@ -923,8 +923,11 @@ def continue_episode_once(
     authorized_by: AuthorizedHuman,
     catalog: ProjectCatalog,
     background_tasks: BackgroundAgentTasks,
+    note: str | None = None,
 ) -> tuple[EpisodeRecord, bool]:
     """Continue an ended episode, or replay the continuation this request id made.
+
+    ``note`` is the human's word to the continued agent, read before its first turn.
 
     Returns the continuation and whether it was a replay. Raises the HTTP refusal.
     """
@@ -945,6 +948,7 @@ def continue_episode_once(
         catalog=catalog,
         store=store,
         background_tasks=background_tasks,
+        note=note,
     )
     return continuation, False
 
@@ -958,6 +962,7 @@ def continue_ended_episode(
     catalog: ProjectCatalog,
     store: AppStore,
     background_tasks: BackgroundAgentTasks,
+    note: str | None = None,
 ) -> EpisodeRecord:
     """Create one continuation of an ended episode, in either mode.
 
@@ -968,12 +973,23 @@ def continue_ended_episode(
     try:
         get_project_writer(catalog, source.project_id).history.require_writable()
         if source.mode == "auto_research":
+            mail = (
+                {}
+                if note is None
+                else {
+                    "message_body": note,
+                    "message_id": str(
+                        uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:{source.project_id}:{request_id}")
+                    ),
+                }
+            )
             continuation, _ = continue_auto_research(
                 background_tasks,
                 source,
                 invocation_ceiling=invocation_ceiling,
                 request_id=request_id,
                 authorized_by=authorized_by,
+                **mail,
             )
             return continuation
         return continue_experiment_episode(
@@ -985,6 +1001,7 @@ def continue_ended_episode(
             catalog=catalog,
             store=store,
             background_tasks=background_tasks,
+            note=note,
         )
     except (EpisodeNotRunning, StateUnavailable, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -1137,7 +1154,7 @@ def send_episode_message_as(
                 status_code=409,
                 detail={
                     "code": "episode_not_running",
-                    "message": "This Experiment has ended. Add turns to continue it.",
+                    "message": "This Experiment has ended. Add turns, with a note, to continue it.",
                 },
             ) from exc
     refusal = auto_research_message_refusal(store, episode)

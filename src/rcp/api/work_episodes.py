@@ -229,7 +229,12 @@ class MemberEpisodeControls:
                 raise _refused(exc, TURN_CONTROL_REFUSALS["resume"]) from exc
 
     def add_turns(
-        self, act: WorkEpisodeAct, *, invocation_ceiling: int, request_id: str
+        self,
+        act: WorkEpisodeAct,
+        *,
+        invocation_ceiling: int,
+        request_id: str,
+        note: str | None = None,
     ) -> EpisodeRecord:
         episode, authorizer = self._episode(act)
         store = self.tasks().store
@@ -247,6 +252,7 @@ class MemberEpisodeControls:
                     authorized_by=authorizer,
                     catalog=self.catalog,
                     background_tasks=self.tasks(),
+                    note=note,
                 )
             except HTTPException as exc:
                 raise _refused(exc, "episode_not_continuable") from exc

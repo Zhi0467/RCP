@@ -415,6 +415,19 @@ def stop_bound_experiment_episode(
         )
 
 
+def _continuation_message(node_id: str, note: str | None) -> str:
+    message = (
+        f"Continue the bounded Experiment-loop for {node_id} in this same session "
+        "with the additional turns the human authorized."
+    )
+    if note is None:
+        return message
+    return (
+        f"{message} Before acting, re-read the loop control, {node_id} and its neighbors: "
+        f"the human sent this note with the turns.\n\n{note}"
+    )
+
+
 def continue_experiment_episode(
     project_id: str,
     source: EpisodeRecord,
@@ -425,6 +438,7 @@ def continue_experiment_episode(
     catalog: ProjectCatalog,
     store: AppStore,
     background_tasks: BackgroundAgentTasks,
+    note: str | None = None,
 ) -> EpisodeRecord:
     """Add turns to an ended Experiment episode by resuming its bound session.
 
@@ -487,10 +501,7 @@ def continue_experiment_episode(
     episode_id = str(uuid.uuid4())
     request = RunRequest.model_validate(last_turn.request).model_copy(
         update={
-            "message": (
-                f"Continue the bounded Experiment-loop for {node_id} in this same session "
-                "with the additional turns the human authorized."
-            ),
+            "message": _continuation_message(node_id, note),
             "browser_requested": source.browser_requested,
             "session_id": experiment.native_session_id,
             "chat_id": experiment.chat_id,

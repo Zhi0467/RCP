@@ -442,8 +442,9 @@ class EpisodeControlArguments(_EpisodeTargetArguments):
 class WorkEpisodeControlArguments(_EpisodeTargetArguments):
     """A member's Work chat pausing, extending, or messaging an episode it started.
 
-    ``add_turns`` names its turns. ``message`` names its body file and, for an
-    ended Auto-research orchestrator, the turns its reply may spend.
+    ``add_turns`` names its turns and may carry a note file the continued agent
+    reads first. ``message`` names its body file; an old ended-orchestrator form
+    also names the turns its reply may spend.
     """
 
     action: Literal["pause", "add_turns", "message"]
@@ -462,8 +463,10 @@ class WorkEpisodeControlArguments(_EpisodeTargetArguments):
             raise ValueError("add_turns requires an invocation limit")
         if self.action == "pause" and self.invocation_limit is not None:
             raise ValueError("pause takes no invocation limit")
-        if (self.action == "message") != (self.body_file is not None):
-            raise ValueError("message, and only message, takes a body file")
+        if self.action == "message" and self.body_file is None:
+            raise ValueError("message takes a body file")
+        if self.action == "pause" and self.body_file is not None:
+            raise ValueError("pause takes no body file")
         return self
 
 

@@ -87,7 +87,12 @@ class WorkEpisodeControls(Protocol):
     def resume_turn(self, act: WorkEpisodeAct) -> AgentTaskRecord: ...
 
     def add_turns(
-        self, act: WorkEpisodeAct, *, invocation_ceiling: int, request_id: str
+        self,
+        act: WorkEpisodeAct,
+        *,
+        invocation_ceiling: int,
+        request_id: str,
+        note: str | None = None,
     ) -> EpisodeRecord: ...
 
     def answer(
@@ -377,9 +382,19 @@ def handle_work_episode_controls(
     if arguments.action == "add_turns":
         assert arguments.invocation_limit is not None
         limit = arguments.invocation_limit
+        note = None
+        if arguments.body_file is not None:
+            if mailbox is None:
+                return _unavailable(request, "Episode notes are unavailable for this turn.")
+            try:
+                note = read_workspace_text(mailbox, arguments.body_file, "Note file")
+            except ValueError as exc:
+                return _refuse(request, str(exc), None)
 
         def add_turns() -> CommandResponse:
-            continuation = controls.add_turns(act, invocation_ceiling=limit, request_id=request_id)
+            continuation = controls.add_turns(
+                act, invocation_ceiling=limit, request_id=request_id, note=note
+            )
             execution.store.record_agent_task_event(
                 execution.operation_id,
                 f"Episode {arguments.episode_id} continues as {continuation.episode_id}.",
@@ -409,12 +424,18 @@ def handle_work_episode_controls(
             invocation_ceiling=arguments.invocation_limit,
             request_id=request_id,
         )
+        recipient = execution.store.episode(sent.episode_id)
+        last_turn = recipient is not None and (
+            recipient.mode == "experiment_loop"
+            and recipient.invocations_used >= recipient.invocation_ceiling
+        )
         return _ok(
             request,
             disposition="sent",
             message_id=sent.message_id,
             episode_id=sent.episode_id,
             delivered=sent.delivered_at is not None,
+            read_at="after_added_turns" if last_turn else "next_turn",
         )
 
     return _attempt(request, "episode_message_refused", message)
