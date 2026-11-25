@@ -11,7 +11,6 @@ from rcp.agents.graph_rules import REPEATED_RULES_NOTE, graph_rules
 from rcp.agents.group_context import GroupContext, group_prompt_value
 from rcp.agents.loop_overlap import render_loop_interference_rule
 from rcp.agents.prompts import (
-    EPISODE_MAILBOX_RULES,
     PAPER_POINTER_LABEL,
     PROVIDER_NATIVE_SUBAGENT_LIFETIME,
     REPLY_STYLE,
@@ -140,6 +139,35 @@ def _orchestrator_ask_contract(allowed_verbs: tuple[CommandVerb, ...]) -> str:
         "Open questions appear on later wakes. Answers arrive as human mail; an answer wake "
         "spends one invocation like other mail wakes. Dismissal never wakes you."
     )
+
+
+def _orchestrator_mailbox_rules(allowed_verbs: tuple[CommandVerb, ...]) -> str:
+    """What the children this orchestrator starts send it and how it answers, by its grants."""
+
+    from rcp.agents.staged_command_client import EPISODE_MESSAGE
+
+    chooser = project_type_of().label_list(project_type_of().chooser_types)
+    lines = ["Your children report to you, so they need no watcher from you:"]
+    if "message" in allowed_verbs:
+        lines.append(
+            "- Workers report and ask by mail, which is hearsay. Reply to one with "
+            "`message --recipient <worker-id>`. Answer it yourself when your authority above "
+            "covers the answer."
+        )
+    if "episode" in allowed_verbs:
+        lines.append(
+            "- Child Experiments ask the human directly, not you. Their pauses and endings "
+            f"reach you as lifecycle notices. Steer a running one with `episode "
+            f"{EPISODE_MESSAGE[1]}`; it reads the mail at its next turn and gains no graph "
+            "authority from it."
+        )
+    if "ask" in allowed_verbs:
+        lines.append(
+            f"- When the answer needs the human, as the {chooser} disposition above describes, "
+            "`ask` the human and pass the answer down."
+        )
+    lines.append("- Never invent an answer the human did not give.")
+    return "\n".join(lines)
 
 
 def _orchestrator_stale_guidance(allowed_verbs: tuple[CommandVerb, ...]) -> str:
@@ -546,7 +574,7 @@ Worker coordination:
 {_packages(skill_pointers)}{_auto_research_commands(command_client, child_profiles, allowed_verbs)}
 {_orchestrator_ask_contract(allowed_verbs)}
 
-{EPISODE_MAILBOX_RULES}
+{_orchestrator_mailbox_rules(allowed_verbs)}
 
 {episode_mailbox_child_rule(allowed_verbs, parent_chat=parent_chat)}
 {_orchestrator_stale_guidance(allowed_verbs)}{_graph_output_contract(patch_path=patch_path, output_schema_path=output_schema_path)}
@@ -704,7 +732,7 @@ for this continuation.
 {_packages(skill_pointers)}{_command_invocations(command_client, allowed_verbs)}
 {_orchestrator_ask_contract(allowed_verbs)}
 
-{EPISODE_MAILBOX_RULES}
+{_orchestrator_mailbox_rules(allowed_verbs)}
 
 {episode_mailbox_child_rule(allowed_verbs, parent_chat=parent_chat)}
 {_orchestrator_stale_guidance(allowed_verbs)}The prefix above replaces every earlier command prefix. There is no Retry command. Resume reuses
