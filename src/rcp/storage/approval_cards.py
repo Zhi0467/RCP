@@ -178,7 +178,7 @@ _RUN_HERE_ACTIVE = f"""(SELECT CASE WHEN r.operation_id IS NOT NULL
 
 
 def _card_state(row: sqlite3.Row, outcome: str | None) -> str:
-    """A Run here card reads `running_here` while the turn it sent is queued or running."""
+    """A Run in this chat card reads `running_here` while the turn it sent is queued or running."""
     if outcome == "expired":
         return "expired"
     if outcome == "run_here":

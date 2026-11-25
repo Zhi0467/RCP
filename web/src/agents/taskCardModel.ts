@@ -53,8 +53,9 @@ function cardView(card: ApprovalCard): TaskCardView {
     open = false,
   ): TaskCardView => ({ phase, open, state, label, badge: label, tone: null });
   if (card.state === "expired") return shown("settled", "expired", "Expired");
-  if (card.state === "running_here") return shown("running_here", "pending", "Running here");
-  if (card.state === "ran_here") return shown("ran_here", "run_here", "Ran here");
+  if (card.state === "running_here")
+    return shown("running_here", "pending", "Running in this chat");
+  if (card.state === "ran_here") return shown("ran_here", "run_here", "Ran in this chat");
   if (card.result)
     return shown("settled", card.result.outcome, capitalized(settledLabel(card.result)));
   if (card.state === "running") return shown("starting", "pending", "Starting");

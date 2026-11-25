@@ -555,7 +555,7 @@ card only, and never wakes an owner.
 Approval questions add `card: {request_id, kind, action, pinned, pinned_sha256,
 expires_at, state, result, shelved_at, revised_at, revised_by,
 revised_operation_id, run_here_operation_id}`. The server owns `state`, in this
-precedence: `expired`; `running_here` or `ran_here` for a card a Run here
+precedence: `expired`; `running_here` or `ran_here` for a card a Run in this chat
 settled; `running` (claimed for Start, or settled by it); `parked`; `pending`.
 `revised_by` is `{kind: "agent" | "member", name}`, and
 `result` carries only `outcome`, `rejected` and `reason`. Ordinary answer and dismiss

@@ -103,7 +103,7 @@ export interface TaskCardProps {
   actorId: string | null;
   glossaryIndex?: GlossaryIndex;
   onOpenNode?: (nodeId: string) => void;
-  /** Scrolls the chat to a turn; a Run here card links its turn through it. */
+  /** Scrolls the chat to a turn; a Run in this chat card links its turn through it. */
   onOpenTurn?: (operationId: string) => void;
   onChanged: () => void | Promise<unknown>;
 }

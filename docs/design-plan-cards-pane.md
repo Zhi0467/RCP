@@ -216,23 +216,23 @@ Stored names do not change: approval action kinds (`experiment_start`,
 `auto_research`), table and column names, and API fields. Old-record replay depends on
 them.
 
-### Run here
+### Run in this chat
 
-An Experiment task card offers three actions: **Start**, **Run here**, and **Park for
-later**. Run here starts no episode, budget, or separate agent. It is for work the member
+An Experiment task card offers three actions: **Start**, **Run in this chat**, and **Park for
+later**. Run in this chat starts no episode, budget, or separate agent. It is for work the member
 wants done but that is not a full Experiment, such as a short pilot.
 
-- Run here goes through the same decision route as Start, with `decision: "run_here"`.
+- Run in this chat goes through the same decision route as Start, with `decision: "run_here"`.
   It runs the same Part 1 order (staged-change check, then Sync of a pending node edit).
   It settles the card with a `run_here` outcome and records the operation id of the turn
   it sends.
 - The turn is the member's own message to this chat: the card's Handoff, Design, and
   Done when, rendered from the card's current fields. It goes through the ordinary send
   path, so a busy chat queues it. The member authorizes it as any message they send.
-- The card shows **Running here** while that turn is queued or running, and **Ran here**
+- The card shows **Running in this chat** while that turn is queued or running, and **Ran in this chat**
   with a link to the turn once it ends. Wakes from the chat's own watches continue in
   the chat and do not reopen the card.
-- Auto-research cards have no Run here. Auto-research always runs as an episode on its
+- Auto-research cards have no Run in this chat. Auto-research always runs as an episode on its
   own branch.
 
 ### One task card for the plan's life
@@ -369,7 +369,7 @@ chat on a narrow one, full width at 390px.
 - Start after a revision uses the revising turn's scope.
 - Crash recovery leaves a newer revision alone.
 - Old rows read correctly.
-- Run here sends one member turn with the card's fields, queues behind a busy chat,
+- Run in this chat sends one member turn with the card's fields, queues behind a busy chat,
   settles the card, and starts no episode. Auto-research refuses `run_here`.
 
 **Part 2, web browser tests:**

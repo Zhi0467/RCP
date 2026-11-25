@@ -199,7 +199,7 @@ test("staged changes refuse Start before any Sync or tap", async () => {
     assert.deepEqual([log.syncs.length, log.decisions.length], [0, 0]);
     assert.equal(await card.getByRole("button", { name: "Start", exact: true }).isDisabled(), true);
     assert.equal(
-      await card.getByRole("button", { name: "Run here", exact: true }).isDisabled(),
+      await card.getByRole("button", { name: "Run in this chat", exact: true }).isDisabled(),
       true,
     );
   });
@@ -282,6 +282,10 @@ test("Park folds the card into the pane, and Delete takes it out", async () => {
     await card.getByRole("button", { name: "Start", exact: true }).waitFor();
     assert.equal(await card.locator(".plan-note").count(), 0);
     assert.equal(await card.getByRole("button", { name: "Save", exact: true }).count(), 0);
+    assert.equal(
+      await card.getByRole("button", { name: "Run in this chat", exact: true }).count(),
+      1,
+    );
     await shot(page, "pane-parked");
     await card.getByRole("button", { name: "Delete", exact: true }).click();
     await row.waitFor({ state: "detached" });
@@ -345,7 +349,7 @@ test("an agent revision drops the member's draft, notes who changed it, and move
     });
 });
 
-test("Run here sends the card's fields and the card then links its turn", async () => {
+test("Run in this chat sends the card's fields and the card then links its turn", async () => {
   await withPage(WIDE, async (page, url) => {
     const asked = { operation_id: "later-15" };
     const state = {
@@ -365,7 +369,7 @@ test("Run here sends the card's fields and the card then links its turn", async 
     const log = await serveTaskCards(page, state);
     await page.goto(`${url}?long`);
     const card = page.locator(CARD);
-    await card.getByRole("button", { name: "Run here", exact: true }).click();
+    await card.getByRole("button", { name: "Run in this chat", exact: true }).click();
     await card.getByRole("button", { name: "Open turn", exact: true }).click();
     assert.equal(log.decisions[0].decision, "run_here");
     assert.equal(log.decisions[0].start.node_rev, 3);

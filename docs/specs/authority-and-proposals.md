@@ -503,7 +503,7 @@ turn, so that chat may later resume, extend or stop it. **Delete**
 settles `declined`. Outcomes reach the agent through ordinary answer delivery.
 The Auto-research orchestrator starts its own children without cards.
 
-**Run here** is an Experiment card's third decision and starts no episode. After
+**Run in this chat** is an Experiment card's third decision and starts no episode. After
 the same pin and node-revision checks as Start, it queues one message to the
 card's own chat as the tapping member, through the chat's ordinary message queue
 under the card's request id, so a busy chat keeps it and the member authorizes
@@ -512,7 +512,7 @@ node's design and completion criteria. The card settles `run_here` with that
 turn's operation id, and the answer is recorded as received by that turn, so no
 follow-up turn repeats it. The card reads `running_here` while the turn is
 queued or running and `ran_here` after. A message queued under a claimed card's
-request id settles an interrupted Run here at startup. Auto-research cards
+request id settles an interrupted Run in this chat at startup. Auto-research cards
 refuse it with `decision_not_available`. The web's staged-change check and node
 Sync run before the tap; the server's part of that order is the node revision.
 

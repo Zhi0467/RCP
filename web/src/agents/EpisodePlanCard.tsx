@@ -522,7 +522,7 @@ function PlanActions({
     <>
       {quiet("decline", parked ? "Delete" : "Don't run")}
       {parked ? dirty && quiet("save", "Save") : quiet("park", "Park for later")}
-      {runHere && !parked && (
+      {runHere && (
         <button
           className="button"
           type="button"
@@ -530,7 +530,7 @@ function PlanActions({
           aria-busy={busy === "run_here" || undefined}
           onClick={() => onTap("run_here")}
         >
-          Run here
+          Run in this chat
         </button>
       )}
       <button

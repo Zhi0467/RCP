@@ -4302,7 +4302,7 @@ export interface ApprovalCard {
   pinned_sha256: string;
   expires_at: string;
   /**
-   * The server's card state, in this precedence: expired, then a Run here's `running_here`
+   * The server's card state, in this precedence: expired, then a Run in this chat's `running_here`
    * (its turn is queued or running) or `ran_here`, then running (claimed for Start, or
    * settled by it), then parked, then pending.
    */
@@ -4320,7 +4320,7 @@ export interface ApprovalCard {
   revised_by?: ApprovalCardReviser | null;
   /** The agent turn that last revised the plan; the card renders in that turn. */
   revised_operation_id?: string | null;
-  /** The member turn a Run here sent to this chat. */
+  /** The member turn a Run in this chat sent to this chat. */
   run_here_operation_id?: string | null;
 }
 

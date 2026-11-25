@@ -256,7 +256,7 @@ def settle_interrupted_approval_cards(
 
     The action's durable effect proves it committed: a request-id receipt for
     episode start and merges, or the live Proposal status or truth membership.
-    A message queued under the card's request id is a Run here that committed.
+    A message queued under the card's request id is a Run in this chat that committed.
     Without one the card fails as interrupted. When the graph cannot be read the
     claim is released, so a later tap rechecks the pins instead.
     """
@@ -282,7 +282,7 @@ def settle_interrupted_approval_cards(
 
 
 def run_here_receipt(queue_id: str) -> dict[str, Any]:
-    """The member turn a Run here sent, named before it starts."""
+    """The member turn a Run in this chat sent, named before it starts."""
     from rcp.runs.agent_thread_queue import queued_turn_operation_id
 
     return {"operation_id": queued_turn_operation_id(queue_id), "queue_id": queue_id}
