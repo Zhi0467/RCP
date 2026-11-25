@@ -576,7 +576,8 @@ Node and project chats show resolved cards read-only in transcript order and
 open question cards at the end of the transcript, scrolling with it. The
 composer retains its steering behavior.
 A single choice submits immediately; multiple choices use toggles and explicit
-submission. Free text remains available with either choice format. A parked
+submission. Free text remains available with either choice format, and
+Cmd+Enter (Ctrl+Enter) in it submits like the submit control. A parked
 chat answer with no running turn names its continuation on its submit control,
 matching the asking turn's capability: Work, or Discuss for a question a
 historical Discuss turn asked.
