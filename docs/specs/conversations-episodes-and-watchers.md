@@ -110,8 +110,11 @@ Each Project Agent uses the same dock, limited to that project's shared chats
 and episodes, and also docks its own open approval cards, pending plan cards,
 and its direct child episodes: each episode its turns started, with the
 episode's open questions, its Runs controls (Pause, Resume or Retry, Add turns,
-Stop), and once ended its report, for a day after it ends. Shared and node
-chats show the same dock for their own plan cards and children. A question a
+Stop), and once ended its report. Every open child stays, with only the 20
+newest ended ones (`CHAT_DOCK_ENDED_EPISODE_LIMIT`). Shared and node chats show
+the same dock for their own plan cards and children; a node chat also lists the
+runs of its node that no chat and no Auto-research parent started, such as a
+start from the node page. A question a
 child asks shows only under that child, so the Space dock leaves out the ones
 a member's Project Agent dock lists. Its plain questions
 stay inline, and a card shows inline only after it leaves the dock, so nothing

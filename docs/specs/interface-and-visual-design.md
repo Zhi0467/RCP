@@ -526,7 +526,8 @@ Every agent view, the floating node chat included, uses one header row: the
 title on the left, then icon chips that each carry a count, in this order: on
 the Space thread the Running button, then schedules, running subagents,
 compactions, the context ring (`141k / 258k`), watchers, and comments. A chip
-shows only when it has something. A ⋯ menu ends the row; a floating window adds
+shows only when it has something. The Tasks and artifacts pane button follows
+them and always shows, with its count. A ⋯ menu ends the row; a floating window adds
 Minimize after it. The menu starts with Rename wherever the agent's name can be
 stored: a thread, or a project chat with history whose host does not title it.
 In a team space Copy link follows the first item. The host's actions follow,

@@ -696,7 +696,8 @@ and Show more. Rows lead with the title. The author, verified Source chat, and
 node link form one quiet line. Clicking a row opens it. Copy reference, Download,
 and Delete sit on the right as icons. Every Download saves under the
 projection's `download_name`, the stored file name with its extension, never the
-display title. Stored identities, times, and paths are
+display title. An episode report whose stored row is gone has no `download_name`
+and downloads under its title. Stored identities, times, and paths are
 data rather than repetitive labels. Captured HTML metadata supplies titles
 without rereading the artifact or changing its digest or outcome. A missing title
 appears as Report. One origin resolver verifies the transcript and exact target
@@ -786,7 +787,7 @@ project chats, node chats, orchestrator chats, Paper coach chats, Space threads,
 and floating windows. A header button, always shown, opens and closes it. Its
 count is the running runs, parked plans and artifacts, it is pressed while the
 pane is open, and it has "Tasks and artifacts" as its hover name. In a dock at
-least 640px wide the pane is a 300px right column beside the chat; in a narrower
+least 640px wide the pane is a 340px right column beside the chat; in a narrower
 dock it covers the chat at full width, and opening an artifact or going to a
 card closes it. Close and the button close it, and the open state is not kept.
 

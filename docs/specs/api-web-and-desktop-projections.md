@@ -556,8 +556,10 @@ Approval questions add `card: {request_id, kind, action, pinned, pinned_sha256,
 expires_at, state, result, shelved_at, revised_at, revised_by,
 revised_operation_id, run_here_operation_id}`. The server owns `state`, in this
 precedence: `expired`; `running_here` or `ran_here` for a card a Run in this chat
-settled; `running` (claimed for Start, or settled by it); `parked`; `pending`.
-`revised_by` is `{kind: "agent" | "member", name}`, and
+settled; `running` once a tap claims the card, which stays after it settles, so a
+client reads `result` first for the outcome; `parked`; `pending`.
+`revised_by` is `{kind: "agent" | "member", name}`, and a member's also carries
+`user_id`;
 `result` carries only `outcome`, `rejected` and `reason`. Ordinary answer and dismiss
 return `409 approval_card` for these questions. The owner, or for a shared-chat
 plan card any member `plan_card_actor` admits, resolves through
