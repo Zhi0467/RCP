@@ -795,9 +795,6 @@
   outline: 2px solid var(--cobalt);
   outline-offset: 1px;
 }
-.markdown-code-copy.failed {
-  color: var(--red);
-}
 .chat-markdown pre code {
   font-family: var(--mono);
   white-space: pre;

@@ -278,3 +278,60 @@ test("each emoji, sequences whole, gets its own spaced box outside code", () => 
   );
   assert.match(rendered, /<code>🎮<\/code>/);
 });
+
+test("copy on a plain-HTTP origin goes through a selection, and a refused copy rejects", async (t) => {
+  const { copyText } = await import("../src/core/clipboard.ts");
+  const saved = ["navigator", "window", "document"].map((name) => [
+    name,
+    Object.getOwnPropertyDescriptor(globalThis, name),
+  ]);
+  t.after(() => {
+    for (const [name, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+  });
+  const asyncWrites = [];
+  const copied = [];
+  let attached = 0;
+  let accept = true;
+  const stub = (name, value) =>
+    Object.defineProperty(globalThis, name, { value, configurable: true, writable: true });
+  stub("navigator", { clipboard: { writeText: async (text) => asyncWrites.push(text) } });
+  stub("window", { isSecureContext: false });
+  stub("document", {
+    body: { append: () => (attached += 1) },
+    createElement: () => {
+      const area = {
+        value: "",
+        style: {},
+        selected: false,
+        setAttribute() {},
+        select: () => (area.selected = true),
+        setSelectionRange() {},
+        remove: () => (attached -= 1),
+      };
+      stub("document", {
+        ...globalThis.document,
+        execCommand: (command) => {
+          if (command === "copy" && area.selected && accept) copied.push(area.value);
+          return accept;
+        },
+      });
+      return area;
+    },
+  });
+
+  await copyText("ssh rcp@host");
+  assert.deepEqual(copied, ["ssh rcp@host"]);
+  assert.deepEqual(asyncWrites, []);
+  assert.equal(attached, 0);
+
+  accept = false;
+  await assert.rejects(copyText("again"));
+  assert.equal(attached, 0);
+
+  globalThis.window.isSecureContext = true;
+  await copyText("secure");
+  assert.deepEqual(asyncWrites, ["secure"]);
+});

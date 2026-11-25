@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { enableMachineLinger, installMachineBrowser, loadMachineBrowser } from "../core/api";
 import { browserReason } from "../core/browserStatus";
-import { CopyCommand } from "../core/CopyCommand";
+import { CopyCommand } from "../core/CopyButton";
 import { errorMessage } from "../core/errors";
 import { Fold } from "../core/Fold";
 import type { MachineBrowserReadiness } from "../core/types";

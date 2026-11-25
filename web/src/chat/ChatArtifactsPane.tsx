@@ -10,10 +10,13 @@ import {
 } from "react";
 import type { AgentWindowEndpoints } from "../agentWindow/agentWindowEndpoints";
 import { chatArtifactsProfile } from "../artifacts/artifactResources";
-import { openArtifact, openSpaceArtifact } from "../artifacts/artifactViewerModel";
+import {
+  artifactDownloadOnly,
+  openArtifactEntry,
+  openSpaceArtifact,
+} from "../artifacts/artifactViewerModel";
 import { ArtifactDownload, storedArtifactSave } from "../artifacts/ArtifactDownload";
 import { DeleteArtifactButton } from "../artifacts/DeleteArtifactButton";
-import { isDesktopRuntime, openDesktopArtifactPdf } from "../core/desktopRuntime";
 import { CopyReferenceButton } from "../core/CopyReferenceButton";
 import { errorMessage } from "../core/errors";
 import { setReferenceDrag } from "../core/projectReferences";
@@ -105,11 +108,12 @@ export function ChatArtifactsPane({
         ),
         name: artifact.name,
       });
-    else if (artifact.view === "pdf")
-      void openDesktopArtifactPdf({ projectId, artifactId: artifact.artifact_id }).catch(
-        (failure) => setOpenError(errorMessage(failure)),
-      );
-    else openArtifact({ projectId, artifactId: artifact.artifact_id });
+    else
+      void openArtifactEntry({
+        projectId,
+        artifactId: artifact.artifact_id,
+        view: artifact.view,
+      }).catch((failure) => setOpenError(errorMessage(failure)));
     onOpened();
   };
   return (
@@ -123,9 +127,7 @@ export function ChatArtifactsPane({
       {openError && <div role="alert">{openError}</div>}
       <ul>
         {artifacts.map((artifact) => {
-          const downloadOnly =
-            artifact.view === "file" ||
-            (artifact.view === "pdf" && (!isDesktopRuntime() || projectId === null));
+          const downloadOnly = artifactDownloadOnly(artifact.view, projectId !== null);
           const kind = artifact.supplier === "episode_ending" ? "Report" : artifact.view;
           return (
             <li

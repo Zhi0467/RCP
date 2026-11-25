@@ -3982,7 +3982,7 @@ button.agent-provider-label {
   gap: 8px;
   min-width: 0;
 }
-.copy-command[data-copy-command="failed"] {
+.copy-command:has([data-copy-state="failed"]) {
   border-left-color: var(--red);
   padding-left: 6px;
 }

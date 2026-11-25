@@ -814,6 +814,16 @@ const nested = ({ tree }) =>
     { ...tree.files[0], file_id: "d1", path: "draft/one.md" },
     { ...tree.files[0], file_id: "d2", path: "draft/deep/two.md" },
   );
+const nestedWithBinary = (fixture) => {
+  nested(fixture);
+  fixture.tree.files.push({
+    file_id: "bin",
+    path: "weights.bin",
+    kind: "binary",
+    format: "binary",
+    size: 5,
+  });
+};
 const fileNames = (page) => page.locator(".paper-file span").allTextContents();
 
 test("folders start folded, remember opening, and the row menu renames and deletes a folder", async (t) => {
@@ -848,14 +858,19 @@ test("folders start folded, remember opening, and the row menu renames and delet
 });
 
 test("Download asks the desktop where to save and is a plain download in a browser", async (t) => {
-  const browserPage = (await openPaper(t, { configure: nested })).page;
+  const browserPage = (await openPaper(t, { configure: nestedWithBinary })).page;
   const download = browserPage.waitForEvent("download");
   await browserPage.getByRole("button", { name: "Actions for draft/", exact: true }).click();
   await browserPage.getByRole("menuitem", { name: "Download" }).click();
   assert.equal((await download).suggestedFilename(), "draft.zip");
+  await browserPage.locator(".paper-file", { hasText: "weights.bin" }).click();
+  assert.equal(
+    await browserPage.locator('a.paper-binary-link[download="weights.bin"]').getAttribute("href"),
+    "/api/projects/p/paper/files/bin/raw",
+  );
 
   const { page } = await openPaper(t, {
-    configure: nested,
+    configure: nestedWithBinary,
     init: () => {
       window.saved = [];
       window.__TAURI_INTERNALS__ = {
@@ -872,10 +887,13 @@ test("Download asks the desktop where to save and is a plain download in a brows
     await page.getByRole("button", { name: `Actions for ${item}`, exact: true }).click();
     await page.getByRole("menuitem", { name: "Download" }).click();
   }
-  await page.waitForFunction(() => window.saved.length === 2);
+  await page.locator(".paper-file", { hasText: "weights.bin" }).click();
+  await page.locator("button.paper-binary-link").click();
+  await page.waitForFunction(() => window.saved.length === 3);
   assert.deepEqual(await page.evaluate(() => window.saved), [
     { projectId: "p", fileId: "d2", suggestedName: "two.md" },
     { projectId: "p", folder: "draft", suggestedName: "draft.zip" },
+    { projectId: "p", fileId: "bin", suggestedName: "weights.bin" },
   ]);
 });
 

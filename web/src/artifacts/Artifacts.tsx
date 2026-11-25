@@ -1,10 +1,8 @@
-import { parseProjectHash } from "../experiments/experimentBoardModel";
-import { graphTargetFromHash } from "../core/graphTarget";
 import { setReferenceDrag } from "../core/projectReferences";
 import { CopyReferenceButton } from "../core/CopyReferenceButton";
 import { useState, type MouseEvent } from "react";
 import { Download, GitCommitHorizontal, MessageCircle, RefreshCw } from "lucide-react";
-import { openArtifact } from "./artifactViewerModel";
+import { artifactGraphTarget, openArtifact } from "./artifactViewerModel";
 import { resourceKeyId } from "../core/resourceStore";
 import { useRefreshRuntime } from "../core/useResource";
 import { useProjectResource } from "../projects/projectResources";
@@ -58,9 +56,7 @@ export function Artifacts({
 
   const row = (entry: ProjectArtifact, grouped: boolean) => {
     const sourceNodeTitle = entry.source_node_id ? nodeTitle(entry.source_node_id) : null;
-    const target =
-      parseProjectHash(entry.source_chat_href ?? "").experimentRoute?.graph_target ??
-      graphTargetFromHash(entry.source_chat_href ?? "");
+    const target = artifactGraphTarget(entry.source_chat_href ?? "");
     return (
       <li
         key={entry.id}
@@ -111,7 +107,7 @@ export function Artifacts({
         {entry.artifact_id && entry.available && (
           <CopyReferenceButton
             projectId={projectId}
-            graphTarget={graphTargetFromHash(entry.source_chat_href ?? "")}
+            graphTarget={target}
             reference={{ kind: "artifact", artifact_id: entry.artifact_id }}
             className="icon-button artifact-entry-action"
           />

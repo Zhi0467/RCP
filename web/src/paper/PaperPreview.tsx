@@ -33,6 +33,8 @@ import {
   readTypstTree,
   typstRoots,
 } from "./typstPreview";
+import { PaperDownload } from "./PaperDownload";
+import { storedFile } from "./paperDownloadModel";
 
 import { PaperDialog } from "./PaperDialog";
 import { panelTools } from "./panelTools";
@@ -683,7 +685,9 @@ export function PaperPreview({
       <Suspense fallback={<LoaderCircle className="spin" size={16} />}>
         <PaperPdf
           url={assetUrl(projectId, file)}
-          name={file.path.split("/").at(-1)}
+          name={storedFile(file).name}
+          projectId={projectId}
+          stored={storedFile(file)}
           toolbar={toolbar}
           path={file.path}
           onBox={onBox}
@@ -698,14 +702,16 @@ export function PaperPreview({
     ) : (
       panelTools(
         toolbar,
-        <a
+        <PaperDownload
           className="icon-button"
+          projectId={projectId}
+          stored={storedFile(file)}
           href={paperRawUrl(projectId, file.file_id)}
-          download
-          aria-label="Download file"
+          name="file"
+          fileName={storedFile(file).name}
         >
           <Download size={16} />
-        </a>,
+        </PaperDownload>,
       )
     );
 
@@ -802,6 +808,7 @@ export function PaperPreview({
             synctex={synctex}
             onBox={onBox}
             url={pdf}
+            projectId={projectId}
             name={`${(selectedRoot || file.path)
               .split("/")
               .at(-1)

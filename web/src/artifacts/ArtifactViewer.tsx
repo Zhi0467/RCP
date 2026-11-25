@@ -12,6 +12,7 @@ import { Download, MessageCircle, Minus, Pin, RefreshCw, X } from "lucide-react"
 import { api } from "../core/api";
 import {
   closeArtifactViewer,
+  artifactGraphTarget,
   openArtifact,
   openEpisodeReport,
   publishDockedArtifact,
@@ -341,8 +342,9 @@ export function ArtifactViewer({ onMerge }: { onMerge?: BranchMergeRequest }) {
           <CopyReferenceButton
             projectId={target.projectId}
             graphTarget={
-              parseProjectHash(state?.thread_href ?? "").experimentRoute?.graph_target ??
-              graphTargetFromHash(state?.thread_href ?? window.location.hash)
+              state.thread_href != null
+                ? artifactGraphTarget(state.thread_href)
+                : graphTargetFromHash(window.location.hash)
             }
             reference={{ kind: "artifact", artifact_id: target.artifactId }}
             className="artifact-viewer-control"
