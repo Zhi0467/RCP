@@ -161,7 +161,7 @@ def run_session(settings: dict[str, Any]) -> int:
                 identity_path = identity["write_git_identity"](
                     Path.home() / ".local" / "share" / "rcp",
                     identity["GitIdentity"](**settings["git_identity"]),
-                    git_path=profile["SHELL_PATH"],
+                    git_path=profile["shell_path"](),
                 )
                 paths = (*paths, str(identity_path))
                 environment["GIT_CONFIG_SYSTEM"] = str(identity_path)

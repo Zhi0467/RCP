@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Copy, Link } from "lucide-react";
+import { copyText } from "./clipboard";
 import { referenceUrl } from "./projectReferences";
 import { copyShareLink, shareLinkRequest, useShareLinks } from "./shareLinks";
 import type { GraphTargetRef, ProjectReferenceSelector } from "./types";
@@ -37,7 +38,7 @@ export function CopyReferenceButton({
             return;
           }
           try {
-            await navigator.clipboard.writeText(referenceUrl(projectId, graphTarget, reference));
+            await copyText(referenceUrl(projectId, graphTarget, reference));
           } catch {
             setNotice("Could not copy the reference. Check clipboard access and try again.");
           }

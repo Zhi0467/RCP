@@ -3,7 +3,6 @@ import {
   ArrowRight,
   Check,
   TriangleAlert,
-  Clipboard,
   FolderGit2,
   LoaderCircle,
   LockKeyhole,
@@ -11,6 +10,7 @@ import {
   Server,
   ShieldCheck,
 } from "lucide-react";
+import { CopyButton } from "../core/CopyButton";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { api } from "../core/api";
 import {
@@ -702,17 +702,6 @@ export function TransferProjectSetup({
     }
   }
 
-  async function copyOperatorCommand(): Promise<void> {
-    if (!bundle?.incoming_provisioning.operator_argv.length) return;
-    try {
-      await navigator.clipboard.writeText(
-        formatCommandArgv(bundle.incoming_provisioning.operator_argv),
-      );
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-    }
-  }
-
   function updateProvider(
     profile: AgentExecutionProfile,
     patch: Partial<ProjectTransferProviderIntent>,
@@ -1291,13 +1280,15 @@ export function TransferProjectSetup({
                 Refresh
               </button>
               {bundle.incoming_provisioning.operator_argv.length > 0 && (
-                <button
+                <CopyButton
                   className="button secondary"
-                  type="button"
-                  onClick={() => void copyOperatorCommand()}
+                  text={formatCommandArgv(bundle.incoming_provisioning.operator_argv)}
+                  onError={(caught) =>
+                    setError(caught instanceof Error ? caught.message : String(caught))
+                  }
                 >
-                  <Clipboard size={14} /> Copy server command
-                </button>
+                  Copy server command
+                </CopyButton>
               )}
               {bundle.incoming_provisioning.can_run_setup && (
                 <button

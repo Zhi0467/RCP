@@ -8,10 +8,9 @@ import { useMachinePower } from "./useMachinePower";
 import { machinePowerWarnings } from "./machinePower";
 import { ProviderLoginNotice } from "./ProviderLoginNotice";
 import { waitsOnOtherMember } from "./providerLoginsModel";
+import { CopyButton, useCopy } from "../core/CopyButton";
 import { api, loadProjectDeletionPreview, loadProviderLogins } from "../core/api";
 import {
-  Check,
-  Copy,
   Ellipsis,
   FolderPlus,
   LayoutGrid,
@@ -1048,8 +1047,7 @@ function MachinePowerWarning({
   onOpenSettings?: () => void;
 }) {
   const { latch, cleanup } = machinePowerWarnings(status);
-  const [copied, setCopied] = useState<string | null>(null);
-  const [copyError, setCopyError] = useState(false);
+  const copy = useCopy();
   if (!latch && !cleanup) return null;
   return (
     <aside className="machine-power-warning" role="alert">
@@ -1069,22 +1067,10 @@ function MachinePowerWarning({
         <>
           <span>Keep-awake cleanup failed: {cleanup.kind.replaceAll("_", " ")}.</span>
           <code>{cleanup.command}</code>
-          <button
-            className="button secondary compact"
-            type="button"
-            onClick={async () => {
-              try {
-                await navigator.clipboard.writeText(cleanup.command);
-                setCopied(cleanup.command);
-                setCopyError(false);
-              } catch {
-                setCopyError(true);
-              }
-            }}
-          >
-            {copied === cleanup.command ? <Check size={14} /> : <Copy size={14} />} Copy command
-          </button>
-          {copyError && <span>Could not copy command</span>}
+          <CopyButton className="button secondary compact" text={cleanup.command} control={copy}>
+            Copy command
+          </CopyButton>
+          {copy.state === "failed" && <span>Could not copy command</span>}
         </>
       )}
     </aside>

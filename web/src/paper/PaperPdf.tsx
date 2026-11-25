@@ -4,6 +4,8 @@ import { getDocument, GlobalWorkerOptions, TextLayer } from "pdfjs-dist";
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { panelTools } from "./panelTools";
+import { PaperDownload } from "./PaperDownload";
+import type { StoredPaperItem } from "./paperDownloadModel";
 import type { PdfSpot, SyncTexMap } from "./synctex";
 import { registerPdfSynctex } from "./previewComments";
 import { installBoxTool } from "../comments/box.ts";
@@ -24,6 +26,8 @@ const scrollPositions = new Map<string, number>();
 export default function PaperPdf({
   url,
   name = "paper.pdf",
+  projectId,
+  stored = null,
   scrollKey = url,
   actions,
   toolbar,
@@ -34,6 +38,9 @@ export default function PaperPdf({
 }: {
   url: string;
   name?: string;
+  projectId: string;
+  /** The stored file this PDF is; a compiled PDF has none. */
+  stored?: StoredPaperItem | null;
   scrollKey?: string;
   actions?: ReactNode;
   toolbar: HTMLElement | null;
@@ -327,9 +334,16 @@ export default function PaperPdf({
               <RotateCcw size={16} />
             </button>
           )}
-          <a className="icon-button" href={url} download={name} aria-label="Download PDF">
+          <PaperDownload
+            className="icon-button"
+            projectId={projectId}
+            stored={stored}
+            href={url}
+            name="PDF"
+            fileName={name}
+          >
             <Download size={16} />
-          </a>
+          </PaperDownload>
         </>,
       )}
       <div className={`paper-pdf-pages${onBox ? " boxes" : ""}`} ref={pages} />

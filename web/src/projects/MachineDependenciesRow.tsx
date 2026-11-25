@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { loadMachineDependencies } from "../core/api";
-import { CopyCommand } from "../core/CopyCommand";
+import { CopyCommand } from "../core/CopyButton";
 import { errorMessage } from "../core/errors";
 import { Fold } from "../core/Fold";
 import type { DependencyStatus } from "../core/types";

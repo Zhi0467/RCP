@@ -7,6 +7,25 @@ import type {
   ChatMessage,
 } from "../core/types";
 import type { TaskTranscriptLine } from "../agents/agentTasks";
+import { retryRefillsComposer, type ConversationAgentStatus } from "./chatWorkspace.ts";
+
+export type NextTaskAction = "resume" | "retry";
+
+/**
+ * What an agent's card can do for its latest turn in one press. A Retry that
+ * refills the composer is the open chat's to offer, and a chat that refuses
+ * human turns offers nothing.
+ */
+export function nextTaskAction(
+  status: Pick<ConversationAgentStatus, "state" | "latest">,
+  refusesHumanTurns: boolean,
+): NextTaskAction | null {
+  const latest = status.latest;
+  if (!latest || refusesHumanTurns) return null;
+  if (status.state !== "failed" && status.state !== "stopped") return null;
+  if (latest.can_resume) return "resume";
+  return latest.can_retry && !retryRefillsComposer(latest) ? "retry" : null;
+}
 
 /** The task fields the status strip reads; a task or an older turn known only from history. */
 export type StatusTask = Pick<

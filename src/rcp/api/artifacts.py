@@ -99,6 +99,7 @@ class SavedArtifactResponse(BaseModel):
     available: bool
     can_download: bool
     download_url: str | None
+    download_name: str | None = None
     can_open: bool
     unavailable_reason: str | None = None
     # The owning branch, resolved here so the page never guesses from a link; None is main.
@@ -352,6 +353,7 @@ def saved_artifacts(
                     can_open=projected.can_open,
                     can_download=projected.can_download,
                     download_url=f"{artifact_url}/download" if projected.can_download else None,
+                    download_name=artifact.name,
                     can_delete=stored is not None
                     and store.artifact_delete_refusal(stored, holds) is None,
                 )
@@ -369,6 +371,7 @@ def saved_artifacts(
         stored = stored_by_id.get(stored_report.artifact_id)
         if stored is not None and _temporary(store, stored):
             continue
+        report_file = stored or store.artifact(stored_report.artifact_id)
         artifact_url = f"{base}/artifacts/{quote(stored_report.artifact_id, safe='')}"
         entries.append(
             SavedArtifactResponse(
@@ -380,6 +383,7 @@ def saved_artifacts(
                 can_open=True,
                 can_download=True,
                 download_url=f"{artifact_url}/download",
+                download_name=report_file.source_name if report_file else None,
                 created_at=report.created_at,
                 artifact_id=stored_report.artifact_id,
                 episode_id=report.episode_id,
@@ -423,6 +427,7 @@ def saved_artifacts(
                 available=True,
                 can_download=True,
                 download_url=f"{artifact_url}/download",
+                download_name=artifact.source_name,
                 can_open=view != "file",
                 can_delete=store.artifact_delete_refusal(artifact, holds) is None,
             )
@@ -490,6 +495,7 @@ class ArtifactViewerState(BaseModel):
     thread_href: str | None
     viewer_url: str | None
     download_url: str
+    download_name: str
     can_keep: bool
     can_delete: bool
     expires_at: str | None
@@ -502,12 +508,14 @@ class ArtifactViewerState(BaseModel):
 class RunArtifactEntry(BaseModel):
     artifact_id: str
     name: str
+    download_name: str
     media_type: ArtifactMediaType
     view: ArtifactView
     supplier: Literal["turn", "episode_ending"]
     origin_operation_id: str | None
     worker_label: str | None
     created_at: str
+    can_delete: bool = False
 
 
 @router.get(
@@ -575,6 +583,7 @@ def stored_artifact_state(
         thread_href=_artifact_source_hrefs(catalog, store, project_id, [artifact]).get(artifact_id),
         viewer_url=f"{base}/viewer" if artifact_view(artifact.media_type) != "file" else None,
         download_url=f"{base}/download",
+        download_name=artifact.source_name,
         can_keep=_temporary(store, artifact),
         can_delete=store.artifact_delete_refusal(artifact, store.artifact_deletion_holds()) is None,
         expires_at=artifact.expires_at,
@@ -635,6 +644,7 @@ def run_artifacts(
         if orchestrator_id is not None:
             actor_ids.append(orchestrator_id)
         titles = chat_titles(connection, project_id, actor_ids)
+    holds = store.artifact_deletion_holds()
     for artifact in artifacts:
         work = works.get(artifact.origin_operation_id)
         label = worker_label(work["instruction"]) if work else None
@@ -644,7 +654,11 @@ def run_artifacts(
             label = "Orchestrator"
         if actor_id is not None:
             label = titles.get(actor_id, label)
-        entries.append(_run_artifact_entry(artifact, label))
+        entries.append(
+            _run_artifact_entry(
+                artifact, store.artifact_delete_refusal(artifact, holds) is None, label
+            )
+        )
     return entries
 
 
@@ -652,16 +666,20 @@ def _unexpired(artifact: Artifact, now: str) -> bool:
     return bool(artifact.kept_at or artifact.expires_at is None or artifact.expires_at > now)
 
 
-def _run_artifact_entry(artifact: Artifact, label: str | None = None) -> RunArtifactEntry:
+def _run_artifact_entry(
+    artifact: Artifact, can_delete: bool, label: str | None = None
+) -> RunArtifactEntry:
     return RunArtifactEntry(
         artifact_id=artifact.artifact_id,
         name=artifact.display_title or artifact.source_name,
+        download_name=artifact.source_name,
         media_type=artifact.media_type,
         view=artifact_view(artifact.media_type),
         supplier=artifact.supplier,
         origin_operation_id=artifact.origin_operation_id,
         worker_label=label,
         created_at=artifact.created_at,
+        can_delete=can_delete,
     )
 
 
@@ -695,7 +713,11 @@ def agent_artifacts(
             and private_artifact_owner(connection, artifact) in {None, user_id}
         ]
     artifacts.sort(key=lambda artifact: (artifact.created_at, artifact.artifact_id), reverse=True)
-    return [_run_artifact_entry(artifact) for artifact in artifacts]
+    holds = store.artifact_deletion_holds()
+    return [
+        _run_artifact_entry(artifact, store.artifact_delete_refusal(artifact, holds) is None)
+        for artifact in artifacts
+    ]
 
 
 @router.get("/api/projects/{project_id}/artifacts/{artifact_id}/content")

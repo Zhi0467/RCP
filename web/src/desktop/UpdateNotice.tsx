@@ -1,5 +1,5 @@
-import { CircleArrowUp, LoaderCircle, Copy, Check } from "lucide-react";
-import { useState } from "react";
+import { CircleArrowUp, LoaderCircle } from "lucide-react";
+import { CopyButton, useCopy } from "../core/CopyButton";
 import type { DesktopUpdate, DesktopBuildIdentity } from "../core/desktopRuntime";
 import type { UpdateNotice as NoticeData } from "../core/types";
 import { Banner } from "../ui/Banner";
@@ -19,22 +19,12 @@ export function UpdateNotice({
   /** Unknown (null) until the app's first update check answers. */
   updaterEnabled: boolean | null;
 }) {
-  const [copied, setCopied] = useState<string | null>(null);
-  const [copyError, setCopyError] = useState(false);
+  const copy = useCopy();
   const release = releaseNotice(notice, identity);
   if (desktop && (updater.update || updater.error)) return <DesktopUpdateNotice {...updater} />;
   // This app's own release is the updater's to offer, in place.
   if ((desktop && notice?.space !== "team" && (!identity || updaterEnabled !== false)) || !release)
     return null;
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(release.command!);
-      setCopied(release.command);
-      setCopyError(false);
-    } catch {
-      setCopyError(true);
-    }
-  };
   return (
     <Banner
       dismissKey={releaseDismissKey(release.dismissKey)}
@@ -50,9 +40,9 @@ export function UpdateNotice({
       {release.command ? (
         <>
           <code>{release.command}</code>
-          <button className="button secondary" type="button" onClick={() => void copy()}>
-            {copied === release.command ? <Check size={14} /> : <Copy size={14} />} Copy command
-          </button>
+          <CopyButton className="button secondary" text={release.command} control={copy}>
+            Copy command
+          </CopyButton>
         </>
       ) : null}
       {release.download ? (
@@ -62,7 +52,7 @@ export function UpdateNotice({
       ) : release.kind === "prebuilt" ? (
         <span>App build not yet published</span>
       ) : null}
-      {copyError ? <span role="alert">Could not copy command</span> : null}
+      {copy.state === "failed" ? <span role="alert">Could not copy command</span> : null}
     </Banner>
   );
 }

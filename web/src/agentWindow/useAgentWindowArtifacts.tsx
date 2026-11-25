@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Download, ExternalLink, File } from "lucide-react";
+import { ArtifactDownload } from "../artifacts/ArtifactDownload";
 import { api } from "../core/api";
 import { isDesktopRuntime } from "../core/desktopRuntime";
 import type { AgentArtifactDescriptor, AgentTask, ProjectSnapshot } from "../core/types";
@@ -137,22 +138,9 @@ export function useAgentWindowArtifacts({
     }
   };
 
-  const downloadArtifact = async (taskId: string, artifact: AgentArtifactDescriptor) => {
-    if (!artifact.can_download) return;
-    const key = `${taskId}:${artifact.artifact_id}`;
-    setArtifactShellErrors((current) => withoutMapKey(current, key));
-    try {
-      await endpoints.downloadArtifact?.(taskId, artifact);
-    } catch (error) {
-      if (!isCurrent()) return;
-      setArtifactShellErrors((current) =>
-        withMapValue(
-          current,
-          key,
-          `Download failed: ${error instanceof Error ? error.message : String(error)}`,
-        ),
-      );
-    }
+  const desktopSave = (taskId: string, artifact: AgentArtifactDescriptor) => {
+    const save = endpoints.downloadArtifact;
+    return save ? () => save(taskId, artifact) : null;
   };
 
   const keepArtifact = async (taskId: string, artifact: AgentArtifactDescriptor) => {
@@ -265,29 +253,18 @@ export function useAgentWindowArtifacts({
     });
   };
 
-  const artifactDownloadControl = (taskId: string, artifact: AgentArtifactDescriptor) => {
-    if (!artifact.can_download) return null;
-    const label = <span className="chat-inline-artifact-label">Download</span>;
-    return desktop ? (
-      <button
-        type="button"
-        aria-label="Download"
-        onClick={() => void downloadArtifact(taskId, artifact)}
-      >
-        <Download size={12} />
-        {label}
-      </button>
-    ) : (
-      <a
+  const artifactDownloadControl = (taskId: string, artifact: AgentArtifactDescriptor) =>
+    artifact.can_download ? (
+      <ArtifactDownload
+        name={artifact.name}
+        fileName={artifact.name}
         href={endpoints.artifactUrl(taskId, artifact.artifact_id, "download")}
-        download={artifact.name}
-        aria-label="Download"
+        save={desktopSave(taskId, artifact)}
       >
         <Download size={12} />
-        {label}
-      </a>
-    );
-  };
+        <span className="chat-inline-artifact-label">Download</span>
+      </ArtifactDownload>
+    ) : null;
 
   // A turn's own descriptors, or the ones an embed fetched after the turn aged out,
   // so a PDF the reply says is attached below keeps its card.
@@ -470,22 +447,16 @@ export function useAgentWindowArtifacts({
                   <ExternalLink size={12} /> Open
                 </button>
               )}
-              {artifact.can_download &&
-                (desktop ? (
-                  <button
-                    type="button"
-                    onClick={() => void downloadArtifact(line.taskId, artifact)}
-                  >
-                    <Download size={12} /> Download
-                  </button>
-                ) : (
-                  <a
-                    href={endpoints.artifactUrl(line.taskId, artifact.artifact_id, "download")}
-                    download={artifact.name}
-                  >
-                    <Download size={12} /> Download
-                  </a>
-                ))}
+              {artifact.can_download && (
+                <ArtifactDownload
+                  name={artifact.name}
+                  fileName={artifact.name}
+                  href={endpoints.artifactUrl(line.taskId, artifact.artifact_id, "download")}
+                  save={desktopSave(line.taskId, artifact)}
+                >
+                  <Download size={12} /> Download
+                </ArtifactDownload>
+              )}
               {endpoints.canKeep && artifact.can_keep && (
                 <button
                   type="button"

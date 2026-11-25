@@ -176,6 +176,18 @@ export function settingsProfile(projectId: string): ResourceProfile<SettingsReso
   };
 }
 
+/** The project's provider readiness and agent profiles: what every agent picker reads. */
+export type ReadinessResource = Pick<
+  ProjectSnapshot,
+  "provider_readiness" | "agent_profiles" | "run_on"
+>;
+export function readinessProfile(projectId: string): ResourceProfile<ReadinessResource> {
+  return {
+    key: projectResourceKey(projectId, "settings", { query: "readiness" }),
+    fetch: (signal) => api(`/api/projects/${encodeURIComponent(projectId)}/readiness`, { signal }),
+  };
+}
+
 export function providerLoginsProfile(projectId: string): ResourceProfile<ProviderLoginState[]> {
   return {
     key: projectResourceKey(projectId, "settings", { query: "provider-logins" }),

@@ -1,12 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, TriangleAlert, X } from "lucide-react";
 import { api, ApiError } from "../core/api";
-import {
-  CommentComposer,
-  CommentPopover,
-  type CommentOffer,
-} from "../comments/react/CommentComposer";
-import { CommentThreadCard } from "../comments/react/CommentThreadCard";
+import { CommentComposer, type CommentOffer } from "../comments/react/CommentComposer";
+import { CommentThreadPopover } from "../comments/react/CommentThreadPopover";
 import { useComments, type DockThreads } from "../comments/react/useComments";
 import type { CommentThread } from "../comments/types.ts";
 import {
@@ -302,15 +298,14 @@ export function PaperTurnDiff({
         <CommentComposer offer={offer} comments={comments} onClose={() => setOffer(null)} />
       )}
       {shownThread && shown && (
-        <CommentPopover point={shown.point} label="Comment" onClose={() => setShown(null)}>
-          <CommentThreadCard
-            thread={shownThread}
-            comments={comments}
-            wholeLabel={path}
-            selected={false}
-            onLocate={() => undefined}
-          />
-        </CommentPopover>
+        <CommentThreadPopover
+          thread={shownThread}
+          point={shown.point}
+          comments={comments}
+          wholeLabel={path}
+          onLocate={() => undefined}
+          onClose={() => setShown(null)}
+        />
       )}
     </aside>
   );

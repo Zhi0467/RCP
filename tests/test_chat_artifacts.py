@@ -33,7 +33,15 @@ def _turn(store, project_id, chat_id: str | None, **fields):
     return task
 
 
-def _artifact(store, task, name: str, *, created_at: str, expires_at: str | None = None):
+def _artifact(
+    store,
+    task,
+    name: str,
+    *,
+    created_at: str,
+    expires_at: str | None = None,
+    display_title: str | None = None,
+):
     data = b"<!doctype html><p>out</p>"
     descriptor = descriptor_for(
         task.operation_id,
@@ -53,6 +61,7 @@ def _artifact(store, task, name: str, *, created_at: str, expires_at: str | None
             episode_id=task.episode_id,
             created_at=created_at,
             expires_at=expires_at,
+            display_title=display_title,
         ),
         data=data,
     )
@@ -83,6 +92,28 @@ def test_chat_lists_its_own_unexpired_artifacts_newest_first(manifest, tmp_path)
     assert _listed(client, chat_id) == [newer.artifact_id, older.artifact_id]
     assert len(_listed(client, other_chat)) == 1
     assert client.get(f"/api/agent-threads/{uuid.uuid4()}/artifact-list").status_code == 404
+
+
+def test_titled_artifact_downloads_under_its_file_name_and_offers_delete(manifest, tmp_path):
+    app, client, store = _app(manifest, tmp_path)
+    project_id = app.state.default_project_id
+    chat_id = str(uuid.uuid4())
+    turn = _turn(store, project_id, chat_id)
+    report = _artifact(
+        store, turn, "pilot.html", created_at=_at(store, 0), display_title="Inkling pilot"
+    )
+
+    [entry] = client.get(f"/api/agent-threads/{chat_id}/artifact-list").json()
+    assert entry["name"] == "Inkling pilot"
+    assert entry["download_name"] == "pilot.html"
+    assert entry["can_delete"] is True
+    state = client.get(f"/api/projects/{project_id}/artifacts/{report.artifact_id}/state").json()
+    assert state["download_name"] == "pilot.html"
+    assert (
+        client.delete(f"/api/projects/{project_id}/artifacts/{report.artifact_id}").status_code
+        == 204
+    )
+    assert client.get(f"/api/agent-threads/{chat_id}/artifact-list").json() == []
 
 
 def test_another_members_private_chat_is_refused(manifest, tmp_path):

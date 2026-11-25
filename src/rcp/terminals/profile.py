@@ -8,7 +8,21 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-SHELL_PATH = "/usr/local/bin:/usr/bin:/bin"
+
+def user_tool_paths() -> tuple[Path, ...]:
+    """The account's user tools, and uv's store their links point into, that exist."""
+    home = Path.home()
+    return tuple(
+        path
+        for path in (home / ".local" / "bin", home / ".local" / "share" / "uv")
+        if path.is_dir()
+    )
+
+
+def shell_path() -> str:
+    """The terminal's PATH: the account's user tools, then the system's; no startup scripts."""
+    return f"{Path.home() / '.local' / 'bin'}:/usr/local/bin:/usr/bin:/bin"
+
 
 _READY_MARKER = b"\x1ercp-terminal-ready\x1f"
 _SHELL_PREFLIGHT = r"""
@@ -125,6 +139,9 @@ def launch_command(
         "StandardError=tty",
     ]
     properties.extend(f"BindPaths={_path(path)}" for path in granted_paths)
+    for tools in user_tool_paths():
+        if not any(_within(str(tools), grant) for grant in granted_paths):
+            properties.append(f"BindReadOnlyPaths={_path(str(tools))}")
     for path in git_read_paths:
         properties.extend([f"BindReadOnlyPaths={_path(path)}", f"ReadOnlyPaths={_path(path)}"])
     for path in protected_paths:
@@ -248,7 +265,7 @@ def shell_environment(git_environment: dict[str, str]) -> list[str]:
         "HOME": str(Path.home()),
         "USER": os.environ.get("USER", "rcp"),
         "LOGNAME": os.environ.get("LOGNAME", "rcp"),
-        "PATH": SHELL_PATH,
+        "PATH": shell_path(),
         "TERM": "xterm-256color",
         "LANG": "C.UTF-8",
         "HISTFILE": "/dev/null",

@@ -1,12 +1,23 @@
 import { Download, File, FileText, Image, Table, X } from "lucide-react";
-import { useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
 import type { AgentWindowEndpoints } from "../agentWindow/agentWindowEndpoints";
 import { chatArtifactsProfile } from "../artifacts/artifactResources";
-import { openArtifact, openSpaceArtifact } from "../artifacts/artifactViewerModel";
-import { StoredArtifactDownload } from "../artifacts/StoredArtifactDownload";
-import { isDesktopRuntime, openDesktopArtifactPdf } from "../core/desktopRuntime";
+import {
+  artifactDownloadOnly,
+  openArtifact,
+  openSpaceArtifact,
+} from "../artifacts/artifactViewerModel";
+import { ArtifactDownload, storedArtifactSave } from "../artifacts/ArtifactDownload";
+import { DeleteArtifactButton } from "../artifacts/DeleteArtifactButton";
 import { CopyReferenceButton } from "../core/CopyReferenceButton";
-import { errorMessage } from "../core/errors";
 import { setReferenceDrag } from "../core/projectReferences";
 import type { GraphTargetRef, RunArtifactEntry } from "../core/types";
 import { resourceKeyId } from "../core/resourceStore";
@@ -33,7 +44,10 @@ export function useChatArtifacts(
     if (previous.revision !== revision) store.invalidate(id);
   }, [store, id, revision]);
   const resource = useResource(owner, profile);
-  return resource.value ?? NO_ARTIFACTS;
+  const refresh = useCallback(() => {
+    if (id) store.invalidate(id);
+  }, [store, id]);
+  return { artifacts: resource.value ?? NO_ARTIFACTS, refresh };
 }
 
 /** Where the open pane sits: below the dock's header, beside the chat when the dock
@@ -69,6 +83,7 @@ export function ChatArtifactsPane({
   artifacts,
   top,
   onOpened,
+  onDeleted,
   onClose,
 }: {
   endpoints: AgentWindowEndpoints;
@@ -76,12 +91,11 @@ export function ChatArtifactsPane({
   artifacts: RunArtifactEntry[];
   top?: number;
   onOpened: () => void;
+  onDeleted: () => void;
   onClose: () => void;
 }) {
   const projectId = endpoints.projectId;
-  const [openError, setOpenError] = useState<string | null>(null);
   const open = (artifact: RunArtifactEntry) => {
-    setOpenError(null);
     if (projectId === null)
       openSpaceArtifact({
         viewerUrl: endpoints.artifactUrl(
@@ -91,10 +105,6 @@ export function ChatArtifactsPane({
         ),
         name: artifact.name,
       });
-    else if (artifact.view === "pdf")
-      void openDesktopArtifactPdf({ projectId, artifactId: artifact.artifact_id }).catch(
-        (failure) => setOpenError(errorMessage(failure)),
-      );
     else openArtifact({ projectId, artifactId: artifact.artifact_id });
     onOpened();
   };
@@ -106,12 +116,9 @@ export function ChatArtifactsPane({
           <X size={15} />
         </button>
       </header>
-      {openError && <div role="alert">{openError}</div>}
       <ul>
         {artifacts.map((artifact) => {
-          const downloadOnly =
-            artifact.view === "file" ||
-            (artifact.view === "pdf" && (!isDesktopRuntime() || projectId === null));
+          const downloadOnly = artifactDownloadOnly(artifact.view, projectId !== null);
           const kind = artifact.supplier === "episode_ending" ? "Report" : artifact.view;
           return (
             <li
@@ -150,30 +157,36 @@ export function ChatArtifactsPane({
                   className="icon-button artifact-entry-action"
                 />
               )}
-              {projectId === null ? (
-                <a
-                  className="icon-button artifact-entry-action"
-                  href={endpoints.artifactUrl(
-                    artifact.origin_operation_id ?? "",
-                    artifact.artifact_id,
-                    "download",
-                  )}
-                  download={artifact.name}
-                  aria-label={`Download ${artifact.name}`}
-                  title="Download"
-                >
-                  <Download size={15} />
-                </a>
-              ) : (
-                <StoredArtifactDownload
+              <ArtifactDownload
+                name={artifact.name}
+                fileName={artifact.download_name}
+                className="icon-button artifact-entry-action"
+                href={
+                  projectId === null
+                    ? endpoints.artifactUrl(
+                        artifact.origin_operation_id ?? "",
+                        artifact.artifact_id,
+                        "download",
+                      )
+                    : `/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifact.artifact_id)}/download`
+                }
+                save={
+                  projectId === null
+                    ? null
+                    : storedArtifactSave(projectId, artifact.artifact_id, artifact.download_name)
+                }
+              >
+                <Download size={15} />
+              </ArtifactDownload>
+              {projectId !== null && artifact.can_delete && (
+                <DeleteArtifactButton
                   projectId={projectId}
                   artifactId={artifact.artifact_id}
-                  name={artifact.name}
+                  label={`Delete ${artifact.name}`}
                   className="icon-button artifact-entry-action"
-                  href={`/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifact.artifact_id)}/download`}
-                >
-                  <Download size={15} />
-                </StoredArtifactDownload>
+                  iconSize={15}
+                  onDeleted={onDeleted}
+                />
               )}
               {!downloadOnly && (
                 <button

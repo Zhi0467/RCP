@@ -49,6 +49,8 @@ import { usePaperFilesSplit, usePaperSplit } from "./usePaperSplit";
 import "./paper-split.css";
 import { ResizeHandle } from "../ui/ResizeHandle";
 import { PaperPreview } from "./PaperPreview";
+import { PaperDownload } from "./PaperDownload";
+import { downloadPaperBlob, storedFile, storedPaperHref } from "./paperDownloadModel";
 import { PaperCoach, type CoachChatActions, type CoachDiff, type CoachOpening } from "./PaperCoach";
 import { PaperTurnDiff } from "./PaperTurn";
 import { PaperHistory } from "./PaperHistory";
@@ -647,13 +649,16 @@ export function PaperWorkspace({
               onCursorLine={(line) => setCursor({ file: file!.file_id, line })}
             />
           ) : file?.kind === "binary" ? (
-            <a
+            <PaperDownload
               className="paper-binary-link"
-              download
-              href={`${apiBase}/paper/files/${encodeURIComponent(file.file_id)}/raw`}
+              projectId={project.id}
+              stored={storedFile(file)}
+              href={storedPaperHref(apiBase, storedFile(file))}
+              name={file.path}
+              fileName={storedFile(file).name}
             >
               {file.path}
-            </a>
+            </PaperDownload>
           ) : !tree || !identity ? (
             <LoaderCircle size={18} className="spin" aria-label="Loading Paper" />
           ) : null}
@@ -820,15 +825,12 @@ function DocumentStatus({
         <button
           className="icon-button"
           aria-label="Download unsent text"
-          onClick={() => {
-            const link = window.document.createElement("a");
-            link.href = URL.createObjectURL(
+          onClick={() =>
+            downloadPaperBlob(
               new Blob([owner.getSnapshot().text], { type: "text/plain" }),
-            );
-            link.download = fileName;
-            link.click();
-            setTimeout(() => URL.revokeObjectURL(link.href), 0);
-          }}
+              fileName,
+            )
+          }
         >
           <Download size={16} />
         </button>

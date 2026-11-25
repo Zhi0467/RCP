@@ -1,6 +1,7 @@
 import {
   CalendarClock,
   Hourglass,
+  MessageCircle,
   Paperclip,
   Pause,
   Pencil,
@@ -98,6 +99,7 @@ export function ThreadQueue({
           );
         const reason = item.refusal_reason?.replaceAll("_", " ");
         const files = item.attachment_count ?? 0;
+        const comments = item.comment_thread_ids?.length ?? 0;
         return (
           <li
             className="thread-queue-row"
@@ -112,10 +114,12 @@ export function ThreadQueue({
                 left(item);
             }}
           >
-            {reason ? (
-              <TriangleAlert className="thread-queue-mark" size={13} aria-hidden="true" />
-            ) : (
-              <Hourglass className="thread-queue-mark" size={12} aria-hidden="true" />
+            {reason && <TriangleAlert className="thread-queue-mark" size={13} aria-hidden="true" />}
+            {comments > 0 && (
+              <span className="thread-queue-comments">
+                <MessageCircle size={12} aria-hidden="true" />
+                {comments} comment{comments === 1 ? "" : "s"}
+              </span>
             )}
             <span
               className="thread-queue-text"

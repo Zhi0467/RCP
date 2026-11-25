@@ -2,29 +2,42 @@ import { useState } from "react";
 import { downloadDesktopArtifact, isDesktopRuntime } from "../core/desktopRuntime";
 import { errorMessage } from "../core/errors";
 
-export function StoredArtifactDownload({
-  projectId,
-  artifactId,
+/** Saves a stored artifact through the desktop dialog; null in a browser. */
+export function storedArtifactSave(
+  projectId: string,
+  artifactId: string,
+  fileName: string,
+): (() => Promise<unknown>) | null {
+  return isDesktopRuntime()
+    ? () => downloadDesktopArtifact({ projectId, artifactId, suggestedName: fileName })
+    : null;
+}
+
+/** Every artifact Download: a plain link in a browser, the native save dialog on desktop. */
+export function ArtifactDownload({
   name,
+  fileName,
   href,
+  save,
   className,
   children,
 }: {
-  projectId: string;
-  artifactId: string;
   name: string;
+  /** The saved file's name with its extension; `name` may be a display title. */
+  fileName: string;
   href: string;
+  save: (() => Promise<unknown>) | null;
   className?: string;
   children: React.ReactNode;
 }) {
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
-  if (!isDesktopRuntime())
+  if (!save)
     return (
       <a
         className={className}
         href={href}
-        download={name}
+        download={fileName}
         aria-label={`Download ${name}`}
         title="Download"
       >
@@ -42,7 +55,7 @@ export function StoredArtifactDownload({
         onClick={() => {
           setError("");
           setSaving(true);
-          void downloadDesktopArtifact({ projectId, artifactId, suggestedName: name })
+          void save()
             .catch((failure) => setError(errorMessage(failure)))
             .finally(() => setSaving(false));
         }}

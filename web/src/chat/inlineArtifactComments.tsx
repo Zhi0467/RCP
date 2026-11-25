@@ -1,12 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import type { InlineComments } from "../agentWindow/useAgentWindowArtifacts";
 import type { Point } from "../comments/box.ts";
-import {
-  CommentComposer,
-  CommentPopover,
-  type CommentOffer,
-} from "../comments/react/CommentComposer";
-import { CommentThreadCard } from "../comments/react/CommentThreadCard";
+import { CommentComposer, type CommentOffer } from "../comments/react/CommentComposer";
+import { CommentThreadPopover } from "../comments/react/CommentThreadPopover";
 import { useComments, type DockThreads } from "../comments/react/useComments";
 import type { CommentScope } from "../comments/api.ts";
 import type { CommentThread } from "../comments/types.ts";
@@ -98,18 +94,14 @@ export function useInlineArtifactComments({
         />
       )}
       {shown && shownThread && (
-        <CommentPopover point={shown.point} label="Comment" onClose={() => setShown(null)}>
-          <CommentThreadCard
-            thread={shownThread}
-            comments={comments}
-            wholeLabel="Whole artifact"
-            selected={false}
-            onLocate={shown.locate}
-          />
-          <div className="rcp-comments-notice" role="status">
-            {comments.error}
-          </div>
-        </CommentPopover>
+        <CommentThreadPopover
+          thread={shownThread}
+          point={shown.point}
+          comments={comments}
+          wholeLabel="Whole artifact"
+          onLocate={shown.locate}
+          onClose={() => setShown(null)}
+        />
       )}
     </>
   );

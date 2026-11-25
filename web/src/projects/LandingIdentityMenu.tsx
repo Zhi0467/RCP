@@ -1,7 +1,5 @@
 import {
-  Check,
   ChevronDown,
-  Copy,
   Link2,
   Pencil,
   RefreshCw,
@@ -9,6 +7,7 @@ import {
   UserPlus,
   UserRound,
 } from "lucide-react";
+import { CopyButton, copiedOr, useCopy, type CopyControl } from "../core/CopyButton";
 import qrcode from "qrcode-generator";
 import { useEffect, useId, useRef, useState } from "react";
 import {
@@ -54,30 +53,18 @@ interface IdentityProvenanceSlipProps {
   identity: IdentityResponse;
   identityError: string | null;
   teamNoticeId: string;
-  copyStatus: "idle" | "copied" | "failed";
-  onCopy: () => void;
+  copy: CopyControl;
   onEdit: () => void;
   teamPanelActive?: boolean;
   onAddTeamSpace?: () => void;
   teamSpaces?: TeamConnectionMetadata[];
 }
 
-export async function copyIdentityId(
-  userId: string,
-  clipboard: Pick<Clipboard, "writeText"> | undefined = typeof navigator === "undefined"
-    ? undefined
-    : navigator.clipboard,
-): Promise<void> {
-  if (!clipboard) throw new Error("Clipboard access is unavailable.");
-  await clipboard.writeText(userId);
-}
-
 export function IdentityProvenanceSlip({
   identity,
   identityError,
   teamNoticeId,
-  copyStatus,
-  onCopy,
+  copy,
   onEdit,
   teamPanelActive = true,
   onAddTeamSpace,
@@ -118,20 +105,16 @@ export function IdentityProvenanceSlip({
               <code tabIndex={0} aria-label={`User ID ${identity.user.user_id}`}>
                 {identity.user.user_id}
               </code>
-              <button
+              <CopyButton
                 className="landing-identity-copy"
-                type="button"
                 data-identity-action="copy-id"
-                aria-label="Copy user ID"
-                onClick={onCopy}
+                label="Copy user ID"
+                iconSize={12}
+                text={identity.user.user_id}
+                control={copy}
               >
-                {copyStatus === "copied" ? (
-                  <Check size={12} aria-hidden="true" />
-                ) : (
-                  <Copy size={12} aria-hidden="true" />
-                )}
-                {copyStatus === "copied" ? "Copied" : "Copy"}
-              </button>
+                {copiedOr("Copy")}
+              </CopyButton>
             </dd>
           </div>
           <div>
@@ -139,7 +122,7 @@ export function IdentityProvenanceSlip({
             <dd>{spaceLabel}</dd>
           </div>
         </dl>
-        {copyStatus === "failed" && (
+        {copy.state === "failed" && (
           <p className="landing-identity-copy-error" role="alert">
             User ID could not be copied. Select it above to copy manually.
           </p>
@@ -465,7 +448,8 @@ export function TeamInvitationPanel({
   const [creating, setCreating] = useState(false);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
+  const copy = useCopy();
+  const resetCopy = copy.reset;
   const titleId = useId();
 
   useEffect(() => {
@@ -473,7 +457,7 @@ export function TeamInvitationPanel({
       // A raw invitation code is shown once, at the moment it is created.
       // Closing the panel discards it, so reopening shows only metadata.
       setIssued(null);
-      setCopyStatus("idle");
+      resetCopy();
       return;
     }
     let stopped = false;
@@ -495,13 +479,13 @@ export function TeamInvitationPanel({
     return () => {
       stopped = true;
     };
-  }, [active, identity.user.user_id, refreshVersion]);
+  }, [active, identity.user.user_id, refreshVersion, resetCopy]);
 
   const createInvitation = async () => {
     if (creating) return;
     setCreating(true);
     setError(null);
-    setCopyStatus("idle");
+    resetCopy();
     try {
       const next = await createTeamInvitation();
       setIssued(next);
@@ -532,16 +516,6 @@ export function TeamInvitationPanel({
       setIssued((current) => (current?.invitation.invitation_id === invitationId ? null : current));
     } catch {
       setError("That invitation could not be revoked. Try opening this panel again.");
-    }
-  };
-
-  const copyInvitation = async () => {
-    if (!issued) return;
-    try {
-      await copyIdentityId(invitationCopyBlock(issued));
-      setCopyStatus("copied");
-    } catch {
-      setCopyStatus("failed");
     }
   };
 
@@ -591,15 +565,10 @@ export function TeamInvitationPanel({
             <div className="landing-team-invitation-expiry">
               Expires {formatInvitationTime(issued.invitation.expires_at)}
             </div>
-            <button type="button" onClick={() => void copyInvitation()}>
-              {copyStatus === "copied" ? (
-                <Check size={12} aria-hidden="true" />
-              ) : (
-                <Copy size={12} aria-hidden="true" />
-              )}
-              {copyStatus === "copied" ? "Copied" : "Copy invitation"}
-            </button>
-            {copyStatus === "failed" && (
+            <CopyButton iconSize={12} text={invitationCopyBlock(issued)} control={copy}>
+              {copiedOr("Copy invitation")}
+            </CopyButton>
+            {copy.state === "failed" && (
               <p role="alert">
                 Invitation could not be copied. Select the code to copy it manually.
               </p>
@@ -711,7 +680,8 @@ export function LandingIdentityMenu({
   compact = false,
 }: Props) {
   const [open, setOpen] = useState(false);
-  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
+  const copy = useCopy();
+  const resetCopy = copy.reset;
   const [teamSpaces, setTeamSpaces] = useState<TeamConnectionMetadata[]>([]);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -724,8 +694,8 @@ export function LandingIdentityMenu({
   useEffect(() => {
     if (namedIdentity) return;
     setOpen(false);
-    setCopyStatus("idle");
-  }, [namedIdentity]);
+    resetCopy();
+  }, [namedIdentity, resetCopy]);
 
   useEffect(() => {
     if (!open) return;
@@ -749,16 +719,6 @@ export function LandingIdentityMenu({
   const requestName = () => {
     setOpen(false);
     void onRequestName();
-  };
-
-  const copyUserId = async () => {
-    if (!namedIdentity) return;
-    try {
-      await copyIdentityId(namedIdentity.user.user_id);
-      setCopyStatus("copied");
-    } catch {
-      setCopyStatus("failed");
-    }
   };
 
   useEffect(() => {
@@ -796,7 +756,7 @@ export function LandingIdentityMenu({
             requestName();
             return;
           }
-          setCopyStatus("idle");
+          resetCopy();
           setOpen((current) => !current);
         }}
       >
@@ -831,8 +791,7 @@ export function LandingIdentityMenu({
             identity={namedIdentity}
             identityError={identityError}
             teamNoticeId={teamNoticeId}
-            copyStatus={copyStatus}
-            onCopy={() => void copyUserId()}
+            copy={copy}
             onEdit={requestName}
             teamPanelActive={open}
             teamSpaces={teamSpaces}
