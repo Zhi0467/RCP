@@ -406,3 +406,42 @@ def test_a_watcher_of_a_replaced_run_is_closed_with_a_reason_not_retried(tmp_pat
     assert closed.state == "cancelled" and closed.cancelled_by == "rcp"
     assert closed.cancel_reason
     assert store.ready_watchers() == []
+
+
+def test_a_model_without_an_effort_still_wakes_from_its_watcher(tmp_path) -> None:
+    """Antigravity models carry no effort, so the bound turn stores an empty one."""
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    episode_id = str(uuid.uuid4())
+    root = _loop_task(store, "root-no-effort", episode_id)
+    root = root.model_copy(update={"request": {**root.request, "reasoning": ""}})
+    root = store.create_experiment_episode_with_invocation(root, graph_base_head=None)
+    store.complete_agent_task(root.operation_id, applied_revision=None, result={})
+    store.commit_experiment_episode_turn(
+        episode_id=episode_id,
+        project_id=_PROJECT_ID,
+        control_node_id=_CONTROL_NODE_ID,
+        provider="codex",
+        machine_id=BACKEND_MACHINE_ID,
+        native_session_id="session-no-effort",
+        stage_machine_id=None,
+        stage_root=str(tmp_path / "stage"),
+        chat_id=str(root.request["chat_id"]),
+        operation_id=root.operation_id,
+        invocation=1,
+        graph_result="no graph change",
+        watcher_ids=[],
+        context_baseline={"ontology": {"sha256": "abc"}},
+    )
+    store.arm_watcher(_watcher(store, "watcher-no-effort", root))
+    runtime = store.experiment_loop_runtime(
+        _PROJECT_ID, _CONTROL_NODE_ID, graph_target=GraphTargetRef()
+    )
+    wake = _loop_task(
+        store, "wake-no-effort", episode_id, invocation=2, watcher_ids=["watcher-no-effort"]
+    ).model_copy(
+        update={"native_session_id": "session-no-effort", "stage_root": str(tmp_path / "stage")}
+    )
+    wake.request.update(session_id="session-no-effort", reasoning=runtime.reasoning)
+
+    assert store.create_experiment_watcher_invocation(wake, ["watcher-no-effort"]) is not None
