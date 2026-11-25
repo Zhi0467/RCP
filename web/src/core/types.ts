@@ -3154,6 +3154,8 @@ export interface ProviderReadiness {
   path_state: "resolved" | "missing" | "denied" | "unconfigured" | "unreachable";
   version?: string | null;
   reason?: string | null;
+  /** Why the backend's last automatic update of this CLI failed; the old version stays in use. */
+  update_warning?: string | null;
   /** Whether Work-like launches can run here. Null means it was not checked. */
   work_like_available?: boolean | null;
   work_like_reason?: string | null;

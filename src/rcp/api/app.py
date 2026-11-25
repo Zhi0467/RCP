@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import pwd
 import sys
 import threading
 import time
@@ -133,6 +134,7 @@ from rcp.history.store import GRAPH_HISTORY_DIRECTORY, graph_history_cache
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import (
     ARTIFACT_IMPORT_RETRY_SECONDS,
+    PROVIDER_AUTO_UPDATE_INTERVAL_SECONDS,
     PROVIDER_SESSION_SWEEP_INTERVAL_SECONDS,
     RUN_STAGE_RETENTION_DAYS,
     SERVER_CONTROL_UPDATE_MAINTENANCE_TIMEOUT_SECONDS,
@@ -195,6 +197,7 @@ from rcp.runs.experiment_loop import (
 )
 from rcp.runs.merge_effects import reconcile_merge_effects, settle_merge_effects
 from rcp.runs.paper_turns import end_settled_paper_turns
+from rcp.runs.provider_auto_update import auto_update_providers
 from rcp.runs.provider_session_sweep import sweep_provider_sessions
 from rcp.runs.provider_sign_in import ProviderSignInRunner
 from rcp.runs.recorded_turn import RecordedProviderTurn
@@ -264,6 +267,7 @@ from rcp.server_ops.members import MemberRemovalCoordinator
 from rcp.server_ops.paper_lifecycle import register_paper_live, unregister_paper_live
 from rcp.server_ops.project_provision import ProjectProvisionCoordinator
 from rcp.server_ops.provider_readiness import ProviderReadinessCoordinator
+from rcp.server_ops.provider_update import run_provider_process_as_self
 from rcp.server_runtime import ServerMetadata, data_dir_identity, remove_server_metadata
 from rcp.service import (
     ProjectService,
@@ -1984,10 +1988,27 @@ def create_app(
         if protected is not None and not stop.is_set():
             sweep_hidden_reads(RUN_STAGE_RETENTION_DAYS, set(protected))
 
-    async def sweep_provider_sessions_periodically() -> None:
+    def provider_auto_update_pass(stop: threading.Event) -> None:
+        try:
+            auto_update_providers(
+                store,
+                launcher,
+                account=pwd.getpwuid(os.geteuid()),
+                runner=run_provider_process_as_self,
+                stop=stop,
+                guard=partial(background_admission_gate.mutation, "provider CLI update"),
+            )
+        except MaintenanceAdmissionClosed:
+            raise
+        except Exception:
+            logger.exception("Could not update provider CLIs")
+
+    async def run_daily_pass_periodically(
+        daily_pass: Callable[[threading.Event], None], interval: float
+    ) -> None:
         while not background_admission_gate.closed:
             stop = threading.Event()
-            work = asyncio.create_task(asyncio.to_thread(provider_session_sweep_pass, stop))
+            work = asyncio.create_task(asyncio.to_thread(daily_pass, stop))
             try:
                 await asyncio.shield(work)
             except asyncio.CancelledError:
@@ -1998,8 +2019,8 @@ def create_app(
             except MaintenanceAdmissionClosed:
                 return
             except Exception:
-                logger.exception("Could not sweep provider sessions")
-            await asyncio.sleep(PROVIDER_SESSION_SWEEP_INTERVAL_SECONDS)
+                logger.exception("A daily maintenance pass failed")
+            await asyncio.sleep(interval)
 
     def schedule_provider_session_sweeps() -> None:
         if background_admission_gate.closed or any(
@@ -2015,9 +2036,14 @@ def create_app(
                     app_data,
                 )
             return
-        task = asyncio.create_task(sweep_provider_sessions_periodically())
-        provider_session_sweep_tasks[:] = [task]
-        startup_maintenance.append(task)
+        passes = [(provider_session_sweep_pass, PROVIDER_SESSION_SWEEP_INTERVAL_SECONDS)]
+        if space_kind == "team":
+            passes.append((provider_auto_update_pass, PROVIDER_AUTO_UPDATE_INTERVAL_SECONDS))
+        provider_session_sweep_tasks[:] = [
+            asyncio.create_task(run_daily_pass_periodically(daily_pass, interval))
+            for daily_pass, interval in passes
+        ]
+        startup_maintenance.extend(provider_session_sweep_tasks)
 
     def schedule_artifact_imports() -> None:
         if background_admission_gate.closed:

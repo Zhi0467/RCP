@@ -126,6 +126,7 @@ class ProviderReadiness(BaseModel):
     authenticated: bool
     version: str | None = None
     reason: str | None = None
+    update_warning: str | None = None
     #: None means the profile has no work-like probe or it could not be checked.
     work_like_available: bool | None = None
     work_like_reason: str | None = None
@@ -746,6 +747,7 @@ class AgentLauncher:
         self._readiness_cache: dict[tuple[str, str, str | None, str], ProviderReadiness] = {}
         self._readiness_probes: dict[tuple[str, str, str | None, str, bool], _ReadinessProbe] = {}
         self._readiness_generations: dict[tuple[str, str, str | None, str], int] = {}
+        self._update_warnings: dict[tuple[str, str], str] = {}
         #: Shared so every process that can rotate this login is staggered,
         #: not only task turns.
         self.credential_gate = ProviderCredentialGate()
@@ -795,7 +797,17 @@ class AgentLauncher:
             )
         return profile_for(login.provider).credential_failure(evidence)
 
+    def set_update_warning(self, provider: str, machine_id: str, warning: str | None) -> None:
+        """Record or clear why the last automatic CLI update on the machine failed."""
+
+        with self._readiness_lock:
+            if warning is None:
+                self._update_warnings.pop((provider, machine_id), None)
+            else:
+                self._update_warnings[(provider, machine_id)] = warning
+
     def _with_login_state(self, readiness: ProviderReadiness, login: LoginKey) -> ProviderReadiness:
+        readiness.update_warning = self._update_warnings.get((login.provider, login.machine_id))
         reason = self._login_refusal(login)
         if reason is not None:
             return readiness.model_copy(update={"authenticated": False, "reason": reason})
