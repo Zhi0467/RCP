@@ -336,7 +336,10 @@ def _episode_usage(profile: AgentProfile, context: UsageContext) -> str:
         )
     from rcp.agents.auto_research_prompt import render_child_profile_choices
     from rcp.runs.auto_research_admission import auto_research_child_profile_choices
-    from rcp.runs.work_episode_controls import work_episode_control_usage
+    from rcp.runs.work_episode_controls import (
+        work_auto_research_command_usage,
+        work_episode_control_usage,
+    )
     from rcp.runs.work_experiment_commands import work_experiment_command_usage
 
     execution = context.execution
@@ -356,8 +359,9 @@ def _episode_usage(profile: AgentProfile, context: UsageContext) -> str:
 
     return "\n\n".join(
         (
+            work_episode_control_usage(context.client),
             work_experiment_command_usage(context.client, choices("node_chat")),
-            work_episode_control_usage(context.client, choices("orchestrator")),
+            work_auto_research_command_usage(context.client, choices("orchestrator")),
         )
     )
 

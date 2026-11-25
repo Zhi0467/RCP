@@ -1121,7 +1121,9 @@ invocation. An ended or stopping Experiment refuses with `episode_not_running`.
 
 Add-turns and message requests derive their request ids from the turn and key,
 so a replay returns the same continuation or message. Pause and resume record a
-receipt, so a replay answers with the turn they already controlled. To change
+receipt, so a replay answers with the turn they already controlled. When the
+member wants more turns on an ended Experiment with the same design, the agent
+adds turns to that episode rather than raising a plan card. To change
 and rerun an Experiment, the agent stops it, fixes it in its Patch, and starts a
 new episode in a later turn once it shows stopped.
 

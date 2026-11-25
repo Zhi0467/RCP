@@ -440,16 +440,11 @@ def handle_work_auto_research_kickoff(
     return record_plan_card_request(execution, mailbox, request, arguments)
 
 
-def work_episode_control_usage(client: str, orchestrator_profiles: str) -> str:
-    """The Auto-research kickoff and shared episode-control usage of a Work turn."""
+def work_auto_research_command_usage(client: str, orchestrator_profiles: str) -> str:
+    """The Auto-research plan card usage of a Work turn granted ``episode``."""
 
-    from rcp.agents.prompts import EPISODE_MAILBOX_RULES
     from rcp.runs.approval_cards import APPROVAL_OUTCOMES
 
-    add_turns = episode_control_usage(EPISODE_ADD_TURNS, required=(KICKOFF_LIMIT,))
-    message = episode_control_usage(
-        EPISODE_MESSAGE, required=(EPISODE_BODY,), optional=(KICKOFF_LIMIT,)
-    )
     return (
         "Auto-research plan card: propose a new episode for the human to review, edit, and Start, "
         "only when the human asks for Auto-research: "
@@ -468,7 +463,21 @@ def work_episode_control_usage(client: str, orchestrator_profiles: str) -> str:
         "parked plan waits for the human. To revise the plan after the human comments, "
         "run the command again with a new key: it revises the open Auto-research card in "
         "place, pending or parked, and raises no second card. Once approved, tell the human "
-        "what started (handoff, limit, branch).\n"
+        "what started (handoff, limit, branch)."
+    )
+
+
+def work_episode_control_usage(client: str) -> str:
+    """Controls a Work turn has over Experiment and Auto-research episodes it started."""
+
+    from rcp.agents.prompts import EPISODE_MAILBOX_RULES
+
+    add_turns = episode_control_usage(EPISODE_ADD_TURNS, required=(KICKOFF_LIMIT,))
+    message = episode_control_usage(
+        EPISODE_MESSAGE, required=(EPISODE_BODY,), optional=(KICKOFF_LIMIT,)
+    )
+    return (
+        "Episode controls (Experiments and Auto-research alike):\n"
         f"{EPISODE_MAILBOX_RULES}\n"
         f"Answer a child question with `{client} episode --answer <question-id> "
         "--answer-file <filename> [--choice <choice>] --key <key>`. "

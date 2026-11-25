@@ -13,7 +13,9 @@ from rcp.agents.command_protocol import (
     ExperimentKickoffArguments,
 )
 from rcp.agents.staged_command_client import (
+    EPISODE_ADD_TURNS,
     EPISODE_RESUME,
+    KICKOFF_LIMIT,
     episode_control_usage,
     experiment_kickoff_usage,
 )
@@ -612,10 +614,14 @@ def work_experiment_command_usage(client: str, profile_choices: str) -> str:
         "so in your reply. To change an Experiment and run it again, stop it, fix the "
         "Experiment in your Patch, and propose it again on a new plan card in a later turn once "
         "the loop status shows it stopped.\n"
+        "Experiment continue: when the human wants more turns on an ended episode (completed, "
+        "stopped, failed, or needs_action) and the design stays the same, add turns to it "
+        f"with `{client} {episode_control_usage(EPISODE_ADD_TURNS, required=(KICKOFF_LIMIT,))}` "
+        "instead of proposing a plan card. The human's message is the authorization.\n"
         "Experiment plan card: propose a new episode for the human to review, edit, and Start. "
         "Propose one only when the human asks you "
         "to run or start an Experiment (in a chat on that Experiment, 'run it' counts) and no "
-        "paused episode should resume instead. Otherwise suggest one in your reply. "
+        "paused or ended episode should resume or continue instead. Otherwise suggest one in your reply. "
         "Before proposing, audit the Experiment and every node one edge away (its Hypotheses, "
         "Decisions, Blockers, and Evidence). Write or fix the Experiment and its neighbors in "
         "this same turn's Patch: graph edits land when the turn ends, and the card appears "
