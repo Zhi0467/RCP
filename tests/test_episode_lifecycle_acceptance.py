@@ -548,6 +548,7 @@ def test_acceptance_exhausted_episode_continues_in_its_own_session_on_its_branch
             "can_message",
             "message_refusal",
             "message_requires_continuation",
+            "presentation",
         }
         unchanged = {key: value for key, value in old_after.items() if key not in moved}
         assert unchanged == {key: value for key, value in old_episode.items() if key not in moved}

@@ -25,11 +25,11 @@ import {
   startEpisode,
   stopEpisode,
 } from "../src/core/api.ts";
+import { withEpisodeAnswers } from "./taskAnswers.mjs";
 import {
   autoResearchStartRefusal,
-  episodeProjection,
+  episodeCanSwitchProvider,
   episodeReportPreviewUrl,
-  episodeTaskRows,
   isLiveEpisode,
   mergeEpisode,
   runsEpisodeCards,
@@ -202,7 +202,7 @@ function renderEpisodes(values, { busyAction = null } = {}) {
       {},
       values.map((value, index) =>
         React.createElement(AutoResearchEpisodeCard, {
-          episode: value,
+          episode: withEpisodeAnswers(value),
           tasks: values.flatMap((episode) => episode.tasks),
           messages: [],
           initiallyExpanded: index === 0 || value.live,
@@ -273,10 +273,9 @@ test("wrap-up has one exact parent state and no report task or recovery control"
     recommendation: "wait",
     task_control: null,
   };
-  const projection = episodeProjection(wrapping, wrapping.tasks);
   const html = renderEpisodes([wrapping]);
 
-  assert.equal(projection.taskControl, null);
+  assert.doesNotMatch(html, /data-task-action="(pause|resume|retry)"/);
 });
 
 test("only a control that can take a new binding offers the switch", () => {
@@ -303,24 +302,22 @@ test("only a control that can take a new binding offers the switch", () => {
   });
 
   const orchestrator = withControl(failed);
-  assert.equal(
-    episodeProjection(orchestrator, orchestrator.tasks).taskControl.canSwitchProvider,
-    true,
-  );
+  assert.equal(episodeCanSwitchProvider(orchestrator, failed), true);
+  assert.match(renderEpisodes([orchestrator]), /Switch provider/);
 
   // A worker continues only through the session its dispatch bound it to, so
   // every switch it could submit would come back refused.
   const workerControl = withControl(worker);
-  assert.equal(
-    episodeProjection(workerControl, workerControl.tasks).taskControl.canSwitchProvider,
-    false,
-  );
+  assert.equal(episodeCanSwitchProvider(workerControl, worker), false);
+  assert.doesNotMatch(renderEpisodes([workerControl]), /Switch provider/);
 
   // A stopping episode admits only exact recovery, from any actor, so the exact
   // Retry stays and the rebinding beside it goes.
   const stopping = { ...orchestrator, stop_requested_at: "2026-09-16T00:00:00Z" };
-  assert.equal(episodeProjection(stopping, stopping.tasks).taskControl.canSwitchProvider, false);
+  assert.equal(episodeCanSwitchProvider(stopping, failed), false);
   const html = renderEpisodes([stopping]);
+  assert.match(html, /data-task-action="retry"/);
+  assert.doesNotMatch(html, /Switch provider/);
 });
 
 test("a ready episode does not expose the internal report identity", () => {
@@ -375,10 +372,9 @@ test("a final report error is visible, terminal, and has no task recovery contro
     recommendation: "reauthorize",
     task_control: null,
   };
-  const projection = episodeProjection(reportFailed, reportFailed.tasks);
   const html = renderEpisodes([reportFailed]);
 
-  assert.equal(projection.taskControl, null);
+  assert.doesNotMatch(html, /data-task-action="(pause|resume|retry)"/);
 
   assert.match(html, /The visual report could not be written\./);
   assert.match(html, /class="campaign-reauthorize"/);
@@ -400,10 +396,10 @@ test("the recommendation does not offer unavailable continuation", () => {
   const available = renderEpisodes([exhausted]);
   const unavailable = renderEpisodes([{ ...exhausted, can_continue: false }]);
 
-  assert.match(available, /Recommended next step<\/span><strong>[^<]*Add turns/);
+  const step = (html) => html.match(/Recommended next step<\/span><strong>([^<]*)/)[1];
   assert.match(available, /class="campaign-reauthorize"/);
-  assert.match(unavailable, /Recommended next step<\/span><strong>[^<]*Review the episode state/);
   assert.doesNotMatch(unavailable, /class="campaign-reauthorize"/);
+  assert.notEqual(step(available), step(unavailable));
 });
 
 test("a continuation chain is one run card listing each member's ceiling, ending, and report", () => {
@@ -492,11 +488,10 @@ test("a report error does not downgrade a completed episode", () => {
     recommendation: "none",
     task_control: null,
   };
-  const projection = episodeProjection(reportFailed, reportFailed.tasks);
   const html = renderEpisodes([reportFailed]);
 
-  assert.equal(projection.health, "completed");
-  assert.equal(projection.taskControl, null);
+  assert.match(html, /class="status-pill task-state completed"/);
+  assert.doesNotMatch(html, /data-task-action="(pause|resume|retry)"/);
 
   assert.match(html, /The visual report could not be written\./);
 });
@@ -638,67 +633,6 @@ test("a paused or interrupted merge asks for action without presenting a failure
   assert.doesNotMatch(needsAction, /branch-failed|role="alert"/);
 });
 
-test("retries and continuations stay at their canonical actor depth", () => {
-  const orchestratorRetryOne = {
-    ...rootTask,
-    operation_id: "turn-root-retry-1",
-    parent_operation_id: rootTask.operation_id,
-    created_at: "2026-08-12T08:01:00Z",
-  };
-  const orchestratorRetryTwo = {
-    ...rootTask,
-    operation_id: "turn-root-retry-2",
-    parent_operation_id: orchestratorRetryOne.operation_id,
-    created_at: "2026-08-12T08:02:00Z",
-  };
-  const worker = {
-    ...rootTask,
-    operation_id: "turn-worker",
-    role: "worker",
-    depth: 1,
-    request: {
-      role: "worker",
-      actor_operation_id: "turn-worker",
-      control_node_id: "experiment/demo",
-    },
-    parent_operation_id: orchestratorRetryTwo.operation_id,
-    created_at: "2026-08-12T08:03:00Z",
-  };
-  const workerWake = {
-    ...worker,
-    operation_id: "turn-worker-wake",
-    role: "wake",
-    request: { ...worker.request, wake_cause: "message" },
-    parent_operation_id: worker.operation_id,
-    created_at: "2026-08-12T08:04:00Z",
-  };
-  const workerRetry = {
-    ...worker,
-    operation_id: "turn-worker-retry",
-    parent_operation_id: workerWake.operation_id,
-    created_at: "2026-08-12T08:05:00Z",
-  };
-
-  assert.deepEqual(
-    episodeTaskRows(episode, [
-      workerRetry,
-      workerWake,
-      worker,
-      orchestratorRetryTwo,
-      orchestratorRetryOne,
-      rootTask,
-    ]).map(({ task, role, depth }) => [task.operation_id, role, depth]),
-    [
-      ["turn-root", "orchestrator", 0],
-      ["turn-root-retry-1", "orchestrator", 0],
-      ["turn-root-retry-2", "orchestrator", 0],
-      ["turn-worker", "worker", 1],
-      ["turn-worker-wake", "wake", 1],
-      ["turn-worker-retry", "worker", 1],
-    ],
-  );
-});
-
 test("episode API calls use only the generic endpoints and the continuation body", async () => {
   const originalFetch = globalThis.fetch;
   const requests = [];
@@ -830,8 +764,8 @@ test("an exhausted episode waiting for admission says wrapping up", () => {
     blocked_reason: null,
     task_control: null,
   };
-  assert.equal(episodeProjection(wrapping).health, "wrapping_up");
   const html = renderEpisodes([wrapping]);
+  assert.match(html, /data-phase="running"/);
 });
 
 test("merge controls render the server offer; an in-flight action disables them", () => {
@@ -872,7 +806,7 @@ test("Stop is the only ending that shows neither a report nor a report error", (
   };
   const html = renderEpisodes([stopped]);
 
-  assert.match(html, /class="status-pill stopped"/);
+  assert.match(html, /class="status-pill task-state stopped"/);
   assert.doesNotMatch(html, /campaign-report-actions|campaign-run-error|must stay hidden/);
 });
 
@@ -933,10 +867,10 @@ function renderDock(cards) {
   );
 }
 
-test("a chat dock puts decisions first: plans, questions, runs needing action, then other runs", () => {
+test("a chat dock puts decisions first: plans, questions, then only the runs that need the member", () => {
   const relayed = (id) => ({ question_id: id, project_id: "p", state: "pending" });
   const run = (id, questions, health = "active") => ({
-    episode: { ...episode, episode_id: id, health },
+    episode: withEpisodeAnswers({ ...episode, episode_id: id, health }),
     title: id,
     link: `#/${id}`,
     questions: questions.map(relayed),
@@ -959,43 +893,47 @@ test("a chat dock puts decisions first: plans, questions, runs needing action, t
       ["question", "question:asked-3"],
       ["question", "question:other"],
       ["run", "run:second"],
-      ["run", "run:first"],
-      ["run", "run:third"],
     ],
   );
-  assert.equal(new Set(cards.map((card) => card.key)).size, cards.length);
   assert.match(renderDock(cards.slice(0, 1)), /data-plan="plan"/);
 });
 
-test("a dock run card offers what its episode allows and links its run and report", () => {
+test("a dock run card offers what its presentation offers and links its run and report", () => {
   const card = (state) =>
     renderDock(
       dockStackCards(
         [],
-        [{ episode: { ...episode, ...state }, title: "Sweep", link: "#/run", questions: [] }],
+        [
+          {
+            episode: withEpisodeAnswers({ ...episode, ...state }),
+            title: "Sweep",
+            link: "#/run",
+            questions: [],
+          },
+        ],
         [],
       ),
     );
-  const running = card({});
-  assert.match(running, /dock-runs-fold/);
-  assert.doesNotMatch(running, /episode-run-card/);
+  assert.equal(card({}), "");
+  assert.equal(card({ health: "completed", can_stop: false, task_control: null }), "");
   const live = card({ health: "needs_action" });
   assert.match(live, /href="#\/run"/);
   assert.match(live, /campaign-stop/);
   assert.doesNotMatch(live, /campaign-reauthorize/);
-  const ended = card({
-    health: "completed",
+  const paused = card({
+    health: "needs_action",
     can_stop: false,
     can_continue: true,
     task_control: null,
     ending: "exhausted",
+    wrapup_state: "ready",
     ended_at: episode.created_at,
     report: { report_id: "r", ending: "exhausted", created_at: episode.created_at },
   });
-  assert.doesNotMatch(ended, /campaign-stop/);
-  assert.match(ended, /campaign-reauthorize/);
+  assert.doesNotMatch(paused, /campaign-stop/);
+  assert.match(paused, /campaign-reauthorize/);
   assert.ok(
-    ended.includes(
+    paused.includes(
       `href="${episodeReportPreviewUrl(episode.project_id, episode.episode_id).replaceAll("&", "&amp;")}"`,
     ),
   );

@@ -4,6 +4,7 @@ import { chromium } from "playwright";
 import { createServer } from "vite";
 import { timelineFixture } from "./fixtures/timeline.mjs";
 import { mockEpisodeArtifacts } from "./fixtures/episodeArtifacts.mjs";
+import { withEpisodeAnswers, withExperimentControlAnswers } from "./taskAnswers.mjs";
 
 const ada = { space_id: "team", user_id: "ada", display_name: "Ada Lovelace" };
 const grace = { space_id: "team", user_id: "grace", display_name: "Grace Hopper" };
@@ -11,7 +12,7 @@ const main = { kind: "main", branch_id: null };
 const branch = { kind: "branch", branch_id: "parent" };
 
 function episode(fields) {
-  return {
+  return withEpisodeAnswers({
     episode_id: "parent",
     project_id: "project-one",
     mode: "auto_research",
@@ -66,7 +67,7 @@ function episode(fields) {
     task_control: null,
     run_section: "actionable",
     ...fields,
-  };
+  });
 }
 
 function node(id, title) {
@@ -95,7 +96,7 @@ function node(id, title) {
 }
 
 function control(episode) {
-  return {
+  return withExperimentControlAnswers({
     ready: true,
     reasons: [],
     graph_reasons: [],
@@ -150,7 +151,7 @@ function control(episode) {
         diagnostic: null,
       },
     },
-  };
+  });
 }
 
 test("active and unresolved episodes archive without stopping work and restore across shared run views", async () => {
@@ -460,7 +461,7 @@ test("active and unresolved episodes archive without stopping work and restore a
     await space.getByRole("checkbox", { name: "Show archived" }).check();
     await projectCard("active").getByRole("button", { name: "Unarchive", exact: true }).waitFor();
     assert.equal(
-      await projectCard("active").locator(".campaign-run-meta .status-pill.active").count(),
+      await projectCard("active").locator(".campaign-run-meta .status-pill.running").count(),
       1,
     );
 

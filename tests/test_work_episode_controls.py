@@ -320,11 +320,13 @@ def test_auto_research_recovery_does_not_replace_a_newer_plan(
     member.store.complete_agent_task("lost-turn", applied_revision=None, result={"messages": []})
     newer_call = member.turn("newer-turn")
     assert newer_call("newer", KICKOFF).result["disposition"] == "card_pending"
-    newer = member.land("newer-turn")
+    member.store.complete_agent_task("newer-turn", applied_revision=None, result={"messages": []})
+    member.background.experiment_card_raiser(member.executions["newer-turn"])
     raise_pending_experiment_cards(member.store, member.background.recorded_execution)
-    assert len(member.store.list_questions(project_id=member.project_id)) == 2
-    assert member.store.approval_card(older.question_id)["result"]["outcome"] == "stale"
-    assert member.store.approval_card(newer.question_id)["state"] == "pending"
+    (question,) = member.store.list_questions(project_id=member.project_id)
+    card = member.store.approval_card(question.question_id)
+    assert question.question_id == older.question_id
+    assert (card["state"], card["revised_operation_id"]) == ("pending", "newer-turn")
     assert member.store.pending_experiment_card_tasks() == []
 
 

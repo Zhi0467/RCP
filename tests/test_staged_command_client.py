@@ -399,7 +399,7 @@ async def test_instruction_and_goal_files_fail_closed_before_admission(tmp_path)
                     f"episode-{path.name}",
                     "--node",
                     "exp-1",
-                    "--goal-file",
+                    "--handoff-file",
                     str(path),
                 ),
             )
@@ -461,7 +461,7 @@ async def test_apply_accepts_only_this_workspace_patch_json(tmp_path) -> None:
         ("episode", "--key", "episode-once", "--add-turns", "episode-1"),
         ("episode", "--key", "episode-once", "--pause", "episode-1", "--invocation-limit", "2"),
         ("episode", "--key", "episode-once", "--message", "episode-1"),
-        ("episode", "--key", "episode-once", "--kick-off-auto-research", "--goal-file", "g.md"),
+        ("episode", "--key", "episode-once", "--kick-off-auto-research", "--handoff-file", "g.md"),
         ("resume", "--key", "resume-once", "worker-1", "--model", "gpt-5"),
         (
             "episode",
@@ -1026,7 +1026,7 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
             "--kick-off-experiment",
             "--node",
             "exp/run",
-            "--goal-file",
+            "--handoff-file",
             str(goal),
             "--invocation-limit",
             "3",
@@ -1040,7 +1040,7 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
         (
             "episode",
             "--kick-off-auto-research",
-            "--goal-file",
+            "--handoff-file",
             str(goal),
             "--invocation-limit",
             "4",

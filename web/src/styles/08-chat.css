@@ -274,7 +274,8 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.chat-watcher-count {
+.chat-watcher-count,
+.agent-pane-button {
   align-items: center;
   background: color-mix(in srgb, var(--cobalt) 10%, var(--sheet));
   border: 1px solid color-mix(in srgb, var(--cobalt) 30%, var(--line));
@@ -287,14 +288,21 @@
   padding: 4px 9px;
 }
 .chat-watcher-count:hover,
-.chat-watcher-count.is-open {
+.chat-watcher-count.is-open,
+.agent-pane-button:hover,
+.agent-pane-button.is-open {
   background: color-mix(in srgb, var(--cobalt) 20%, var(--sheet));
   border-color: var(--cobalt);
 }
-.chat-dock:has(> .chat-artifacts-pane) {
+.agent-pane-button:not(.is-open, :hover) {
+  background: var(--sheet);
+  border-color: var(--line);
+  color: var(--muted);
+}
+.chat-dock:has(> .agent-pane) {
   position: relative;
 }
-.chat-artifacts-pane {
+.agent-pane {
   animation: paper-pane-enter 160ms ease;
   background: var(--surface);
   bottom: 0;
@@ -305,26 +313,64 @@
   right: 0;
   z-index: 3;
 }
-.chat-artifacts-pane > header {
+.agent-pane > header {
   align-items: center;
   display: flex;
   justify-content: space-between;
   padding: 0 0 6px 8px;
 }
-.chat-artifacts-pane > ul {
+.agent-pane-section + .agent-pane-section {
+  margin-top: 6px;
+}
+.agent-pane-fold {
+  align-items: center;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  color: var(--muted);
+  display: flex;
+  font-size: var(--type-sm);
+  font-weight: 600;
+  gap: 6px;
+  padding: 6px 8px;
+  text-align: left;
+  width: 100%;
+}
+.agent-pane-fold:hover {
+  color: var(--ink);
+}
+.agent-pane-fold svg {
+  flex: none;
+  transition: transform 0.16s ease;
+}
+.agent-pane-section[data-folded] .agent-pane-fold svg {
+  transform: rotate(-90deg);
+}
+.agent-pane-count {
+  font-variant-numeric: tabular-nums;
+  margin-left: auto;
+}
+.agent-pane-section > ul {
+  animation: agent-pane-unfold 0.16s ease-out;
   display: grid;
   gap: 6px;
   list-style: none;
   margin: 0;
-  padding: 0;
+  padding: 0 0 6px;
 }
-.chat-artifacts-pane > header > .icon-button,
-.chat-artifacts-pane .artifact-entry-action {
+@keyframes agent-pane-unfold {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+.agent-pane > header > .icon-button,
+.agent-pane .artifact-entry-action {
   background: none;
   border-color: transparent;
   color: var(--muted);
 }
-.chat-artifacts-pane .artifact-entry {
+.agent-pane .artifact-entry {
   background: var(--sheet);
   border: 1px solid var(--line);
   gap: 10px;
@@ -333,18 +379,18 @@
     background 0.15s ease,
     border-color 0.15s ease;
 }
-.chat-artifacts-pane .artifact-entry:hover,
-.chat-artifacts-pane .artifact-entry:focus-within {
+.agent-pane .artifact-entry:hover,
+.agent-pane .artifact-entry:focus-within {
   background: color-mix(in srgb, var(--surface-cool) 45%, var(--sheet));
   border-color: var(--line-strong);
 }
-.chat-artifacts-pane .artifact-entry:has(.artifact-entry-open:hover) h3 {
+.agent-pane .artifact-entry:has(.artifact-entry-open:hover) h3 {
   text-decoration: none;
 }
-.chat-artifacts-pane .artifact-entry > div {
+.agent-pane .artifact-entry > div {
   margin-right: 0;
 }
-.chat-artifacts-pane .artifact-entry-open {
+.agent-pane .artifact-entry-open {
   background: none;
   border: 0;
   cursor: pointer;
@@ -361,16 +407,137 @@
   justify-content: center;
   width: 32px;
 }
-.chat-dock.artifacts-beside {
-  padding-right: 300px;
+.chat-dock.pane-beside {
+  padding-right: 340px;
 }
-.chat-dock.artifacts-beside > header {
-  margin-right: -300px;
+.chat-dock.pane-beside > header {
+  margin-right: -340px;
 }
-.chat-dock.artifacts-beside > .chat-artifacts-pane {
+.chat-dock.pane-beside > .agent-pane {
   border-left: 1px solid var(--line);
   left: auto;
-  width: 300px;
+  width: 340px;
+}
+.task-row {
+  background: var(--sheet);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  display: grid;
+  min-width: 0;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+.task-row:hover,
+.task-row:focus-within {
+  border-color: var(--line-strong);
+}
+.task-row-line {
+  align-items: center;
+  display: flex;
+  gap: 2px;
+  min-width: 0;
+  padding: 6px 6px 6px 0;
+}
+.task-row-main {
+  align-items: center;
+  background: none;
+  border: 0;
+  color: inherit;
+  display: flex;
+  flex: 1;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 6px 4px 10px;
+  text-align: left;
+}
+.task-row-main .approval-icon {
+  height: 26px;
+  width: 26px;
+}
+.task-row-main strong {
+  flex: 1;
+  font-size: var(--type-sm);
+  font-weight: 650;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-row .task-state {
+  border: 0;
+  border-radius: 999px;
+  flex: 0 1 auto;
+  font: inherit;
+  font-size: var(--type-2xs);
+  letter-spacing: 0;
+  padding: 2px 8px;
+  text-transform: none;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-row .question-state,
+.task-row-error {
+  background: var(--amber-soft);
+  border-radius: 999px;
+  color: var(--ink);
+  flex: 0 1 auto;
+  font-size: var(--type-2xs);
+  max-width: 55%;
+  overflow: hidden;
+  padding: 2px 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-row-error {
+  background: none;
+  color: var(--coral);
+}
+.task-row .icon-button {
+  background: none;
+  border-color: transparent;
+  color: var(--muted);
+  flex: none;
+}
+.task-row .icon-button:hover {
+  color: var(--ink);
+}
+.task-row {
+  overflow: hidden;
+}
+.task-row[data-open] .task-row-main strong {
+  white-space: normal;
+}
+.task-row > .approval-card {
+  animation: agent-pane-unfold 0.16s ease-out;
+  background: none;
+  border-color: var(--line);
+  border-radius: 0;
+  border-style: solid;
+  border-width: 1px 0 0;
+  box-shadow: none;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 12px;
+}
+.task-row > .approval-card > .approval-head {
+  display: none;
+}
+.task-row > .approval-card .approval-sub {
+  margin: 0;
+  padding-left: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-pane,
+  .agent-pane-section > ul,
+  .task-row > .approval-card {
+    animation: none;
+  }
+  .agent-pane-fold svg {
+    transition: none;
+  }
 }
 .chat-watchers {
   background: var(--paper-deep);

@@ -148,10 +148,10 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       const card = await page.locator(".chat-composer").boundingBox();
       assert.ok(card.width >= viewport.width - 50, "Composer uses the full narrow column");
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), viewport.width);
-      const chip = page.getByRole("button", { name: "Artifacts", exact: true });
+      const chip = page.getByRole("button", { name: "Tasks and artifacts", exact: true });
       assert.equal((await chip.textContent()).trim(), "2");
       await chip.click();
-      const pane = page.getByRole("complementary", { name: "Artifacts" });
+      const pane = page.getByRole("complementary", { name: "Tasks and artifacts" });
       const paneBox = await pane.boundingBox();
       assert.deepEqual([paneBox.x, paneBox.width], [0, viewport.width]);
       assert.deepEqual(await page.evaluate(sidewaysScrollers), []);

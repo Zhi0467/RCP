@@ -1,15 +1,11 @@
 import { EpisodeControls } from "./EpisodeControls";
 import { BrowserToggle } from "../core/BrowserControls";
-import {
-  AgentConfigChip,
-  AgentConfigControls,
-  launchProviderReady,
-  profileRunConfig,
-} from "../core/AgentConfigControls";
+import { useAgentConfigPicker, useLaunchConfig } from "../core/AgentConfigPicker";
+import { ExperimentStartButton } from "./ExperimentStartButton";
 import { EpisodeQuestions } from "./EpisodeQuestions";
 import { useHiddenWatchers } from "./useHiddenWatchers";
 import { ExternalJobRow } from "./ExternalJobRow";
-import { ExternalLink, FlaskConical, RotateCcw } from "lucide-react";
+import { ExternalLink, RotateCcw } from "lucide-react";
 import { useEffect, useId, useState, type ReactNode } from "react";
 import { resourceKeyId } from "../core/resourceStore";
 import { useRefreshRuntime, useResource } from "../core/useResource";
@@ -23,61 +19,19 @@ import {
   type ExperimentWatcherGroup,
   type ExperimentWatcherItem,
   authorizedInvocationCount,
-  experimentRecommendation,
   experimentRunConfig,
   experimentWatcherDisplayItems,
   graphConditionLabel,
   isExternalWatcherRecord,
+  runPresentation,
   watcherLastObservedAt,
 } from "./runProjection";
+import { runRecommendationLabel } from "./campaigns";
 import { currentExperimentGuidance, experimentGuidanceDetail } from "../core/experimentGuidance";
-import type {
-  AgentRunConfig,
-  ExperimentLoopHealth,
-  ProjectSnapshot,
-  WatcherRecord,
-} from "../core/types";
+import type { AgentRunConfig, ProjectSnapshot, WatcherRecord } from "../core/types";
 import { EpisodeReportLink } from "./EpisodeReportLink";
 import { spaceMachineById } from "../projects/spaceMachines";
 import { useSpaceMachines } from "../projects/useSpaceMachines";
-
-const healthLabels: Record<ExperimentLoopHealth, string> = {
-  starting: "Starting",
-  agent_active: "Agent active",
-  waiting_on_watchers: "Waiting on watchers",
-  completion_pending: "Completion pending delivery",
-  degraded: "Watcher degraded",
-  stopping: "Stopping gracefully",
-  wrapping_up: "Wrapping up visualization and report",
-  failed: "Failed",
-  human_stopped: "Human-stopped",
-  paused_at_limit: "Paused at invocation limit",
-  needs_action: "Needs action",
-  completed: "Completed",
-};
-
-const healthTones: Record<ExperimentLoopHealth, string> = {
-  starting: "running",
-  agent_active: "running",
-  waiting_on_watchers: "waiting",
-  completion_pending: "waiting",
-  degraded: "degraded",
-  stopping: "stopping",
-  wrapping_up: "running",
-  failed: "degraded",
-  human_stopped: "stopped",
-  paused_at_limit: "paused",
-  needs_action: "actionable",
-  completed: "completed",
-};
-
-export function experimentHealthLabel(health: ExperimentLoopHealth): string {
-  return healthLabels[health];
-}
-
-export function experimentHealthTone(health: ExperimentLoopHealth): string {
-  return healthTones[health];
-}
 
 interface Props {
   apiBase: string;
@@ -137,29 +91,52 @@ export function ExperimentRunDetail({
   const machineName = (machineId: string) =>
     spaceMachineById(machineCards ?? [], machineId)?.name ?? machineId;
   const launchProfile = project?.agent_profiles.node_chat;
-  // Only an explicit pick is state; untouched, the picker follows the current profile.
-  const [pickedConfig, setLaunchConfig] = useState<AgentRunConfig | null>(null);
-  const [launchOpen, setLaunchOpen] = useState(false);
+  const launch = useLaunchConfig(
+    project,
+    launchProfile,
+    project ? experimentRunConfig(run, project.run_on) : null,
+  );
+  const resetLaunch = launch.reset;
   const [startMessage, setStartMessage] = useState("");
+  const launchLocked = runDisabled || startDisabled || runBusy;
+  const launchOffered = allowStart && !run.control.node_closed;
+  const launchPicker = useAgentConfigPicker({
+    project: launchOffered ? project : undefined,
+    value: launch.config,
+    onChange: launch.setConfig,
+    label: "Experiment agent",
+    disabled: launchLocked,
+    effectiveModel: launch.effectiveModel,
+    workLike: launchProfile?.work_like_capable,
+    workLikeCapable: launchProfile?.work_like_capable,
+    optionCount: Number(browserRequested) + Number(Boolean(startMessage.trim())),
+    options: (
+      <>
+        <div className="agent-config-options" role="group" aria-label="Launch options">
+          <BrowserToggle
+            checked={browserRequested}
+            disabled={launchLocked}
+            onChange={setBrowserRequested}
+          />
+        </div>
+        <textarea
+          className="experiment-start-message"
+          aria-label="Starting message"
+          placeholder="Starting message (optional)"
+          rows={3}
+          value={startMessage}
+          disabled={launchLocked}
+          onChange={(event) => setStartMessage(event.target.value)}
+        />
+      </>
+    ),
+  });
+  const closeLaunchPicker = launchPicker.close;
   useEffect(() => {
-    setLaunchConfig(null);
-    setLaunchOpen(false);
+    resetLaunch();
+    closeLaunchPicker();
     setStartMessage("");
-  }, [run.node.id]);
-  const launchConfig =
-    pickedConfig ??
-    (project
-      ? (experimentRunConfig(run, project.run_on) ??
-        (launchProfile ? profileRunConfig(launchProfile, project.run_on) : undefined))
-      : undefined);
-  const launchReady =
-    !project ||
-    !launchConfig ||
-    launchProviderReady(project, launchConfig, launchProfile?.work_like_capable);
-  const launchEffectiveModel =
-    launchConfig && launchProfile && launchConfig.provider === launchProfile.provider
-      ? launchProfile.effective_model
-      : "";
+  }, [run.node.id, resetLaunch, closeLaunchPicker]);
   const [reportOpenError, setReportOpenError] = useState<string | null>(null);
   const { node, control, taskGroup, currentTask, health } = run;
   // Untouched, the field follows the node's own limit, which the human sees as
@@ -180,7 +157,6 @@ export function ExperimentRunDetail({
   const timeline = episodeResource.value?.timeline ?? null;
   const timelineError = episodeResource.error ? String(episodeResource.error) : null;
   const runArtifacts = useRunArtifacts(episode?.project_id, episode?.episode_id, true);
-  const stopUnsettled = control.stop_pending;
   const currentOperationId =
     currentTask?.operation_id ??
     operational?.current_operation_id ??
@@ -199,14 +175,15 @@ export function ExperimentRunDetail({
   const lastActivity = formatMoment(
     currentTask?.last_activity_at ?? operational?.current_last_activity_at,
   );
-  const baseRecommendation = experimentRecommendation(run);
+  const presentation = runPresentation(control);
+  const published = presentation ?? { recommendation: control.recommendation, actions: [] };
   const canContinue = Boolean(episode?.can_continue && onContinue);
   const recommendation =
-    !allowStart && !canContinue && baseRecommendation.step === "start_episode"
+    !allowStart && !canContinue && published.recommendation === "start_episode"
       ? { step: "review" as const, label: "Review the owning Auto-research episode" }
-      : startDisabled && baseRecommendation.step === "start_episode"
+      : startDisabled && published.recommendation === "start_episode"
         ? { step: "review" as const, label: "Sync staged changes before starting" }
-        : baseRecommendation;
+        : { step: published.recommendation, label: runRecommendationLabel(published, episode) };
   const summaryGuidance = experimentGuidanceDetail(node, "current_summary");
   const nextActionGuidance = experimentGuidanceDetail(node, "next_action");
   const currentSummary = currentExperimentGuidance(node, "current_summary");
@@ -216,29 +193,24 @@ export function ExperimentRunDetail({
   const authorizedCeiling = authorizedInvocationCount(ceilingInput);
 
   return (
-    <div className={`experiment-run-detail ${healthTones[health]}`}>
+    <div className={`experiment-run-detail ${presentation?.tone ?? ""}`}>
       <div className="experiment-run-topline">
-        <div
-          className={`experiment-run-health ${healthTones[health]}`}
-          role="status"
-          aria-live="polite"
-          aria-atomic="true"
-        >
-          <strong>{healthLabels[health]}</strong>
-        </div>
+        {presentation && (
+          <div
+            className={`experiment-run-health ${presentation.tone}`}
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            <strong>{presentation.state_line}</strong>
+          </div>
+        )}
         <div className="experiment-run-actions" aria-label="Experiment loop actions">
           <EpisodeControls
+            presentation={presentation}
             episode={episode}
             experimentControl={control}
-            taskControl={
-              currentTask && control.task_control
-                ? {
-                    task: currentTask,
-                    kind: control.task_control,
-                    canSwitchProvider: control.can_switch_provider,
-                  }
-                : null
-            }
+            controlTask={currentTask}
             additionalTurns={ceilingInput}
             onAdditionalTurnsChange={setEditedCeiling}
             busyAction={
@@ -298,82 +270,33 @@ export function ExperimentRunDetail({
               />
             </label>
           )}
-          {allowStart && !control.node_closed && project && launchConfig && (
-            <AgentConfigChip
-              project={project}
-              value={launchConfig}
-              effectiveModel={launchEffectiveModel}
-              open={launchOpen}
-              disabled={runDisabled || startDisabled || runBusy}
-              label="Experiment agent"
-              workLike={launchProfile?.work_like_capable}
-              optionCount={Number(browserRequested) + Number(Boolean(startMessage.trim()))}
-              onToggle={() => setLaunchOpen((open) => !open)}
-            />
-          )}
-          {allowStart && !control.node_closed && (
-            <button
-              type="button"
-              className="button primary compact experiment-run-button"
+          {launchPicker.chip}
+          {launchOffered && (
+            <ExperimentStartButton
+              control={control}
+              busy={runBusy}
               disabled={
                 runDisabled ||
                 startDisabled ||
-                runBusy ||
-                stopUnsettled ||
                 !control.can_start ||
-                !launchReady ||
+                !launch.ready ||
                 (reauthorizing && authorizedCeiling === null)
               }
-              onClick={() =>
+              reasonsId={control.reasons.length ? `${node.id}-run-requirements` : undefined}
+              onStart={() =>
                 onRun(
                   reauthorizing ? (authorizedCeiling ?? undefined) : undefined,
                   browserRequested,
-                  launchConfig,
+                  launch.config,
                   startMessage,
                 )
               }
-              aria-describedby={control.reasons.length ? `${node.id}-run-requirements` : undefined}
-            >
-              <FlaskConical size={14} aria-hidden="true" />{" "}
-              {runBusy ? "Starting" : control.episode_id ? "Start new episode" : "Start episode"}
-            </button>
+            />
           )}
         </div>
       </div>
 
-      {launchOpen &&
-        allowStart &&
-        !control.node_closed &&
-        project &&
-        launchProfile &&
-        launchConfig && (
-          <AgentConfigControls
-            project={project}
-            value={launchConfig}
-            onChange={setLaunchConfig}
-            effectiveModel={launchEffectiveModel}
-            workLikeCapable={launchProfile.work_like_capable}
-            locked={runDisabled || startDisabled || runBusy}
-            compact
-          >
-            <div className="agent-config-options" role="group" aria-label="Launch options">
-              <BrowserToggle
-                checked={browserRequested}
-                disabled={runDisabled || startDisabled || runBusy}
-                onChange={setBrowserRequested}
-              />
-            </div>
-            <textarea
-              className="experiment-start-message"
-              aria-label="Starting message"
-              placeholder="Starting message (optional)"
-              rows={3}
-              value={startMessage}
-              disabled={runDisabled || startDisabled || runBusy}
-              onChange={(event) => setStartMessage(event.target.value)}
-            />
-          </AgentConfigControls>
-        )}
+      {launchPicker.panel}
 
       {episode && <EpisodeQuestions apiBase={apiBase} episodeId={episode.episode_id} />}
 
@@ -628,12 +551,12 @@ export function ExperimentRunDetail({
                   : null,
               },
               {
-                label: "Last task error",
+                label: "Last turn error",
                 value: currentTask?.error,
                 breakable: true,
               },
               { label: "Episode", value: control?.episode_id, mono: true, breakable: true },
-              { label: "Current task", value: currentOperationId, mono: true, breakable: true },
+              { label: "Current turn", value: currentOperationId, mono: true, breakable: true },
             ]}
           />
         </Fold>
@@ -935,7 +858,7 @@ function WatcherDetail({
             { label: "Completed", value: formatMoment(watcher.completed_at) },
             { label: "Machine", value: machineName(watcher.machine_id) },
             {
-              label: "Delivery task",
+              label: "Delivery turn",
               value: watcher.notification_operation_id,
               mono: true,
               breakable: true,

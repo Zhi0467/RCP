@@ -242,6 +242,19 @@ def experiment_node(state: GraphState, node_id: str) -> Experiment | None:
     return node if isinstance(node, Experiment) else None
 
 
+def run_here_message(node: Experiment, handoff: str) -> str:
+    """The member's message that runs a plan in its own chat: the card's Handoff, and the
+    node's Design and Done when as the card shows them."""
+    done_when = "\n".join(f"- {criterion}" for criterion in node.completion_criteria)
+    return (
+        f"Run this plan here, in this chat. Do not start an Experiment episode for it.\n\n"
+        f"Experiment: {node.title} ({node.id})\n\n"
+        f"Handoff:\n{handoff.strip()}\n\n"
+        f"Design:\n{node.design.strip()}\n\n"
+        f"Done when:\n{done_when}"
+    )
+
+
 class ExperimentNotReady(ValueError):
     """The Experiment's graph or operational state refuses a fresh episode."""
 

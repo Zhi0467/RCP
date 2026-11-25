@@ -4,7 +4,6 @@ import {
   History,
   Inbox,
   LoaderCircle,
-  Play,
   RotateCcw,
   ScrollText,
   TriangleAlert,
@@ -39,6 +38,7 @@ import type { GlossaryIndex } from "../graph/glossary";
 import { ReplyLinkButton } from "../core/ReplyLinkButton";
 import { CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD, THREAD_TIME_GAP_MINUTES } from "../core/uiConstants";
 import { MarkdownAnswer } from "../core/chatMarkdown";
+import { TaskActionButton } from "../agents/taskActions";
 import { BrowserTurnNotice } from "../core/BrowserControls";
 import { ArtifactCommentQuotes, artifactCommentLead } from "../chat/ArtifactCommentQuotes";
 import { SentAttachments } from "../chat/SentAttachments";
@@ -46,6 +46,7 @@ import { CompactionDivider } from "../chat/AgentStatusStrip";
 import { compactionAnchors } from "../chat/agentStatusModel";
 import { questionTranscript } from "../chat/questions";
 import { isPlanCardQuestion } from "../agents/experimentPlanModel";
+import { cardTurnId } from "../agents/taskCardModel";
 import { turnOutcomeChip } from "../chat/turnOutcome";
 import type { AgentWindowEndpoints } from "./agentWindowEndpoints";
 import type { useAgentWindowArtifacts } from "./useAgentWindowArtifacts";
@@ -579,7 +580,7 @@ export function lineTapShowsTime(
 
 /**
  * Plan cards by the line that shows them: the last finished answer of the turn that
- * raised each. A card whose turn has no answer here keeps the ordinary card place,
+ * raised each, or that last revised it. A card whose turn has no answer here keeps the ordinary card place,
  * still drawn as a plan card.
  */
 export function planCardPlacement(
@@ -594,7 +595,7 @@ export function planCardPlacement(
     const owner = lines
       .filter(
         (line) =>
-          line.taskId === question.operation_id &&
+          line.taskId === cardTurnId(question) &&
           line.role === "agent" &&
           line.source !== "voice" &&
           !line.running,
@@ -708,7 +709,7 @@ export function InlineTaskProgress({
     : undefined;
   const label =
     running?.text ??
-    (task ? task.status_message || `${taskKindLabel(task.kind)} is running` : "Starting task");
+    (task ? task.status_message || `${taskKindLabel(task.kind)} is running` : "Starting turn");
   return (
     <>
       {task && <TurnProgress task={task} live />}
@@ -768,24 +769,17 @@ function InlinePausedTask({
   onRetry: () => void;
 }) {
   return (
-    <div className="chat-task-inline paused" role="status" aria-label="Agent task paused">
+    <div className="chat-task-inline paused" role="status" aria-label="Agent turn paused">
       <span>{pausedTaskText(task)}</span>
-      <button
-        type="button"
-        className="button compact primary"
-        disabled={disabled}
-        onClick={onResume}
-      >
-        <Play size={12} /> Resume
-      </button>
-      <button
-        type="button"
-        className="button compact secondary"
-        disabled={disabled}
-        onClick={onRetry}
-      >
-        <RotateCcw size={12} /> Retry
-      </button>
+      {task.can_resume && (
+        <TaskActionButton
+          action="resume"
+          className="button compact primary"
+          disabled={disabled}
+          onClick={onResume}
+        />
+      )}
+      {task.can_retry && <TaskActionButton action="retry" disabled={disabled} onClick={onRetry} />}
     </div>
   );
 }

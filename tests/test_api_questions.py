@@ -283,3 +283,49 @@ def test_answer_in_archived_chat_is_refused_unstored(questions_api):
     assert response.status_code == 409
     assert store.get_question(question.question_id) == question
     app.state.reconcile_question_answers.assert_not_called()
+
+
+def _plan_card(store, project_id, *, key="plan"):
+    return store.create_or_get_question(
+        origin=_question(store, project_id, key=f"{key}-origin").origin,
+        key=key,
+        question="Start this plan?",
+        choices=["Approve", "Decline"],
+        card={
+            "action": {"kind": "experiment_start", "project_id": project_id, "node_id": "node"},
+            "pinned": {},
+        },
+    )
+
+
+def test_plan_card_names_its_started_and_current_episode(questions_api):
+    _app, client, store, project_id = questions_api
+    question = _plan_card(store, project_id)
+    open_card = _plan_card(store, project_id, key="open")
+    store.create_episode(_episode(store, "started", project_id=project_id))
+    assert store.claim_approval_card(question.question_id)
+    store.settle_approval_card(
+        question.question_id, {"outcome": "approved", "result": {"episode_id": "started"}}
+    )
+
+    def cards():
+        listed = client.get(f"/api/projects/{project_id}/chats/chat/questions").json()
+        return {item["question_id"]: item["card"] for item in listed if item["card"]}
+
+    shown = cards()
+    assert shown[open_card.question_id]["started_episode_id"] is None
+    assert shown[open_card.question_id]["current_episode_id"] is None
+    assert shown[question.question_id]["started_episode_id"] == "started"
+    assert shown[question.question_id]["current_episode_id"] == "started"
+    assert "result" not in shown[question.question_id]["result"]
+
+    store.end_episode_without_report("started", ending="exhausted", diagnostic=None)
+    store.create_episode(_episode(store, "continued", project_id=project_id))
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE episodes SET continues_episode_id='started' WHERE episode_id='continued'"
+        )
+
+    shown = cards()
+    assert shown[question.question_id]["started_episode_id"] == "started"
+    assert shown[question.question_id]["current_episode_id"] == "continued"

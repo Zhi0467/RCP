@@ -129,6 +129,23 @@ Product login behavior belongs to
 [Providers and containment](providers-and-containment.md#login-state-and-failure). Operator actions belong to
 [server.md](../server.md#11-provider-authentication).
 
+A team backend runs the same native update itself once a day
+(`PROVIDER_AUTO_UPDATE_INTERVAL_SECONDS`), as the service account and without
+root, from
+[provider_auto_update.py](../../src/rcp/runs/provider_auto_update.py). It
+covers only the backend machine, and updates the executable its card names,
+else the discovered one, only when it lies inside the account's home. A
+provider with a backend turn running, pausing or queued waits for the next
+pass. While a provider updates, new local launches of it wait, so no turn
+starts between that check and the update. A failed update changes nothing else: the installed version keeps
+running and the reason is the provider's `update_warning` in machine-card
+readiness until an update succeeds. The warning is process memory, so a restart
+clears it until the next pass. A changed version re-probes that provider's
+readiness.
+
+**Why:** a native updater needs only the account that installed the CLI, so
+keeping it current should not wait for an operator or for an RCP update.
+
 ### Release check and update notices
 
 [release_check.py](../../src/rcp/release_check.py) checks stable releases and

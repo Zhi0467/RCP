@@ -12,6 +12,7 @@ import stat
 import subprocess
 import tempfile
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO
@@ -19,7 +20,7 @@ from typing import BinaryIO
 from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import ProviderId, profile_for
 from rcp.server_ops.cli import CallerIdentity, PreparedServerCommand, ServerEventEmitter
-from rcp.server_ops.install import _run_as_account
+from rcp.server_ops.install import _account_environment_argv, _run_as_account, _run_process
 from rcp.server_ops.layout import DEFAULT_SERVER_LAYOUT, ServerLayout
 from rcp.server_ops.models import (
     MachineTarget,
@@ -146,6 +147,48 @@ def prepare_provider_update_command(
     )
 
 
+@dataclass(frozen=True)
+class ProviderVersionChange:
+    """The version one native update started from and the version it left installed."""
+
+    before: str
+    after: str
+
+
+def installed_provider(account: pwd.struct_passwd, provider: ProviderId) -> Path | None:
+    """The account's executable for `provider`, None when it has none."""
+    return _discover_provider(account, provider)
+
+
+def update_installed_provider(
+    account: pwd.struct_passwd,
+    provider: ProviderId,
+    binary: Path,
+    runner: ProviderProcessRunner,
+) -> ProviderVersionChange:
+    """Run the native update of `binary` and prove the result on that same executable.
+
+    Raises `ProviderUpdateRefused` or `OSError` when the update or either
+    version probe fails.
+    """
+    before = _provider_version(account, provider, binary, runner)
+    _update_provider(account, provider, binary, runner)
+    return ProviderVersionChange(
+        before=before, after=_provider_version(account, provider, binary, runner)
+    )
+
+
+def run_provider_process_as_self(
+    account: pwd.struct_passwd,
+    argv: tuple[str, ...],
+    timeout: float,
+) -> subprocess.CompletedProcess[str]:
+    """Run a provider command as the calling account, which must be `account`; needs no root."""
+    return _run_process(
+        (*_account_environment_argv(account), *argv), cwd=Path(account.pw_dir), timeout=timeout
+    )
+
+
 def _pending_steps(provider: ProviderId, target: MachineTarget) -> tuple[ServerStep, ...]:
     label = profile_for(provider).label
     common = {"performed_by": "system", "target": target, "state": "pending"}
@@ -191,24 +234,34 @@ def _installed_service_account(layout: ServerLayout) -> pwd.struct_passwd:
         raise ProviderUpdateRefused("The installed rcp service account is missing.") from exc
 
 
-def _refuse_while_turns_run(database: Path, provider: ProviderId) -> None:
-    """Refuse while a backend turn runs this provider; an unreadable database does not block."""
+def backend_turns_using(database: Path, provider: ProviderId, *, queued: bool = False) -> int:
+    """Count backend turns running this provider, and with `queued` those waiting to start.
+
+    An unreadable database counts none.
+    """
+    statuses = ("queued", "running", "pausing") if queued else ("running", "pausing")
     try:
         connection = sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)
     except sqlite3.Error:
-        return
+        return 0
     try:
-        (running,) = connection.execute(
+        (count,) = connection.execute(
             "SELECT COUNT(*) FROM graph_runs "
             "WHERE json_extract(request_json, '$.provider')=? "
             "AND COALESCE(NULLIF(stage_machine_id,''),?)=? "
-            "AND status IN ('running', 'pausing')",
-            (provider, BACKEND_MACHINE_ID, BACKEND_MACHINE_ID),
+            f"AND status IN ({','.join('?' * len(statuses))})",
+            (provider, BACKEND_MACHINE_ID, BACKEND_MACHINE_ID, *statuses),
         ).fetchone()
     except sqlite3.Error:
-        return
+        return 0
     finally:
         connection.close()
+    return count
+
+
+def _refuse_while_turns_run(database: Path, provider: ProviderId) -> None:
+    """Refuse while a backend turn runs this provider; an unreadable database does not block."""
+    running = backend_turns_using(database, provider)
     if running:
         raise ProviderUpdateRefused(
             f"{running} agent turn(s) are running {profile_for(provider).label} on the backend. "
@@ -360,6 +413,11 @@ def _failed(step: ServerStep, message: str) -> ServerStep:
 
 
 __all__ = [
+    "backend_turns_using",
+    "installed_provider",
     "prepare_provider_update_command",
     "ProviderUpdateRefused",
+    "ProviderVersionChange",
+    "run_provider_process_as_self",
+    "update_installed_provider",
 ]

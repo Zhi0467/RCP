@@ -19,7 +19,7 @@ from rcp.history.queries import HeadSpec
 from rcp.limits import DIGEST_RECHECK_SECONDS, DIGEST_STOP_TIMEOUT_SECONDS
 from rcp.server_ops.maintenance import MaintenanceAdmissionClosed
 from rcp.storage.chat_names import chat_titles
-from rcp.storage.digest import append_digest_event
+from rcp.storage.digest import PARKED_CARD_SQL, append_digest_event
 from rcp.transport import StateUnavailable
 
 _LOG = logging.getLogger(__name__)
@@ -525,6 +525,7 @@ def _drop_closed_attention(store, project_id: str, events: list[dict]) -> list[d
                 row[0]
                 for row in conn.execute(
                     "SELECT question_id FROM questions WHERE state='pending' AND withdrawn_readonly=0 "
+                    f"AND NOT {PARKED_CARD_SQL} "
                     "AND question_id IN (SELECT value FROM json_each(?))",
                     (json.dumps(opened["question_attention"]),),
                 )

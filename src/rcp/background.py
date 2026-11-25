@@ -2299,7 +2299,7 @@ class BackgroundAgentTasks:
             )
             self.store.record_agent_task_event(operation_id, event)
         else:
-            self.store.record_agent_task_event(operation_id, "Agent task queued.")
+            self.store.record_agent_task_event(operation_id, "Turn queued.")
 
     def _run(
         self,
@@ -3466,7 +3466,7 @@ class BackgroundAgentTasks:
                     checkpoint_session_id = event.session_id
                     self.store.update_agent_task_message(
                         execution.operation_id,
-                        "Agent task is running.",
+                        "Turn is running.",
                         phase="agent",
                     )
                 if event.event == "message":

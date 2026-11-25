@@ -602,16 +602,69 @@ in the answer's right margin, level with the quote's last line, opens it, the he
 inline-artifact threads, and saved threads dock at the composer, whose next send
 carries them, a steer while a turn runs. Queue carries them too. A project thread offers Work in a worktree in its + menu like a project
 chat.
-A pending Experiment or Auto-research plan card sits in the chat's dock, in
-threads, shared chats and node chats alike; once settled it stays inside its
-raising turn's answer. Both share one body. An Experiment plan shows the node,
-Design (markdown), Done when, This run (the goal), then one row with the agent
-chip and turn limit, then Don't run this now and Start. Design and Done when
-open the node's Edit node. An Auto-research plan shows its branch name as a
-chip, This run (the starting instruction, whose pencil also opens the branch
-name), then the same row with the Code worktree choice. An Experiment plan's Start
-waits while the member has staged changes on the card's graph target. Edits to a plan card
-last while its stack is shown, across Next and Back.
+An Experiment or Auto-research plan and the run it starts show as one **task
+card**, from proposal to result: Needs you, Parked, Starting, the run's own
+state, then its outcome. The plan and the episode stay separate
+[stored records](authority-and-proposals.md#episode-plan-cards); the card joins
+them by the episode ids the question projection names, so the join survives a
+reload. A card is one record, so a park, revision or Start shows in every view
+that lists it. "Task" names these cards only; one agent invocation is a turn.
+
+A task card sits inside the answer of the turn that raised it, or that last
+revised it, above that turn's Done chip, in threads, shared chats and node chats
+alike. It stays there while pending, parked, running and ended, so the member
+decides where the agent explained the plan. Only a card relayed from another
+chat docks.
+
+Both plan kinds share one body. An Experiment plan shows the node chip, Design
+(markdown), Done when, Handoff, then one row with the agent chip and turn limit.
+An Auto-research plan shows its branch name as a chip, Handoff (the starting
+instruction, whose pencil also opens the branch name), then the same row with
+the Code worktree choice. Each pencil opens a text box on the card, and nothing
+leaves the agent view; the node chip opens the node for reading. Done when is
+edited one criterion per line. A long handoff shows six lines, a fade and Show
+more, which expands in place; Show less folds it. Its editor grows with the
+text to 16 lines, then scrolls inside itself. Drafts are kept per card for the
+agent view, so one survives the card folding or moving.
+
+An open Experiment card offers Don't run, Park for later, Run in this chat and
+Start. An Auto-research card has no Run in this chat. Start and Run in this
+chat run in this order:
+
+1. With staged changes on the card's graph target, the tap stops and asks for a
+   Sync. Nothing is written.
+2. A changed Design or Done when is saved to the node through the ordinary Sync
+   route, from the node revision the draft started at. A graph that only moved
+   elsewhere is retried once from a new read. A node that itself changed keeps
+   the card open and drops those two fields from the draft.
+3. The decision is sent with the node's new revision.
+
+Start says on hover that it saves the edits to the node. When the save lands and
+the decision is refused, the edit stays on the node as ordinary graph history
+and the card shows the refusal.
+
+Park for later first saves the same node edit, then stores the handoff, turn
+limit and agent on the card. The card folds in its turn to one line with its
+title and Parked, and a copy travels to the pane button; with reduced motion it
+only fades. Clicking the line expands the card in place and leaves it parked. A
+parked card offers Delete, Start, Run in this chat on an Experiment card, and
+Save while it has unsaved edits. Delete leaves the collapsed declined card in
+the transcript.
+
+A revision moves the card to the revising turn. When the card's hash changes
+under a draft that this tab did not save, the draft is dropped, and a node that
+moved past a Design or Done when draft drops those fields, because the newer
+plan is the one a Start would run. The card then shows who changed the plan and
+when. A tap the server refuses as `plan_revised` leaves the card open and
+re-reads it.
+
+A started card shows the run's
+[presentation](conversations-episodes-and-watchers.md#runs-projection): its
+state line and tone, a menu of the run's controls, Show handoff, Open agent
+while it runs, and Open report once it ends. A card that Run in this chat
+settled reads Running in this chat while its turn is queued or running, then
+Ran in this chat with Open turn, which scrolls to that turn. A failed start
+keeps its failure line. No view keeps its own label or tone table.
 
 Approval cards stay where the agent raised them, before later transcript lines,
 and show the action with See details on the left and Later, Decline and Approve
@@ -641,23 +694,22 @@ composer, in every agent view, says so on hover and leaves at the next good read
 Proposal cards first, then asked cards, then plain questions relayed from the
 member's projects, each naming its project. A relayed question also names the
 run or chat that asked, and an answer removes it. A Project Agent uses the same
-dock for its own open Proposal and asked cards, then its pending plan cards,
-then its child episodes' questions, then that project's relayed questions,
-then the child runs that need action, then the ended child runs. Only its
-Proposal and asked cards drop the project chip; its plain questions stay inline. A child
-run that is starting, active, recovering, stopping or wrapping up asks nothing, so it
-is not a card: such runs share one folded line under the stack that opens into a
-row per run, with its linked title, its Runs state and a menu of the same
-controls. A run card names the run,
-linked to Runs, with its Runs state, its report once ended, and the controls
-Runs shows from the same projection: an Experiment's controls follow its Runs
+dock for its own open Proposal and asked cards, then pending plan cards relayed
+from other chats, then its runs' questions, then that project's relayed
+questions, then the runs that need the member. Parked plan cards never dock.
+Only its
+Proposal and asked cards drop the project chip; its plain questions stay inline. A
+run that does not need the member is not a card; the
+[agent pane](paper-artifacts-and-result-views.md#a-chats-tasks-and-artifacts)
+lists it. A run card names the run,
+linked to Runs, with its published state, its report once ended, and the controls
+Runs shows from the same presentation: an Experiment's controls follow its Runs
 control state, including node readiness and Resume with the turns a pause left
 unused. A run card's busy state and typed turn count last across Next and
 Back; its controls stay disabled until the dock has re-read after an action.
 At phone width its report link, Later and controls share one row where they
-fit. An ended child leaves the dock when its window closes, without waiting
-for another change. Shared and node chats
-dock their plan cards, children and child questions the same way. A decided card
+fit. Shared and node chats
+dock their runs and run questions the same way. A decided card
 leaves the dock at the next change, and an asked card's result then shows in its
 turn. Both docks hide when empty. Docked cards
 stay reachable where inline ones would scroll away. Every question and approval

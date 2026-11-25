@@ -778,19 +778,36 @@ ordinary Work turns with the chat's profile. They can combine attachments and
 references, including in Experiments. A read-only lineage child takes them only
 as scratch edits, without references. Both paths can publish tracked next versions. Keep follows viewer state.
 
-### A chat's artifacts
+### A chat's tasks and artifacts
 
-Every agent view lists its agent's artifacts in a side pane, so they are not
-only cards scattered through the transcript. That covers project chats,
-orchestrator chats, Paper coach chats, Space threads, and floating windows.
-A header chip with the Files icon and the count opens and closes it. The chip
-shows only when the count is above zero, is pressed while the pane is open, and
-has "Artifacts" as its hover name. In a dock at least 640px wide the pane is a
-300px right column beside the chat; in a narrower dock it covers the chat, and
-opening an artifact closes it. Close and the chip close it, and the open state
-is not kept.
+Every agent view has one side pane for what its agent runs and makes, so runs
+and artifacts are not only cards scattered through the transcript. That covers
+project chats, node chats, orchestrator chats, Paper coach chats, Space threads,
+and floating windows. A header button, always shown, opens and closes it. Its
+count is the running runs, parked plans and artifacts, it is pressed while the
+pane is open, and it has "Tasks and artifacts" as its hover name. In a dock at
+least 640px wide the pane is a 300px right column beside the chat; in a narrower
+dock it covers the chat at full width, and opening an artifact or going to a
+card closes it. Close and the button close it, and the open state is not kept.
 
-Each row is a card, newest first: a type icon tile (table for CSV, image,
+The pane has up to four sections in this order: Running, Parked, Ended and
+Artifacts. An empty section is hidden, and an empty pane shows only its header.
+A section header folds its section and shows the count while folded; the fold
+is remembered per section on the device. Running and Ended follow the
+[dock feed's](api-web-and-desktop-projections.md#agent-thread-api) `episodes`
+by each run's presentation section, in the server's order. Parked lists the
+chat's parked plan cards, newest first.
+
+Running, Parked and Ended rows are
+[task cards](interface-and-visual-design.md#agent-view) in one line: the icon,
+the title, the state badge, an Open agent icon on a run, and a menu. The menu
+holds the run's controls, Open agent, Open report once a run ended, and Delete
+on a parked plan. Clicking a row never leaves the agent view. A row whose card
+is in the transcript scrolls the chat to it. A run started from its node page
+has no turn, so its row expands the full card in place. Only Open agent
+navigates.
+
+Each artifact row is a card, newest first: a type icon tile (table for CSV, image,
 text, or file), the title, and a quiet line with the kind, any worker label,
 and the relative time, with the full time on hover. Every card ends in a
 Download action, and a project agent's card adds Copy reference before it and

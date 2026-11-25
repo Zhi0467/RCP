@@ -23,6 +23,7 @@ from rcp.api.identity import IdentityAccess
 from rcp.background import BackgroundAgentTasks
 from rcp.core.models import AuthorizedHuman
 from rcp.projects import ProjectCatalog
+from rcp.runs.approval_cards import PLAN_CARD_KINDS
 from rcp.runs.auto_research_delivery import deliver_pending_auto_research_mail
 from rcp.runs.auto_research_questions import record_auto_research_question_answer
 from rcp.storage import AppStore
@@ -87,7 +88,12 @@ def _newest_episode(store: AppStore, question: QuestionRecord) -> EpisodeRecord 
     if question.origin.owner_kind != "episode":
         return None
     episode = store.episode(question.origin.owner_id)
-    while episode is not None and (newer := store.episode_continuation(episode.episode_id)):
+    return _newest_member(store, episode) if episode is not None else None
+
+
+def _newest_member(store: AppStore, episode: EpisodeRecord) -> EpisodeRecord:
+    """The newest member of the continuation chain ``episode`` belongs to."""
+    while newer := store.episode_continuation(episode.episode_id):
         episode = newer
     return episode
 
@@ -151,15 +157,28 @@ def _serialize_all(
 _SHOWN_RESULT_FIELDS = ("outcome", "rejected", "reason")
 
 
-def _card_response(card: dict[str, Any]) -> dict[str, Any]:
-    """The card without its receipt; a settled one keeps the outcome the member sees."""
+def _card_response(store: AppStore, card: dict[str, Any]) -> dict[str, Any]:
+    """The card without its receipt; a settled one keeps the outcome the member sees.
+
+    A plan card names the episode its Start created and that chain's newest
+    member, so the card finds its run without the receipt.
+    """
     result = card["result"]
-    return {
+    shown = {
         **{key: value for key, value in card.items() if key != "result"},
         "result": (
             {key: result[key] for key in _SHOWN_RESULT_FIELDS if key in result} if result else None
         ),
     }
+    if card["kind"] in PLAN_CARD_KINDS:
+        receipt = result.get("result") if result else None
+        started = receipt.get("episode_id") if isinstance(receipt, dict) else None
+        episode = store.episode(started) if isinstance(started, str) else None
+        shown["started_episode_id"] = episode.episode_id if episode is not None else None
+        shown["current_episode_id"] = (
+            _newest_member(store, episode).episode_id if episode is not None else None
+        )
+    return shown
 
 
 def _response(
@@ -185,7 +204,7 @@ def _response(
         operation_id=question.origin.operation_id,
         capability=question.origin.capability,
         state=state,
-        card=_card_response(card) if card else None,
+        card=_card_response(store, card) if card else None,
         can_answer=_can_answer(question),
         agent_waiting=(
             _can_answer(question) and store.question_activity.is_waiting(question.question_id)

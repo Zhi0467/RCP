@@ -5,7 +5,7 @@ export function providerPathPresentation(
   readiness: ProviderReadiness | undefined,
   value: string,
   recorded: string,
-): { label: string; kind: "ready" | "warning" | "error" | "pending" } {
+): { label: string; kind: "ready" | "warning" | "error" | "pending"; note?: string } {
   if (value !== recorded) return { label: "Unsaved", kind: "pending" };
   if (readiness?.path_state === "unreachable")
     return { label: "Machine unreachable", kind: "error" };
@@ -13,6 +13,10 @@ export function providerPathPresentation(
   if (readiness?.path_state === "missing") {
     return { label: value ? "Recorded path missing" : "Executable missing", kind: "error" };
   }
-  if (readiness?.path_state === "resolved") return { label: "Ready", kind: "ready" };
+  if (readiness?.path_state === "resolved") {
+    return readiness.update_warning
+      ? { label: "Update failed", kind: "warning", note: readiness.update_warning }
+      : { label: "Ready", kind: "ready" };
+  }
   return { label: "Not recorded", kind: "warning" };
 }

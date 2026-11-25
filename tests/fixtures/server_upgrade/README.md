@@ -264,3 +264,8 @@ pointers gain their own tables (migration 93). Exact source
 keep the member's skill and agent picks (migration 94). Exact source
 `1a806a8126d0e94a9106d1957e0f0e31999cb479` upgrades a copy of
 `pre-agents-v51-0389869` through the existing fixture builder.
+
+`pre-plan-revisions-v53-76fe929` freezes migration 94 before plan cards gain
+parking and in-place revision columns (migration 95). Exact source
+`76fe9294917aa1a2bbf522acc6be8a7008ffea95` upgrades a copy of
+`pre-queue-picks-v52-1a806a8` through the existing fixture builder.

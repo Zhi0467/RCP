@@ -553,14 +553,29 @@ The strict request rejects additional fields.
 card only, and never wakes an owner.
 
 Approval questions add `card: {request_id, kind, action, pinned, pinned_sha256,
-expires_at, state, result}`, where state is pending, running or expired, and
+expires_at, state, result, shelved_at, revised_at, revised_by,
+revised_operation_id, run_here_operation_id}`. The server owns `state`, in this
+precedence: `expired`; `running_here` or `ran_here` for a card a Run in this chat
+settled; `running` (claimed for Start, or settled by it); `parked`; `pending`.
+`revised_by` is `{kind: "agent" | "member", name}`, and
 `result` carries only `outcome`, `rejected` and `reason`. Ordinary answer and dismiss
 return `409 approval_card` for these questions. The owner, or for a shared-chat
 plan card any member `plan_card_actor` admits, resolves through
 `POST /api/approval-cards/{question_id}` with
-`{decision: "approve" | "decline", pinned_sha256, start?}`; approving a plan card
-requires `start`. The response is
-`{outcome: "approved" | "declined" | "stale" | "failed" | "expired", result?, reason?}`;
+`{decision: "approve" | "decline" | "park" | "save" | "run_here", pinned_sha256,
+start?}`; approving a plan card requires `start`. `park` and `save` are plan
+card decisions that write the member's `start` fields into the card without
+settling it and return `{outcome: "parked" | "saved", pinned_sha256}` with the
+new hash; `save` without `start` answers `422 start_required`. `run_here`, the
+decision behind Run in this chat, is an Experiment plan card's and requires
+`start` (`422 experiment_start_required`). Another kind answers
+`422 decision_not_available`. A Run in this chat message longer than the chat
+queue's limit answers `422 run_here_too_long`, and a card whose chat no longer
+exists answers `409 run_here_chat_unavailable`; both leave the card open.
+Approve and decline accept parked cards. The response is
+`{outcome: "approved" | "declined" | "stale" | "failed" | "expired" | "run_here", result?, reason?}`.
+A presented hash the card no longer carries returns `409 plan_revised` and
+leaves the card open;
 a second tap returns `409 card_taken`. A declined card that approves a
 Proposal adds `rejected` (and `reason` when false) unless the Proposal was
 already decided. A derived Proposal card decides through
@@ -1436,7 +1451,10 @@ publish both choices and `isolation_owner_episode_id`; Resume, Retry, and Add N
 turns retain them. Clients never supply paths or ownership.
 
 Runs lists durable Experiment-loop and Auto-research parents, using backend
-health, section, recommendation, and control offers. Experiment entries use
+health, section, recommendation, and control offers. `EpisodeResponse` and
+`ExperimentControlResponse` both publish `presentation`
+([owner](conversations-episodes-and-watchers.md#runs-projection)); Space Runs
+`health_label` and `health_tone` are its `label` and `tone`. Experiment entries use
 `ExperimentControlState`, never generic episode status. Layout belongs to
 [Projections](interface-and-visual-design.md#projections). Other tasks remain in
 History; Blocker judgment stays in Inbox. Old Seed and Refresh rows are history
@@ -2564,19 +2582,30 @@ A named thread's `asked_cards`, `questions` and `episodes` come from `chat_dock`
 in [`api/agent_threads.py`](../../src/rcp/api/agent_threads.py), which
 `GET /api/projects/{project_id}/chats/{chat_id}/cards` also calls for a shared or
 node chat, under the chat question route's membership and private-owner checks;
-that route's `proposal_cards` is empty. `episodes` lists the chat's direct child
-episodes, newest first: the current member of each continuation chain whose root
-names a turn of this chat, while it is not completed, stopped or failed, or for
-`CHAT_DOCK_ENDED_EPISODE_WINDOW` after it ends. Each entry is
-`{episode, title, link, questions}`: the Runs `EpisodeResponse`, the Space Runs
-title, the Runs link, and the chain's relayed question rows. The buckets are
-disjoint by question id: the chat's own questions stay inline, its children's
-questions appear only under `episodes`, and `questions` holds the rest of the
-project's relayed questions for a Project Agent thread only; a shared or node
-chat's `questions` is empty. `next_expiry_at` is the instant the next listed
-ended child leaves `episodes`, or null when none will; the Web reads the dock
-again then. Entries serialize without graph branch summaries, so a
-branch-owning child lists like any other.
+that route's `proposal_cards` is empty. `episodes` lists the chat's runs, newest
+first, each the current member of its continuation chain. A `chat` run is one
+whose chain root names a turn of this chat. A `node` run, listed for a node chat
+only, is an Experiment run of that chat's node that no chat and no
+Auto-research parent started. Every run that is not completed, stopped or
+failed is listed; ended runs stop at the newest
+`CHAT_DOCK_ENDED_EPISODE_LIMIT`, so the list survives a reload without growing
+unbounded. Each entry is `{episode, title, source, link, questions}`: the Runs
+`EpisodeResponse`, the presentation title, `chat` or `node`, the Runs link, and
+the chain's relayed question rows. An Experiment run that is its node's current
+run carries the Experiment control's `presentation`, so the dock and Runs show
+the same state; an older run of the node keeps its own with the node title, and
+a run whose graph cannot be read keeps the episode presentation, titled by node
+id. The buckets are disjoint by question id: the chat's own questions stay
+inline, its runs' questions appear only under `episodes`, and `questions` holds
+the rest of the project's relayed questions for a Project Agent thread only; a
+shared or node chat's `questions` is empty. `next_expiry_at` is always null.
+Entries serialize without graph branch summaries, so a branch-owning child
+lists like any other.
+
+A question's `card` omits the action receipt. A plan card (`experiment_start`
+or `auto_research`) instead names its run: `started_episode_id` is the episode
+its Start created, and `current_episode_id` is the newest member of that
+episode's continuation chain. Both are null until the card starts a run.
 
 `GET /api/agent-threads/running` returns `{rows, needs, total}` for the
 acting member ([behavior](conversations-episodes-and-watchers.md#private-agent-threads)).

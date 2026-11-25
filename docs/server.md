@@ -185,6 +185,14 @@ sudo -u rcp -H /bin/bash -lc '~/.opencode/bin/opencode providers login'
 
 ### Update provider CLIs
 
+The running backend updates each provider CLI installed in the `rcp` home once a
+day, as `rcp` itself. It waits while a backend turn using that provider is
+running or queued. A failed update leaves the installed version in use and
+shows on the provider's row of the backend machine card. A CLI installed
+outside the `rcp` home, or on another machine, is not updated automatically.
+
+To update outside that schedule:
+
 ```bash
 sudo /usr/local/bin/rcp server provider update codex
 sudo /usr/local/bin/rcp server provider update claude

@@ -19,8 +19,8 @@ test("plan edits survive stack navigation and are sent by question id", async ()
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/planDrafts.html`,
     );
-    await page.getByRole("button", { name: "Edit goal", exact: true }).click();
-    await page.getByRole("textbox", { name: "Goal", exact: true }).fill("Edited study goal");
+    await page.getByRole("button", { name: "Edit handoff", exact: true }).click();
+    await page.getByRole("textbox", { name: "Handoff", exact: true }).fill("Edited study goal");
     await page.getByRole("spinbutton", { name: "Turn limit", exact: true }).fill("12");
     await page.getByRole("button", { name: /^Experiment agent:/ }).click();
     await page.locator(".agent-config-fields select").first().selectOption("claude");

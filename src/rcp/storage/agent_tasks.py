@@ -241,7 +241,7 @@ def _completed_graph_status_message(graph_update: object) -> str:
         return "Completed; graph update not applied."
     if status == "rejected":
         return "Completed; graph update rejected."
-    return "Agent task completed."
+    return "Turn completed."
 
 
 # The chat's agent a wake continues, taken from its current turn.
@@ -6568,7 +6568,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
             if graph_unavailable
             else "Operational work completed, but its graph update was rejected."
             if graph_rejected
-            else "Agent task completed."
+            else "Turn completed."
         )
         payload: dict[str, object] = {"status": "succeeded"}
         if applied_revision is not None:

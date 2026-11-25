@@ -8,37 +8,23 @@ import {
   experimentStartOverlap,
 } from "../experiments/experimentStart";
 import { BrowserToggle } from "../core/BrowserControls";
-import {
-  AgentConfigChip,
-  AgentConfigControls,
-  launchProviderReady,
-  profileRunConfig,
-} from "../core/AgentConfigControls";
 import { CopyReferenceButton } from "../core/CopyReferenceButton";
 import { MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget";
 import { BranchNameField, branchNameRequest, branchNameValid } from "./BranchNameField";
 import type { AgentRunConfig, GraphRef, GraphTargetRef, ProjectSnapshot } from "../core/types";
 import { BranchChangeDetail } from "./BranchChangeDetail";
 import type { GraphBranchChanges, MergeDiffPath } from "../core/types";
-import {
-  Check,
-  Flag,
-  FlaskConical,
-  MessageCircle,
-  Minus,
-  Pencil,
-  Play,
-  Trash2,
-  X,
-} from "lucide-react";
-import { pausedResumeTurns } from "../experiments/runProjection";
+import { Check, Flag, MessageCircle, Minus, Pencil, Trash2, X } from "lucide-react";
+import { pausedResumeTurns, runPresentation } from "../experiments/runProjection";
+import { EpisodeControls } from "../experiments/EpisodeControls";
+import { ExperimentStartButton } from "../experiments/ExperimentStartButton";
+import { useAgentConfigPicker, useLaunchConfig } from "../core/AgentConfigPicker";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { experimentGuidanceDetail } from "../core/experimentGuidance";
 import type { GlossaryIndex } from "./glossary";
 import { DraggableWindow } from "../ui/DraggableWindow";
 import { GlossaryText, formatNodeContext, formatNodeValue } from "./GlossaryText";
-import { takeNodeEditRequest, useNodeEditRequest } from "./nodeEditRequest";
 import {
   changedNodeFields,
   editableNodeFields,
@@ -130,7 +116,7 @@ interface Props {
     message?: string,
   ) => void;
   /** Resumes an Experiment episode that paused for its human, with its unused turns. */
-  onResumeExperiment?: (episodeId: string, turns: number) => void;
+  onResumeExperiment?: (episodeId: string, turns: number) => void | Promise<void>;
   /** The server's branch-name refusal code from the last Experiment start, if any. */
   experimentBranchNameRefusal?: string | null;
   /** The project's branches, for the branch field's placeholder and overlap tags. */
@@ -231,27 +217,14 @@ export function DetailDrawer({
   const [browserRequested, setBrowserRequested] = useState(false);
   useEffect(() => setBrowserRequested(false), [node.id]);
   const launchProfile = project?.agent_profiles.node_chat;
-  // Only an explicit pick is state; untouched, the picker follows the current profile.
-  const [pickedConfig, setLaunchConfig] = useState<AgentRunConfig | null>(null);
-  const [launchOpen, setLaunchOpen] = useState(false);
+  const launch = useLaunchConfig(project, launchProfile, experimentAgent);
+  const resetLaunch = launch.reset;
   const [startMessage, setStartMessage] = useState("");
+  const [resumeBusy, setResumeBusy] = useState(false);
   useEffect(() => {
-    setLaunchConfig(null);
-    setLaunchOpen(false);
+    resetLaunch();
     setStartMessage("");
-  }, [node.id]);
-  const launchConfig =
-    pickedConfig ??
-    experimentAgent ??
-    (launchProfile && project ? profileRunConfig(launchProfile, project.run_on) : undefined);
-  const launchReady =
-    !project ||
-    !launchConfig ||
-    launchProviderReady(project, launchConfig, launchProfile?.work_like_capable);
-  const launchEffectiveModel =
-    launchConfig && launchProfile && launchConfig.provider === launchProfile.provider
-      ? launchProfile.effective_model
-      : "";
+  }, [node.id, resetLaunch]);
   const [editing, setEditing] = useState(behind);
   const [removalConfirmationOpen, setRemovalConfirmationOpen] = useState(false);
   const [isolation, setIsolation] = useState<EpisodeIsolationChoice>({
@@ -342,6 +315,69 @@ export function DetailDrawer({
   const experimentControlActive = Boolean(experimentControl?.active);
   const experimentPausedAtLimit = Boolean(experimentControl?.paused && !experimentControlActive);
   const resumeTurns = pausedResumeTurns(experimentControl?.episode);
+  const launchLocked = nodeMutationDisabled || experimentRunBusy;
+  const launchPicker = useAgentConfigPicker({
+    project: launchProfile ? project : undefined,
+    value: launch.config,
+    onChange: launch.setConfig,
+    label: "Experiment agent",
+    disabled: launchLocked,
+    effectiveModel: launch.effectiveModel,
+    workLike: launchProfile?.work_like_capable,
+    workLikeCapable: launchProfile?.work_like_capable,
+    optionCount:
+      Number(browserRequested) +
+      Number(Boolean(startMessage.trim())) +
+      Number((inheritedIsolation ?? isolation).code_worktree) +
+      Number(graphTarget.kind === "main" && isolation.graph_isolation),
+    forceOpen: Boolean(experimentBranchNameRefusal),
+    options: (
+      <>
+        <div className="agent-config-options" role="group" aria-label="Launch options">
+          {graphTarget.kind === "main" && (
+            <label>
+              <input
+                type="checkbox"
+                checked={isolation.graph_isolation}
+                onChange={(event) =>
+                  setIsolation({ ...isolation, graph_isolation: event.target.checked })
+                }
+              />
+              On a new branch
+            </label>
+          )}
+          {codeWorktreeToggle}
+          <BrowserToggle
+            checked={browserRequested}
+            disabled={launchLocked}
+            onChange={setBrowserRequested}
+          />
+        </div>
+        {graphTarget.kind === "main" && isolation.graph_isolation && (
+          <BranchNameField
+            mode="experiment_loop"
+            value={experimentBranch}
+            disabled={launchLocked}
+            refusal={experimentBranchNameRefusal}
+            namesInUse={graphRefs?.map((ref) => ref.name)}
+            onChange={setExperimentBranch}
+          />
+        )}
+        <textarea
+          className="experiment-start-message"
+          aria-label="Starting message"
+          placeholder="Starting message (optional)"
+          rows={3}
+          value={startMessage}
+          disabled={launchLocked}
+          onChange={(event) => setStartMessage(event.target.value)}
+        />
+      </>
+    ),
+  });
+  const closeLaunchPicker = launchPicker.close;
+  useEffect(() => closeLaunchPicker(), [node.id, closeLaunchPicker]);
+  const startReasonsId = `${node.id}-start-requirements`;
 
   useEffect(() => {
     if (!editing) {
@@ -369,13 +405,6 @@ export function DetailDrawer({
     setDraft(nodeEditDraft(node, ontology));
     setEditing(true);
   };
-  const editRequest = useNodeEditRequest();
-  useEffect(() => {
-    if (!projectId || nodeMutationDisabled || !takeNodeEditRequest(projectId, graphTarget, node.id))
-      return;
-    if (!editing) beginEditing();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editRequest, projectId, graphTarget, node.id, nodeMutationDisabled]);
   const cancelEditing = () => {
     if (standingBeforeEdit.current && standingBeforeEdit.current !== "asserted") {
       onStanding(standingBeforeEdit.current, !stagedNewNode);
@@ -801,49 +830,37 @@ export function DetailDrawer({
                       <span className="experiment-loop-marker paused">Paused at limit</span>
                     )}
                     {onResumeExperiment && experimentControl.episode && resumeTurns !== null && (
-                      <button
-                        className="button primary compact experiment-continue-button"
-                        type="button"
-                        disabled={
-                          nodeMutationDisabled || experimentRunBusy || !experimentControl.can_start
-                        }
-                        onClick={() =>
-                          experimentControl.episode &&
-                          onResumeExperiment(experimentControl.episode.episode_id, resumeTurns)
-                        }
-                      >
-                        <Play size={14} aria-hidden="true" /> Resume · {resumeTurns}{" "}
-                        {resumeTurns === 1 ? "turn" : "turns"}
-                      </button>
-                    )}
-                    {project && launchProfile && launchConfig && (
-                      <AgentConfigChip
-                        project={project}
-                        value={launchConfig}
-                        effectiveModel={launchEffectiveModel}
-                        open={launchOpen}
+                      <EpisodeControls
+                        presentation={runPresentation(experimentControl)}
+                        episode={experimentControl.episode}
+                        experimentControl={experimentControl}
+                        additionalTurns=""
+                        onAdditionalTurnsChange={() => undefined}
                         disabled={nodeMutationDisabled || experimentRunBusy}
-                        label="Experiment agent"
-                        workLike={launchProfile?.work_like_capable}
-                        optionCount={
-                          Number(browserRequested) +
-                          Number(Boolean(startMessage.trim())) +
-                          Number((inheritedIsolation ?? isolation).code_worktree) +
-                          Number(graphTarget.kind === "main" && isolation.graph_isolation)
+                        busyAction={
+                          resumeBusy ? `continue:${experimentControl.episode.episode_id}` : null
                         }
-                        onToggle={() => setLaunchOpen((open) => !open)}
+                        taskActionId={null}
+                        onContinue={async (episodeId, turns) => {
+                          setResumeBusy(true);
+                          try {
+                            await onResumeExperiment(episodeId, turns);
+                          } finally {
+                            setResumeBusy(false);
+                          }
+                        }}
                       />
                     )}
-                    <button
-                      className="button primary compact experiment-run-button"
-                      type="button"
+                    {launchPicker.chip}
+                    <ExperimentStartButton
+                      control={experimentControl}
+                      busy={experimentRunBusy}
                       disabled={
                         nodeMutationDisabled ||
                         experimentRunDisabled ||
-                        experimentRunBusy ||
-                        !launchReady ||
+                        resumeBusy ||
+                        !launch.ready ||
                         !newBranchNameValid ||
-                        // Overlap never blocks Run; Run waits only while it is being checked.
                         experimentEntriesStatus === "loading" ||
                         !canStartExperiment(
                           experimentControl,
@@ -851,7 +868,8 @@ export function DetailDrawer({
                           (inheritedIsolation ?? isolation).graph_isolation,
                         )
                       }
-                      onClick={() =>
+                      reasonsId={startReasons.length > 0 ? startReasonsId : undefined}
+                      onStart={() =>
                         onRunExperiment(
                           {
                             ...(inheritedIsolation ??
@@ -861,84 +879,19 @@ export function DetailDrawer({
                             worktree_repository: worktreeRepository,
                           },
                           browserRequested,
-                          launchConfig,
+                          launch.config,
                           startMessage,
                         )
                       }
-                    >
-                      <FlaskConical size={14} />{" "}
-                      {experimentRunBusy
-                        ? "Starting"
-                        : experimentControl.episode_id
-                          ? "Start new episode"
-                          : "Start episode"}
-                    </button>
+                    />
                   </div>
-                  {/* A refused branch name reopens the picker so its warning shows. */}
-                  {(launchOpen || Boolean(experimentBranchNameRefusal)) &&
-                    project &&
-                    launchProfile &&
-                    launchConfig && (
-                      <AgentConfigControls
-                        project={project}
-                        value={launchConfig}
-                        onChange={setLaunchConfig}
-                        effectiveModel={launchEffectiveModel}
-                        workLikeCapable={launchProfile.work_like_capable}
-                        locked={nodeMutationDisabled || experimentRunBusy}
-                        compact
-                      >
-                        <div
-                          className="agent-config-options"
-                          role="group"
-                          aria-label="Launch options"
-                        >
-                          {/* On a branch the Experiment runs there; there is no branch from a branch. */}
-                          {graphTarget.kind === "main" && (
-                            <label>
-                              <input
-                                type="checkbox"
-                                checked={isolation.graph_isolation}
-                                onChange={(event) =>
-                                  setIsolation({
-                                    ...isolation,
-                                    graph_isolation: event.target.checked,
-                                  })
-                                }
-                              />
-                              On a new branch
-                            </label>
-                          )}
-                          {codeWorktreeToggle}
-                          <BrowserToggle
-                            checked={browserRequested}
-                            disabled={nodeMutationDisabled || experimentRunBusy}
-                            onChange={setBrowserRequested}
-                          />
-                        </div>
-                        {graphTarget.kind === "main" && isolation.graph_isolation && (
-                          <BranchNameField
-                            mode="experiment_loop"
-                            value={experimentBranch}
-                            disabled={nodeMutationDisabled || experimentRunBusy}
-                            refusal={experimentBranchNameRefusal}
-                            namesInUse={graphRefs?.map((ref) => ref.name)}
-                            onChange={setExperimentBranch}
-                          />
-                        )}
-                        <textarea
-                          className="experiment-start-message"
-                          aria-label="Starting message"
-                          placeholder="Starting message (optional)"
-                          rows={3}
-                          value={startMessage}
-                          disabled={nodeMutationDisabled || experimentRunBusy}
-                          onChange={(event) => setStartMessage(event.target.value)}
-                        />
-                      </AgentConfigControls>
-                    )}
+                  {launchPicker.panel}
                   {startReasons.length > 0 && (
-                    <ul className="experiment-gate-reasons" aria-label="Run requirements">
+                    <ul
+                      className="experiment-gate-reasons"
+                      id={startReasonsId}
+                      aria-label="Run requirements"
+                    >
                       {startReasons.map((reason) => (
                         <li key={reason}>{reason}</li>
                       ))}

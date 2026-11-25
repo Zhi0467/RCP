@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 
 import {
-  approvalCardExpired,
+  askedCardOpen,
   approvalCardTitle,
   chosenThread,
   firingScheduleCount,
@@ -281,14 +281,13 @@ test("a thread lists its agent's waking watchers by agent route and stops them b
   ]);
 });
 
-test("a card is expired by its state or its time", () => {
-  const card = { state: "pending", expires_at: "2026-11-01T12:00:00Z" };
-  assert.equal(approvalCardExpired(card, Date.parse("2026-11-01T11:00:00Z")), false);
-  assert.equal(approvalCardExpired(card, Date.parse("2026-11-01T12:00:00Z")), true);
-  assert.equal(
-    approvalCardExpired({ ...card, state: "expired" }, Date.parse("2026-11-01T11:00:00Z")),
-    true,
-  );
+test("a card is open until it is settled or the server expires it, whatever the device clock says", () => {
+  const card = { state: "pending", expires_at: "2000-01-01T00:00:00Z" };
+  assert.equal(askedCardOpen({ state: "pending", card }), true);
+  assert.equal(askedCardOpen({ state: "pending", card: { ...card, state: "expired" } }), false);
+  assert.equal(askedCardOpen({ state: "answered", card }), false);
+  assert.equal(askedCardOpen({ state: "dismissed", card }), false);
+  assert.equal(askedCardOpen({ state: "pending" }), true);
 });
 
 test("the latest turn is the newest message that names an operation", () => {

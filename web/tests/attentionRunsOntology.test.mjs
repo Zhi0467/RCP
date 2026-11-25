@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { withTaskAnswers } from "./taskAnswers.mjs";
+import { withEpisodeAnswers, withTaskAnswers } from "./taskAnswers.mjs";
 import { after, test } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -208,7 +208,7 @@ function task(operationId, kind, status, statusMessage, updatedAt = "2026-08-03T
 
 function runsEpisode(id, mode, runSection, createdAt, controlNodeId = null) {
   const completed = runSection === "completed";
-  return {
+  return withEpisodeAnswers({
     episode_id: id,
     project_id: "project",
     mode,
@@ -260,7 +260,7 @@ function runsEpisode(id, mode, runSection, createdAt, controlNodeId = null) {
     recommendation: completed ? "none" : "continue",
     task_control: null,
     run_section: runSection,
-  };
+  });
 }
 
 function experimentNode(id) {
@@ -538,7 +538,7 @@ test("Runs is episode-first while Experiment placement and status stay control-a
   assert.match(html, /campaign-run-title.*?<span>EXP NEWEST<\/span>/);
   assert.match(html, /<time dateTime="2026-08-03T04:00:00Z">/);
   assert.doesNotMatch(html, /2026-08-03T00:30:00Z/);
-  assert.match(html, /class="status-pill completed"/);
+  assert.match(html, /class="status-pill task-state completed"/);
 
   assert.match(
     html,

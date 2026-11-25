@@ -1,7 +1,8 @@
 import { TriangleAlert, Play, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import type { AgentExecutionProfile, AgentRunConfig, ProjectSnapshot } from "../core/types";
 import { AgentConfigControls, launchProviderReady } from "../core/AgentConfigControls";
+import { useLaunchConfig } from "../core/AgentConfigPicker";
 
 interface Props {
   open: boolean;
@@ -21,11 +22,14 @@ function switchTitle(kind: AgentExecutionProfile): string {
 }
 
 export function RunDialog({ open, kind, project, initialConfig, busy, onClose, onRun }: Props) {
-  const [config, setConfig] = useState(initialConfig);
+  const profile = project.agent_profiles[kind];
+  const launch = useLaunchConfig(project, profile, initialConfig);
+  const config = launch.config ?? initialConfig;
+  const resetLaunch = launch.reset;
 
   useEffect(() => {
-    if (open) setConfig(initialConfig);
-  }, [open, initialConfig]);
+    if (open) resetLaunch();
+  }, [open, initialConfig, resetLaunch]);
 
   if (!open) return null;
   // A run only reaches this dialog through a switch control, so opening it
@@ -50,11 +54,7 @@ export function RunDialog({ open, kind, project, initialConfig, busy, onClose, o
   // is not a capacity axis, so a reasoning-only switch strands nothing and says
   // nothing.
   const childProfile = project.agent_profiles.node_chat;
-  const selectedModel =
-    config.model ||
-    (config.provider === project.agent_profiles[kind].provider
-      ? project.agent_profiles[kind].effective_model
-      : "");
+  const selectedModel = config.model || launch.effectiveModel;
   const childBindingStays = Boolean(
     kind === "orchestrator" &&
     childProfile &&
@@ -84,12 +84,8 @@ export function RunDialog({ open, kind, project, initialConfig, busy, onClose, o
         <AgentConfigControls
           project={project}
           value={config}
-          effectiveModel={
-            config.provider === project.agent_profiles[kind].provider
-              ? project.agent_profiles[kind].effective_model
-              : ""
-          }
-          onChange={setConfig}
+          effectiveModel={launch.effectiveModel}
+          onChange={launch.setConfig}
           workLikeCapable={project.agent_profiles[kind]?.work_like_capable ?? true}
           runtime={profileRuntime ? { value: profileRuntime, locked: true } : undefined}
           collapsible

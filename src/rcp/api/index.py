@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from functools import partial
 from typing import Annotated, Literal, cast
@@ -47,6 +49,7 @@ from rcp.core.models import CLOSED_EXPERIMENT_STATUSES, AuthorizedHuman, GraphSt
 from rcp.core.transition_models import GraphHeadRef, GraphTargetRef
 from rcp.digest import digest_counts
 from rcp.history import ProjectIdentityConflict
+from rcp.history.branches import BranchHistoryManager
 from rcp.history.store import GRAPH_HISTORY_DIRECTORY, graph_history_cache
 from rcp.keyed_locks import KeyedLocks
 from rcp.limits import REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS, SPACE_RUNS_COMPLETED_TTL
@@ -59,6 +62,7 @@ from rcp.loop_status import (
 from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.providers import PROVIDER_IDS
+from rcp.run_presentation import RunPresentation, RunTone, episode_run_state, run_display
 from rcp.runs.project_deletion import (
     ProjectDeletionStopsChanged,
     deletion_preview,
@@ -159,15 +163,6 @@ class ExperimentLoopIndexResponse(BaseModel):
 
 SpaceRunMode = Literal["experiment_loop", "auto_research"]
 SpaceRunSection = Literal["actionable", "running", "completed"]
-SpaceRunTone = Literal[
-    "running",
-    "waiting",
-    "degraded",
-    "stopping",
-    "stopped",
-    "actionable",
-    "completed",
-]
 
 
 class SpaceRunIndexEntryResponse(BaseModel):
@@ -187,7 +182,7 @@ class SpaceRunIndexEntryResponse(BaseModel):
     started_at: str
     last_activity_at: str
     health_label: str
-    health_tone: SpaceRunTone
+    health_tone: RunTone
     run_section: SpaceRunSection
     archived: bool = False
     can_archive: bool = False
@@ -760,34 +755,7 @@ def _space_experiment_run(
     entry: ExperimentLoopIndexEntryResponse,
 ) -> SpaceRunIndexEntryResponse:
     control = entry.control
-    health_labels = {
-        "starting": "Starting",
-        "agent_active": "Agent active",
-        "waiting_on_watchers": "Waiting on watchers",
-        "completion_pending": "Completion pending delivery",
-        "degraded": "Watcher degraded",
-        "stopping": "Stopping gracefully",
-        "wrapping_up": "Wrapping up",
-        "failed": "Failed",
-        "human_stopped": "Human-stopped",
-        "paused_at_limit": "Paused at invocation limit",
-        "needs_action": "Needs action",
-        "completed": "Completed",
-    }
-    health_tones: dict[str, SpaceRunTone] = {
-        "starting": "running",
-        "agent_active": "running",
-        "waiting_on_watchers": "waiting",
-        "completion_pending": "waiting",
-        "degraded": "degraded",
-        "stopping": "stopping",
-        "wrapping_up": "running",
-        "failed": "degraded",
-        "human_stopped": "stopped",
-        "paused_at_limit": "actionable",
-        "needs_action": "actionable",
-        "completed": "completed",
-    }
+    assert control.presentation is not None
     return SpaceRunIndexEntryResponse(
         episode_id=entry.episode.episode_id,
         project_id=entry.project_id,
@@ -804,8 +772,8 @@ def _space_experiment_run(
             if control.run_section == "completed"
             else entry.control.operational.current_last_activity_at or entry.episode.updated_at
         ),
-        health_label=health_labels[control.health],
-        health_tone=health_tones[control.health],
+        health_label=control.presentation.label,
+        health_tone=control.presentation.tone,
         run_section=control.run_section,
         archived=entry.episode.archived,
         can_archive=entry.episode.can_archive,
@@ -826,28 +794,7 @@ def _space_auto_research_run(
 ) -> SpaceRunIndexEntryResponse:
     episode = snapshot.episode
     health, run_section, last_activity_at = space_auto_research_episode_projection(snapshot)
-    health_labels = {
-        "starting": "Starting",
-        "active": "Active",
-        "recovering": "Recovering",
-        "needs_action": "Needs action",
-        "stopping": "Stopping gracefully",
-        "wrapping_up": "Wrapping up",
-        "completed": "Completed",
-        "stopped": "Stopped",
-        "failed": "Failed",
-    }
-    health_tones: dict[str, SpaceRunTone] = {
-        "starting": "running",
-        "active": "running",
-        "recovering": "waiting",
-        "needs_action": "actionable",
-        "stopping": "stopping",
-        "wrapping_up": "running",
-        "completed": "completed",
-        "stopped": "stopped",
-        "failed": "degraded",
-    }
+    health_label, health_tone = run_display(episode_run_state(health, episode.ending))
     return SpaceRunIndexEntryResponse(
         episode_id=episode.episode_id,
         project_id=episode.project_id,
@@ -860,8 +807,8 @@ def _space_auto_research_run(
         experiment_id=None,
         started_at=episode.created_at,
         last_activity_at=last_activity_at,
-        health_label=health_labels[health],
-        health_tone=health_tones[health],
+        health_label=health_label,
+        health_tone=health_tone,
         run_section=run_section,
         archived=archive_state.archived,
         can_archive=archive_state.can_archive,
@@ -1280,6 +1227,86 @@ def episode_title(catalog: ProjectCatalog, episode: EpisodeRecord) -> str:
     return node.title if node is not None else episode.control_node_id or "Experiment history"
 
 
+def experiment_run_presentations(
+    store: AppStore,
+    catalog: ProjectCatalog,
+    project_id: str,
+    episodes: Sequence[EpisodeResponse],
+) -> dict[str, RunPresentation]:
+    """Listed Experiment runs as their Experiment owner shows them, by episode id.
+
+    A node's current run takes the Experiment control's presentation. An older
+    run of the node keeps its own and gains the node title. A run whose graph
+    cannot be read is left out, so its caller shows the generic episode value.
+    """
+
+    grouped: dict[str, list[EpisodeResponse]] = defaultdict(list)
+    for episode in episodes:
+        if episode.control_node_id is not None:
+            grouped[episode.graph_target.key].append(episode)
+    shown: dict[str, RunPresentation] = {}
+    for group in grouped.values():
+        target = group[0].graph_target
+        try:
+            state = _display_graph_state(catalog, project_id, target)
+        except (KeyError, OSError, StateUnavailable, ValueError, HTTPException) as exc:
+            logger.warning(
+                "Experiment runs on %s in project %s show without their node: %s",
+                target.key,
+                project_id,
+                exc,
+            )
+            continue
+        if state is None:
+            continue
+        read_models = store.experiment_control_projection_snapshots(
+            project_id,
+            {episode.control_node_id or "" for episode in group},
+            graph_target=target,
+        )
+        for episode in group:
+            node = experiment_node(state, episode.control_node_id)
+            if node is None:
+                continue
+            read_model = read_models.get(node.id)
+            control = (
+                _experiment_control_response(
+                    state,
+                    node.id,
+                    read_model.runtime,
+                    episode,
+                    latest_report_episode_id=read_model.latest_report_episode_id,
+                )
+                if read_model is not None and read_model.runtime.episode_id == episode.episode_id
+                else None
+            )
+            shown[episode.episode_id] = (
+                control.presentation
+                if control is not None and control.presentation is not None
+                else episode.presentation.model_copy(update={"title": node.title})
+            )
+    return shown
+
+
+def _display_graph_state(
+    catalog: ProjectCatalog, project_id: str, target: GraphTargetRef
+) -> GraphState | None:
+    """The target's graph for display: main from its cached snapshot, a branch from history."""
+
+    if target.kind == "main":
+        _status, cached = catalog.cached_snapshot_status(project_id)
+        return _cached_graph_state(cached)
+    service = get_project_service(catalog, project_id).for_graph_target(
+        target,
+        initialize=False,
+        refresh_max_age_seconds=REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS,
+    )
+    history = cast(BranchHistoryManager, service.history)
+    return history.current_materialization(
+        refresh_max_age_seconds=REMOTE_STATE_DISPLAY_READ_MAX_AGE_SECONDS
+    ).state
+
+
 def _cached_graph_state(snapshot: dict[str, object] | None) -> GraphState | None:
     if snapshot is None:
         return None
@@ -1307,6 +1334,7 @@ __all__ = [
     "delete_project",
     "episode_title",
     "experiment_episodes",
+    "experiment_run_presentations",
     "membership_router",
     "preflight_project",
     "project_invitations_for_me",

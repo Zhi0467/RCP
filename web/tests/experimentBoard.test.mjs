@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
-import { withExperimentControlAnswers, withTaskAnswers, withTurnAnswers } from "./taskAnswers.mjs";
+import {
+  withEpisodeAnswers,
+  withExperimentControlAnswers,
+  withTaskAnswers,
+  withTurnAnswers,
+} from "./taskAnswers.mjs";
 import { after, test } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -113,7 +118,7 @@ function entry(id, nodeStatus, controlState, projectName = "Project") {
 }
 
 function episode(fields = {}) {
-  return {
+  return withEpisodeAnswers({
     episode_id: "episode-1",
     project_id: "project",
     mode: "experiment_loop",
@@ -166,7 +171,7 @@ function episode(fields = {}) {
     task_control: null,
     run_section: "running",
     ...fields,
-  };
+  });
 }
 
 test("experiment links round-trip through the project hash parser", () => {
@@ -318,7 +323,7 @@ test("project Runs keeps the dispatched child card while timeline owns turn hist
     },
     created_at: "2026-08-06T01:00:00Z",
     updated_at: "2026-08-06T01:01:00Z",
-    status_message: "Agent task is running.",
+    status_message: "Turn is running.",
     error: null,
     attempt: 1,
     estimate_seconds: 60,
@@ -373,7 +378,7 @@ test("project Runs keeps the dispatched child card while timeline owns turn hist
       task_active: true,
       current_operation_id: childTask.operation_id,
       current_status: "running",
-      current_status_message: "Agent task is running.",
+      current_status_message: "Turn is running.",
     },
   );
   const indexed = {
@@ -1507,12 +1512,9 @@ test("every target view keeps same-node parent cards and the opened child, and s
         return renderedCard;
       }
       renderMarkup(React.createElement(CaptureCard));
-      const toggle = findElement(
-        renderedCard,
-        (element) => element.props.className === "campaign-run-toggle",
-      );
-      assert.equal(toggle.props["aria-expanded"], false);
-      toggle.props.onClick();
+      const { toggle } = findElement(renderedCard, (element) => element.props.toggle).props;
+      assert.equal(toggle.expanded, false);
+      toggle.onToggle();
       assert.deepEqual(selections, [[experiment.id, route]]);
       const cards = [
         ...html.matchAll(/<article[^>]*data-episode-id="([^"]+)"[\s\S]*?<\/article>/g),

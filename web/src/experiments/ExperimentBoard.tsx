@@ -3,7 +3,7 @@ import { ChevronRight, FlaskConical, WifiOff } from "lucide-react";
 import { useMemo } from "react";
 import { experimentBoardRouteToken, experimentTerminalLabel } from "./experimentBoardModel";
 import { activeExperimentGuidanceText } from "../core/experimentGuidance";
-import { experimentHealthLabel, experimentHealthTone } from "./ExperimentRunDetail";
+import { runPresentation } from "./runProjection";
 import type { ExperimentLoopHealth, ExperimentLoopIndexEntry } from "../core/types";
 
 interface ExperimentBoardItem {
@@ -113,11 +113,10 @@ function ExperimentRows({
     <ul className="experiment-board-rows">
       {items.map((item) => {
         const { entry, health, lastActivityAt } = item;
-        const tone = experimentHealthTone(health);
+        const presentation = runPresentation(entry.control) ?? entry.episode.presentation;
+        const tone = presentation.tone;
         const statusLabel =
-          health === "completed"
-            ? experimentTerminalLabel(entry.node.status)
-            : experimentHealthLabel(health);
+          health === "completed" ? experimentTerminalLabel(entry.node.status) : presentation.label;
         const summary = activeExperimentGuidanceText(entry.node);
         return (
           <li

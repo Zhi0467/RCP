@@ -298,6 +298,13 @@ def test_taps_recheck_pins_and_run_only_once(questions_api, monkeypatch, changed
     url = f"/api/approval-cards/{question.question_id}"
     with ThreadPoolExecutor(max_workers=2) as pool:
         responses = list(pool.map(lambda _: client.post(url, json=body), range(2)))
+    if changed == "client":
+        assert [response.json()["detail"] for response in responses] == [
+            {"code": "plan_revised"}
+        ] * 2
+        assert store.approval_card(question.question_id)["state"] == "pending"
+        assert calls == []
+        return
     assert sorted(response.status_code for response in responses) == [200, 409]
     result = next(response.json() for response in responses if response.status_code == 200)
     assert result["outcome"] == ("approved" if changed == "none" else "stale")

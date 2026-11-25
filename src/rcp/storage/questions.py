@@ -12,7 +12,7 @@ from typing import Any
 from rcp.core.models import AuthorizedHuman
 from rcp.limits import ASK_ANSWER_MAX_LENGTH
 from rcp.storage.approval_cards import insert_approval_card
-from rcp.storage.digest import append_question_attention
+from rcp.storage.digest import PARKED_CARD_SQL, append_question_attention
 from rcp.storage.mixin_base import StoreMixinBase
 from rcp.storage.models import AgentTaskRecord
 from rcp.storage.question_models import (
@@ -224,7 +224,8 @@ class QuestionStoreMixin(StoreMixinBase):
         owner_id: str | None = None,
         open_only: bool = False,
     ) -> list[QuestionRecord]:
-        """Open means pending and answerable; withdrawn episode cards remain in history."""
+        """Open means pending, answerable and not a parked plan card; withdrawn episode cards
+        remain in history."""
         clauses, parameters = [], []
         for column, value in (
             ("project_id", project_id),
@@ -235,7 +236,7 @@ class QuestionStoreMixin(StoreMixinBase):
                 clauses.append(f"{column}=?")
                 parameters.append(value)
         if open_only:
-            clauses.append("state='pending' AND withdrawn_readonly=0")
+            clauses.append(f"state='pending' AND withdrawn_readonly=0 AND NOT {PARKED_CARD_SQL}")
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with self.connection() as connection:
             rows = connection.execute(

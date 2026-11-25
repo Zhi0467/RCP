@@ -6,6 +6,7 @@ import { createServer } from "vite";
 import { watermarkResponse } from "./watermarks.mjs";
 import { episode as baseEpisode } from "./fixtures/campaigns.mjs";
 import { timelineFixture } from "./fixtures/timeline.mjs";
+import { withEpisodeAnswers } from "./taskAnswers.mjs";
 import {
   capabilities,
   message,
@@ -1970,7 +1971,7 @@ function mergeFixture(episodeOwned = true) {
     mode: episodeOwned ? "auto_research" : null,
     merge_eligible: true,
   };
-  const episode = {
+  const episode = withEpisodeAnswers({
     ...baseEpisode,
     project_id: "demo",
     episode_id: "chain-current",
@@ -1996,7 +1997,7 @@ function mergeFixture(episodeOwned = true) {
     code_worktree: false,
     isolation_owner_episode_id: "chain-root",
     isolation_state: null,
-  };
+  });
   return { ref, episode };
 }
 

@@ -237,6 +237,12 @@ def append_episode_ended(connection, episode_id, created_at):
     )
 
 
+PARKED_CARD_SQL = (
+    "EXISTS (SELECT 1 FROM approval_cards parked WHERE parked.question_id=questions.question_id "
+    "AND parked.shelved_at IS NOT NULL)"
+)
+
+
 def append_question_attention(connection, row, created_at):
     if (
         row["owner_kind"] == "chat"
@@ -248,7 +254,15 @@ def append_question_attention(connection, row, created_at):
     origin = json.loads(row["origin_json"])
     target_ref = origin["graph_target"]
     target = "main" if target_ref["kind"] == "main" else "branch:" + target_ref["branch_id"]
-    active = row["state"] == "pending" and not row["withdrawn_readonly"]
+    active = (
+        row["state"] == "pending"
+        and not row["withdrawn_readonly"]
+        and connection.execute(
+            f"SELECT 1 FROM questions WHERE question_id=? AND {PARKED_CARD_SQL}",
+            (row["question_id"],),
+        ).fetchone()
+        is None
+    )
     previous = connection.execute(
         "SELECT payload_json FROM digest_events WHERE project_id=? AND kind='question_attention' AND item_id=? ORDER BY seq DESC LIMIT 1",
         (row["project_id"], row["question_id"]),

@@ -47,9 +47,13 @@ export function withTurnAnswers(operational) {
   };
 }
 
-/** Fill the Experiment Runs answers a backend control fixture must publish. */
-export function withExperimentControlAnswers(control) {
-  return {
+/**
+ * Fill the Experiment Runs answers a backend control fixture must publish. The
+ * presentation follows the answers the fixture ended up with, and the embedded
+ * episode carries the same value, as the server sends it.
+ */
+export function withExperimentControlAnswers(control, title = "Experiment") {
+  const answered = {
     health: "needs_action",
     recommendation: "start_episode",
     run_section: "actionable",
@@ -65,4 +69,151 @@ export function withExperimentControlAnswers(control) {
     node_closed: false,
     ...control,
   };
+  const presentation =
+    control.presentation === undefined
+      ? experimentPresentation(answered, title)
+      : control.presentation;
+  return {
+    ...answered,
+    presentation,
+    episode:
+      answered.episode && presentation ? { ...answered.episode, presentation } : answered.episode,
+  };
+}
+
+const RUN_DISPLAY = {
+  starting: ["Starting", "running"],
+  active: ["Running", "running"],
+  recovering: ["Recovering", "waiting"],
+  waiting_on_watchers: ["Waiting on watchers", "waiting"],
+  completion_pending: ["Completion pending delivery", "waiting"],
+  degraded: ["Watcher degraded", "degraded"],
+  stopping: ["Stopping gracefully", "stopping"],
+  wrapping_up: ["Wrapping up", "running"],
+  failed: ["Failed", "degraded"],
+  stopped: ["Stopped", "stopped"],
+  paused_at_limit: ["Paused at invocation limit", "actionable"],
+  needs_action: ["Needs action", "actionable"],
+  completed: ["Completed", "completed"],
+};
+const EXPERIMENT_RUN_STATES = { agent_active: "active", human_stopped: "stopped" };
+
+/** The label and tone the server publishes for an Experiment health. */
+export function experimentRunDisplay(health) {
+  const [label, tone] = RUN_DISPLAY[EXPERIMENT_RUN_STATES[health] ?? health];
+  return { label, tone };
+}
+
+/** The server's `present_run`, for fixtures that stand in for its projection. */
+export function presentRun({
+  state,
+  title,
+  ended,
+  needsYou,
+  recommendation,
+  used,
+  ceiling,
+  actions,
+}) {
+  const [label, tone] = RUN_DISPLAY[state];
+  const section = ended ? "ended" : "running";
+  const turns = ended ? `${used} turn${used === 1 ? "" : "s"}` : `turn ${used} of ${ceiling}`;
+  return {
+    phase: needsYou ? "needs_you" : section,
+    title,
+    label,
+    state_line: used ? `${label} · ${turns}` : label,
+    tone,
+    section,
+    needs_you: needsYou,
+    recommendation,
+    actions,
+  };
+}
+
+/** The server's `run_actions`: each offered control with the record it acts on. */
+export function runActions({
+  episodeId,
+  canStop,
+  taskControl,
+  controlTaskId,
+  canContinue,
+  reportEpisodeId,
+  startNodeId = null,
+}) {
+  const action = (kind, fields) => ({
+    kind,
+    episode_id: null,
+    operation_id: null,
+    report_episode_id: null,
+    node_id: null,
+    ...fields,
+  });
+  const actions = [];
+  if (taskControl && controlTaskId)
+    actions.push(action(taskControl, { episode_id: episodeId, operation_id: controlTaskId }));
+  if (canContinue) actions.push(action("continue", { episode_id: episodeId }));
+  if (startNodeId) actions.push(action("start", { node_id: startNodeId }));
+  if (canStop) actions.push(action("stop", { episode_id: episodeId }));
+  if (reportEpisodeId) actions.push(action("open_report", { report_episode_id: reportEpisodeId }));
+  return actions;
+}
+
+const ENDED_HEALTH = new Set(["completed", "failed", "stopped"]);
+
+/** Fill the presentation the generic episode owner publishes from the episode's own answers. */
+export function withEpisodeAnswers(episode, title = "Auto-research") {
+  const state =
+    episode.health === "needs_action" && episode.ending === "exhausted"
+      ? "paused_at_limit"
+      : episode.health;
+  return {
+    ...episode,
+    presentation: presentRun({
+      state,
+      title,
+      ended: state !== "wrapping_up" && (Boolean(episode.ending) || ENDED_HEALTH.has(state)),
+      needsYou: episode.health === "needs_action" || episode.blocked_reason === "question",
+      recommendation: episode.recommendation,
+      used: episode.budget?.invocations_used ?? 0,
+      ceiling: episode.budget?.invocation_ceiling ?? 0,
+      actions: runActions({
+        episodeId: episode.episode_id,
+        canStop: Boolean(episode.can_stop),
+        taskControl: episode.task_control,
+        controlTaskId: episode.current_control_task_id,
+        canContinue: Boolean(episode.can_continue),
+        reportEpisodeId:
+          episode.report && episode.wrapup_state === "ready" ? episode.episode_id : null,
+      }),
+    }),
+  };
+}
+
+function experimentPresentation(control, title) {
+  if (!control.episode_id) return null;
+  const state = EXPERIMENT_RUN_STATES[control.health] ?? control.health;
+  const episode = control.episode;
+  return presentRun({
+    state,
+    title,
+    ended:
+      control.run_section === "completed" ||
+      control.health === "human_stopped" ||
+      episode?.presentation?.section === "ended",
+    needsYou: control.run_section === "actionable" && control.health !== "human_stopped",
+    recommendation: control.recommendation,
+    used: control.invocations_used ?? 0,
+    ceiling: control.invocation_ceiling ?? 0,
+    actions: runActions({
+      episodeId: control.episode_id,
+      canStop: control.can_stop,
+      taskControl: control.task_control,
+      controlTaskId:
+        episode?.current_control_task_id ?? control.operational?.current_operation_id ?? null,
+      canContinue: Boolean(episode?.can_continue),
+      reportEpisodeId: control.report_episode_id,
+      startNodeId: control.ready ? (episode?.control_node_id ?? "experiment") : null,
+    }),
+  });
 }

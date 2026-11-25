@@ -972,12 +972,16 @@ Experiment turns, Auto-research child Work, consolidation and artifact edits do
 not get the `episode` verb, and an orchestrator that names a member-only action
 is refused with `episode_action_not_granted`.
 
-**Experiment start.** `episode --kick-off-experiment --node <id> --goal-file
+**Experiment start.** `episode --kick-off-experiment --node <id> --handoff-file
 <file>` raises a [plan card](authority-and-proposals.md#episode-plan-cards)
 on the chat's own graph target instead of starting. The card appears when the
 turn's Patch lands, so the agent writes and fixes the node in the same turn.
 `--invocation-limit` may shorten the episode but never exceed the node's limit,
-and the goal file is required. Provider, model and effort are the agent's pick
+and the handoff file is required. The handoff is the text the agent hands to the
+experiment agent, and the run starts with it as that agent's first message.
+Running the command again for the same node with a new key revises the open card
+in place, and a node whose run is live refuses the kickoff with
+`experiment_run_live`. Provider, model and effort are the agent's pick
 from the ready profiles, otherwise Settings; the human may change all three on
 the card. Readiness is checked at Start. The Experiment's ending reaches the chat
 through the episode mailbox, so the agent arms no watcher for it.
@@ -988,7 +992,7 @@ or results that could change project beliefs) to an Experiment. Infrastructure
 and tooling of any size, and short one-shot checks, stay in the chat with a
 launch and a watch. This is guidance; nothing caps a direct launch.
 
-**Auto-research start.** `episode --kick-off-auto-research --goal-file <file>
+**Auto-research start.** `episode --kick-off-auto-research --handoff-file <file>
 --invocation-limit <n>` records a request and answers `card_pending`. The card
 appears after the Work turn succeeds; only the human's Start creates the episode
 on its own branch from main. A branch chat is refused early with
@@ -1410,6 +1414,20 @@ controls from episode, task, Stop, budget, watcher, report and node state. The
 ending fence decides whether the episode is over. A terminal episode on a closed
 Experiment reads Completed even after human Stop, whose ending remains history.
 The browser neither rebuilds health from task rows nor suggests unavailable actions.
+
+Every run also carries one presentation,
+[`RunPresentation`](../../src/rcp/run_presentation.py): phase, title, label,
+state line, tone, pane section, whether it needs the member, recommendation,
+and actions that name the exact episode, turn, report, or node they act on.
+Chat, pane, dock, Runs and Space Runs render it as published, and that module
+holds the only label and tone table. The episode owner fills it from episode
+health. The Experiment owner refines it with its node, watcher and session
+rules, and its control's embedded episode carries the refined value, so one
+response never shows two states. A run that ended at its invocation limit
+shows as paused at the limit with the actionable tone, for both run kinds. A
+run the member stopped is ended and does not ask for them; Runs still groups a
+stopped Experiment under its actionable section. An Experiment with no run has
+no presentation.
 
 Report availability is independent of current episode: the newest surviving
 report for that Experiment and target remains linked to its owner. `report_is_current`

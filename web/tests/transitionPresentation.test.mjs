@@ -107,7 +107,11 @@ test("current-flow board copy omits stale Experiment summary and next action", (
           project_reachable: true,
           graph_target: { kind: "main", branch_id: null },
           node,
-          control: control(),
+          control: withExperimentControlAnswers({
+            ...control(),
+            presentation: undefined,
+            episode_id: "episode",
+          }),
           episode: null,
         },
       ],
