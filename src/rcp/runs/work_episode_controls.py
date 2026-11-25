@@ -425,9 +425,8 @@ def handle_work_episode_controls(
             request_id=request_id,
         )
         recipient = execution.store.episode(sent.episode_id)
-        last_turn = recipient is not None and (
-            recipient.control_node_id is not None
-            and recipient.invocations_used >= recipient.invocation_ceiling
+        last_turn = (
+            recipient is not None and recipient.invocations_used >= recipient.invocation_ceiling
         )
         return _ok(
             request,
