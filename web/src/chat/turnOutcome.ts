@@ -1,13 +1,14 @@
 import type { TurnOutcome, TurnOutcomeStatus } from "../core/types";
 
-const labels: Record<TurnOutcomeStatus, string> = {
-  done: "Done",
+const labels: Record<Exclude<TurnOutcomeStatus, "done">, string> = {
   partial: "Partial",
   could_not: "Couldn't do it",
   not_stated: "No outcome stated",
 };
 
-export function turnOutcomeChip(outcome: TurnOutcome) {
+/** A finished turn's chip; a Done turn shows none. */
+export function turnOutcomeChip(outcome: TurnOutcome | null | undefined) {
+  if (!outcome || outcome.status === "done") return null;
   return {
     status: outcome.status,
     label: labels[outcome.status],

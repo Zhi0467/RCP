@@ -448,9 +448,9 @@ export function AgentWindowTranscript({
                     )}
                   </p>
                 ))}
-              {line.role === "agent" && (line.graphUpdate || line.turnOutcome) && (
+              {line.role === "agent" && (line.graphUpdate || turnOutcomeChip(line.turnOutcome)) && (
                 <div className="chat-turn-receipts">
-                  {line.turnOutcome && <TurnOutcomeChip outcome={line.turnOutcome} />}
+                  <TurnOutcomeChip outcome={line.turnOutcome} />
                   {line.graphUpdate && (
                     <GraphUpdateReceipt
                       update={line.graphUpdate}
@@ -784,8 +784,9 @@ function InlinePausedTask({
   );
 }
 
-function TurnOutcomeChip({ outcome }: { outcome: TurnOutcome }) {
+function TurnOutcomeChip({ outcome }: { outcome: TurnOutcome | null | undefined }) {
   const chip = turnOutcomeChip(outcome);
+  if (!chip) return null;
   return (
     <span className="chat-turn-outcome" data-outcome={chip.status}>
       {chip.label}
