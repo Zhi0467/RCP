@@ -869,8 +869,10 @@ def _request_arguments(namespace, workspace):
             if action == "add_turns" and invocation_limit is None:
                 raise ClientInputError("--add-turns requires --invocation-limit")
             body_file = namespace.body_file
-            if (action == "message") != (body_file is not None):
-                raise ClientInputError("--body-file goes with --message, and --message needs it")
+            if action == "message" and body_file is None:
+                raise ClientInputError("--message needs --body-file")
+            if body_file is not None and action not in ("message", "add_turns"):
+                raise ClientInputError("--body-file goes with --message or --add-turns")
             if action == "answer":
                 if namespace.answer_file is None:
                     raise ClientInputError("--answer requires --answer-file")

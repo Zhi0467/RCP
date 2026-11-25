@@ -926,6 +926,9 @@ def continue_episode_once(
 ) -> tuple[EpisodeRecord, bool]:
     """Continue an ended episode, or replay the continuation this request id made.
 
+    The body's optional note is the human's word to the continued agent, read
+    before its first turn. A replay with a different note is refused.
+
     Returns the continuation and whether it was a replay. Raises the HTTP refusal.
     """
 
@@ -936,6 +939,7 @@ def continue_episode_once(
     if existing is not None:
         if existing.continuation_request_id != body.request_id:
             raise HTTPException(status_code=409, detail="This episode has already been continued.")
+        require_replayed_note(store, existing, body.note)
         return existing, True
     continuation = continue_ended_episode(
         source,
@@ -945,8 +949,41 @@ def continue_episode_once(
         catalog=catalog,
         store=store,
         background_tasks=background_tasks,
+        note=body.note,
     )
     return continuation, False
+
+
+def require_replayed_note(store: AppStore, continuation: EpisodeRecord, note: str | None) -> None:
+    """Refuse a replay that names a different note than its continuation carried."""
+
+    if _continuation_note(store, continuation) != note:
+        raise HTTPException(
+            status_code=409,
+            detail="This request id already continued the episode with a different note.",
+        )
+
+
+def _continuation_note(store: AppStore, continuation: EpisodeRecord) -> str | None:
+    """The note a continuation carried: its first turn's message or its first mail."""
+
+    if continuation.control_node_id is None:
+        if continuation.continuation_request_id is None:
+            return None
+        message_id = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"rcp:{continuation.project_id}:{continuation.continuation_request_id}",
+            )
+        )
+        saved = store.auto_research_message(message_id)
+        return saved.body if saved is not None else None
+    root = (
+        store.agent_task(continuation.root_operation_id) if continuation.root_operation_id else None
+    )
+    message = str(root.request.get("message") or "") if root is not None else ""
+    _, separator, note = message.partition("\n\n")
+    return note if separator else None
 
 
 def continue_ended_episode(
@@ -958,6 +995,7 @@ def continue_ended_episode(
     catalog: ProjectCatalog,
     store: AppStore,
     background_tasks: BackgroundAgentTasks,
+    note: str | None = None,
 ) -> EpisodeRecord:
     """Create one continuation of an ended episode, in either mode.
 
@@ -968,12 +1006,23 @@ def continue_ended_episode(
     try:
         get_project_writer(catalog, source.project_id).history.require_writable()
         if source.mode == "auto_research":
+            mail = (
+                {}
+                if note is None
+                else {
+                    "message_body": note,
+                    "message_id": str(
+                        uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:{source.project_id}:{request_id}")
+                    ),
+                }
+            )
             continuation, _ = continue_auto_research(
                 background_tasks,
                 source,
                 invocation_ceiling=invocation_ceiling,
                 request_id=request_id,
                 authorized_by=authorized_by,
+                **mail,
             )
             return continuation
         return continue_experiment_episode(
@@ -985,6 +1034,7 @@ def continue_ended_episode(
             catalog=catalog,
             store=store,
             background_tasks=background_tasks,
+            note=note,
         )
     except (EpisodeNotRunning, StateUnavailable, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -1137,7 +1187,7 @@ def send_episode_message_as(
                 status_code=409,
                 detail={
                     "code": "episode_not_running",
-                    "message": "This Experiment has ended. Add turns to continue it.",
+                    "message": "This Experiment has ended. Add turns, with a note, to continue it.",
                 },
             ) from exc
     refusal = auto_research_message_refusal(store, episode)

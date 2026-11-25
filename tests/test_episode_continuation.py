@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 
 from rcp.agents import AgentEvent
 from rcp.api.episodes import episode_on_branch
@@ -562,3 +563,60 @@ def test_continue_resumes_an_ended_experiment_episode_in_its_session(
     assert stored is not None
     assert stored.continuation_request_id == request_id
     assert stored.authorized_by is not None
+
+
+def test_a_note_on_continuing_an_ended_experiment_reaches_its_first_turn(
+    manifest, tmp_path: Path
+) -> None:
+    from rcp.api.episode_routes import continue_episode_once
+    from rcp.api.episodes import ContinueEpisodeBody
+
+    app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
+    loop = _Loop(app)
+    loop.start_episode()
+    stage = tmp_path / "loop-stage"
+    loop.bind_session(stage, native_session_id="native-session-abc")
+    loop.settle_exhausted_ending()
+    tasks = app.state.background_tasks
+    store = tasks.store
+    tasks.stream = _session_resuming_stream(
+        kind="node_chat", session_id="native-session-abc", stage_root=str(stage), seen=[]
+    )
+    source = store.episode(loop.episode_id)
+    assert source is not None and source.authorized_by is not None
+
+    body = ContinueEpisodeBody(
+        invocation_ceiling=2,
+        request_id=str(uuid.uuid4()),
+        note="The design changed: run three seeds, not one.",
+    )
+    continuation, replayed = continue_episode_once(
+        source,
+        body,
+        authorized_by=source.authorized_by,
+        catalog=app.state.catalog,
+        background_tasks=tasks,
+    )
+
+    assert replayed is False
+    assert continuation.root_operation_id is not None
+    root = wait_for_task(store, continuation.root_operation_id, expect="succeeded")
+    assert "run three seeds, not one." in RunRequest.model_validate(root.request).message
+    again, replayed = continue_episode_once(
+        source,
+        body,
+        authorized_by=source.authorized_by,
+        catalog=app.state.catalog,
+        background_tasks=tasks,
+    )
+    assert (again.episode_id, replayed) == (continuation.episode_id, True)
+    for changed_note in ("Run five seeds instead.", None):
+        with pytest.raises(HTTPException) as changed:
+            continue_episode_once(
+                source,
+                body.model_copy(update={"note": changed_note}),
+                authorized_by=source.authorized_by,
+                catalog=app.state.catalog,
+                background_tasks=tasks,
+            )
+        assert changed.value.status_code == 409

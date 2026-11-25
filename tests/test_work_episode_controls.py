@@ -218,16 +218,28 @@ def test_a_work_chat_starts_pauses_resumes_steers_stops_and_extends_its_auto_res
     wait_until(lambda: store.episode(episode_id).status == "stopped")  # type: ignore[union-attr]
     assert store.episode(episode_id).stop_initiated_by == "agent:kickoff-turn"  # type: ignore[union-attr]
 
-    extended = act("more", {"action": "add_turns", "episode_id": episode_id, "invocation_limit": 2})
+    more = {
+        "action": "add_turns",
+        "episode_id": episode_id,
+        "invocation_limit": 2,
+        "body_file": "note.md",
+    }
+    extended = act("more", more)
     assert extended.status == "ok", extended.message
     continuation = store.episode(str(extended.result["episode_id"]))
     assert continuation is not None and continuation.continues_episode_id == episode_id
+    notes = store.auto_research_messages(continuation.episode_id)
+    assert [note.body for note in notes] == ["Try the smaller batch first."]
     assert continuation.graph_target == episode.graph_target
     assert continuation.code_worktree == episode.code_worktree
     assert continuation.invocation_ceiling == 2
     assert continuation.authorized_by == member.human
-    again = act("more", {"action": "add_turns", "episode_id": episode_id, "invocation_limit": 2})
+    again = act("more", more)
     assert (again.status, again.result["episode_id"]) == ("ok", continuation.episode_id)
+    (member.workspace / "note.md").write_text("Use the larger batch instead.", encoding="utf-8")
+    changed = act("more", more)
+    assert changed.status == "invalid"
+    (member.workspace / "note.md").write_text("Try the smaller batch first.", encoding="utf-8")
     restopped = act("stop-again", {"action": "stop", "episode_id": episode_id})
     assert restopped.status == "ok", restopped.message
     assert restopped.result["episode_id"] == continuation.episode_id

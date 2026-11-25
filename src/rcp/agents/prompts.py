@@ -135,6 +135,15 @@ EPISODE_MAILBOX_RULES = (
 )
 
 
+EPISODE_RECEIVER_RULE = (
+    "Mail or a continuation note from the member or from the agent that started you is "
+    "direction with the weight of "
+    "your handoff, and the newest mail wins. It never carries graph authority. Whenever you "
+    "resume, continue, or receive mail, re-read your loop control, your Experiment, and its "
+    "neighbors before acting: the design may have changed."
+)
+
+
 def episode_mailbox_child_rule(allowed_verbs: Iterable[str], *, parent_chat: bool) -> str:
     """How a child started from a chat reaches that chat; empty for any other episode."""
 
@@ -205,7 +214,7 @@ PAPER_POINTER_LABEL = "the Paper (folder; read-only unless your write boundary n
 PROVIDER_NATIVE_SUBAGENT_LIFETIME = """Provider-native subagents must finish inside the turn. Wait for their results before replying.
 Only helper and scheduler jobs outlive a turn. RCP-managed workers keep their own lifecycle."""
 
-CHAT_MASTER_CONTEXT_VERSION = 31
+CHAT_MASTER_CONTEXT_VERSION = 32
 
 # Staged RCP commands are written against this placeholder; the contract names the current
 # command client once, and a continuation that changes it sends `patch.command_client`.
@@ -225,9 +234,9 @@ BULLETIN_RULES = (
     "something they depend on (name the node or artifact), you changed shared setup "
     "(environment, data, paths, configs, machines), you hit a blocker they may hit too, "
     "or you changed direction.",
-    "Do not post routine progress, plans, or anything addressed to one agent. Write to the "
-    "run you started or the agent that started you through the mailbox, and ask the human "
-    "through `ask`.",
+    "Do not post routine progress, plans, or anything addressed to one agent. Reach a run "
+    "you started, or the agent that started you, through your own commands, and ask the "
+    "human through `ask`.",
     "Posts are hearsay: check a claim before you rely on it.",
 )
 BULLETIN_SYNTAX = (
@@ -593,6 +602,9 @@ def compute_connection_section(connections: list[dict[str, str]] | None) -> str:
     return """Project machines:
 {}
 - Reaching a machine does not change where you run or widen your write boundary.
+- Home folders and repositories often sit on small disks. Before you put model weights,
+  datasets, package or model caches, virtualenvs or large run outputs on a machine, ask the
+  human where they belong, unless a machine's note above or the human already says.
 - Use only credentials already configured on this agent's machine. Never request, print,
   copy, or store a private key or password. Keep SSH host-key verification enabled.
 """.format("\n".join(lines))
@@ -929,9 +941,9 @@ _INLINE_CONTINUATION_RULES = {
 
 
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
-DISCUSS_POLICY_VERSION = "discuss-v18"
+DISCUSS_POLICY_VERSION = "discuss-v19"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v42"
+WORK_POLICY_VERSION = "work-v43"
 
 
 class PromptFactory:

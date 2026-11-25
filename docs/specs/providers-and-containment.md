@@ -1258,7 +1258,10 @@ watcher wakes, Retry and recovery all state the machines as they are at launch.
 The branch-merge agent receives no compute-machine context; it retains its
 protected graph-history client. The first master/task context lists
 each machine's card name, route, job manager and hint; data fields carry the
-card id. A resumed native session receives a concise delta for added or changed
+card id. It also tells the agent to ask the human where model weights, datasets,
+caches, virtualenvs and large run outputs belong unless a hint or the human
+already says. RCP does not probe disks; home folders and repositories often sit
+on small disks that only the human knows about. A resumed native session receives a concise delta for added or changed
 machines, with the rules of any manager they name, and only the name of a
 removed one.
 Compute metadata never grants authority and never includes credential contents

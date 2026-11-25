@@ -22,6 +22,8 @@ from rcp.storage import (
     AutoResearchChildExperimentRecord,
     AutoResearchExperimentAllowance,
     AutoResearchExperimentAllowanceReached,
+    AutoResearchMessageRecord,
+    EpisodeNotRunning,
 )
 
 if TYPE_CHECKING:
@@ -59,6 +61,10 @@ class AutoResearchExperimentLimitInvalid(ValueError):
             f"allowance of {allowance.total}; lower --invocation-limit to "
             f"{allowance.total} or less."
         )
+
+
+class AutoResearchMessageConflict(ValueError):
+    """A child-message key was replayed with a different body or recipient."""
 
 
 def require_auto_research_experiment_limit(
@@ -326,6 +332,49 @@ class AutoResearchExperimentCoordinator:
             reason=result.reason,
             replacement_command=result.replacement_command,
         )
+
+    def message(
+        self,
+        auto_research_episode_id: str,
+        child_episode_id: str,
+        *,
+        message_id: str,
+        sender_task_id: str,
+        body: str,
+    ) -> AutoResearchMessageRecord:
+        """Mail an owned running child Experiment's next invocation; replay by message id.
+
+        Raises ``EpisodeNotRunning`` for an ended child and
+        ``AutoResearchMessageConflict`` when the id already carries another message.
+        """
+
+        route = self._child(auto_research_episode_id, child_episode_id)
+        saved = self.store.auto_research_message(message_id)
+        if saved is None:
+            if route.state != "running":
+                raise EpisodeNotRunning("child_experiment_ended")
+            saved = self.store.record_episode_message(
+                AutoResearchMessageRecord(
+                    message_id=message_id,
+                    episode_id=child_episode_id,
+                    sender_role="orchestrator",
+                    sender_task_id=sender_task_id,
+                    recipient_kind="episode",
+                    body=body,
+                    created_at=self.store.now(),
+                )
+            )
+        if (
+            saved.episode_id != child_episode_id
+            or saved.recipient_kind != "episode"
+            or saved.sender_role != "orchestrator"
+            or saved.sender_task_id != sender_task_id
+            or saved.body != body.strip()
+        ):
+            raise AutoResearchMessageConflict(
+                "This key already carries a different message; use a new key."
+            )
+        return saved
 
     def _fresh_request(
         self,
