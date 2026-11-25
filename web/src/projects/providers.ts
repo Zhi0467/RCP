@@ -81,9 +81,17 @@ export function reasoningFor(models: ModelChoice[], model: string): string[] {
   return [...new Set(models.flatMap((item) => item.reasoning))];
 }
 
-/** Whether the catalog says this model runs without an effort, so none is offered or kept. */
+/**
+ * Whether the catalog says this model runs without an effort, so none is offered
+ * or kept: a listed model with no efforts, or the provider default when no
+ * listed model takes one. An unlisted model keeps its saved effort.
+ */
 export function takesNoEffort(models: ModelChoice[], model: string): boolean {
-  return models.length > 0 && reasoningFor(models, model).length === 0;
+  if (model === "") {
+    return models.length > 0 && models.every((item) => item.reasoning.length === 0);
+  }
+  const chosen = models.find((item) => item.id === model);
+  return chosen !== undefined && chosen.reasoning.length === 0;
 }
 
 export function reasoningOptions(models: ModelChoice[], model: string, saved: string): Option[] {

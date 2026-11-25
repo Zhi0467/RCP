@@ -97,6 +97,15 @@ test("a catalog whose models take no effort offers no effort, even a saved one",
   });
 });
 
+test("an unlisted model keeps its saved effort", () => {
+  assert.deepEqual(reasoningOptions(AGY_MODELS, "gemini-next-preview", "medium"), [
+    { id: "medium", label: "medium" },
+  ]);
+  assert.deepEqual(modelChange(AGY_MODELS, "gemini-next-preview", "medium"), {
+    model: "gemini-next-preview",
+  });
+});
+
 test("an effort the new model still accepts is left alone", () => {
   assert.deepEqual(modelChange(CODEX.models, "gpt-5.5", "high"), { model: "gpt-5.5" });
 });
