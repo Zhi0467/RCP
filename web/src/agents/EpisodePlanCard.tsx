@@ -505,7 +505,7 @@ function PlanActions({
   startDisabled,
   startNote,
   canAnswer,
-  runHere,
+  runHereDisabled,
   onTap,
 }: {
   parked: boolean;
@@ -516,7 +516,8 @@ function PlanActions({
   /** What Start also does, shown on hover. */
   startNote?: string;
   canAnswer: boolean;
-  runHere: boolean;
+  /** Run in this chat's own gate; absent where the card has no such action. */
+  runHereDisabled?: boolean;
   onTap: (decision: PlanDecisionKind) => void;
 }) {
   const quiet = (decision: PlanDecisionKind, label: string, disabled = false) => (
@@ -534,11 +535,11 @@ function PlanActions({
     <>
       {quiet("decline", parked ? "Delete" : "Don't run")}
       {parked ? dirty && quiet("save", "Save") : quiet("park", "Park for later")}
-      {runHere && (
+      {runHereDisabled !== undefined && (
         <button
           className="button"
           type="button"
-          disabled={startDisabled}
+          disabled={runHereDisabled}
           aria-busy={busy === "run_here" || undefined}
           onClick={() => onTap("run_here")}
         >
@@ -756,7 +757,7 @@ function ExperimentPlanCardView({
             busy={busy}
             locked={locked}
             canAnswer={question.can_answer}
-            runHere
+            runHereDisabled={locked || isStaged || !planInputsReady(inputs, node, cap)}
             startNote={nodeChanges ? "Saves your edits to the node" : undefined}
             startDisabled={
               locked || isStaged || !providerReady || !planInputsReady(inputs, node, cap)
@@ -924,7 +925,6 @@ function AutoResearchPlanCardView({
             busy={busy}
             locked={locked}
             canAnswer={question.can_answer}
-            runHere={false}
             startDisabled={locked || !providerReady || !autoResearchInputsReady(inputs)}
             onTap={(decision) => void tap(decision)}
           />
