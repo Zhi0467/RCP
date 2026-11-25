@@ -480,6 +480,8 @@ treat a parked card as inactive. The agent's question snapshot marks it
 `shelved: true` and sorts it after every other pending item, so a backlog of
 parked plans never crowds out a newer question. The state is named `shelved` in
 storage because `parked` already names a question waiting on a settled turn.
+A row stored before parking and revision existed reads as open and never
+revised.
 
 The card follows its chat. Anyone who can read the chat sees it. In a private
 chat only its owner acts; in a shared or node chat any Patch-capable member with
@@ -499,8 +501,9 @@ node's (`invocation_ceiling_above_node`), and a blank or oversized goal
 (`goal_invalid`). A node that is not ready, an admission conflict, or another
 refusal settles it `failed`. The episode id derives from the
 card's request, the tapping member authorizes it, and its root names the raising
-turn, so that chat may later resume, extend or stop it. **Delete**
-settles `declined`. Outcomes reach the agent through ordinary answer delivery.
+turn, so that chat may later resume, extend or stop it. **Don't run**, named
+**Delete** on a parked card, settles `declined`. An agent may revise a card but
+never starts or deletes one. Outcomes reach the agent through ordinary answer delivery.
 The Auto-research orchestrator starts its own children without cards.
 
 **Run in this chat** is an Experiment card's third decision and starts no episode. After

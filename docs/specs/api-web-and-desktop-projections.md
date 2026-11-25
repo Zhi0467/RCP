@@ -566,9 +566,13 @@ plan card any member `plan_card_actor` admits, resolves through
 start?}`; approving a plan card requires `start`. `park` and `save` are plan
 card decisions that write the member's `start` fields into the card without
 settling it and return `{outcome: "parked" | "saved", pinned_sha256}` with the
-new hash; `save` requires `start`. `run_here` is an Experiment plan card's and
-requires `start`. Another kind answers `422 decision_not_available`. Approve
-and decline accept parked cards. The response is
+new hash; `save` without `start` answers `422 start_required`. `run_here`, the
+decision behind Run in this chat, is an Experiment plan card's and requires
+`start` (`422 experiment_start_required`). Another kind answers
+`422 decision_not_available`. A Run in this chat message longer than the chat
+queue's limit answers `422 run_here_too_long`, and a card whose chat no longer
+exists answers `409 run_here_chat_unavailable`; both leave the card open.
+Approve and decline accept parked cards. The response is
 `{outcome: "approved" | "declined" | "stale" | "failed" | "expired" | "run_here", result?, reason?}`.
 A presented hash the card no longer carries returns `409 plan_revised` and
 leaves the card open;
