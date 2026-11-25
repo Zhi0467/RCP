@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Final, cast
 
 from pydantic import BaseModel
@@ -71,6 +71,25 @@ def stored_dispatch_authority(stored: str | None) -> AgentDispatchAuthority | No
     if isinstance(raw, dict) and raw.get("task_contract") in _RETIRED_TASK_CONTRACTS:
         return None
     return AgentDispatchAuthority.model_validate_json(stored)
+
+
+def pinned_request_fields_match(
+    model: type[BaseModel],
+    left: Mapping[str, object],
+    right: Mapping[str, object],
+    fields: Iterable[str],
+) -> bool:
+    """Whether two persisted requests pin the same values for ``fields``.
+
+    A row written before a field existed omits it, and the field's default is
+    its meaning, so an omitted field equals its default.
+    """
+
+    for field in fields:
+        default = model.model_fields[field].get_default(call_default_factory=True)
+        if left.get(field, default) != right.get(field, default):
+            return False
+    return True
 
 
 def persisted_request_roundtrips(request: BaseModel, stored: object) -> bool:

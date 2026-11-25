@@ -445,3 +445,25 @@ def test_a_model_without_an_effort_still_wakes_from_its_watcher(tmp_path) -> Non
     wake.request.update(session_id="session-no-effort", reasoning=runtime.reasoning)
 
     assert store.create_experiment_watcher_invocation(wake, ["watcher-no-effort"]) is not None
+
+
+def test_an_omitted_pinned_field_means_its_default() -> None:
+    from rcp.service import RunRequest
+    from rcp.storage.request_compat import pinned_request_fields_match
+
+    fields = ("chat_scope", "patch_kind", "browser_requested", "model")
+    old_row = {"model": "gpt-5"}
+    rebuilt = {
+        "model": "gpt-5",
+        "chat_scope": "node",
+        "patch_kind": "work",
+        "browser_requested": False,
+    }
+
+    assert pinned_request_fields_match(RunRequest, rebuilt, old_row, fields)
+    assert not pinned_request_fields_match(
+        RunRequest, {**rebuilt, "chat_scope": "project"}, old_row, fields
+    )
+    assert not pinned_request_fields_match(
+        RunRequest, {**rebuilt, "model": "other"}, old_row, fields
+    )
