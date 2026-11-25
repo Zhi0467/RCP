@@ -608,7 +608,8 @@ card**, from proposal to result: Needs you, Parked, Starting, the run's own
 state, then its outcome. The plan and the episode stay separate
 [stored records](authority-and-proposals.md#episode-plan-cards); the card joins
 them by the episode ids the question projection names, so the join survives a
-reload. A card is one record, so a park, revision or Start shows in every view
+reload. A card that names a run first paints once the chat's run list arrives,
+so opening the agent never flips it from its own state to the run's. A card is one record, so a park, revision or Start shows in every view
 that lists it. "Task" names these cards only; one agent invocation is a turn.
 
 A task card sits inside the answer of the turn that raised it, or that last

@@ -167,6 +167,9 @@ test("a card joins its run by the episode ids it names and renders in its revisi
   const startedCard = card({ started_episode_id: "episode/a", current_episode_id: "episode/b" });
   assert.equal(taskCards.cardRun(startedCard, runs), runs[1]);
   assert.equal(taskCards.cardRun(card(), runs), null);
+  assert.equal(taskCards.cardAwaitsRun(startedCard, true), true);
+  assert.equal(taskCards.cardAwaitsRun(startedCard, false), false);
+  assert.equal(taskCards.cardAwaitsRun(card(), true), false);
   const asked = question({ card: startedCard });
   assert.equal(taskCards.runCard(runs[0], [asked]), asked);
   assert.equal(taskCards.runCard({ episode: { episode_id: "episode/c" } }, [asked]), null);

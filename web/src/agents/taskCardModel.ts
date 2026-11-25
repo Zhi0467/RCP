@@ -94,6 +94,14 @@ export function cardRun(
   return id ? (episodes.find((run) => run.episode.episode_id === id) ?? null) : null;
 }
 
+/** A started card waits for the run list, so its first paint is the run, not its own state. */
+export function cardAwaitsRun(
+  card: ApprovalCard | null | undefined,
+  runsLoading: boolean,
+): boolean {
+  return runsLoading && Boolean(card?.current_episode_id ?? card?.started_episode_id);
+}
+
 /** The card whose Start created this run, when the chat shows it. */
 export function runCard(
   run: DockEpisode,

@@ -540,6 +540,42 @@ test("a started card shows its live run and then its outcome, through a reload, 
     });
 });
 
+test("a started card's first paint is its run, and the chat stays at its bottom while runs load", async () => {
+  for (const viewport of [WIDE, PHONE])
+    await withPage(viewport, async (page, url) => {
+      const state = fullPane();
+      state.questions = [started()];
+      await serveTaskCards(page, state);
+      let releaseCards;
+      const cardsHeld = new Promise((resolve) => (releaseCards = resolve));
+      await page.route("**/api/projects/p/chats/chat/cards", async (route) => {
+        await cardsHeld;
+        await route.fallback();
+      });
+      await page.addInitScript((selector) => {
+        window.cardBadges = [];
+        new MutationObserver(() => {
+          const badge = document.querySelector(`${selector} .question-state`)?.textContent;
+          if (badge && window.cardBadges.at(-1) !== badge) window.cardBadges.push(badge);
+        }).observe(document, { subtree: true, childList: true, characterData: true });
+      }, CARD);
+      await page.goto(`${url}?long`);
+      const lines = page.locator(".agent-chat-view-lines");
+      await page.locator('.agent-chat-view-line[data-task-id="later-15"]').first().waitFor();
+      await page.waitForTimeout(200);
+      releaseCards();
+      await page.locator(CARD).waitFor();
+      await page.waitForTimeout(200);
+      assert.deepEqual(await page.evaluate(() => window.cardBadges), [
+        state.episodes[0].episode.presentation.state_line,
+      ]);
+      const gap = await lines.evaluate(
+        (element) => element.scrollHeight - element.clientHeight - element.scrollTop,
+      );
+      assert.ok(gap < 2, `the chat left its bottom by ${gap}px`);
+    });
+});
+
 test("the pane lists four sections that fold and stay folded, at phone width too", async () => {
   for (const viewport of [WIDE, PHONE])
     await withPage(viewport, async (page, url) => {

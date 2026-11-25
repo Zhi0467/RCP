@@ -27,6 +27,7 @@ import { TaskCard, TaskCardRow } from "../agents/TaskCard";
 import {
   agentPaneContent,
   agentPaneCount,
+  cardAwaitsRun,
   cardRun,
   runCard,
   taskCardView,
@@ -649,6 +650,7 @@ export function AgentChatView({
   const showTaskCard = (id: string | undefined) =>
     Boolean(id) && scrollToCard(`[data-task-card="${CSS.escape(id!)}"]`);
   const renderPlanCard = (question: AgentQuestion) => {
+    if (cardAwaitsRun(question.card, cards.loading)) return null;
     const action = planCardAction(question.card)!;
     const here =
       action.kind === "experiment_start" &&
