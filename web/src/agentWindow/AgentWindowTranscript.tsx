@@ -4,7 +4,6 @@ import {
   History,
   Inbox,
   LoaderCircle,
-  Play,
   RotateCcw,
   ScrollText,
   TriangleAlert,
@@ -39,6 +38,7 @@ import type { GlossaryIndex } from "../graph/glossary";
 import { ReplyLinkButton } from "../core/ReplyLinkButton";
 import { CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD, THREAD_TIME_GAP_MINUTES } from "../core/uiConstants";
 import { MarkdownAnswer } from "../core/chatMarkdown";
+import { TaskActionButton } from "../agents/taskActions";
 import { BrowserTurnNotice } from "../core/BrowserControls";
 import { ArtifactCommentQuotes, artifactCommentLead } from "../chat/ArtifactCommentQuotes";
 import { SentAttachments } from "../chat/SentAttachments";
@@ -708,7 +708,7 @@ export function InlineTaskProgress({
     : undefined;
   const label =
     running?.text ??
-    (task ? task.status_message || `${taskKindLabel(task.kind)} is running` : "Starting task");
+    (task ? task.status_message || `${taskKindLabel(task.kind)} is running` : "Starting turn");
   return (
     <>
       {task && <TurnProgress task={task} live />}
@@ -768,24 +768,17 @@ function InlinePausedTask({
   onRetry: () => void;
 }) {
   return (
-    <div className="chat-task-inline paused" role="status" aria-label="Agent task paused">
+    <div className="chat-task-inline paused" role="status" aria-label="Agent turn paused">
       <span>{pausedTaskText(task)}</span>
-      <button
-        type="button"
-        className="button compact primary"
-        disabled={disabled}
-        onClick={onResume}
-      >
-        <Play size={12} /> Resume
-      </button>
-      <button
-        type="button"
-        className="button compact secondary"
-        disabled={disabled}
-        onClick={onRetry}
-      >
-        <RotateCcw size={12} /> Retry
-      </button>
+      {task.can_resume && (
+        <TaskActionButton
+          action="resume"
+          className="button compact primary"
+          disabled={disabled}
+          onClick={onResume}
+        />
+      )}
+      {task.can_retry && <TaskActionButton action="retry" disabled={disabled} onClick={onRetry} />}
     </div>
   );
 }

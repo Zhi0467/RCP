@@ -5991,7 +5991,7 @@ function MemberApp({
               )
             }
             onResumeExperiment={(episodeId, turns) =>
-              void requestEpisodeContinuation(episodeId, turns).catch(() => undefined)
+              requestEpisodeContinuation(episodeId, turns).catch(() => undefined)
             }
             inheritedIsolation={
               activeBranchEpisode

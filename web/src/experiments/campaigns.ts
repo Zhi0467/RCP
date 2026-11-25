@@ -3,59 +3,12 @@ import type {
   Episode,
   EpisodeBlockedReason,
   EpisodeEnding,
-  EpisodeHealth,
-  EpisodeRecommendationKind,
-  EpisodeTaskControlKind,
-  EpisodeTask,
+  RunAction,
+  RunPresentation,
+  RunRecommendation,
 } from "../core/types";
 
-export type { EpisodeHealth, EpisodeRecommendationKind };
-
-const EPISODE_HEALTH_LABELS: Record<EpisodeHealth, string> = {
-  starting: "Starting",
-  active: "Active",
-  recovering: "Recovering",
-  needs_action: "Needs action",
-  stopping: "Stopping gracefully",
-  wrapping_up: "Wrapping up visualization and report",
-  completed: "Completed",
-  stopped: "Stopped",
-  failed: "Failed",
-};
-
 export type EpisodeTaskRole = "orchestrator" | "worker" | "wake";
-
-export interface EpisodeTaskRow {
-  task: EpisodeTask;
-  role: EpisodeTaskRole;
-  depth: number;
-}
-
-export interface EpisodeRecommendation {
-  kind: EpisodeRecommendationKind;
-  label: string;
-  task: AgentTask | null;
-}
-
-export interface EpisodeTaskControl {
-  kind: EpisodeTaskControlKind;
-  task: AgentTask;
-  /**
-   * Whether this control may be retried on a different binding. A rebinding
-   * starts a clean native session, which an Auto-research worker never gets —
-   * it continues only through the session its dispatch bound it to — and which
-   * a stopping episode refuses from anyone, so it admits only exact recovery.
-   * A switch either would submit comes back refused.
-   */
-  canSwitchProvider: boolean;
-}
-
-export interface EpisodeProjection {
-  health: EpisodeHealth;
-  healthLabel: string;
-  recommendation: EpisodeRecommendation;
-  taskControl: EpisodeTaskControl | null;
-}
 
 export function isLiveEpisode(episode: Episode): boolean {
   // The projection says whether a parent is still live. Restating the storage
@@ -79,7 +32,7 @@ export function autoResearchStartRefusal(state: AutoResearchStartState): string 
   if (state.mutationsDisabled) return "Graph mutations are currently disabled.";
   if (!state.authoritative) return "The project has not finished reconciling its saved state.";
   if (!state.canonicalReachable) return "The project's saved state is unreachable.";
-  if (state.taskStarting) return "Another task start is already being submitted.";
+  if (state.taskStarting) return "Another turn is already starting.";
   if (state.episodeAction) return "Wait for the current episode action to finish.";
   return null;
 }
@@ -117,38 +70,37 @@ export function runsEpisodeCards(
     );
 }
 
-export function currentEpisodeControlTask(
-  episode: Episode,
-  tasks: AgentTask[] = episode.tasks,
-): AgentTask | null {
-  if (!episode.current_control_task_id) return null;
-  return tasks.find((task) => task.operation_id === episode.current_control_task_id) ?? null;
-}
-
-const EPISODE_RECOMMENDATION_LABELS: Record<EpisodeRecommendationKind, string> = {
-  continue: "Let auto-research continue",
+const RUN_RECOMMENDATION_LABELS: Record<RunRecommendation, string> = {
+  continue: "Let the run continue",
   wait: "Wait for the current step",
   resume: "Resume the current turn",
   retry: "Retry the current turn",
   reauthorize: "Add turns",
+  reauthenticate_provider: "Sign in on the machine, verify it above, then retry",
+  keep_loop: "Keep the loop running; check now if needed",
+  start_episode: "Start a new episode",
+  stop_and_restart: "Stop the loop, then start a new episode",
+  resolve_requirements: "Resolve the run requirements",
   open_report: "Open report",
-  review: "Review the episode state",
-  none: "No further action is needed",
+  review: "Review the run",
+  none: "No action needed",
 };
 
-/** The wording for the wait and review the projection distinguishes by state. */
-const EPISODE_RECOMMENDATION_LABELS_BY_HEALTH: Partial<
-  Record<EpisodeHealth, Partial<Record<EpisodeRecommendationKind, string>>>
-> = {
-  wrapping_up: { wait: "Wrapping up visualization and report" },
-  recovering: { wait: "Wait for automatic turn recovery" },
-  stopping: { wait: "Wait for the current turn to finish" },
-  starting: { wait: "Wait for auto-research to start" },
-  active: { wait: "Wait for the current turn to pause" },
-  stopped: { none: "The episode has stopped" },
-  failed: { review: "Review the episode failure" },
-  needs_action: { review: "Review the blocked turn" },
-};
+/** The published next step in words, led by what blocks the run when something does. */
+export function runRecommendationLabel(
+  presentation: Pick<RunPresentation, "recommendation" | "actions">,
+  episode: Pick<Episode, "blocked_reason" | "ending"> | null,
+): string {
+  const offered = (kind: RunAction["kind"]) =>
+    presentation.actions.some((action) => action.kind === kind);
+  const step =
+    presentation.recommendation === "reauthorize" && !offered("continue")
+      ? "review"
+      : presentation.recommendation;
+  const label = RUN_RECOMMENDATION_LABELS[step];
+  if (step === "reauthenticate_provider") return label;
+  return blockedReasonLead(episode?.blocked_reason, episode?.ending, label);
+}
 
 /**
  * One lead sentence naming what blocks the episode, before the recommendation.
@@ -177,55 +129,16 @@ export function blockedReasonLead(
   return label;
 }
 
-export function episodeProjection(
-  episode: Episode,
-  tasks: AgentTask[] = episode.tasks,
-): EpisodeProjection {
-  // Lifecycle state, next step, and available control are decided by the server.
-  // This function resolves them to copy and to the task object a control acts on.
-  const task = currentEpisodeControlTask(episode, tasks);
-  const defaultLabel =
-    episode.recommendation === "reauthorize" && !episode.can_continue
-      ? EPISODE_RECOMMENDATION_LABELS.review
-      : (EPISODE_RECOMMENDATION_LABELS_BY_HEALTH[episode.health]?.[episode.recommendation] ??
-        EPISODE_RECOMMENDATION_LABELS[episode.recommendation]);
-  const label =
-    episode.mode === "experiment_loop"
-      ? experimentEpisodeRecommendationLabel(episode, defaultLabel)
-      : defaultLabel;
-  return {
-    health: episode.health,
-    healthLabel: EPISODE_HEALTH_LABELS[episode.health],
-    recommendation: {
-      kind: episode.recommendation,
-      label: blockedReasonLead(episode.blocked_reason, episode.ending, label),
-      task,
-    },
-    taskControl:
-      episode.task_control && task
-        ? {
-            kind: episode.task_control,
-            task,
-            // Read from the episode's own membership: a mode without roles, or
-            // a control this list does not name, is not a worker.
-            canSwitchProvider:
-              episode.stop_requested_at === null &&
-              episode.tasks.find((member) => member.operation_id === task.operation_id)?.role !==
-                "worker",
-          }
-        : null,
-  };
-}
-
-function experimentEpisodeRecommendationLabel(episode: Episode, fallback: string): string {
-  if (episode.recommendation === "continue") return "Let the experiment loop continue";
-  if (episode.health === "starting" && episode.recommendation === "wait") {
-    return "Wait for the experiment loop to start";
-  }
-  if (episode.health === "active" && episode.recommendation === "wait") {
-    return "Wait for the current experiment turn to pause";
-  }
-  return fallback;
+/**
+ * Whether a retry may move to another provider. A rebinding starts a clean
+ * native session, which an Auto-research worker never gets and a stopping
+ * episode refuses from anyone.
+ */
+export function episodeCanSwitchProvider(episode: Episode, task: AgentTask): boolean {
+  return (
+    episode.stop_requested_at === null &&
+    episode.tasks.find((member) => member.operation_id === task.operation_id)?.role !== "worker"
+  );
 }
 
 export function episodeEndingLabel(ending: EpisodeEnding): string {
@@ -247,20 +160,6 @@ export function episodeReportPreviewUrl(projectId: string, episodeId: string): s
   return `/api/projects/${encodeURIComponent(projectId)}/episodes/${encodeURIComponent(episodeId)}/report/viewer`;
 }
 
-export function episodeTaskRows(
-  episode: Episode,
-  tasks: EpisodeTask[] = episode.tasks,
-): EpisodeTaskRow[] {
-  const episodeTasks = tasks
-    .filter((task) => task.episode_id === episode.episode_id)
-    .sort(compareTaskTime);
-  return episodeTasks.map((task) => ({
-    task,
-    role: task.role,
-    depth: task.depth,
-  }));
-}
-
 export function episodeTaskRoleLabel(role: EpisodeTaskRole): string {
   switch (role) {
     case "orchestrator":
@@ -274,13 +173,6 @@ export function episodeTaskRoleLabel(role: EpisodeTaskRole): string {
 
 export function formatTokenCount(value: number): string {
   return new Intl.NumberFormat("en-US").format(value);
-}
-
-function compareTaskTime(left: EpisodeTask, right: EpisodeTask): number {
-  return (
-    comparableTime(left.created_at) - comparableTime(right.created_at) ||
-    left.operation_id.localeCompare(right.operation_id)
-  );
 }
 
 function comparableTime(value: string): number {

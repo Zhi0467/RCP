@@ -1,14 +1,14 @@
 import { EpisodeQuestions } from "./EpisodeQuestions";
 import { graphViewHash } from "../core/graphTarget";
 import { ChevronDown, LoaderCircle, Network, RotateCcw, Send, Telescope } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState, type Ref } from "react";
+import { useEffect, useId, useRef, useState, type Ref } from "react";
 import {
   episodeEndingLabel,
-  episodeProjection,
   episodeReportPreviewUrl,
-  episodeTaskRows,
   formatTokenCount,
+  runRecommendationLabel,
 } from "./campaigns";
+import { TaskCardHeader } from "../agents/TaskCardHeader";
 import { MarkdownAnswer } from "../core/chatMarkdown";
 import { ApiError } from "../core/api";
 import { useRunArtifacts } from "./useRunArtifacts";
@@ -97,7 +97,6 @@ export function AutoResearchEpisodeCard({
   const messageDisabled =
     messageRefused || !episode.can_message || (messageContinues && !messageTurnsValid);
   const [localError, setLocalError] = useState<string | null>(null);
-  const taskRows = useMemo(() => episodeTaskRows(episode), [episode]);
   const apiBase = `/api/projects/${encodeURIComponent(episode.project_id)}`;
   const { store } = useRefreshRuntime();
   const timelineProfile = episodeProfile(episode.project_id, episode.episode_id);
@@ -105,15 +104,7 @@ export function AutoResearchEpisodeCard({
   const timeline = timelineResource.value?.timeline ?? null;
   const timelineError = timelineResource.error ? String(timelineResource.error) : null;
   const runArtifacts = useRunArtifacts(episode.project_id, episode.episode_id, expanded);
-  const projection = useMemo(
-    () =>
-      episodeProjection(
-        episode,
-        taskRows.map(({ task }) => task),
-      ),
-    [episode, taskRows],
-  );
-  const { recommendation, taskControl } = projection;
+  const presentation = episode.presentation;
   const mergeBusy = busyAction === `merge:${episode.episode_id}`;
   const messageBusy = busyAction === `message:${episode.episode_id}`;
   const anotherActionBusy = busyAction !== null || taskActionId !== null;
@@ -167,27 +158,22 @@ export function AutoResearchEpisodeCard({
 
   return (
     <article
-      className={`campaign-run ${projection.health}`}
+      className={`campaign-run ${presentation.tone}`}
       data-episode-id={episode.episode_id}
       data-selected={selected || undefined}
     >
       <span className="campaign-state-rail" aria-hidden="true" />
-      <div className="campaign-run-heading">
-        <button
-          className="campaign-run-toggle"
-          type="button"
-          aria-label={`${expanded ? "Collapse" : "Expand"} auto-research episode started ${episodeTimestamp}`}
-          aria-expanded={expanded}
-          aria-controls={detailId}
-          onClick={() => setExpanded((current) => !current)}
-        />
-        <span className="campaign-run-identity">
-          <strong className="campaign-run-title">
-            <Telescope size={14} aria-hidden="true" />
-            <span>Auto-research</span>
-          </strong>
-          <span className="campaign-run-meta">
-            <span className={`status-pill ${projection.health}`}>{projection.healthLabel}</span>
+      <TaskCardHeader
+        presentation={presentation}
+        icon={Telescope}
+        toggle={{
+          expanded,
+          controls: detailId,
+          label: `${expanded ? "Collapse" : "Expand"} auto-research episode started ${episodeTimestamp}`,
+          onToggle: () => setExpanded((current) => !current),
+        }}
+        meta={
+          <>
             <time dateTime={episode.created_at}>{episodeTimestamp}</time>
             <BranchTag refs={graphRefs} target={episode.graph_target} />
             <EpisodeAuthor author={episode.authorized_by} />
@@ -199,18 +185,22 @@ export function AutoResearchEpisodeCard({
                 Continued {chain.length - 1} {chain.length === 2 ? "time" : "times"}
               </span>
             )}
-          </span>
-        </span>
-        <EpisodeBudgetMeter episode={episode} />
-        <span className="campaign-run-time">
-          <EpisodeArchiveButton
-            episode={episode}
-            disabled={anotherActionBusy}
-            onArchive={onArchive}
-          />
-          <ChevronDown size={16} aria-hidden="true" />
-        </span>
-      </div>
+          </>
+        }
+        trailing={
+          <>
+            <EpisodeBudgetMeter episode={episode} />
+            <span className="campaign-run-time">
+              <EpisodeArchiveButton
+                episode={episode}
+                disabled={anotherActionBusy}
+                onArchive={onArchive}
+              />
+              <ChevronDown size={16} aria-hidden="true" />
+            </span>
+          </>
+        }
+      />
       {expanded && (
         <div className="campaign-run-detail" id={detailId} tabIndex={-1} ref={detailRef}>
           {chain.length > 1 && (
@@ -250,12 +240,12 @@ export function AutoResearchEpisodeCard({
           )}
           <div className="campaign-run-actions">
             <div
-              className={`campaign-run-health ${projection.health}`}
+              className={`campaign-run-health ${presentation.tone}`}
               role="status"
               aria-live="polite"
               aria-atomic="true"
             >
-              <strong>{projection.healthLabel}</strong>
+              <strong>{presentation.state_line}</strong>
             </div>
             {episode.graph_branch && (
               <a
@@ -269,10 +259,10 @@ export function AutoResearchEpisodeCard({
               </a>
             )}
             <EpisodeControls
+              presentation={presentation}
               episode={episode}
               additionalTurns={additionalTurns}
               onAdditionalTurnsChange={setAdditionalTurns}
-              taskControl={taskControl}
               busyAction={busyAction}
               taskActionId={taskActionId}
               onOperateTask={onOperateTask}
@@ -290,9 +280,9 @@ export function AutoResearchEpisodeCard({
             onRetry={runArtifacts.reload}
           />
 
-          <div className={`campaign-run-recommendation ${recommendation.kind}`}>
+          <div className={`campaign-run-recommendation ${presentation.recommendation}`}>
             <span className="eyebrow">Recommended next step</span>
-            <strong>{recommendation.label}</strong>
+            <strong>{runRecommendationLabel(presentation, episode)}</strong>
           </div>
 
           {episode.graph_branch && (

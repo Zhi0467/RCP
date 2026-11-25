@@ -2,6 +2,7 @@
 // progress line, approval card titles and the schedules list.
 
 import type {
+  AgentQuestion,
   AgentSchedule,
   AgentTask,
   AgentThread,
@@ -183,8 +184,15 @@ export function approvalCardDetails(card: ApprovalCard): Array<[string, string]>
   ]);
 }
 
-export function approvalCardExpired(card: ApprovalCard, now: number): boolean {
-  return card.state === "expired" || Date.parse(card.expires_at) <= now;
+/** Whether a card still waits on its human: unsettled, and not expired by the server. */
+export function askedCardOpen(
+  question: Pick<AgentQuestion, "state"> & { card?: Pick<ApprovalCard, "state"> | null },
+): boolean {
+  return (
+    question.state !== "answered" &&
+    question.state !== "dismissed" &&
+    question.card?.state !== "expired"
+  );
 }
 
 const TIME = /^\d{1,2}$/;

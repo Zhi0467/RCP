@@ -59,3 +59,76 @@ for (const width of [1000, 390]) {
     }
   });
 }
+
+async function experimentDrawer(width, query = "") {
+  const page = await browser.newPage({ viewport: { width, height: 850 } });
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.route("**/api/**", (route) => route.fulfill({ status: 404, json: {} }));
+  await page.goto(`${origin}/tests/fixtures/taskCards.html?view=drawer${query}`);
+  return { page, errors };
+}
+
+for (const width of [1000, 390]) {
+  test(`the node's Resume shows it is in flight and holds Start at ${width}px`, async () => {
+    const { page, errors } = await experimentDrawer(width);
+    try {
+      const resume = page.locator(".experiment-continue-button");
+      const start = page.locator(".experiment-run-button");
+      assert.equal(await resume.isEnabled(), true);
+      await resume.click();
+      await page.locator('.experiment-continue-button[aria-busy="true"]').waitFor();
+      assert.equal(await resume.isDisabled(), true);
+      assert.equal(await start.isDisabled(), true);
+      assert.deepEqual(await page.evaluate(() => window.resumed), [["episode/exp-1", 5]]);
+      await page.evaluate(() => window.finishResume());
+      await page.locator('.experiment-continue-button:not([aria-busy="true"])').waitFor();
+      assert.equal(await resume.isEnabled(), true);
+      assert.equal(
+        await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+        true,
+      );
+      assert.deepEqual(errors, []);
+    } finally {
+      await page.close();
+    }
+  });
+}
+
+test("the node's Resume and Start wait while a Stop is unsettled", async () => {
+  const { page, errors } = await experimentDrawer(1000, "&stop=1");
+  try {
+    const start = page.locator(".experiment-run-button");
+    assert.equal(await page.locator(".experiment-continue-button").isDisabled(), true);
+    assert.equal(await start.isDisabled(), true);
+    const reasons = await start.getAttribute("aria-describedby");
+    assert.equal(await page.locator(`[id="${reasons}"] li`).count(), 1);
+    assert.deepEqual(await page.evaluate(() => window.resumed), []);
+    assert.deepEqual(errors, []);
+  } finally {
+    await page.close();
+  }
+});
+
+test("the launch picker closes on Escape and on a press outside it", async () => {
+  const { page, errors } = await experimentDrawer(1000);
+  try {
+    const chip = page.locator(".agent-config-chip");
+    const panel = page.locator(".agent-config");
+    await chip.click();
+    await panel.waitFor();
+    await page.getByLabel("Starting message").fill("Begin with seed two.");
+    assert.equal(await panel.count(), 1);
+    await page.keyboard.press("Escape");
+    assert.equal(await panel.count(), 0);
+    assert.equal(await page.locator(".detail-drawer").count(), 1);
+    assert.equal(await chip.evaluate((element) => element === document.activeElement), true);
+    await chip.click();
+    assert.equal(await page.getByLabel("Starting message").inputValue(), "Begin with seed two.");
+    await page.locator(".detail-drawer h2, .detail-drawer h1").first().click();
+    assert.equal(await panel.count(), 0);
+    assert.deepEqual(errors, []);
+  } finally {
+    await page.close();
+  }
+});

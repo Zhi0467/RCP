@@ -264,6 +264,9 @@ test("Escape closes the repository list before the menu; the agent picker and Ad
   await panel.locator("select").first().focus();
   await page.keyboard.press("Escape");
   await panel.waitFor({ state: "detached" });
+  assert.equal(await menu.getAttribute("aria-expanded"), "true");
+  assert.equal(await isFocused(chip), true);
+  await page.keyboard.press("Escape");
   assert.equal(await menu.getAttribute("aria-expanded"), "false");
   assert.equal(await isFocused(menu), true);
   await menu.click();

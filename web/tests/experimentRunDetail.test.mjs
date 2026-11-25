@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { withExperimentControlAnswers, withTaskAnswers, withTurnAnswers } from "./taskAnswers.mjs";
+import {
+  experimentRunDisplay,
+  withEpisodeAnswers,
+  withExperimentControlAnswers,
+  withTaskAnswers,
+  withTurnAnswers,
+} from "./taskAnswers.mjs";
 import { after, test } from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -19,11 +25,12 @@ after(() => runtime.scheduler.stop());
 // Components that read backend data need the shared refresh runtime.
 const renderMarkup = (element) =>
   renderToStaticMarkup(React.createElement(ResourceRuntime, null, element));
-const { ExperimentRunDetail, experimentHealthLabel } = await server.ssrLoadModule(
+const { ExperimentRunDetail } = await server.ssrLoadModule(
   "/src/experiments/ExperimentRunDetail.tsx",
 );
-const { buildExperimentRun, experimentWatcherDisplayItems, experimentRecommendation } =
-  await server.ssrLoadModule("/src/experiments/runProjection.ts");
+const { buildExperimentRun, experimentWatcherDisplayItems } = await server.ssrLoadModule(
+  "/src/experiments/runProjection.ts",
+);
 const { ExecutionView } = await server.ssrLoadModule("/src/graph/GraphViews.tsx");
 
 after(() => server.close());
@@ -220,15 +227,9 @@ function render(run, props = {}) {
       ...props,
     }),
   );
-  const recommendation = experimentRecommendation(run);
-  if (
-    recommendation.step !== "start_episode" ||
-    (!props.startDisabled && props.allowStart !== false)
-  ) {
-    const expected = renderMarkup(React.createElement("strong", null, recommendation.label));
-    const actual = html.match(/class="experiment-run-recommendation[^]*?<strong>(.*?)<\/strong>/s);
-    assert.ok(actual);
-    assert.equal(`<strong>${actual[1]}</strong>`, expected);
+  const step = run.control.recommendation;
+  if (step !== "start_episode" || (!props.startDisabled && props.allowStart !== false)) {
+    assert.ok(html.includes(`class="experiment-run-recommendation ${step}"`));
   }
   return html;
 }
@@ -237,12 +238,16 @@ function assertDetailProjection(html, health, step) {
   const healthViews = [
     ...html.matchAll(/<div class="experiment-run-health[^"]*"[^>]*>(.*?)<\/div>/gs),
   ];
-  assert.equal(healthViews.length, 1);
-  assert.equal(
-    healthViews[0][1],
-    renderMarkup(React.createElement("strong", null, experimentHealthLabel(health))),
-  );
+  assert.equal(healthViews.length, health === null ? 0 : 1);
+  if (health === null) return assertRecommendation(html, step);
+  const { label, tone } = experimentRunDisplay(health);
+  assert.ok(healthViews[0][0].includes(`class="experiment-run-health ${tone}"`));
+  assert.ok(healthViews[0][1].startsWith(`<strong>${label}`));
 
+  assertRecommendation(html, step);
+}
+
+function assertRecommendation(html, step) {
   const recommendationViews = [
     ...html.matchAll(/<div class="experiment-run-recommendation[^"]*">(.*?)<\/div>/gs),
   ];
@@ -287,7 +292,7 @@ function recoveryTask(fields = {}) {
 }
 
 function episode(fields = {}) {
-  return {
+  return withEpisodeAnswers({
     graph_target: { kind: "main" },
     episode_id: "episode-1",
     project_id: "project",
@@ -327,7 +332,7 @@ function episode(fields = {}) {
     task_control: null,
     run_section: "running",
     ...fields,
-  };
+  });
 }
 
 test("Experiment wrap-up uses the shared parent state without report recovery controls", () => {
@@ -604,7 +609,7 @@ test("a closed Experiment offers no episode start until its status is edited", (
     health: "completed",
   });
 
-  assertDetailProjection(html, "completed", "none");
+  assertDetailProjection(html, null, "none");
 
   assert.doesNotMatch(html, /experiment-run-button/);
 });
@@ -764,7 +769,7 @@ test("staged graph changes disable Start until Sync", () => {
     { startDisabled: true },
   );
 
-  assertDetailProjection(html, "needs_action", "review");
+  assertDetailProjection(html, null, "review");
   assert.match(html, /experiment-run-button" disabled=""/);
 });
 
@@ -1127,7 +1132,7 @@ test("an unavailable Stop is neither shown nor recommended", () => {
     health: "needs_action",
   });
 
-  assertDetailProjection(html, "needs_action", "start_episode");
+  assertDetailProjection(html, null, "start_episode");
 
   assert.doesNotMatch(html, /experiment-stop-loop/);
 
@@ -1621,4 +1626,74 @@ test("a parent link selects and expands the newest member of its continued run",
   assert.match(html, /data-episode-id="parent-newest"[^>]*data-selected="true"/);
   assert.match(html, /aria-expanded="true"/);
   assert.match(html, /<details[^>]*class="episode-type-group"[^>]*open=""/);
+});
+
+function shownState(html) {
+  const badge = html.match(/<span class="[^"]*task-state[^"]*"[^>]*>[^<]*<\/span>/);
+  if (!badge) return null;
+  return {
+    phase: badge[0].match(/data-phase="([^"]*)"/)[1],
+    tone: badge[0].match(/data-tone="([^"]*)"/)[1],
+    text: badge[0].replace(/<[^>]*>/g, ""),
+  };
+}
+
+test("the dock, the compact card, and Runs show one run in the same phase, label, and tone", async () => {
+  const { RUN_STATE_CASES } = await import("./fixtures/runStates.mjs");
+  const { ApprovalCardStack, dockStackCards } = await server.ssrLoadModule(
+    "/src/agents/ApprovalCardStack.tsx",
+  );
+  const { TaskCardHeader } = await server.ssrLoadModule("/src/agents/TaskCardHeader.tsx");
+  for (const state of RUN_STATE_CASES) {
+    const experiment = node({ status: state.control.node_closed ? "completed" : "running" });
+    const answered = control({
+      ...state.control,
+      episode: episode({ status: "running", wrapup_state: "not_started", ...state.episode }),
+    });
+    const { presentation } = answered;
+    const runs = shownState(
+      renderMarkup(
+        React.createElement(ExecutionView, {
+          graph: { nodes: { [experiment.id]: experiment } },
+          episodes: [answered.episode],
+          episodeMessages: {},
+          tasks: [],
+          watchers: [],
+          experimentControl: { [experiment.id]: answered },
+          stopBusyIds: new Set(),
+        }),
+      ),
+    );
+    const compact = shownState(
+      renderMarkup(
+        React.createElement(TaskCardHeader, { compact: true, presentation, icon: "span" }),
+      ),
+    );
+    const dock = shownState(
+      renderMarkup(
+        React.createElement(ApprovalCardStack, {
+          stackKey: `shared:${state.name}`,
+          cards: dockStackCards(
+            [],
+            [{ episode: answered.episode, title: "Run", link: "#/run", questions: [] }],
+            [],
+          ),
+          onDecided() {},
+          onResolved() {},
+          onAnswered() {},
+          onChanged() {},
+        }),
+      ),
+    );
+    assert.deepEqual({ phase: runs.phase, tone: runs.tone }, state.shows, `${state.name} on Runs`);
+    assert.equal(runs.text, presentation.label, state.name);
+    assert.deepEqual(
+      { phase: compact.phase, tone: compact.tone },
+      state.shows,
+      `${state.name} compact`,
+    );
+    assert.equal(compact.text, presentation.state_line, state.name);
+    if (state.shows.phase === "needs_you") assert.deepEqual(dock, compact, state.name);
+    else assert.equal(dock, null, `${state.name} stays out of the dock`);
+  }
 });

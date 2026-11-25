@@ -1,9 +1,65 @@
+import { LoaderCircle, Play, RotateCcw, Square, type LucideIcon } from "lucide-react";
+import { createElement } from "react";
 import { ApiError } from "../core/api";
 import { type ResourceStore, resourceKeyId } from "../core/resourceStore";
 import type { AgentTask } from "../core/types";
 import { taskResourceProfile, tasksResourceKey } from "./taskResources";
 
 export type TaskAction = "pause" | "resume" | "retry" | "stop";
+
+/** How every surface names and draws one turn control. Pausing a turn reads Stop. */
+export const TASK_ACTIONS: Record<
+  TaskAction,
+  { label: string; busyLabel: string; pendingLabel: string; icon: LucideIcon }
+> = {
+  pause: { label: "Stop", busyLabel: "Stopping…", pendingLabel: "Pausing", icon: Square },
+  resume: { label: "Resume", busyLabel: "Resuming…", pendingLabel: "Resuming", icon: Play },
+  retry: { label: "Retry", busyLabel: "Retrying…", pendingLabel: "Retrying", icon: RotateCcw },
+  stop: { label: "Stop", busyLabel: "Stopping…", pendingLabel: "Stopping", icon: Square },
+};
+
+/** One turn control as a menu row. */
+export function taskActionItem(
+  action: TaskAction,
+  item: { label?: string; disabled?: boolean; onSelect: () => void },
+) {
+  return { label: TASK_ACTIONS[action].label, icon: TASK_ACTIONS[action].icon, ...item };
+}
+
+/** One turn control as a button, drawn the same wherever a turn can be controlled. */
+export function TaskActionButton({
+  action,
+  label,
+  busy = false,
+  disabled = false,
+  className = "button compact secondary",
+  size = 12,
+  onClick,
+}: {
+  action: TaskAction;
+  label?: string;
+  busy?: boolean;
+  disabled?: boolean;
+  className?: string;
+  size?: number;
+  onClick: () => void;
+}) {
+  const { icon, busyLabel, label: named } = TASK_ACTIONS[action];
+  return createElement(
+    "button",
+    {
+      type: "button",
+      className,
+      disabled,
+      "aria-busy": busy,
+      "data-task-action": action,
+      onClick,
+    },
+    busy ? createElement(LoaderCircle, { className: "spin", size }) : createElement(icon, { size }),
+    " ",
+    busy ? busyLabel : (label ?? named),
+  );
+}
 
 /** Task commands share one fenced list and paint their intent before network I/O. */
 export function beginTaskMutation(
@@ -24,9 +80,7 @@ export function beginTaskMutation(
         action_error: undefined,
         action_error_action: undefined,
         action_pending: action,
-        status_label: { pause: "Pausing", resume: "Resuming", retry: "Retrying", stop: "Stopping" }[
-          action
-        ],
+        status_label: TASK_ACTIONS[action].pendingLabel,
         ...(action === "pause" || action === "stop"
           ? { pausing: true, can_pause: false }
           : { queued: true, paused: false, can_resume: false, can_retry: false }),

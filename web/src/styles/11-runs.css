@@ -555,17 +555,15 @@
   overflow: hidden;
   position: relative;
 }
-.campaign-run.starting,
-.campaign-run.active,
-.campaign-run.recovering,
-.campaign-run.wrapping_up {
+.campaign-run.running {
   --campaign-tone: var(--teal);
 }
-.campaign-run.needs_action,
+.campaign-run.waiting,
 .campaign-run.stopping {
   --campaign-tone: var(--mustard);
 }
-.campaign-run.failed {
+.campaign-run.degraded,
+.campaign-run.actionable {
   --campaign-tone: var(--coral);
 }
 .campaign-run.stopped {
@@ -711,6 +709,7 @@
   white-space: nowrap;
 }
 .campaign-run-identity > .campaign-run-title {
+  display: flex;
   font-family: var(--editorial);
   font-size: var(--type-xl);
   font-weight: 600;
@@ -762,15 +761,17 @@
 .campaign-run-chain-members li[aria-current="true"] {
   color: var(--ink);
 }
-.campaign-run .status-pill.needs_action,
+.campaign-run .status-pill.waiting,
 .campaign-run .status-pill.stopping,
 .campaign-run .status-pill.queued {
   background: var(--amber-soft);
   color: var(--amber);
 }
-.campaign-run .status-pill.starting,
-.campaign-run .status-pill.recovering,
-.campaign-run .status-pill.wrapping_up,
+.campaign-run .status-pill.degraded,
+.campaign-run .status-pill.actionable {
+  background: var(--red-soft);
+  color: var(--red);
+}
 .campaign-run .status-pill.completed {
   background: var(--green-soft);
   color: var(--green);
