@@ -302,6 +302,12 @@
 .approval-head .approval-title {
   flex: 1 1 auto;
 }
+.task-card-header {
+  flex-wrap: wrap;
+}
+.task-card-header > .approval-title {
+  flex-basis: 9em;
+}
 .question-header .card-asked {
   margin-left: auto;
 }

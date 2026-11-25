@@ -692,7 +692,7 @@ test("an Auto-research child explains its active turn, stale guidance, and watch
   const task = recoveryTask({
     operation_id: "active-child-turn",
     status: "running",
-    status_message: "Agent task is running.",
+    status_message: "Turn is running.",
     error: null,
     can_retry: false,
     request: {

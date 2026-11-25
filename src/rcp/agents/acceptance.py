@@ -297,7 +297,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
 
         if _holds_reauthorized_exhaustion(state, campaign_contract):
             # ``session`` is the provider boundary that changes the durable task message
-            # from preparation to "Agent task is running."  Create the held-turn marker
+            # from preparation to "Turn is running."  Create the held-turn marker
             # first so that visible message is a reliable browser synchronization point.
             _prepare_campaign_fixture_active(
                 resolved_cwd,

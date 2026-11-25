@@ -323,7 +323,7 @@ test("project Runs keeps the dispatched child card while timeline owns turn hist
     },
     created_at: "2026-08-06T01:00:00Z",
     updated_at: "2026-08-06T01:01:00Z",
-    status_message: "Agent task is running.",
+    status_message: "Turn is running.",
     error: null,
     attempt: 1,
     estimate_seconds: 60,
@@ -378,7 +378,7 @@ test("project Runs keeps the dispatched child card while timeline owns turn hist
       task_active: true,
       current_operation_id: childTask.operation_id,
       current_status: "running",
-      current_status_message: "Agent task is running.",
+      current_status_message: "Turn is running.",
     },
   );
   const indexed = {
