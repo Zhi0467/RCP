@@ -49,7 +49,7 @@ from rcp.terminals.models import (
     TerminalUnavailable,
 )
 from rcp.terminals.probe import TerminalProbe, TerminalProbeCache
-from rcp.terminals.profile import SHELL_PATH, account_config_paths
+from rcp.terminals.profile import account_config_paths, shell_path
 from rcp.terminals.runtime import (
     end_runtime,
     get_runtime,
@@ -685,7 +685,7 @@ class TerminalManager:
                     raise RuntimeError(missing_deploy_key(str(root)))
             if git_identity is not None:
                 identity_path = await asyncio.to_thread(
-                    write_git_identity, self.data_dir, git_identity, git_path=SHELL_PATH
+                    write_git_identity, self.data_dir, git_identity, git_path=shell_path()
                 )
                 git_read_paths = (*git_read_paths, str(identity_path))
                 git_environment = {

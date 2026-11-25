@@ -9,6 +9,7 @@ import type {
   ApprovalCard,
   ApprovalCardAction,
   ApprovalCardDecision,
+  ApprovalCardDecisionKind,
   ApprovalCardResult,
   ApprovalCardRevision,
   GraphNode,
@@ -181,7 +182,7 @@ export async function savePlanNodeEdit(
   }
 }
 
-export type PlanDecisionKind = ApprovalCardDecision["decision"];
+export type PlanDecisionKind = ApprovalCardDecisionKind;
 
 /** A plan tap's request: the pinned digest plus the human's own inputs and the node revision shown. */
 export function planStartDecision(

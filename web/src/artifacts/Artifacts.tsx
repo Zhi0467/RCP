@@ -1,16 +1,14 @@
-import { parseProjectHash } from "../experiments/experimentBoardModel";
-import { graphTargetFromHash } from "../core/graphTarget";
 import { setReferenceDrag } from "../core/projectReferences";
 import { CopyReferenceButton } from "../core/CopyReferenceButton";
 import { useState, type MouseEvent } from "react";
 import { Download, GitCommitHorizontal, MessageCircle, RefreshCw } from "lucide-react";
-import { openArtifact } from "./artifactViewerModel";
+import { artifactGraphTarget, openArtifact } from "./artifactViewerModel";
 import { resourceKeyId } from "../core/resourceStore";
 import { useRefreshRuntime } from "../core/useResource";
 import { useProjectResource } from "../projects/projectResources";
 import { artifactsProfile } from "./artifactResources";
 import { DeleteArtifactButton } from "./DeleteArtifactButton";
-import { StoredArtifactDownload } from "./StoredArtifactDownload";
+import { ArtifactDownload, storedArtifactSave } from "./ArtifactDownload";
 import { EpisodeAuthor } from "../experiments/EpisodeRunControls";
 import type { GraphRef, ProjectArtifact } from "../core/types";
 import { BranchTag } from "../core/BranchTag";
@@ -58,9 +56,7 @@ export function Artifacts({
 
   const row = (entry: ProjectArtifact, grouped: boolean) => {
     const sourceNodeTitle = entry.source_node_id ? nodeTitle(entry.source_node_id) : null;
-    const target =
-      parseProjectHash(entry.source_chat_href ?? "").experimentRoute?.graph_target ??
-      graphTargetFromHash(entry.source_chat_href ?? "");
+    const target = artifactGraphTarget(entry.source_chat_href ?? "");
     return (
       <li
         key={entry.id}
@@ -111,21 +107,25 @@ export function Artifacts({
         {entry.artifact_id && entry.available && (
           <CopyReferenceButton
             projectId={projectId}
-            graphTarget={graphTargetFromHash(entry.source_chat_href ?? "")}
+            graphTarget={target}
             reference={{ kind: "artifact", artifact_id: entry.artifact_id }}
             className="icon-button artifact-entry-action"
           />
         )}
         {entry.can_download && entry.download_url && entry.artifact_id && (
-          <StoredArtifactDownload
-            projectId={projectId}
-            artifactId={entry.artifact_id}
+          <ArtifactDownload
+            save={storedArtifactSave(
+              projectId,
+              entry.artifact_id,
+              entry.download_name ?? entry.name,
+            )}
             name={entry.name}
+            fileName={entry.download_name ?? entry.name}
             className="icon-button artifact-entry-action"
             href={entry.download_url}
           >
             <Download size={15} />
-          </StoredArtifactDownload>
+          </ArtifactDownload>
         )}
         {entry.can_open && (
           // The whole row is this link; the actions above it stay clickable.

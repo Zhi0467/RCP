@@ -73,6 +73,7 @@ import {
   type RefObject,
 } from "react";
 import {
+  api,
   ApiError,
   loadServiceConnections,
   loadConnectionModels,
@@ -118,7 +119,7 @@ import { chatDockScope, useCommentDock } from "../comments/react/CommentDock";
 import { sendKeys } from "../comments/react/threadModel";
 import { useInlineArtifactComments } from "./inlineArtifactComments";
 import type { DockThreads } from "../comments/react/useComments";
-import type { CommentScope } from "../comments/api.ts";
+import { createScopedCommentsClient, type CommentScope } from "../comments/api.ts";
 import { createComposerDraft, useComposerDraft, type ComposerDraft } from "./composerDraft";
 import {
   chooseRecordingFormat,
@@ -383,7 +384,7 @@ export function AgentChatView({
   );
   const endpoints = feed?.endpoints ?? chatEndpoints!;
   const hasTurns = Boolean(feed) || relatedTasks.length > 0 || Boolean(historyMessages?.length);
-  const chatArtifacts = useChatArtifacts(
+  const { artifacts: chatArtifacts, refresh: refreshChatArtifacts } = useChatArtifacts(
     hasTurns ? (feed?.thread.thread_id ?? chatId) : null,
     projectId,
     revision ?? relatedTasks.at(-1)?.updated_at ?? null,
@@ -1607,7 +1608,7 @@ export function AgentChatView({
       {replyComments.headerButton}
       <button
         ref={paneButtonRef}
-        className={`chat-watcher-count agent-pane-button${paneOpen ? " is-open" : ""}`}
+        className={`agent-pane-button${paneOpen ? " is-open" : ""}`}
         type="button"
         aria-expanded={paneOpen}
         aria-label="Tasks and artifacts"
@@ -1790,7 +1791,17 @@ export function AgentChatView({
       setSubmitError(errorMessage(error));
       throw error;
     }
-    if (dismissed) draft.set((current) => [item.message, current].filter(Boolean).join("\n\n"));
+    if (!dismissed) return;
+    draft.set((current) => [item.message, current].filter(Boolean).join("\n\n"));
+    const ids = item.comment_thread_ids ?? [];
+    if (!ids.length) return;
+    const client = createScopedCommentsClient(commentScope, api);
+    const loaded = await Promise.allSettled(ids.map((id) => client.get(id)));
+    commentDock.dock(
+      loaded.flatMap((result) => (result.status === "fulfilled" ? result.value : [])),
+    );
+    const failed = loaded.find((result) => result.status === "rejected");
+    if (failed) setSubmitError(errorMessage(failed.reason));
   };
   const firstLineOfTurn = new Map<string, string>();
   for (const line of shownLines)
@@ -1890,6 +1901,7 @@ export function AgentChatView({
           onOpened={() => {
             if (!paneLayout.beside) setPaneOpen(false);
           }}
+          onDeleted={refreshChatArtifacts}
           onClose={() => setPaneOpen(false)}
         />
       )}

@@ -339,6 +339,8 @@ turn carries the text and anchored `artifact_context` the queue accepted. The
 turn's message leads with the queued text, and the rendered threads follow it.
 A queued message that is removed or refused before its turn starts reopens its
 threads, but only those still resolved under its key and operation id.
+The queue lists each row's `comment_thread_ids`, so Edit returns the text to
+the composer and docks those threads there again.
 
 Two sends queue comments. A composer send queues its docked comments with its
 text when the chat is busy or its queue is not empty; steering still carries

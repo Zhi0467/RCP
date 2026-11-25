@@ -752,6 +752,7 @@ def test_cooperative_api_session_carries_missing_protection(tmp_path, monkeypatc
 
     def capture_identity(*args, git_path):
         assert f"PATH={git_path}" in profile.shell_environment({})
+        assert git_path.split(":")[0] == str(Path.home() / ".local" / "bin")
         return write_identity(*args, git_path=git_path)
 
     monkeypatch.setattr(manager, "write_git_identity", capture_identity)

@@ -11,7 +11,7 @@ import {
 } from "../comments/react/CommentComposer";
 import { CommentPins } from "../comments/react/CommentPins";
 import { CommentList } from "../comments/react/CommentRail";
-import { CommentThreadCard } from "../comments/react/CommentThreadCard";
+import { CommentThreadPopover } from "../comments/react/CommentThreadPopover";
 import {
   textAnchor,
   flashRect,
@@ -233,18 +233,14 @@ export function useReplyComments({
         />
       )}
       {shownThread && (
-        <CommentPopover point={shown.point} label="Comment" onClose={() => setShown(null)}>
-          <CommentThreadCard
-            thread={shownThread}
-            comments={comments}
-            wholeLabel="Whole reply"
-            selected={false}
-            onLocate={() => locate(shownThread)}
-          />
-          <div className="rcp-comments-notice" role="status">
-            {comments.error}
-          </div>
-        </CommentPopover>
+        <CommentThreadPopover
+          thread={shownThread}
+          point={shown.point}
+          comments={comments}
+          wholeLabel="Whole reply"
+          onLocate={() => locate(shownThread)}
+          onClose={() => setShown(null)}
+        />
       )}
       {listPoint && (
         <CommentPopover

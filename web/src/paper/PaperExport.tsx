@@ -3,6 +3,7 @@ import { Package, X } from "lucide-react";
 import type { PaperFile } from "../core/types";
 import { PaperDialog } from "./PaperDialog";
 import { fetchArxivExport } from "./arxivExport";
+import { downloadPaperBlob } from "./paperDownloadModel";
 
 export function PaperExport({
   projectId,
@@ -20,18 +21,16 @@ export function PaperExport({
     try {
       const result = await fetchArxivExport(projectId, file.file_id);
       if ("reason" in result) setFailure(result);
-      else {
-        const link = document.createElement("a");
-        link.href = URL.createObjectURL(result.blob);
-        link.download = `${
-          file.path
-            .split("/")
-            .at(-1)
-            ?.replace(/\.tex$/i, "") ?? "paper"
-        }-arxiv.zip`;
-        link.click();
-        setTimeout(() => URL.revokeObjectURL(link.href), 0);
-      }
+      else
+        downloadPaperBlob(
+          result.blob,
+          `${
+            file.path
+              .split("/")
+              .at(-1)
+              ?.replace(/\.tex$/i, "") ?? "paper"
+          }-arxiv.zip`,
+        );
     } catch (error) {
       setFailure({ reason: "failed", log_tail: String(error) });
     } finally {

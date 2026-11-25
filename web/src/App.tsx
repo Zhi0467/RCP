@@ -38,6 +38,7 @@ import {
 import {
   type SettingsResource,
   settingsProfile,
+  readinessProfile,
   consolidationProfile,
   providerLoginsProfile,
   useProjectResource,
@@ -132,6 +133,7 @@ import { worktreeRepositoryChoices } from "./chat/worktreeRepositories";
 import {
   bindArtifactResourceStore,
   closeArtifactViewer,
+  artifactDownloadOnly,
   openArtifact,
   openEpisodeReport,
   setArtifactViewerHidden,
@@ -181,7 +183,6 @@ import {
   setDesktopWebviewZoom,
   isDesktopRuntime,
   listenDesktopEvent,
-  openDesktopArtifactPdf,
   ADD_TEAM_SPACE_HASH,
   returnDesktopToPersonal,
   reverifyBackendIdentity,
@@ -816,17 +817,11 @@ function MemberApp({
   >(null);
   const showWebMcpArtifactViewer = useCallback(
     async (record: ProjectArtifactRecord, projectId: string) => {
-      if (record.view === "pdf") {
-        // The panel's own path: the desktop's system PDF viewer; a browser offers Download.
-        if (!isDesktopRuntime() || !record.artifact_id) return false;
-        await openDesktopArtifactPdf({
-          projectId,
-          artifactId: record.artifact_id,
-          ...(record.task_id ? { taskId: record.task_id } : {}),
-        });
+      if (artifactDownloadOnly(record.view, Boolean(record.artifact_id))) return false;
+      if (record.view === "pdf" && record.artifact_id) {
+        openArtifact({ projectId, artifactId: record.artifact_id });
         return true;
       }
-      if (record.view === "file") return false;
       const response = await fetch(record.content_url, {
         method: "HEAD",
         cache: "no-store",
@@ -1779,6 +1774,7 @@ function MemberApp({
       const readiness = await loadProjectReadiness(apiBase, true);
       const current = store.view<SettingsResource>(id).value;
       mutation.settle(current ? new Map([[id, { ...current, ...readiness }]]) : undefined);
+      store.invalidate(resourceKeyId(readinessProfile(projectId).key));
     } catch (error) {
       mutation.fail();
       throw error;

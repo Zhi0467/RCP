@@ -1,5 +1,5 @@
-import { Check, Clipboard, ExternalLink, RefreshCw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ExternalLink, RefreshCw } from "lucide-react";
+import { CopyButton, copiedOr } from "../core/CopyButton";
 import type { ServerOperatorRoute } from "../core/desktopRuntime";
 import { formatCommandArgv } from "./projectSetupModel";
 import type { ServerExecutionContext, ServerStep } from "../core/types";
@@ -26,27 +26,16 @@ function routeLandsAs(route: ServerOperatorRoute | null): string | null {
   return route.ssh_target.split("@")[0] ?? null;
 }
 
-function CopyButton({ value, label }: { value: string; label: string }) {
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return;
-    const timer = window.setTimeout(() => setCopied(false), 1600);
-    return () => window.clearTimeout(timer);
-  }, [copied]);
+function CopyValue({ value, label }: { value: string; label: string }) {
   return (
-    <button
+    <CopyButton
       className="button secondary tiny"
-      type="button"
-      aria-label={`Copy ${label}`}
-      onClick={() => {
-        void navigator.clipboard.writeText(value).then(
-          () => setCopied(true),
-          () => setCopied(false),
-        );
-      }}
+      text={value}
+      label={`Copy ${label}`}
+      iconSize={12}
     >
-      {copied ? <Check size={12} /> : <Clipboard size={12} />} {copied ? "Copied" : "Copy"}
-    </button>
+      {copiedOr("Copy")}
+    </CopyButton>
   );
 }
 
@@ -81,14 +70,14 @@ function CommandBlock({
           {entry && (
             <>
               <code>{entry}</code>
-              <CopyButton value={entry} label="the sign-in command" />
+              <CopyValue value={entry} label="the sign-in command" />
             </>
           )}
         </div>
       )}
       <div className="operator-copy-row">
         <code className="operator-value">{command}</code>
-        <CopyButton value={command} label="this command" />
+        <CopyValue value={command} label="this command" />
       </div>
     </>
   );
@@ -213,7 +202,7 @@ export function OperatorActionPanel({
                   <code className="operator-value" aria-labelledby={named}>
                     {String(field.value)}
                   </code>
-                  <CopyButton value={String(field.value)} label={field.name} />
+                  <CopyValue value={String(field.value)} label={field.name} />
                 </div>
               </div>
             );

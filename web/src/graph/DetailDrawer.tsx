@@ -25,7 +25,6 @@ import { experimentGuidanceDetail } from "../core/experimentGuidance";
 import type { GlossaryIndex } from "./glossary";
 import { DraggableWindow } from "../ui/DraggableWindow";
 import { GlossaryText, formatNodeContext, formatNodeValue } from "./GlossaryText";
-import { takeNodeEditRequest, useNodeEditRequest } from "./nodeEditRequest";
 import {
   changedNodeFields,
   editableNodeFields,
@@ -406,13 +405,6 @@ export function DetailDrawer({
     setDraft(nodeEditDraft(node, ontology));
     setEditing(true);
   };
-  const editRequest = useNodeEditRequest();
-  useEffect(() => {
-    if (!projectId || nodeMutationDisabled || !takeNodeEditRequest(projectId, graphTarget, node.id))
-      return;
-    if (!editing) beginEditing();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editRequest, projectId, graphTarget, node.id, nodeMutationDisabled]);
   const cancelEditing = () => {
     if (standingBeforeEdit.current && standingBeforeEdit.current !== "asserted") {
       onStanding(standingBeforeEdit.current, !stagedNewNode);

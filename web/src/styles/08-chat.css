@@ -274,7 +274,8 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.chat-watcher-count {
+.chat-watcher-count,
+.agent-pane-button {
   align-items: center;
   background: color-mix(in srgb, var(--cobalt) 10%, var(--sheet));
   border: 1px solid color-mix(in srgb, var(--cobalt) 30%, var(--line));
@@ -287,7 +288,9 @@
   padding: 4px 9px;
 }
 .chat-watcher-count:hover,
-.chat-watcher-count.is-open {
+.chat-watcher-count.is-open,
+.agent-pane-button:hover,
+.agent-pane-button.is-open {
   background: color-mix(in srgb, var(--cobalt) 20%, var(--sheet));
   border-color: var(--cobalt);
 }
@@ -958,9 +961,6 @@
 .markdown-code-copy:focus-visible {
   outline: 2px solid var(--cobalt);
   outline-offset: 1px;
-}
-.markdown-code-copy.failed {
-  color: var(--red);
 }
 .chat-markdown pre code {
   font-family: var(--mono);

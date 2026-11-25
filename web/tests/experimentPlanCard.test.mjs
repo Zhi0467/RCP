@@ -23,9 +23,6 @@ const { hasStagedHumanDraft, persistProjectHumanDraft } = await server.ssrLoadMo
   "/src/graph/projectSession.ts",
 );
 const { emptyHumanDraft } = await server.ssrLoadModule("/src/graph/humanDraft.ts");
-const { requestNodeEdit, takeNodeEditRequest } = await server.ssrLoadModule(
-  "/src/graph/nodeEditRequest.ts",
-);
 
 const action = (extra = {}) => ({
   kind: "experiment_start",
@@ -429,15 +426,6 @@ test("staged changes count only for this member, project and graph target", () =
     },
   };
   assert.equal(hasStagedHumanDraft(broken, "u1", "p", branch), false);
-});
-
-test("an Edit node request is taken once, by the drawer showing that exact node", () => {
-  const main = { kind: "main" };
-  requestNodeEdit({ projectId: "p", graphTarget: main, nodeId: "exp/a" });
-  assert.equal(takeNodeEditRequest("p", { kind: "branch", branch_id: "b" }, "exp/a"), false);
-  assert.equal(takeNodeEditRequest("p", main, "exp/b"), false);
-  assert.equal(takeNodeEditRequest("p", main, "exp/a"), true);
-  assert.equal(takeNodeEditRequest("p", main, "exp/a"), false);
 });
 
 test("Auto-research cards use main and send edited launch inputs", () => {

@@ -1221,6 +1221,7 @@ def thread_queue(
             "created_at": row.created_at,
             "refusal_reason": row.refusal_reason,
             "attachment_count": row.attachment_count,
+            "comment_thread_ids": row.picks.comment_thread_ids,
         }
         for row in store.agent_thread_queue(thread.agent_id)
     )

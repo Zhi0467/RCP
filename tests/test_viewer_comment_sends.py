@@ -225,6 +225,9 @@ def test_composer_queue_carries_comment_threads_and_removal_reopens(edit_origin,
     queued = queue({"message": "Also check", "comment_thread_ids": [kept]})
     removed = queue({"comment_thread_ids": [dropped]})
     assert _state(store, task, dropped)[0] == "resolved"
+    listed = {item["queue_id"]: item for item in client.get(base).json()["items"]}
+    assert listed[queued]["comment_thread_ids"] == [kept]
+    assert listed[removed]["comment_thread_ids"] == [dropped]
     assert client.delete(f"{base}/{removed}").status_code == 200
     assert _state(store, task, dropped) == ("open", None)
 

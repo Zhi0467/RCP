@@ -2,7 +2,6 @@ import {
   ArrowLeft,
   ArrowRight,
   Check,
-  Clipboard,
   FolderGit2,
   LoaderCircle,
   Plus,
@@ -12,6 +11,7 @@ import {
   Trash2,
   TriangleAlert,
 } from "lucide-react";
+import { CopyButton } from "../core/CopyButton";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { EXPERIMENT_BOARD_POLL_DELAY_MS } from "./useProjectTabs";
 import {
@@ -517,16 +517,6 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
     }
   };
 
-  const copyCommand = async () => {
-    if (!request) return;
-    setError(null);
-    try {
-      await navigator.clipboard.writeText(formatCommandArgv(request.operator_argv));
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-    }
-  };
-
   const saveAndProbeRoute = async () => {
     if (!connection) return;
     if (!operatorTarget.trim()) {
@@ -947,7 +937,9 @@ export function TeamProjectSetup({ intentChooser, onCancel, onCreated }: Props) 
               setProbe(null);
             }}
             onSaveAndProbe={() => void saveAndProbeRoute()}
-            onCopy={() => void copyCommand()}
+            onCopyError={(caught) =>
+              setError(caught instanceof Error ? caught.message : String(caught))
+            }
             onRun={() => void runSetup()}
             onTerminal={() => void openTerminal()}
             onCancel={() => void cancelRequest()}
@@ -1180,7 +1172,7 @@ export function ProvisioningStatus({
   busy,
   onOperatorTarget,
   onSaveAndProbe,
-  onCopy,
+  onCopyError,
   onRun,
   onTerminal,
   onCancel,
@@ -1196,7 +1188,7 @@ export function ProvisioningStatus({
   busy: string | null;
   onOperatorTarget: (value: string) => void;
   onSaveAndProbe: () => void;
-  onCopy: () => void;
+  onCopyError: (error: unknown) => void;
   onRun: () => void;
   onTerminal: () => void;
   onCancel: () => void;
@@ -1317,14 +1309,14 @@ export function ProvisioningStatus({
 
       <div className="provisioning-controls">
         {request.can_run_setup && (
-          <button
+          <CopyButton
             className="button secondary"
-            type="button"
             disabled={busy !== null}
-            onClick={onCopy}
+            text={formatCommandArgv(request.operator_argv)}
+            onError={onCopyError}
           >
-            <Clipboard size={14} /> Copy server command
-          </button>
+            Copy server command
+          </CopyButton>
         )}
         {desktop && connection && request.can_run_setup && operatorRouteReady && (
           <button className="button primary" type="button" disabled={busy !== null} onClick={onRun}>

@@ -37,11 +37,11 @@ import {
   type ConversationAgentStatus,
   orchestratorCanUnlock,
   orchestratorChatTurns,
-  retryRefillsComposer,
   type StartConversationTask,
   chainEpisode,
   withEpisodeAttention,
 } from "./chatWorkspace";
+import { nextTaskAction } from "./agentStatusModel";
 import { OrchestratorComposer, type SendOrchestratorMessage } from "./OrchestratorComposer";
 import {
   AGENT_BOARD_COLUMNS,
@@ -186,6 +186,8 @@ function phaseText(phase: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
+const NEXT_TASK_ACTION_LABEL = { resume: "Resume", retry: "Retry" } as const;
+
 /** Everything after the provider, which renders as its own mark: model, effort,
  *  task type, then what the latest turn needs. */
 function agentMeta(
@@ -199,16 +201,10 @@ function agentMeta(
     config.reasoning,
     agentTypeLabel(conversation),
   ];
-  if (!latest) return parts.filter(Boolean).join(" · ");
-  if (status.state === "working") {
+  if (latest && status.state === "working")
     parts.push(phaseText(latest.phase), `${Math.max(1, Math.round(latest.elapsed_seconds / 60))}m`);
-  } else {
-    if (status.state === "failed" && latest.can_retry) parts.push("Retry");
-    if (status.state === "stopped") {
-      if (latest.can_resume) parts.push("Resume");
-      else if (latest.can_retry) parts.push("Retry");
-    }
-  }
+  const next = nextTaskAction(status, Boolean(conversation.humanTurnRefusal));
+  if (next) parts.push(NEXT_TASK_ACTION_LABEL[next]);
   return parts.filter(Boolean).join(" · ");
 }
 
@@ -837,13 +833,13 @@ export function ChatsWorkspace({
     const { config, label: providerLabel } = agentSetup(conversation, latest);
     const provider = config.provider;
     const renaming = renamingChatId === conversation.chatId;
+    const next = nextTaskAction(status, Boolean(conversation.humanTurnRefusal));
     const action =
-      !conversation.humanTurnRefusal && needsHuman(status) && latest
-        ? latest.can_resume
-          ? { label: "Resume", run: () => onResumeTask(latest) }
-          : latest.can_retry && !retryRefillsComposer(latest)
-            ? { label: "Retry", run: () => onRetryTask(latest) }
-            : null
+      next && latest
+        ? {
+            label: NEXT_TASK_ACTION_LABEL[next],
+            run: () => (next === "resume" ? onResumeTask(latest) : onRetryTask(latest)),
+          }
         : null;
     return (
       <>

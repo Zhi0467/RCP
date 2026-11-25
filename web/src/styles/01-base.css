@@ -268,6 +268,10 @@ button:disabled {
     border-color 0.15s ease,
     transform 0.15s ease;
 }
+button[data-copy-state="failed"] {
+  color: var(--red);
+  outline: 1px solid var(--red);
+}
 .button:hover:not(:disabled),
 .icon-button:hover:not(:disabled) {
   border-color: var(--oxblood);

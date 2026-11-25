@@ -2850,7 +2850,10 @@ async function serveQueue(page, served) {
     }
     const queueId = `queued-${served.posted.length}`;
     served.posted.push({ key: request.headers()["idempotency-key"], body });
-    served.items = [...served.items, queuedMessage(queueId, body.message)];
+    served.items = [
+      ...served.items,
+      queuedMessage(queueId, body.message, { comment_thread_ids: body.comment_thread_ids }),
+    ];
     return route.fulfill({ status: 202, json: { queue_id: queueId, operation_id: null } });
   });
 }
@@ -3086,13 +3089,33 @@ test("Enter steers a steerable text-only run and otherwise queues behind the tur
     assert.equal(served.posted[2].body.comment_thread_ids.length, 1);
     await docked.waitFor({ state: "detached" });
 
+    assert.equal(await rows.nth(2).locator(".thread-queue-comments").count(), 1);
+    assert.equal(await rows.nth(1).locator(".thread-queue-comments").count(), 0);
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+    const rowBox = await rows.nth(2).boundingBox();
+    assert.ok(rowBox.x >= 0 && rowBox.x + rowBox.width <= 390);
+    await shoot(page, "thread-queue-comments-390");
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await shoot(page, "thread-queue-comments-1440");
+    await rows.nth(2).getByRole("button", { name: "Edit" }).click();
+    await docked.waitFor();
+    assert.equal(await rows.count(), 2);
+    await moss.getByRole("button", { name: "Queue", exact: true }).click();
+    await rows.nth(2).waitFor();
+    assert.deepEqual(
+      served.posted[3].body.comment_thread_ids,
+      served.posted[2].body.comment_thread_ids,
+    );
+    await docked.waitFor({ state: "detached" });
+
     task = settled("op-moss");
     await moveWatermark(page);
     await moss.locator(".agent-turn-live").waitFor({ state: "detached" });
     await box.fill("And summarize");
     await box.press("Enter");
     await rows.nth(3).waitFor();
-    assert.deepEqual(served.posted[3].body, {
+    assert.deepEqual(served.posted[4].body, {
       message: "And summarize",
       provider: "claude",
       model: "opus",

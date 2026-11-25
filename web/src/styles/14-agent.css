@@ -1185,8 +1185,8 @@ button.approval-head {
 .thread-queue-row {
   align-items: center;
   animation: thread-queue-enter 0.2s ease-out;
-  border: 1px solid var(--line);
-  border-radius: 12px;
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  border-radius: 10px;
   box-sizing: border-box;
   color: var(--muted);
   display: flex;
@@ -1194,9 +1194,9 @@ button.approval-head {
   gap: 8px;
   margin: 0 0 6px;
   max-height: 60px;
-  min-height: 38px;
+  min-height: 34px;
   overflow: hidden;
-  padding: 4px 5px 4px 12px;
+  padding: 2px 4px 2px 12px;
 }
 .thread-queue-row[data-leaving] {
   animation: thread-queue-leave 0.2s ease-in forwards;
@@ -1235,19 +1235,44 @@ button.approval-head {
   font-variant-numeric: tabular-nums;
   gap: 3px;
 }
+.thread-queue-comments {
+  align-items: center;
+  color: var(--muted);
+  display: inline-flex;
+  flex: none;
+  gap: 4px;
+}
 .thread-queue-row .icon-button {
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  box-shadow: none;
+  color: var(--faint);
   flex: none;
   height: 28px;
   min-height: 28px;
   padding: 0;
   width: 28px;
 }
+.thread-queue-row .icon-button:hover,
+.thread-queue-row .icon-button:focus-visible {
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--ink);
+}
+/* Themes paint relief on every icon button; these stay flat. */
+:root[data-theme] .thread-queue-row .icon-button {
+  background-image: none;
+  box-shadow: none;
+}
+:root[data-theme] .thread-queue-row .icon-button:is(:hover, :active) {
+  box-shadow: none;
+  transform: none;
+}
 .thread-queue-row .button {
   flex: none;
 }
 @keyframes thread-queue-enter {
   from {
-    border-width: 0;
     margin-bottom: 0;
     max-height: 0;
     min-height: 0;
@@ -1258,7 +1283,6 @@ button.approval-head {
 }
 @keyframes thread-queue-leave {
   to {
-    border-width: 0;
     margin-bottom: 0;
     max-height: 0;
     min-height: 0;

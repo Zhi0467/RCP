@@ -149,3 +149,30 @@ for (const width of [1280, 390])
     );
     assert.deepEqual(errors, []);
   });
+
+test("a failed action on a diff-line comment reports inside its popover", async (t) => {
+  const { page } = await openPaper(t, {
+    browser,
+    origin: server.origin,
+    width: 390,
+    init: `window.paperCoachFixture = { tasks: [${JSON.stringify(turn)}], started: [] };`,
+    configure: seed,
+  });
+  await page.getByRole("button", { name: "Coach", exact: true }).first().click();
+  await page.getByRole("button", { name: /2 files changed/ }).click();
+  await page.locator(".paper-turn-file").nth(1).click();
+  const diff = page.getByRole("complementary", { name: "Changes to sections/method.md" });
+  await diff.getByRole("button", { name: "Comment on new line 20" }).click();
+  await page.getByRole("textbox", { name: "Comment", exact: true }).fill("Keep the old wording.");
+  await page.getByRole("button", { name: "Comment", exact: true }).click();
+  await diff.locator(".paper-turn-pin").click();
+  const popover = page.getByRole("dialog", { name: "Comment", exact: true });
+  await popover.locator(".rcp-comment-resolve").click();
+  const notice = popover.getByRole("status");
+  await page.waitForFunction(
+    () => document.querySelector(".rcp-comments-notice")?.textContent.trim().length > 0,
+  );
+  assert.equal(await notice.count(), 1);
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/turn-comment-error-390.png` });
+});

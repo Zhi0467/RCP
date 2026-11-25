@@ -12,6 +12,7 @@ import { Download, MessageCircle, Minus, Pin, RefreshCw, X } from "lucide-react"
 import { api } from "../core/api";
 import {
   closeArtifactViewer,
+  artifactGraphTarget,
   openArtifact,
   openEpisodeReport,
   publishDockedArtifact,
@@ -30,7 +31,7 @@ import {
 import { artifactPopupTarget, storedArtifactViewerUrl } from "./artifactViewerRequests";
 import { parseProjectHash } from "../experiments/experimentBoardModel";
 import { listenDesktopEvent } from "../core/desktopRuntime";
-import { StoredArtifactDownload } from "./StoredArtifactDownload";
+import { ArtifactDownload, storedArtifactSave } from "./ArtifactDownload";
 import { errorMessage } from "../core/errors";
 import { useResource, useRefreshRuntime } from "../core/useResource";
 import { resourceKeyId } from "../core/resourceStore";
@@ -341,8 +342,9 @@ export function ArtifactViewer({ onMerge }: { onMerge?: BranchMergeRequest }) {
           <CopyReferenceButton
             projectId={target.projectId}
             graphTarget={
-              parseProjectHash(state?.thread_href ?? "").experimentRoute?.graph_target ??
-              graphTargetFromHash(state?.thread_href ?? window.location.hash)
+              state.thread_href != null
+                ? artifactGraphTarget(state.thread_href)
+                : graphTargetFromHash(window.location.hash)
             }
             reference={{ kind: "artifact", artifact_id: target.artifactId }}
             className="artifact-viewer-control"
@@ -419,16 +421,16 @@ export function ArtifactViewer({ onMerge }: { onMerge?: BranchMergeRequest }) {
           </a>
         )}
         {target.kind === "artifact" && state && (
-          <StoredArtifactDownload
+          <ArtifactDownload
             key={`download:${state.artifact_id}`}
-            projectId={target.projectId}
-            artifactId={state.artifact_id}
+            save={storedArtifactSave(target.projectId, state.artifact_id, state.download_name)}
             name={state.name}
+            fileName={state.download_name}
             className="artifact-viewer-control"
             href={state.download_url}
           >
             <Download size={16} />
-          </StoredArtifactDownload>
+          </ArtifactDownload>
         )}
         {target.kind === "artifact" && state?.can_delete && (
           <DeleteArtifactButton
@@ -465,16 +467,16 @@ export function ArtifactViewer({ onMerge }: { onMerge?: BranchMergeRequest }) {
           title={title}
         />
       ) : target.kind === "artifact" && state ? (
-        <StoredArtifactDownload
+        <ArtifactDownload
           key={state.artifact_id}
-          projectId={target.projectId}
-          artifactId={state.artifact_id}
+          save={storedArtifactSave(target.projectId, state.artifact_id, state.download_name)}
           name={state.name}
+          fileName={state.download_name}
           className="artifact-viewer-file"
           href={state.download_url}
         >
           Download {title}
-        </StoredArtifactDownload>
+        </ArtifactDownload>
       ) : (
         <div className="artifact-viewer-loading" role="status">
           Loading…

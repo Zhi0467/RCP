@@ -2451,6 +2451,8 @@ export interface ArtifactViewerState {
   /** Same-origin viewer shell for the current version; null for PDF and download-only. */
   viewer_url: string | null;
   download_url: string;
+  /** The saved file name with its extension; `name` may be a title without one. */
+  download_name: string;
   can_keep: boolean;
   can_delete: boolean;
   expires_at: string | null;
@@ -2459,8 +2461,12 @@ export interface ArtifactViewerState {
 /** One entry of `GET /api/projects/{project_id}/episodes/{episode_id}/artifacts`:
  *  the report and every artifact its turns and worker turns produced. */
 export interface RunArtifactEntry {
+  /** Whether this member may delete it now; a hold or a live edit refuses. */
+  can_delete?: boolean;
   artifact_id: string;
   name: string;
+  /** The saved file name with its extension. */
+  download_name: string;
   media_type: AgentArtifactMediaType;
   view: ArtifactView;
   supplier: "turn" | "episode_ending";
@@ -3667,6 +3673,8 @@ export interface ProjectArtifact {
   available: boolean;
   can_download: boolean;
   download_url: string | null;
+  /** The saved file name with its extension; `name` may be a title without one. */
+  download_name?: string | null;
   can_open: boolean;
   unavailable_reason: string | null;
   /** The owning branch, resolved by the server; null is main. */
@@ -4192,6 +4200,8 @@ export type AgentThreadQueueItem =
       /** Set once the queued turn can never start; Dismiss deletes it. */
       refusal_reason: string | null;
       attachment_count?: number;
+      /** The comment threads the message carries; Edit docks them at the composer again. */
+      comment_thread_ids?: string[];
     };
 
 /** `GET /api/agent-threads/{thread_id}/queue`. */
@@ -4357,12 +4367,14 @@ export interface AutoResearchStartOverrides {
   reasoning?: string | null;
 }
 
+export type ApprovalCardDecisionKind = "approve" | "decline" | "park" | "save" | "run_here";
+
 export interface ApprovalCardDecision {
   /**
    * `park` and `save` are plan card decisions and write the member's `start` fields into
    * the card; `run_here` is an Experiment plan card's and requires `start`.
    */
-  decision: "approve" | "decline" | "park" | "save" | "run_here";
+  decision: ApprovalCardDecisionKind;
   /** The hash the member saw; a card revised since answers `409 plan_revised`. */
   pinned_sha256: string;
   start?: ExperimentStartOverrides | AutoResearchStartOverrides;

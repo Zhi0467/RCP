@@ -19,6 +19,8 @@ const { IdentityProvenanceSlip, TeamInvitationLedger, TeamMemberRoster, invitati
 
 after(() => server.close());
 
+const idleCopy = { state: "idle", copy() {}, reset() {} };
+
 const teamIdentity = {
   space_id: "123e4567-e89b-42d3-a456-426614174000",
   space_kind: "team",
@@ -120,8 +122,7 @@ test("an authenticated team member gets the active invitation seam", () => {
       identity: teamIdentity,
       identityError: null,
       teamNoticeId: "team-status",
-      copyStatus: "idle",
-      onCopy() {},
+      copy: idleCopy,
       onEdit() {},
       teamPanelActive: false,
     }),

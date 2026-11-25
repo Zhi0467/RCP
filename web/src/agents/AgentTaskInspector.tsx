@@ -1,14 +1,5 @@
-import {
-  TriangleAlert,
-  Check,
-  Pause,
-  Clock3,
-  Copy,
-  LoaderCircle,
-  RotateCcw,
-  X,
-} from "lucide-react";
-import { useState } from "react";
+import { TriangleAlert, Check, Pause, Clock3, LoaderCircle, RotateCcw, X } from "lucide-react";
+import { CopyButton, copiedOr } from "../core/CopyButton";
 import {
   isActiveTask,
   reconstructTaskTranscript,
@@ -48,36 +39,12 @@ export function AgentTaskInspector({
   onRetry,
   onClose,
 }: Props) {
-  const [copiedReceiptId, setCopiedReceiptId] = useState<number | null>(null);
-  const [copiedContractRole, setCopiedContractRole] = useState<string | null>(null);
   const transcript = task ? reconstructTaskTranscript([task]) : [];
   const attempts = task ? turnAttempts(task, tasks) : [];
   const promptReceipts = task?.debug_receipts?.filter(isPromptReceipt) ?? [];
   const contracts = task?.contracts ?? [];
   const resolvedSkillPackages = task?.request.resolved_skill_packages ?? [];
   const resolvedProviderSkills = task?.request.resolved_provider_skills ?? [];
-
-  async function copyPrompt(receipt: AgentTaskReceipt) {
-    const prompt = receipt.payload.prompt;
-    if (typeof prompt !== "string") return;
-    try {
-      await navigator.clipboard.writeText(prompt);
-    } catch {
-      return;
-    }
-    setCopiedReceiptId(receipt.receipt_id);
-    window.setTimeout(() => setCopiedReceiptId(null), 1600);
-  }
-
-  async function copyContract(contract: AgentTaskContract) {
-    try {
-      await navigator.clipboard.writeText(contract.content);
-    } catch {
-      return;
-    }
-    setCopiedContractRole(contract.role);
-    window.setTimeout(() => setCopiedContractRole(null), 1600);
-  }
 
   return (
     <div
@@ -306,18 +273,13 @@ export function AgentTaskInspector({
                               )}
                               <div className="run-prompt-toolbar">
                                 <span>{promptStats(receipt, prompt)}</span>
-                                <button
+                                <CopyButton
                                   className="button ghost compact"
-                                  type="button"
-                                  onClick={() => void copyPrompt(receipt)}
+                                  text={prompt}
+                                  iconSize={12}
                                 >
-                                  {copiedReceiptId === receipt.receipt_id ? (
-                                    <Check size={12} />
-                                  ) : (
-                                    <Copy size={12} />
-                                  )}
-                                  {copiedReceiptId === receipt.receipt_id ? "Copied" : "Copy"}
-                                </button>
+                                  {copiedOr("Copy")}
+                                </CopyButton>
                               </div>
                               <pre>{prompt}</pre>
                             </div>
@@ -341,18 +303,13 @@ export function AgentTaskInspector({
                           <div className="run-prompt-body">
                             <div className="run-prompt-toolbar">
                               <span>{contractStats(contract)}</span>
-                              <button
+                              <CopyButton
                                 className="button ghost compact"
-                                type="button"
-                                onClick={() => void copyContract(contract)}
+                                text={contract.content}
+                                iconSize={12}
                               >
-                                {copiedContractRole === contract.role ? (
-                                  <Check size={12} />
-                                ) : (
-                                  <Copy size={12} />
-                                )}
-                                {copiedContractRole === contract.role ? "Copied" : "Copy"}
-                              </button>
+                                {copiedOr("Copy")}
+                              </CopyButton>
                             </div>
                             <pre>{contract.content}</pre>
                           </div>
