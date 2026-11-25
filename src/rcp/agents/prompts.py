@@ -593,6 +593,9 @@ def compute_connection_section(connections: list[dict[str, str]] | None) -> str:
     return """Project machines:
 {}
 - Reaching a machine does not change where you run or widen your write boundary.
+- Home folders and repositories often sit on small disks. Before you put model weights,
+  datasets, package or model caches, virtualenvs or large run outputs on a machine, ask the
+  human where they belong, unless a machine's note above or the human already says.
 - Use only credentials already configured on this agent's machine. Never request, print,
   copy, or store a private key or password. Keep SSH host-key verification enabled.
 """.format("\n".join(lines))
