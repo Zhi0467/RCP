@@ -310,6 +310,21 @@ test("a comment link outlines its anchor after a slow artifact loads, and the ou
     const artifact = page.frameLocator("#preview").frameLocator("#artifact");
     const outline = artifact.locator('[data-rcp-selection="locate"]');
     await outline.waitFor({ state: "attached" });
+    const frame = await (
+      await page.frameLocator("#preview").locator("#artifact").elementHandle()
+    ).contentFrame();
+    const outlines = (id) =>
+      frame.waitForFunction((id) => {
+        const mark = document.querySelector('[data-rcp-selection="locate"]');
+        const anchor = document.getElementById(id);
+        if (!mark || !anchor) return false;
+        const box = mark.getBoundingClientRect();
+        const target = anchor.getBoundingClientRect();
+        return (
+          target.height > 0 && Math.abs(box.x - target.x) < 1 && Math.abs(box.y - target.y) < 1
+        );
+      }, id);
+    await outlines("second");
     await page.waitForTimeout(1500);
     const box = await outline.boundingBox();
     const target = await artifact.locator("#second").boundingBox();
@@ -317,21 +332,13 @@ test("a comment link outlines its anchor after a slow artifact loads, and the ou
     assert.ok(Math.abs(box.y - target.y) < 1 && Math.abs(box.x - target.x) < 1);
     assert.ok(target.y >= 0 && target.y + target.height <= 844);
     await page.locator('[data-thread-id="first"] .rcp-comment-quote').click();
-    const moved = await artifact.locator("#first").boundingBox();
-    await page.waitForTimeout(200);
-    const next = await outline.boundingBox();
-    assert.ok(Math.abs(next.y - moved.y) < 1);
+    await outlines("first");
     await page.locator('[data-thread-id="late"] .rcp-comment-quote').click();
-    await artifact.locator("#late").waitFor({ state: "visible" });
-    await page.waitForTimeout(300);
+    await outlines("late");
     const late = await artifact.locator("#late").boundingBox();
-    const outlined = await outline.boundingBox();
     assert.ok(late.y >= 0 && late.y + late.height <= 844);
-    assert.ok(Math.abs(outlined.y - late.y) < 1);
     await artifact.locator("#late").evaluate((late) => (late.style.left = "300px"));
-    await page.waitForTimeout(200);
-    const shifted = await artifact.locator("#late").boundingBox();
-    assert.ok(Math.abs((await outline.boundingBox()).x - shifted.x) < 1);
+    await outlines("late");
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();
