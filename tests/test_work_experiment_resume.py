@@ -58,9 +58,13 @@ def test_work_reply_resumes_a_paused_experiment_with_its_unused_turns(
         mode="work",
     )
 
-    def work_turn(operation_id: str, chat_id: str = loop.chat_id):
+    def work_turn(
+        operation_id: str,
+        chat_id: str = loop.chat_id,
+        session_id: str | None = "native-session-abc",
+    ):
         now = store.now()
-        turn = request.model_copy(update={"chat_id": chat_id})
+        turn = request.model_copy(update={"chat_id": chat_id, "session_id": session_id})
         store.create_agent_task(
             AgentTaskRecord(
                 operation_id=operation_id,
@@ -124,3 +128,12 @@ def test_work_reply_resumes_a_paused_experiment_with_its_unused_turns(
         if item.mode == "experiment_loop"
     ]
     assert sorted(loops) == sorted([loop.episode_id, continuation.episode_id])
+
+    first = loop.episode_id
+    loop.episode_id = continuation.episode_id
+    loop.settle_exhausted_ending(
+        ending="human_pause", concluding_operation_id=continuation.root_operation_id or ""
+    )
+    again = work_turn("work-again", session_id=None)(_resume(first, "resume-again"))
+    assert again.status == "ok", again.message
+    assert again.result["episode_id"] == continuation.episode_id

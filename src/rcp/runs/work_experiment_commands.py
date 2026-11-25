@@ -153,18 +153,21 @@ def handle_work_episode_command(
         return handle_work_episode_controls(execution, mailbox, request, arguments)
     if arguments.action == "stop":
         return stop_own_episode(execution, request, arguments.episode_id)
-    episode = execution.store.episode(arguments.episode_id)
+    from rcp.api.episode_routes import _newest_chain_member
+
+    named = execution.store.episode(arguments.episode_id)
+    episode = None if named is None else _newest_chain_member(execution.store, named)
     if episode is not None and (episode.mode == "auto_research" or episode.ending is None):
         return control_own_turn(execution, request, arguments.episode_id, "resume")
-    return _schedule_work_experiment_resume(execution, request, arguments)
+    return _schedule_work_experiment_resume(execution, request, episode)
 
 
 def _schedule_work_experiment_resume(
     execution: AgentTaskExecution,
     request: EpisodeCommandRequest,
-    arguments: EpisodeControlArguments,
+    episode: EpisodeRecord | None,
 ) -> CommandResponse:
-    """Record the resume; it starts once this turn succeeds.
+    """Record the resume of the chain's current episode; it starts once this turn succeeds.
 
     The paused episode resumes its own session, which is usually this chat's,
     and this turn's Patch lands only when the turn ends, so nothing starts now.
@@ -172,7 +175,6 @@ def _schedule_work_experiment_resume(
 
     store = execution.store
     task = store.agent_task(execution.operation_id)
-    episode = store.episode(arguments.episode_id)
     refusal = (
         "Experiment resume is unavailable for this turn."
         if task is None

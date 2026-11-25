@@ -346,7 +346,8 @@ when no eligible chat remains, it creates a fresh one. Revisits retain
 loaded rows until refresh.
 Display ownership and admission follow
 [Agents](api-web-and-desktop-projections.md#agents).
-Use the shipped provider logos, with Claude in orange and others in monochrome.
+Use the shipped provider logos, with Claude in orange, Antigravity's Gemini mark in
+blue, and others in monochrome.
 Use labels when a logo is unavailable.
 
 Human requests are quiet paper cards in one readable column.
@@ -535,7 +536,8 @@ In a team space Copy link follows the first item. The host's actions follow,
 then Archive or Restore for a project thread, New session, Branch this chat for
 an unarchived project thread, Browser use, and last a
 collapsible `provider · model · effort` row that opens the provider, model and
-effort selects. The agent pick is never a header button. A thread's pick is
+effort selects. For a model that takes no effort, the row omits effort and has no
+effort select. The agent pick is never a header button. A thread's pick is
 stored on the thread at once, and every later turn runs it, retries and wakes
 included; opening the menu reads provider readiness again, so a sign-in from
 Settings appears without a reload. Until the member picks, the row shows the
@@ -609,8 +611,9 @@ card**, from proposal to result: Needs you, Parked, Starting, the run's own
 state, then its outcome. The plan and the episode stay separate
 [stored records](authority-and-proposals.md#episode-plan-cards); the card joins
 them by the episode ids the question projection names, so the join survives a
-reload. A card that names a run first paints once the chat's run list arrives,
-so opening the agent never flips it from its own state to the run's. A card is one record, so a park, revision or Start shows in every view
+reload. A card that names a run first paints after the chat's first successful
+cards read, so opening the agent never flips it from its own state to the run's;
+until then, a failed read included, it is not shown. A card is one record, so a park, revision or Start shows in every view
 that lists it. "Task" names these cards only; one agent invocation is a turn.
 
 A task card sits inside the answer of the turn that raised it, or that last

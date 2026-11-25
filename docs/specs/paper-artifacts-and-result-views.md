@@ -278,20 +278,21 @@ text; the compile root, or an uploaded PDF's path, and page for PDFs, plus "near
 a source line from reverse SyncTeX when the compile has a map, which is
 approximate because the map keeps one mark per line; path for images and HTML. An
 area adds its place as percentages across and down: of the PDF page or image, or
-of the visible part of an HTML page, which is approximate. A long location drops
-whole trailing parts, the approximate source line first. A location carries no
+of the visible part of an HTML page, which is approximate. A long location is cut
+at its length bound, so the trailing approximate source line goes first, possibly
+mid-part. A location carries no
 revision, so after later edits or a rename it can point at the wrong place with no
 signal; the quote is what names the text. Recording a revision was rejected:
 the Coach reads only the current folder, so it could flag drift but not find the
 old place.
 
-A PDF area quotes the text-layer text inside it. An HTML area quotes the text, or
-else the label, of up to eight elements mostly inside it, or of the element that
+A PDF area quotes the text-layer text inside it. An HTML area quotes the label, or
+else the text, of up to eight elements mostly inside it, or of the element that
 holds it, which can reach past the area. One with neither quotes "Selected area",
 so an area over a figure in a Typst PDF, or on a LaTeX page outside the map, names
 only its page and place. The HTML frame bounds each text and element itself, by
-bytes and without a marker. A joined area quote still longer than a quote allows
-is cut, ending in "…"; a longer native selection is refused.
+bytes and without a marker. A quote longer than a quote allows, joined area
+or native selection, is cut without a marker.
 [Comment models](../../src/rcp/comments/models.py) own these bounds. Areas never
 send pixels: the Coach reads the source files from the folder, so text and
 place are enough, and a crop would add an upload to every comment.

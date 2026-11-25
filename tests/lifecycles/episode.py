@@ -368,7 +368,11 @@ class Loop:
         )
 
     def settle_exhausted_ending(
-        self, *, report: bool = False, ending: EpisodeEnding = "exhausted"
+        self,
+        *,
+        report: bool = False,
+        ending: EpisodeEnding = "exhausted",
+        concluding_operation_id: str = "loop-root",
     ) -> None:
         """Put the episode where a spent ceiling leaves it: ended and settled.
 
@@ -390,7 +394,7 @@ class Loop:
                     episode_id=self.episode_id,
                     ending=ending,
                     partial=True,
-                    concluding_operation_id="loop-root",
+                    concluding_operation_id=concluding_operation_id,
                     receipt_json=receipt_json,
                     receipt_sha256=receipt_sha256,
                     state="failed",

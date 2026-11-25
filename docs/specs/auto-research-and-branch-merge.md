@@ -78,8 +78,8 @@ and a body file. The child reads it as ordinary episode mail at its next turn. T
 mail grants no graph authority. The key fixes the message id, so a replay returns
 the same message and a different body under the same key is refused. The message
 takes no turn limit. A child on its final invocation reads the mail only after a
-human adds turns, and the receipt says so. An ended child refuses mail; the root
-starts a new child instead. Episodes outside this root and worker ids are refused.
+human adds turns, and the receipt says so. An ended or stopping child refuses new
+mail; the root starts a new child instead. Episodes outside this root and worker ids are refused.
 Recovery returns a message already committed before a crash, even after the root
 stops.
 
