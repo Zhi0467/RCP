@@ -632,13 +632,25 @@ def auto_research_command_effects(
                 message=f"{exc} Only your own child Experiments take episode mail.",
                 result={"code": "episode_not_owned_child", "episode_id": arguments.episode_id},
             )
+        child = store.episode(saved.episode_id)
+        final_turn = (
+            child is not None
+            and child.control_node_id is not None
+            and child.invocations_used >= child.invocation_ceiling
+        )
         return AutoResearchCommandEffectResult(
-            message="The message waits for the child Experiment's next turn.",
+            message=(
+                "The child Experiment is on its final turn, so it reads this message only "
+                "after a human adds turns; you cannot add them."
+                if final_turn
+                else "The message waits for the child Experiment's next turn."
+            ),
             result={
                 "disposition": "sent",
                 "message_id": saved.message_id,
                 "episode_id": saved.episode_id,
                 "delivered": saved.delivered_at is not None,
+                "read_at": "after_added_turns" if final_turn else "next_turn",
             },
         )
 
@@ -728,6 +740,19 @@ def auto_research_command_effects(
             }:
                 return stop(context, request.arguments.worker_id)
             return None
+        if (
+            isinstance(request, EpisodeCommandRequest)
+            and isinstance(request.arguments, WorkEpisodeControlArguments)
+            and planned_effect_id is not None
+        ):
+            if store.auto_research_message(planned_effect_id) is None:
+                return None
+            outcome = episode(context, request.arguments, planned_effect_id)
+            if outcome.status != "ok":
+                raise AutoResearchCommandUnavailable(
+                    "The interrupted child message does not match its original command."
+                )
+            return outcome
         if (
             isinstance(request, EpisodeCommandRequest)
             and isinstance(request.arguments, ExperimentKickoffArguments)

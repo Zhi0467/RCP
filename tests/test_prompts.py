@@ -706,6 +706,20 @@ def test_auto_research_ask_rendering_follows_resolved_verbs():
     assert auto._orchestrator_ask_contract(auto_research_allowed_verbs("orchestrator"))
 
 
+def test_orchestrator_mailbox_rules_follow_resolved_verbs():
+    from rcp.agents import auto_research_prompt as auto
+    from rcp.agents.staged_command_client import EPISODE_MESSAGE
+    from tests.helpers import auto_research_verbs as auto_research_allowed_verbs
+
+    granted = auto._orchestrator_mailbox_rules(auto_research_allowed_verbs("orchestrator"))
+    assert "--recipient" in granted
+    assert EPISODE_MESSAGE[1] in granted
+    assert "`ask`" in granted
+    bare = auto._orchestrator_mailbox_rules(("validate",))
+    for absent in ("--recipient", EPISODE_MESSAGE[1], "`ask`"):
+        assert absent not in bare
+
+
 @pytest.mark.parametrize("actor", ["orchestrator", "worker"])
 def test_auto_research_stable_values_capture_allowed_verbs_and_ask_limits(actor):
     from rcp.agents.auto_research_prompt import auto_research_prompt_values

@@ -367,6 +367,8 @@ class AutoResearchExperimentCoordinator:
         if (
             saved.episode_id != child_episode_id
             or saved.recipient_kind != "episode"
+            or saved.sender_role != "orchestrator"
+            or saved.sender_task_id != sender_task_id
             or saved.body != body.strip()
         ):
             raise AutoResearchMessageConflict(
