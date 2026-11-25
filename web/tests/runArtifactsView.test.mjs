@@ -16,6 +16,7 @@ const { RunArtifacts } = await server.ssrLoadModule("/src/experiments/RunArtifac
 const artifact = {
   artifact_id: "pdf-one",
   name: "results.pdf",
+  download_name: "results.pdf",
   media_type: "application/pdf",
   view: "pdf",
   supplier: "turn",
