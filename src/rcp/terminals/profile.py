@@ -9,6 +9,16 @@ from pathlib import Path
 from typing import Any
 
 
+def user_tool_paths() -> tuple[Path, ...]:
+    """The account's user tools, and uv's store their links point into, that exist."""
+    home = Path.home()
+    return tuple(
+        path
+        for path in (home / ".local" / "bin", home / ".local" / "share" / "uv")
+        if path.is_dir()
+    )
+
+
 def shell_path() -> str:
     """The terminal's PATH: the account's user tools, then the system's; no startup scripts."""
     return f"{Path.home() / '.local' / 'bin'}:/usr/local/bin:/usr/bin:/bin"
@@ -129,6 +139,9 @@ def launch_command(
         "StandardError=tty",
     ]
     properties.extend(f"BindPaths={_path(path)}" for path in granted_paths)
+    for tools in user_tool_paths():
+        if not any(_within(str(tools), grant) for grant in granted_paths):
+            properties.append(f"BindReadOnlyPaths={_path(str(tools))}")
     for path in git_read_paths:
         properties.extend([f"BindReadOnlyPaths={_path(path)}", f"ReadOnlyPaths={_path(path)}"])
     for path in protected_paths:

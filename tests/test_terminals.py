@@ -295,6 +295,27 @@ def test_launch_profile_preserves_canonical_denies_and_exact_git_access(manifest
     assert "HISTFILE=/dev/null" in argv
 
 
+def test_mirrored_terminal_mounts_user_tools_read_only(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    tools = home / ".local" / "bin"
+    tools.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: home)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    argv = launch.launch_command(
+        unit="rcp-terminal-test",
+        repository=tmp_path,
+        protected_paths=[],
+        git_read_paths=(),
+        git_environment={},
+        empty_directory=empty,
+    )
+    properties = [argv[index + 1] for index, item in enumerate(argv) if item == "--property"]
+    assert f'BindReadOnlyPaths="{tools}"' in properties
+    assert not any(str(home / ".local" / "share") in item for item in properties)
+    assert f"PATH={tools}:/usr/local/bin:/usr/bin:/bin" in argv
+
+
 def test_grants_mount_writable_and_keep_rcp_storage_read_only_inside(monkeypatch, tmp_path):
     home = tmp_path / "home"
     (home / ".ssh").mkdir(parents=True)
