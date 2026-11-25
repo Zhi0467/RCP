@@ -16,13 +16,22 @@ import { projectAgentWindowEndpoints } from "../agentWindow/agentWindowEndpoints
 import { ProviderSwitchHint } from "./ProviderSwitchHint";
 import { ChatBranchPicker, ChatOriginLink } from "./ChatBranchPicker";
 import { ChatComposer, ComposerField } from "./ChatComposer";
-import { ChatArtifactsPane, useArtifactsPaneLayout, useChatArtifacts } from "./ChatArtifactsPane";
+import { AgentPane, useAgentPaneLayout, useChatArtifacts } from "./AgentPane";
 import { ChatHeaderMenu, type ChatHeaderAction } from "./ChatHeaderMenu";
 import { AgentHeader, AgentPickRow } from "./AgentHeader";
 import type { ChatAgentSetup, ChatOrigin } from "../core/types";
 import { MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget";
-import { EpisodePlanCard } from "../agents/EpisodePlanCard";
+import { EpisodePlanDraftProvider } from "../agents/EpisodePlanCard";
 import { isPlanCardQuestion, planCardAction, planGraphTarget } from "../agents/experimentPlanModel";
+import { TaskCard, TaskCardRow } from "../agents/TaskCard";
+import {
+  agentPaneContent,
+  agentPaneCount,
+  cardRun,
+  runCard,
+  taskCardView,
+} from "../agents/taskCardModel";
+import { flyToPane } from "./paneFlight";
 import {
   AgentCardsUnavailable,
   ApprovalCardStack,
@@ -40,12 +49,12 @@ import { questionIsOpen } from "./questions";
 import { ExternalJobRow } from "../experiments/ExternalJobRow";
 import {
   CalendarClock,
-  Files,
   GitPullRequestArrow,
   ListPlus,
   LoaderCircle,
   Mic,
   MicOff,
+  PanelRight,
   Play,
   RadioTower,
   RotateCcw,
@@ -379,8 +388,8 @@ export function AgentChatView({
     projectId,
     revision ?? relatedTasks.at(-1)?.updated_at ?? null,
   );
-  const [artifactsOpen, setArtifactsOpen] = useState(false);
-  const artifactsPane = chatArtifacts.length > 0;
+  const [paneOpen, setPaneOpen] = useState(false);
+  const paneButtonRef = useRef<HTMLButtonElement>(null);
   const questionApiBase = endpoints.questionsApiBase;
   const chatQuestions = useQuestions(
     questionApiBase ?? "",
@@ -544,7 +553,7 @@ export function AgentChatView({
   const [renaming, setRenaming] = useState(false);
   const [renamedTitle, setRenamedTitle] = useState<string | null>(null);
   const dockRef = useRef<HTMLDivElement>(null);
-  const artifactsLayout = useArtifactsPaneLayout(dockRef, artifactsPane && artifactsOpen);
+  const paneLayout = useAgentPaneLayout(dockRef, paneOpen);
   const dictationSpanRef = useRef<DictationSpan | null>(null);
   const dictationTimerRef = useRef<number | null>(null);
   const microphoneRef = useRef<{ sessionId: string; claim: MicrophoneClaim } | null>(null);
@@ -577,17 +586,23 @@ export function AgentChatView({
     await cards.refetch();
     questionState.refresh();
   };
-  const dockedPlans = new Set([
+  const ownQuestionIds = new Set(questionState.questions.map((question) => question.question_id));
+  const relayedPlans = cards.plans.filter(
+    (question) => !ownQuestionIds.has(question.question_id) && question.owner_id !== chatId,
+  );
+  const shownInDock = new Set([
     ...cards.asked.map((question) => question.question_id),
-    ...cards.plans.map((question) => question.question_id),
     ...(cards.loading
       ? questionState.questions.flatMap((question) =>
-          (question.card || isPlanCardQuestion(question)) && question.state === "pending"
+          question.card && !isPlanCardQuestion(question) && question.state === "pending"
             ? [question.question_id]
             : [],
         )
       : []),
   ]);
+  const openPlanIds = [...questionState.questions, ...relayedPlans].flatMap((question) =>
+    isPlanCardQuestion(question) && taskCardView(question.card).open ? [question.question_id] : [],
+  );
   const relayed = feed?.cardsRelayed ?? false;
   const proposalStackCard = (view: ProposalCardView): StackCard => ({
     kind: "proposal",
@@ -602,13 +617,36 @@ export function AgentChatView({
     question,
     projectName,
   });
+  const runsNeedingMember = cards.episodes.filter((run) => run.episode.presentation.needs_you);
   const dockCards: StackCard[] = [
     ...cards.proposals.filter((view) => !view.stale).map(proposalStackCard),
     ...cards.asked.map((question) =>
       askedStackCard(question, relayed ? question.project_name : null),
     ),
-    ...dockStackCards(cards.plans, cards.episodes, cards.questions),
+    ...dockStackCards(relayedPlans, runsNeedingMember, [
+      ...cards.episodes
+        .filter((run) => !runsNeedingMember.includes(run))
+        .flatMap((run) => run.questions),
+      ...cards.questions,
+    ]),
   ];
+  const pane = agentPaneContent(cards.episodes, questionState.questions, chatArtifacts);
+  const prefersReducedMotion = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const scrollToCard = (selector: string): boolean => {
+    const target = dockRef.current?.querySelector<HTMLElement>(
+      `.agent-chat-view-lines ${selector}`,
+    );
+    if (!target) return false;
+    if (!paneLayout.beside) setPaneOpen(false);
+    target.scrollIntoView({
+      block: "center",
+      behavior: prefersReducedMotion() ? "auto" : "smooth",
+    });
+    target.focus({ preventScroll: true });
+    return true;
+  };
+  const showTaskCard = (id: string | undefined) =>
+    Boolean(id) && scrollToCard(`[data-task-card="${CSS.escape(id!)}"]`);
   const renderPlanCard = (question: AgentQuestion) => {
     const action = planCardAction(question.card)!;
     const here =
@@ -617,12 +655,16 @@ export function AgentChatView({
       sameGraphTarget(planGraphTarget(action), graphTarget) &&
       Boolean(nodes[action.node_id]);
     return (
-      <EpisodePlanCard
+      <TaskCard
         question={question}
+        run={cardRun(question.card, cards.episodes)}
         actorId={actorId}
         glossaryIndex={glossaryIndex}
         onOpenNode={here ? onOpenNode : undefined}
-        onSettled={cardsChanged}
+        onOpenTurn={(operationId) =>
+          void scrollToCard(`[data-task-id="${CSS.escape(operationId)}"]`)
+        }
+        onChanged={cardsChanged}
       />
     );
   };
@@ -1563,18 +1605,17 @@ export function AgentChatView({
       <AgentStatusStrip tasks={statusTasks} />
       {watcherToggle}
       {replyComments.headerButton}
-      {artifactsPane && (
-        <button
-          className={`chat-watcher-count${artifactsOpen ? " is-open" : ""}`}
-          type="button"
-          aria-expanded={artifactsOpen}
-          aria-label="Artifacts"
-          title="Artifacts"
-          onClick={() => setArtifactsOpen((open) => !open)}
-        >
-          <Files size={12} /> {chatArtifacts.length}
-        </button>
-      )}
+      <button
+        ref={paneButtonRef}
+        className={`chat-watcher-count agent-pane-button${paneOpen ? " is-open" : ""}`}
+        type="button"
+        aria-expanded={paneOpen}
+        aria-label="Tasks and artifacts"
+        title="Tasks and artifacts"
+        onClick={() => setPaneOpen((open) => !open)}
+      >
+        <PanelRight size={12} /> {agentPaneCount(pane)}
+      </button>
     </>
   );
   const headerMenu = (
@@ -1789,10 +1830,10 @@ export function AgentChatView({
       <strong title={feed?.thread.project_name ?? undefined}>{shownTitle}</strong>
     ));
 
-  return (
+  const dock = (
     <div
       ref={dockRef}
-      className={`chat-dock ${presentation}${artifactsPane && artifactsOpen && artifactsLayout.beside ? " artifacts-beside" : ""}`}
+      className={`chat-dock ${presentation}${paneOpen && paneLayout.beside ? " pane-beside" : ""}`}
       role={presentation === "floating" ? "dialog" : "region"}
       aria-modal="false"
       aria-label={
@@ -1823,16 +1864,33 @@ export function AgentChatView({
           )
         }
       />
-      {artifactsPane && artifactsOpen && (
-        <ChatArtifactsPane
+      {paneOpen && (
+        <AgentPane
+          title={shownTitle}
           endpoints={endpoints}
           graphTarget={graphTarget}
-          artifacts={chatArtifacts}
-          top={artifactsLayout.top}
-          onOpened={() => {
-            if (!artifactsLayout.beside) setArtifactsOpen(false);
+          content={pane}
+          top={paneLayout.top}
+          renderTask={(section, index) => {
+            if (section === "artifacts") return null;
+            const run = section === "parked" ? null : pane[section][index];
+            const question = run ? runCard(run, questionState.questions) : pane.parked[index];
+            return (
+              <TaskCardRow
+                key={run?.episode.episode_id ?? question?.question_id}
+                question={question}
+                run={run}
+                actorId={actorId}
+                glossaryIndex={glossaryIndex}
+                onShow={() => showTaskCard(question?.question_id)}
+                onChanged={cardsChanged}
+              />
+            );
           }}
-          onClose={() => setArtifactsOpen(false)}
+          onOpened={() => {
+            if (!paneLayout.beside) setPaneOpen(false);
+          }}
+          onClose={() => setPaneOpen(false)}
         />
       )}
       {watcherRows.length > 0 && watchersOpen && (
@@ -1937,7 +1995,7 @@ export function AgentChatView({
             ) : null
           }
           renderPlanCard={renderPlanCard}
-          shownElsewhere={dockedPlans}
+          shownElsewhere={shownInDock}
           renderCards={(entry) => (
             <ApprovalCardStack
               stackKey={`${chatId}:${entry.key}`}
@@ -2340,6 +2398,20 @@ export function AgentChatView({
       {replyComments.layers}
       {inlineArtifactComments.layer}
     </div>
+  );
+  return (
+    <EpisodePlanDraftProvider
+      questionIds={openPlanIds}
+      onParked={(questionId) =>
+        flyToPane(
+          dockRef.current?.querySelector(`[data-task-card="${CSS.escape(questionId)}"]`) ?? null,
+          paneButtonRef.current,
+          prefersReducedMotion(),
+        )
+      }
+    >
+      {dock}
+    </EpisodePlanDraftProvider>
   );
 }
 

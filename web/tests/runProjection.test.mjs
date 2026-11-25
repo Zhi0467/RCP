@@ -5,7 +5,6 @@ import test from "node:test";
 import {
   buildExperimentRun,
   authorizedInvocationCount,
-  experimentRecommendation,
   experimentRunConfig,
   experimentWatcherDisplayItems,
   externalWatcherLabel,
@@ -231,7 +230,6 @@ test("backend operation identity selects the exact task even when a newer row ex
   const run = buildExperimentRun(node, staleControl, [failed, retry], []);
   assert.equal(run.currentTask.operation_id, failed.operation_id);
   assert.equal(run.health, "needs_action");
-  assert.deepEqual(experimentRecommendation(run).step, "review");
 });
 
 test("Experiment watcher projection keeps each immutable group and ungrouped history distinct", () => {
@@ -499,7 +497,6 @@ test("an unsettled Experiment stop exposes exact paused recovery before graceful
 
   const run = buildExperimentRun(node, experimentControl, [paused], []);
   assert.equal(run.health, "needs_action");
-  assert.deepEqual(experimentRecommendation(run).step, "resume");
 });
 
 test("historical watchers stay visible without driving current health or task selection", () => {
@@ -570,7 +567,6 @@ test("a succeeded legacy-attribution episode recommends a fresh episode directly
   assert.equal(run.currentTask.status, "succeeded");
   assert.deepEqual(run.currentWatchers, []);
   assert.equal(run.health, "needs_action");
-  assert.deepEqual(experimentRecommendation(run).step, "start_episode");
 });
 
 test("compatible adopted degraded watchers drive current health through control state", () => {
@@ -610,75 +606,6 @@ test("compatible adopted degraded watchers drive current health through control 
 
   assert.equal(run.currentWatchers.length, 0);
   assert.equal(run.health, "degraded");
-  assert.deepEqual(experimentRecommendation(run).step, "keep_loop");
-});
-
-test("Experiment recommendation follows the backend recommendation enum", () => {
-  const base = {
-    node: experiment("experiment/recommendation"),
-    control: control({
-      episode_id: "episode-recommendation",
-      health: "agent_active",
-      recommendation: "wait",
-      run_section: "running",
-    }),
-    taskGroup: null,
-    currentTask: null,
-    watchers: [],
-    watcherItems: [],
-    currentWatchers: [],
-    health: "agent_active",
-  };
-
-  assert.equal(experimentRecommendation(base).step, "wait");
-  assert.equal(
-    experimentRecommendation({
-      ...base,
-      control: control({
-        episode_id: "episode-recommendation",
-        recommendation: "stop_and_restart",
-      }),
-    }).step,
-    "stop_and_restart",
-  );
-  assert.equal(
-    experimentRecommendation({
-      ...base,
-      control: control({ recommendation: "start_episode" }),
-      health: "human_stopped",
-    }).step,
-    "start_episode",
-  );
-  assert.equal(
-    experimentRecommendation({
-      ...base,
-      control: control({
-        ready: false,
-        reasons: ["Blocker blk/required-input is open."],
-        graph_reasons: ["Blocker blk/required-input is open."],
-        episode_id: "episode-recommendation",
-        recommendation: "resolve_requirements",
-      }),
-      health: "human_stopped",
-    }).step,
-    "resolve_requirements",
-  );
-  // A revoked login names the provider, because "retry" is the one thing that
-  // cannot fix it and the human has to know which login to repair.
-  assert.deepEqual(
-    experimentRecommendation({
-      ...base,
-      control: control(
-        {
-          episode_id: "episode-recommendation",
-          recommendation: "reauthenticate_provider",
-        },
-        { session: { provider: "codex" } },
-      ),
-      health: "needs_action",
-    }).step,
-    "reauthenticate_provider",
-  );
 });
 
 test("an authorized invocation count is the whole number the human typed", () => {

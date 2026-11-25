@@ -36,7 +36,7 @@
   },
   "src/agents/ApprovalCard.tsx": {
     "rcp/no-comments": {
-      "count": 2
+      "count": 1
     }
   },
   "src/agents/agentTasks.ts": {
@@ -346,7 +346,7 @@
   },
   "src/experiments/AutoResearchDialog.tsx": {
     "rcp/no-comments": {
-      "count": 6
+      "count": 5
     }
   },
   "src/experiments/CampaignRuns.tsx": {
@@ -376,7 +376,7 @@
   },
   "src/experiments/ExperimentRunDetail.tsx": {
     "rcp/no-comments": {
-      "count": 11
+      "count": 10
     }
   },
   "src/experiments/ExternalJobRow.tsx": {
@@ -401,7 +401,7 @@
   },
   "src/experiments/campaigns.ts": {
     "rcp/no-comments": {
-      "count": 10
+      "count": 6
     }
   },
   "src/experiments/episodeResources.ts": {
@@ -451,7 +451,7 @@
   },
   "src/graph/DetailDrawer.tsx": {
     "rcp/no-comments": {
-      "count": 15
+      "count": 11
     }
   },
   "src/graph/GraphPicker.tsx": {
@@ -1436,7 +1436,7 @@
   },
   "tests/runProjection.test.mjs": {
     "rcp/no-comments": {
-      "count": 6
+      "count": 4
     }
   },
   "tests/serverSettings.test.mjs": {

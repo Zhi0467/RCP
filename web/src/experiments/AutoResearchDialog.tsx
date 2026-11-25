@@ -1,12 +1,7 @@
 import { AutoResearchFields, AutoResearchWorktree } from "./AutoResearchControls";
 import { worktreeRepositoryChoices } from "../chat/worktreeRepositories";
 import { BrowserToggle } from "../core/BrowserControls";
-import {
-  AgentConfigChip,
-  AgentConfigControls,
-  launchProviderReady,
-  profileRunConfig,
-} from "../core/AgentConfigControls";
+import { useAgentConfigPicker, useLaunchConfig } from "../core/AgentConfigPicker";
 import { BranchTag } from "../core/BranchTag";
 import type { AgentRunConfig, Episode, GraphRef, ProjectSnapshot } from "../core/types";
 import { branchNameRequest, branchNameValid } from "../graph/BranchNameField";
@@ -159,17 +154,9 @@ export function AutoResearchDialog({
   // A retried send of the same message reuses its request id.
   const messageRequest = useRef<{ key: string; id: string } | null>(null);
   const launchProfile = project?.agent_profiles.orchestrator;
-  // Only an explicit pick is state; untouched, the picker follows the current profile.
-  const [pickedConfig, setLaunchConfig] = useState<AgentRunConfig | null>(null);
-  const [launchOpen, setLaunchOpen] = useState(false);
-  useEffect(() => {
-    if (!open) return;
-    setLaunchConfig(null);
-    setLaunchOpen(false);
-  }, [open, project?.id]);
-  const launchConfig =
-    pickedConfig ??
-    (launchProfile && project ? profileRunConfig(launchProfile, project.run_on) : undefined);
+  const launch = useLaunchConfig(project, launchProfile);
+  const launchConfig = launch.config;
+  const resetLaunch = launch.reset;
   // A code worktree checks out one writable repository on the orchestrator's
   // machine; the human picks it only when several qualify.
   const worktreeRepositories =
@@ -184,10 +171,6 @@ export function AutoResearchDialog({
         : (worktreeRepositories[0] ?? null);
   const worktreeUnavailable = worktreeRepositories !== null && worktreeRepository === null;
   const codeWorktreeOn = codeWorktree && !worktreeUnavailable;
-  const launchEffectiveModel =
-    launchConfig && launchProfile && launchConfig.provider === launchProfile.provider
-      ? launchProfile.effective_model
-      : "";
 
   useEffect(() => {
     if (!open) return;
@@ -216,12 +199,55 @@ export function AutoResearchDialog({
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!dialog.current) return;
+      if (!dialog.current || event.defaultPrevented) return;
       handleAutoResearchDialogKeyDown(event, dialog.current, document.activeElement, busy, onClose);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [busy, onClose, open]);
+
+  const launchPicker = useAgentConfigPicker({
+    project: open && !continueBranch && launchProfile ? project : undefined,
+    value: launchConfig,
+    onChange: launch.setConfig,
+    label: "Orchestrator agent",
+    disabled: busy,
+    effectiveModel: launch.effectiveModel,
+    workLike: launchProfile?.work_like_capable,
+    workLikeCapable: launchProfile?.work_like_capable,
+    optionCount: Number(browserRequested) + Number(codeWorktreeOn),
+    options: launchConfig && (
+      <div className="agent-config-options" role="group" aria-label="Launch options">
+        <label>
+          <input
+            type="checkbox"
+            role="switch"
+            checked={bulletinEnabled}
+            disabled={busy}
+            onChange={(event) => setBulletinEnabled(event.target.checked)}
+          />
+          Bulletin
+        </label>
+        <BrowserToggle checked={browserRequested} disabled={busy} onChange={setBrowserRequested} />
+        <AutoResearchWorktree
+          worktreeUnavailable={worktreeUnavailable}
+          runOn={launchConfig.run_on}
+          codeWorktreeOn={codeWorktreeOn}
+          busy={busy}
+          setCodeWorktree={setCodeWorktree}
+          worktreeRepositories={worktreeRepositories}
+          worktreeRepository={worktreeRepository}
+          setWorktreePick={setWorktreePick}
+        />
+      </div>
+    ),
+  });
+  const closeLaunchPicker = launchPicker.close;
+  useEffect(() => {
+    if (!open) return;
+    resetLaunch();
+    closeLaunchPicker();
+  }, [open, project?.id, resetLaunch, closeLaunchPicker]);
 
   if (!open) return null;
   const invocationCeiling = Number(budget);
@@ -385,45 +411,7 @@ export function AutoResearchDialog({
               />
             </>
           )}
-          {!continued && launchOpen && project && launchProfile && launchConfig && (
-            <AgentConfigControls
-              project={project}
-              value={launchConfig}
-              onChange={setLaunchConfig}
-              effectiveModel={launchEffectiveModel}
-              workLikeCapable={launchProfile.work_like_capable}
-              locked={busy}
-              compact
-            >
-              <div className="agent-config-options" role="group" aria-label="Launch options">
-                <label>
-                  <input
-                    type="checkbox"
-                    role="switch"
-                    checked={bulletinEnabled}
-                    disabled={busy}
-                    onChange={(event) => setBulletinEnabled(event.target.checked)}
-                  />
-                  Bulletin
-                </label>
-                <BrowserToggle
-                  checked={browserRequested}
-                  disabled={busy}
-                  onChange={setBrowserRequested}
-                />
-                <AutoResearchWorktree
-                  worktreeUnavailable={worktreeUnavailable}
-                  runOn={launchConfig.run_on}
-                  codeWorktreeOn={codeWorktreeOn}
-                  busy={busy}
-                  setCodeWorktree={setCodeWorktree}
-                  worktreeRepositories={worktreeRepositories}
-                  worktreeRepository={worktreeRepository}
-                  setWorktreePick={setWorktreePick}
-                />
-              </div>
-            </AgentConfigControls>
-          )}
+          {launchPicker.panel}
         </div>
         {shownError && (
           <div className="campaign-dialog-error" role="alert">
@@ -432,19 +420,7 @@ export function AutoResearchDialog({
         )}
         <footer>
           {/* A continuation keeps its episode's agent; only a new start picks one. */}
-          {!continued && project && launchConfig && (
-            <AgentConfigChip
-              project={project}
-              value={launchConfig}
-              effectiveModel={launchEffectiveModel}
-              open={launchOpen}
-              disabled={busy}
-              label="Orchestrator agent"
-              workLike={launchProfile?.work_like_capable}
-              optionCount={Number(browserRequested) + Number(codeWorktreeOn)}
-              onToggle={() => setLaunchOpen((current) => !current)}
-            />
-          )}
+          {launchPicker.chip}
           <button className="button secondary" type="button" onClick={onClose} disabled={busy}>
             Cancel
           </button>
@@ -452,14 +428,7 @@ export function AutoResearchDialog({
             className="button primary"
             type="submit"
             disabled={
-              busy ||
-              !canSubmit ||
-              Boolean(
-                !continued &&
-                project &&
-                launchConfig &&
-                !launchProviderReady(project, launchConfig, launchProfile?.work_like_capable),
-              )
+              busy || !canSubmit || Boolean(!continued && project && launchConfig && !launch.ready)
             }
           >
             {busy ? <LoaderCircle className="spin" size={14} /> : <Telescope size={14} />}

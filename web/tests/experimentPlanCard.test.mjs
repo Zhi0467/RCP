@@ -18,6 +18,14 @@ const { EpisodePlanCardView: ExperimentPlanCardView } = await server.ssrLoadModu
 );
 const { approvalCardTitle } = await server.ssrLoadModule("/src/agents/agentThreadModel.ts");
 const { ApiError } = await server.ssrLoadModule("/src/core/api.ts");
+const taskCards = await server.ssrLoadModule("/src/agents/taskCardModel.ts");
+const { hasStagedHumanDraft, persistProjectHumanDraft } = await server.ssrLoadModule(
+  "/src/graph/projectSession.ts",
+);
+const { emptyHumanDraft } = await server.ssrLoadModule("/src/graph/humanDraft.ts");
+const { requestNodeEdit, takeNodeEditRequest } = await server.ssrLoadModule(
+  "/src/graph/nodeEditRequest.ts",
+);
 
 const action = (extra = {}) => ({
   kind: "experiment_start",
@@ -120,17 +128,187 @@ test("Start waits for a live node, a goal, and a limit within the node's cap", (
   assert.equal(model.planTurnCap(action(), null), 20);
 });
 
-test("a settled plan card is one receipt line without its body or buttons", () => {
-  const settled = render({
-    question: question({
-      state: "answered",
-      answer: "approved",
-      card: card({ result: { outcome: "approved" } }),
-    }),
+test("a card reads its phase from the server's card state, and a run's display wins", () => {
+  const phase = (extra, run) => {
+    const view = taskCards.taskCardView(card(extra), run);
+    return [view.phase, view.open, view.state];
+  };
+  assert.deepEqual(phase({}), ["needs_you", true, "pending"]);
+  assert.deepEqual(phase({ state: "parked" }), ["parked", true, "pending"]);
+  assert.deepEqual(phase({ state: "running" }), ["starting", false, "pending"]);
+  assert.deepEqual(phase({ state: "running_here" }), ["running_here", false, "pending"]);
+  assert.deepEqual(phase({ state: "ran_here", result: { outcome: "run_here" } }), [
+    "ran_here",
+    false,
+    "run_here",
+  ]);
+  assert.deepEqual(phase({ state: "expired" }), ["settled", false, "expired"]);
+  assert.deepEqual(phase({ state: "parked", result: { outcome: "declined" } }), [
+    "settled",
+    false,
+    "declined",
+  ]);
+  const run = {
+    phase: "ended",
+    state_line: "Completed · 9 turns",
+    tone: "completed",
+    section: "ended",
+  };
+  const shown = taskCards.taskCardView(card({ state: "running" }), run);
+  assert.deepEqual(
+    [shown.phase, shown.label, shown.tone, shown.open],
+    ["ended", run.state_line, run.tone, false],
+  );
+  assert.equal(
+    taskCards.taskCardView(undefined, { ...run, phase: "needs_you" }).phase,
+    "needs_you",
+  );
+});
+
+test("a card joins its run by the episode ids it names and renders in its revising turn", () => {
+  const runs = ["episode/a", "episode/b"].map((episode_id) => ({ episode: { episode_id } }));
+  const startedCard = card({ started_episode_id: "episode/a", current_episode_id: "episode/b" });
+  assert.equal(taskCards.cardRun(startedCard, runs), runs[1]);
+  assert.equal(taskCards.cardRun(card(), runs), null);
+  const asked = question({ card: startedCard });
+  assert.equal(taskCards.runCard(runs[0], [asked]), asked);
+  assert.equal(taskCards.runCard({ episode: { episode_id: "episode/c" } }, [asked]), null);
+  assert.equal(taskCards.cardTurnId(question()), "op1");
+  assert.equal(
+    taskCards.cardTurnId(question({ card: card({ revised_operation_id: "op2" }) })),
+    "op2",
+  );
+});
+
+test("the pane lists runs by their published section and parked plans newest first", () => {
+  const run = (episode_id, section) => ({ episode: { episode_id, presentation: { section } } });
+  const parked = (question_id, shelved_at) =>
+    question({ question_id, card: card({ state: "parked", shelved_at }) });
+  const content = taskCards.agentPaneContent(
+    [run("a", "running"), run("b", "ended"), run("c", "running")],
+    [
+      parked("old", "2026-11-18T10:00:00Z"),
+      question(),
+      parked("new", "2026-11-19T10:00:00Z"),
+      parked("gone", "2026-11-20T10:00:00Z"),
+    ].map((item) =>
+      item.question_id === "gone"
+        ? { ...item, card: { ...item.card, result: { outcome: "declined" } } }
+        : item,
+    ),
+    [{ artifact_id: "x" }],
+  );
+  assert.deepEqual(
+    content.running.map((item) => item.episode.episode_id),
+    ["a", "c"],
+  );
+  assert.deepEqual(
+    content.ended.map((item) => item.episode.episode_id),
+    ["b"],
+  );
+  assert.deepEqual(
+    content.parked.map((item) => item.question_id),
+    ["new", "old"],
+  );
+  assert.equal(taskCards.agentPaneCount(content), 5);
+});
+
+test("a node edit Syncs from the draft's revision and a moved node is a conflict", async () => {
+  const save = {
+    projectId: "p",
+    target: { kind: "main" },
+    nodeId: node.id,
+    baseUpdatedRev: 41,
+    changes: { design: "New" },
+  };
+  const graphAt = (revision, updated_rev) => ({
+    revision,
+    nodes: { [node.id]: { ...node, updated_rev } },
   });
-  assert.ok(settled.includes(node.id));
-  assert.ok(!settled.includes(node.design));
-  assert.equal(startButton(settled), "");
+  const sent = [];
+  const refusal = new ApiError("moved", 409);
+  const ports = (reads, answers) => ({
+    read: async () => reads.shift(),
+    sync: async (_project, _target, body) => {
+      sent.push(body);
+      const answer = answers.shift();
+      if (answer instanceof Error) throw answer;
+      return answer;
+    },
+  });
+  assert.deepEqual(await model.savePlanNodeEdit(save, ports([graphAt(7, 41)], [graphAt(8, 42)])), {
+    kind: "saved",
+    nodeRev: 42,
+  });
+  assert.deepEqual(sent.pop(), {
+    base_revision: 7,
+    nodes: [{ node_id: node.id, base_updated_rev: 41, changes: { design: "New" } }],
+  });
+  assert.deepEqual(
+    await model.savePlanNodeEdit(
+      save,
+      ports([graphAt(7, 41), graphAt(9, 41)], [refusal, graphAt(10, 43)]),
+    ),
+    { kind: "saved", nodeRev: 43 },
+  );
+  assert.deepEqual(
+    sent.splice(0).map((body) => body.base_revision),
+    [7, 9],
+  );
+  assert.deepEqual(
+    await model.savePlanNodeEdit(save, ports([graphAt(7, 41), graphAt(9, 44)], [refusal])),
+    { kind: "conflict" },
+  );
+  await assert.rejects(
+    model.savePlanNodeEdit(save, ports([graphAt(7, 41), graphAt(9, 41)], [refusal, refusal])),
+    (failure) => failure === refusal,
+  );
+  await assert.rejects(
+    model.savePlanNodeEdit(save, ports([graphAt(7, 41)], [new ApiError("bad", 422)])),
+  );
+});
+
+test("a draft changes only the node fields that differ, and goes stale when the node moves", () => {
+  assert.equal(model.planNodeChanges({}, node), null);
+  assert.equal(
+    model.planNodeChanges(
+      { design: `${node.design}  `, doneWhen: node.completion_criteria.join("\n") },
+      node,
+    ),
+    null,
+  );
+  assert.deepEqual(model.planNodeChanges({ design: "New", doneWhen: " One \n\nTwo" }, node), {
+    design: "New",
+    completion_criteria: ["One", "Two"],
+  });
+  assert.equal(model.planNodeDraftStale({ design: "New", nodeRev: 41 }, node), false);
+  assert.equal(model.planNodeDraftStale({ design: "New", nodeRev: 40 }, node), true);
+  assert.equal(model.planNodeDraftStale({ nodeRev: 40 }, node), false);
+});
+
+test("a revised card keeps the tap open; Park and Save hand back the hash to adopt", async () => {
+  const revised = await model.tapPlanCard(
+    "q1",
+    { decision: "approve", pinned_sha256: "old" },
+    async () => {
+      throw new ApiError("revised", 409, { code: "plan_revised" });
+    },
+  );
+  assert.deepEqual(revised, { kind: "revised" });
+  const kept = await model.tapPlanCard(
+    "q1",
+    { decision: "park", pinned_sha256: "old" },
+    async () => ({ outcome: "parked", pinned_sha256: "new" }),
+  );
+  assert.deepEqual(kept, { kind: "kept", revision: { outcome: "parked", pinned_sha256: "new" } });
+  const parkRequest = model.planStartDecision(
+    card(),
+    model.initialPlanInputs(action(), null),
+    node,
+    "park",
+  );
+  assert.equal(parkRequest.decision, "park");
+  assert.equal(parkRequest.start.node_rev, 41);
 });
 
 test("the agent's pick seeds the inputs; without one the profile does", () => {
@@ -230,14 +408,6 @@ test("episode kickoff cards are plan cards, and a branch card targets its branch
   });
 });
 
-const { hasStagedHumanDraft, persistProjectHumanDraft } = await server.ssrLoadModule(
-  "/src/graph/projectSession.ts",
-);
-const { emptyHumanDraft } = await server.ssrLoadModule("/src/graph/humanDraft.ts");
-const { requestNodeEdit, takeNodeEditRequest } = await server.ssrLoadModule(
-  "/src/graph/nodeEditRequest.ts",
-);
-
 test("staged changes count only for this member, project and graph target", () => {
   const items = new Map();
   const storage = {
@@ -303,7 +473,7 @@ test("Auto-research cards use main and send edited launch inputs", () => {
   });
 });
 
-test("Auto-research needs a ready orchestrator and settled cards have no inputs", () => {
+test("Auto-research needs a ready orchestrator and a settled card is not open", () => {
   const own = card({
     kind: "auto_research",
     action: {
@@ -327,11 +497,7 @@ test("Auto-research needs a ready orchestrator and settled cards have no inputs"
     startButton(render({ question: question({ card: own }), snapshot: null })),
     /disabled/,
   );
-  const settled = render({
-    question: question({ state: "answered", card: { ...own, result: { outcome: "approved" } } }),
-    snapshot: autoSnapshot,
-  });
-  assert.doesNotMatch(settled, /<(input|textarea|button)[ >]/);
+  assert.equal(taskCards.taskCardView({ ...own, result: { outcome: "approved" } }).open, false);
 });
 
 test("both card kinds preserve explicit model and reasoning with the profile provider", () => {

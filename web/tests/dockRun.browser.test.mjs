@@ -17,27 +17,6 @@ test("a paused Experiment in the dock resumes its unused turns from one compact 
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     const continued = [];
-    await page.route("**/api/projects/*/experiment-episodes*", (route) =>
-      route.fulfill({
-        json: {
-          entries: [
-            {
-              episode: { episode_id: "episode/alpha" },
-              control: {
-                episode_id: "episode/alpha",
-                can_start: true,
-                can_stop: false,
-                stop_pending: false,
-                task_control: null,
-                can_switch_provider: false,
-                node_closed: false,
-              },
-            },
-          ],
-          unavailable: [],
-        },
-      }),
-    );
     await page.route("**/api/projects/*/episodes/*/continue", (route) => {
       continued.push(route.request().postDataJSON());
       return route.fulfill({ status: 409, json: { detail: "refused" } });
@@ -70,7 +49,7 @@ test("a paused Experiment in the dock resumes its unused turns from one compact 
   }
 });
 
-test("a running run waits folded under the stack and stops from its row menu", async () => {
+test("a running run stays out of the dock, and its controls draw as one menu", async () => {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "silent",
@@ -83,29 +62,22 @@ test("a running run waits folded under the stack and stops from its row menu", a
     const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.route("**/api/projects/*/experiment-episodes*", (route) =>
-      route.fulfill({ json: { entries: [], unavailable: [] } }),
-    );
-    const stopped = [];
-    await page.route("**/api/projects/*/episodes/*/stop", (route) => {
-      stopped.push(decodeURIComponent(new URL(route.request().url()).pathname));
-      return route.fulfill({ status: 409, json: { detail: "refused" } });
-    });
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/dockRun.html`,
-    );
-    await page.locator(".dock-runs-fold").waitFor();
+    const fixture = `http://127.0.0.1:${server.httpServer.address().port}/tests/fixtures/dockRun.html`;
+    await page.goto(fixture);
+    await page.locator(".episode-run-card").waitFor();
     assert.equal(await page.locator(".episode-run-card").count(), 1);
-    assert.equal(await page.locator(".dock-run").count(), 0);
-    await page.locator(".dock-runs-fold").click();
-    const row = page.locator(".dock-run");
-    assert.equal(await row.count(), 1);
-    assert.equal(await row.locator("a").getAttribute("href"), "#/running");
-    await row.getByRole("button").click();
-    await page.getByRole("menuitem", { name: "Stop" }).click();
-    await row.locator(".dock-run-error").waitFor();
-    assert.equal(stopped.length, 1);
-    assert.ok(stopped[0].endsWith("/episodes/episode/beta/stop"));
+    assert.equal(await page.locator('a[href="#/running"]').count(), 0);
+    assert.equal(await page.locator(".dock-runs").count(), 0);
+
+    await page.goto(`${fixture}?view=menu`);
+    await page.getByRole("button", { name: "Run actions" }).click();
+    const items = page.getByRole("menuitem");
+    assert.equal(await items.count(), 3);
+    await items.nth(1).click();
+    assert.deepEqual(await page.evaluate(() => window.operated), [["turn-root", "pause"]]);
+    await page.getByRole("button", { name: "Run actions" }).click();
+    await page.getByRole("menuitem").nth(2).click();
+    assert.deepEqual(await page.evaluate(() => window.stopped), ["episode/beta"]);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
     assert.deepEqual(errors, []);
   } finally {

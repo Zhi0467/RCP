@@ -21,7 +21,8 @@ import type {
   ApprovalCardResult,
   ProposalCardView,
 } from "../core/types";
-import { approvalCardDetails, approvalCardTitle } from "./agentThreadModel";
+import { approvalCardDetails, approvalCardTitle, askedCardOpen } from "./agentThreadModel";
+import { taskCardView } from "./taskCardModel";
 import { decideProposalCard, resolveApprovalCard } from "./agentThreadsApi";
 
 const ICONS: Record<ApprovalCardKind, LucideIcon> = {
@@ -35,20 +36,12 @@ const ICONS: Record<ApprovalCardKind, LucideIcon> = {
 
 export type Busy = "approve" | "decline" | null;
 
-type SettledResult = NonNullable<ApprovalCard["result"]>;
-
-function settledLabel(result: SettledResult): string {
-  if (result.outcome === "failed")
-    return [result.outcome, result.reason].filter(Boolean).join(": ");
-  if (result.outcome === "declined" && result.rejected === false)
-    return `${result.outcome} · Proposal still pending: ${result.reason ?? ""}`;
-  return result.outcome;
-}
-
 /**
  * One approval card as the member sees it: open with its buttons, or settled to one
  * line. It decides nothing itself; its adapter runs each tap. A card with a `body`
  * shows it always, in place of See details, and names its own chip and buttons.
+ * `actions` replaces the buttons, on a settled card too; `onOpen` makes the head
+ * the one control of a folded card.
  */
 export function ApprovalCardShell({
   icon: Icon,
@@ -71,6 +64,11 @@ export function ApprovalCardShell({
   onApprove,
   onDecline,
   onLater,
+  actions,
+  tone,
+  sub,
+  cardId,
+  onOpen,
 }: {
   icon: LucideIcon;
   title: string;
@@ -89,23 +87,37 @@ export function ApprovalCardShell({
   approveDisabled?: boolean;
   declineDisabled?: boolean;
   error: string | null;
-  busy: Busy;
-  running: boolean;
-  onApprove: () => void;
-  onDecline: () => void;
+  busy?: Busy;
+  running?: boolean;
+  onApprove?: () => void;
+  onDecline?: () => void;
   onLater?: () => void;
+  actions?: ReactNode;
+  /** The run tone the state badge takes. */
+  tone?: string | null;
+  /** One quiet line under the head. */
+  sub?: ReactNode;
+  /** Names the card so a pane row can scroll to it. */
+  cardId?: string;
+  onOpen?: () => void;
 }) {
   const [toggled, setOpen] = useState(false);
   const open = toggled || body !== undefined;
   const pending = state === "pending";
+  const Head = onOpen ? "button" : "div";
   return (
     <section
       className={`approval-card${open ? " open" : ""}${className ? ` ${className}` : ""}`}
       tabIndex={-1}
       data-state={state}
+      data-tone={tone ?? undefined}
+      data-task-card={cardId}
       aria-label={title}
     >
-      <div className="approval-head">
+      <Head
+        className="approval-head"
+        {...(onOpen ? { type: "button", "aria-expanded": false, onClick: onOpen } : {})}
+      >
         <span className="approval-icon" aria-hidden="true">
           <Icon size={pending ? 16 : 14} />
         </span>
@@ -123,17 +135,21 @@ export function ApprovalCardShell({
           )}
         </div>
         <span className="question-state">
-          {pending ? stateLabel : stateLabel.charAt(0).toUpperCase() + stateLabel.slice(1)}
+          {stateLabel.charAt(0).toUpperCase() + stateLabel.slice(1)}
         </span>
         <AskedTime at={askedAt} />
-      </div>
+      </Head>
+      {sub && <p className="approval-sub">{sub}</p>}
       {body ?? (open && <div className="approval-details">{details}</div>)}
       {error && (
         <p className="approval-error" role="alert">
           {error}
         </p>
       )}
-      {pending && (
+      {actions !== undefined && actions !== null && (
+        <div className="approval-actions">{actions}</div>
+      )}
+      {actions === undefined && pending && (
         <div className="approval-actions">
           {body === undefined && (
             <button
@@ -177,22 +193,20 @@ export function ApprovalCardShell({
   );
 }
 
-/** Where an asked card stands: open, settled with its outcome, or expired by the server. */
+/** Where an asked card stands, read from the server's card state and settled outcome. */
 export function askedCardState(
   question: AgentQuestion,
   card: ApprovalCard,
 ): { pending: boolean; state: string; stateLabel: string } {
-  const answered = question.state === "answered" || question.state === "dismissed";
-  // The server settles expiry; a device clock never decides it.
-  const expired = !answered && card.state === "expired";
-  const pending = !answered && !expired;
-  const answer = answered && card.result ? settledLabel(card.result) : (question.answer ?? "");
-  const state = answered
-    ? (card.result?.outcome ?? question.answer?.split(":")[0] ?? "answered")
-    : expired
-      ? "expired"
-      : "pending";
-  return { pending, state, stateLabel: pending ? "Needs you" : answered ? answer : "Expired" };
+  const view = taskCardView(card);
+  const withdrawn = view.open && !askedCardOpen(question);
+  if (withdrawn)
+    return {
+      pending: false,
+      state: question.answer?.split(":")[0] ?? "answered",
+      stateLabel: question.answer ?? "",
+    };
+  return { pending: view.state === "pending", state: view.state, stateLabel: view.label };
 }
 
 /**

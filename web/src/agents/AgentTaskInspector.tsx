@@ -5,7 +5,6 @@ import {
   Clock3,
   Copy,
   LoaderCircle,
-  Play,
   RotateCcw,
   X,
 } from "lucide-react";
@@ -19,6 +18,7 @@ import {
   turnTitle,
 } from "./agentTasks";
 import type { AgentTask, AgentTaskContract, AgentTaskReceipt } from "../core/types";
+import { TaskActionButton } from "./taskActions";
 
 interface Props {
   tasks: AgentTask[];
@@ -120,7 +120,7 @@ export function AgentTaskInspector({
             {loading && !task ? (
               <div className="quiet-empty">
                 <LoaderCircle className="spin" size={16} />
-                <span>Loading task</span>
+                <span>Loading turn</span>
               </div>
             ) : task ? (
               <>
@@ -175,7 +175,7 @@ export function AgentTaskInspector({
                 </section>
 
                 <section>
-                  <h4>Task contract</h4>
+                  <h4>Turn contract</h4>
                   <dl className="detail-list run-contract-list">
                     <div>
                       <dt>Kind</dt>
@@ -248,7 +248,7 @@ export function AgentTaskInspector({
                       </div>
                     )}
                     <div>
-                      <dt>Task</dt>
+                      <dt>Turn</dt>
                       <dd className="mono">{task.operation_id}</dd>
                     </div>
                     {task.parent_operation_id && (
@@ -330,7 +330,7 @@ export function AgentTaskInspector({
 
                 {contracts.length > 0 && (
                   <section>
-                    <h4>Task contracts</h4>
+                    <h4>Turn contracts</h4>
                     <div className="run-prompt-list">
                       {contracts.map((contract) => (
                         <details className="run-prompt" key={contract.role}>
@@ -363,7 +363,7 @@ export function AgentTaskInspector({
                 )}
 
                 <section>
-                  <h4>Task history</h4>
+                  <h4>Turn history</h4>
                   <ol className="run-events">
                     {(task.events || []).map((event) => (
                       <li key={event.event_id} className={event.level}>
@@ -379,7 +379,7 @@ export function AgentTaskInspector({
                 </section>
               </>
             ) : (
-              <div className="quiet-empty">No task selected.</div>
+              <div className="quiet-empty">No turn selected.</div>
             )}
           </div>
         </div>
@@ -390,19 +390,31 @@ export function AgentTaskInspector({
             <footer className="drawer-actions run-inspector-actions">
               <div>
                 {task.can_pause && (
-                  <button className="button secondary" disabled={actionBusy} onClick={onPause}>
-                    <Pause size={14} /> Pause
-                  </button>
+                  <TaskActionButton
+                    action="pause"
+                    className="button secondary"
+                    size={14}
+                    disabled={actionBusy}
+                    onClick={onPause}
+                  />
                 )}
                 {task.can_retry && (
-                  <button className="button secondary" disabled={actionBusy} onClick={onRetry}>
-                    <RotateCcw size={14} /> Retry
-                  </button>
+                  <TaskActionButton
+                    action="retry"
+                    className="button secondary"
+                    size={14}
+                    disabled={actionBusy}
+                    onClick={onRetry}
+                  />
                 )}
                 {task.can_resume && (
-                  <button className="button primary" disabled={actionBusy} onClick={onResume}>
-                    <Play size={14} /> Resume
-                  </button>
+                  <TaskActionButton
+                    action="resume"
+                    className="button primary"
+                    size={14}
+                    disabled={actionBusy}
+                    onClick={onResume}
+                  />
                 )}
               </div>
             </footer>

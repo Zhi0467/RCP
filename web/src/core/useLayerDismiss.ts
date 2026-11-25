@@ -6,16 +6,21 @@ import { useEffect, type RefObject } from "react";
  * Escape is taken in the capture phase and marked handled, so an enclosing
  * layer that skips a handled Escape (the chat header menu) stays open: each
  * Escape closes only the innermost layer, and focus returns to `trigger`.
+ *
+ * A layer that sits in the page flow passes `outside: "click"`: closing it
+ * moves what is below it, so it closes after the press has landed on its
+ * target, never under the pointer mid-press.
  */
 export function useLayerDismiss(
   open: boolean,
   close: () => void,
   inside: readonly RefObject<HTMLElement | null>[],
   trigger: RefObject<HTMLElement | null>,
+  outside: "pointerdown" | "click" = "pointerdown",
 ) {
   useEffect(() => {
     if (!open) return;
-    const pressOutside = (event: PointerEvent) => {
+    const pressOutside = (event: Event) => {
       const target = event.target as Node;
       if (!inside.some((ref) => ref.current?.contains(target))) close();
     };
@@ -25,11 +30,11 @@ export function useLayerDismiss(
       close();
       trigger.current?.focus();
     };
-    document.addEventListener("pointerdown", pressOutside);
+    document.addEventListener(outside, pressOutside);
     document.addEventListener("keydown", escape, true);
     return () => {
-      document.removeEventListener("pointerdown", pressOutside);
+      document.removeEventListener(outside, pressOutside);
       document.removeEventListener("keydown", escape, true);
     };
-  }, [open, close, inside, trigger]);
+  }, [open, close, inside, trigger, outside]);
 }

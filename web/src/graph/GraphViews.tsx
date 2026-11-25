@@ -103,12 +103,13 @@ import {
   type DagLayoutMode,
   type DagPosition,
 } from "./useForceDag";
-import { buildExperimentRun, type ExperimentRun } from "../experiments/runProjection";
 import {
-  ExperimentRunDetail,
-  experimentHealthLabel,
-  experimentHealthTone,
-} from "../experiments/ExperimentRunDetail";
+  buildExperimentRun,
+  runPresentation,
+  type ExperimentRun,
+} from "../experiments/runProjection";
+import { ExperimentRunDetail } from "../experiments/ExperimentRunDetail";
+import { TaskCardHeader } from "../agents/TaskCardHeader";
 import type { GraphEditingProps } from "./canvasEditing";
 import { useDagCanvasEditor } from "./DagCanvasEditor";
 import { AutoResearchEpisodeCard, EpisodeBudgetMeter } from "../experiments/CampaignRuns";
@@ -1778,7 +1779,7 @@ function ExperimentEpisodeCard({
 }) {
   const detailId = useId();
   const [expanded, setExpanded] = useState(initiallyExpanded);
-  const tone = experimentHealthTone(run.health);
+  const presentation = runPresentation(run.control) ?? episode.presentation;
   const title = run.node.title;
   const episodeTimestamp = formatEpisodeTimestamp(episode.created_at);
   const isExactBranchEpisode = exactBranchEntry?.episode?.episode_id === episode.episode_id;
@@ -1789,18 +1790,19 @@ function ExperimentEpisodeCard({
 
   return (
     <article
-      className={`campaign-run experiment-episode-card ${tone}`}
+      className={`campaign-run experiment-episode-card ${presentation.tone}`}
       data-episode-id={episode.episode_id}
     >
       <span className="campaign-state-rail" aria-hidden="true" />
-      <div className="campaign-run-heading">
-        <button
-          className="campaign-run-toggle"
-          type="button"
-          aria-label={`${expanded ? "Collapse" : "Expand"} Experiment loop episode ${title}`}
-          aria-expanded={expanded}
-          aria-controls={detailId}
-          onClick={() => {
+      <TaskCardHeader
+        presentation={presentation}
+        icon={FlaskConical}
+        title={title}
+        toggle={{
+          expanded,
+          controls: detailId,
+          label: `${expanded ? "Collapse" : "Expand"} Experiment loop episode ${title}`,
+          onToggle: () => {
             const next = !expanded;
             setExpanded(next);
             if (next) {
@@ -1813,15 +1815,10 @@ function ExperimentEpisodeCard({
             } else if (selected) {
               onSelectExperiment(null);
             }
-          }}
-        />
-        <span className="campaign-run-identity">
-          <strong className="campaign-run-title">
-            <FlaskConical size={14} aria-hidden="true" />
-            <span>{title}</span>
-          </strong>
-          <span className="campaign-run-meta">
-            <span className={`status-pill ${tone}`}>{experimentHealthLabel(run.health)}</span>
+          },
+        }}
+        meta={
+          <>
             <time dateTime={episode.created_at}>{episodeTimestamp}</time>
             <BranchTag refs={graphRefs} target={episode.graph_target} />
             <ExperimentLoopMetadata
@@ -1831,18 +1828,22 @@ function ExperimentEpisodeCard({
               author={episode.authorized_by}
             />
             <EpisodeAuthor author={episode.authorized_by} />
-          </span>
-        </span>
-        <EpisodeBudgetMeter episode={episode} />
-        <span className="campaign-run-time">
-          <EpisodeArchiveButton
-            episode={episode}
-            disabled={archiveDisabled}
-            onArchive={onArchive}
-          />
-          <ChevronDown size={16} aria-hidden="true" />
-        </span>
-      </div>
+          </>
+        }
+        trailing={
+          <>
+            <EpisodeBudgetMeter episode={episode} />
+            <span className="campaign-run-time">
+              <EpisodeArchiveButton
+                episode={episode}
+                disabled={archiveDisabled}
+                onArchive={onArchive}
+              />
+              <ChevronDown size={16} aria-hidden="true" />
+            </span>
+          </>
+        }
+      />
       {expanded && (
         <div className="campaign-run-detail" id={detailId} tabIndex={-1} ref={detailRef}>
           <ExperimentRunDetail

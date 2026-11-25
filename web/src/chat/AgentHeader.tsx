@@ -1,9 +1,6 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import {
-  AgentConfigChip,
-  AgentConfigControls,
-  type AgentConfigSource,
-} from "../core/AgentConfigControls";
+import { useEffect, useRef, type ReactNode } from "react";
+import type { AgentConfigSource } from "../core/AgentConfigControls";
+import { useAgentConfigPicker } from "../core/AgentConfigPicker";
 import type { AgentRunConfig } from "../core/types";
 
 /**
@@ -67,31 +64,22 @@ export function AgentPickRow({
   /** The menu opened, so readiness is read again. */
   onShown?: () => void;
 }) {
-  const [open, setOpen] = useState(false);
   const shown = useRef(onShown);
   useEffect(() => shown.current?.(), []);
+  const picker = useAgentConfigPicker({
+    project: source,
+    value,
+    onChange,
+    label: "Chat agent",
+    disabled,
+    effectiveModel,
+    workLike: true,
+    workLikeCapable,
+  });
   return (
     <div className="agent-pick-row">
-      <AgentConfigChip
-        project={source}
-        value={value}
-        effectiveModel={effectiveModel}
-        open={open}
-        disabled={disabled}
-        label="Chat agent"
-        workLike
-        onToggle={() => setOpen(!open)}
-      />
-      {open && !disabled && (
-        <AgentConfigControls
-          project={source}
-          value={value}
-          onChange={onChange}
-          effectiveModel={effectiveModel}
-          workLikeCapable={workLikeCapable}
-          compact
-        />
-      )}
+      {picker.chip}
+      {!disabled && picker.panel}
     </div>
   );
 }

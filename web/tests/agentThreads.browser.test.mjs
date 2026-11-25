@@ -1632,7 +1632,7 @@ test("the thread composer is one row that grows with its text and settles back",
   });
 });
 
-test("both thread kinds show the context ring just left of the thread menu", async () => {
+test("both thread kinds show the context ring, then the pane button, just left of the thread menu", async () => {
   await withFixture(async (browser, base) => {
     const page = await browser.newPage({ viewport: { width: 1280, height: 844 } });
     await mockApi(page, []);
@@ -1662,8 +1662,10 @@ test("both thread kinds show the context ring just left of the thread menu", asy
       const ring = header.getByRole("button", { name: "Context" });
       await ring.waitFor();
       const menu = await header.getByRole("button", { name: "Chat menu" }).boundingBox();
+      const pane = await header.locator(".agent-pane-button").boundingBox();
       const box = await ring.boundingBox();
-      assert.ok(box.x + box.width <= menu.x && menu.x - (box.x + box.width) < 16);
+      assert.ok(box.x + box.width <= pane.x && pane.x - (box.x + box.width) < 16);
+      assert.ok(pane.x + pane.width <= menu.x && menu.x - (pane.x + pane.width) < 16);
       if (shots) await page.screenshot({ path: `${shots}/context-ring-${hash}-1280.png` });
     }
   });

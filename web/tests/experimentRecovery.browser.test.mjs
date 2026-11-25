@@ -4,7 +4,11 @@ import { chromium } from "playwright";
 import { createServer } from "vite";
 import { timelineFixture } from "./fixtures/timeline.mjs";
 import { mockEpisodeArtifacts } from "./fixtures/episodeArtifacts.mjs";
-import { withTaskAnswers } from "./taskAnswers.mjs";
+import {
+  withEpisodeAnswers,
+  withExperimentControlAnswers,
+  withTaskAnswers,
+} from "./taskAnswers.mjs";
 import { watermarkResponse } from "./watermarks.mjs";
 
 let server;
@@ -127,67 +131,69 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
       const refreshRequested = Promise.withResolvers();
       const releaseRefresh = Promise.withResolvers();
       t.after(() => releaseRefresh.resolve());
-      const episode = () => ({
-        episode_id: "episode",
-        project_id: "demo",
-        mode: "experiment_loop",
-        control_node_id: node.id,
-        graph_target: target,
-        status: recovered ? "running" : "needs_action",
-        ending: null,
-        wrapup_state: "not_started",
-        created_at: previous.created_at,
-        updated_at: previous.created_at,
-        current_operation_id: recovered ? next.operation_id : previous.operation_id,
-        current_control_task_id: recovered ? next.operation_id : previous.operation_id,
-        tasks: recovered ? [previous, next] : [previous],
-        archived: false,
-        can_archive: true,
-        budget: {
+      const episode = () =>
+        withEpisodeAnswers({
+          episode_id: "episode",
+          project_id: "demo",
+          mode: "experiment_loop",
+          control_node_id: node.id,
+          graph_target: target,
+          status: recovered ? "running" : "needs_action",
+          ending: null,
+          wrapup_state: "not_started",
+          created_at: previous.created_at,
+          updated_at: previous.created_at,
+          current_operation_id: recovered ? next.operation_id : previous.operation_id,
+          current_control_task_id: recovered ? next.operation_id : previous.operation_id,
+          tasks: recovered ? [previous, next] : [previous],
+          archived: false,
+          can_archive: true,
+          budget: {
+            invocation_ceiling: 5,
+            invocations_used: 1,
+            invocations_remaining: 4,
+            observed_input_tokens: 0,
+            observed_generated_tokens: 0,
+          },
+          health: recovered ? "active" : "needs_action",
+          run_section: recovered ? "running" : "actionable",
+          live: recovered,
+          can_stop: true,
+          recommendation: recovered ? "continue" : action,
+        });
+      const control = () =>
+        withExperimentControlAnswers({
+          episode_id: "episode",
+          episode: episode(),
+          ready: false,
+          reasons: [],
+          graph_reasons: [],
+          governing_decisions: [],
+          decision_drift: [],
           invocation_ceiling: 5,
           invocations_used: 1,
           invocations_remaining: 4,
-          observed_input_tokens: 0,
-          observed_generated_tokens: 0,
-        },
-        health: recovered ? "active" : "needs_action",
-        run_section: recovered ? "running" : "actionable",
-        live: recovered,
-        can_stop: true,
-        recommendation: recovered ? "continue" : action,
-      });
-      const control = () => ({
-        episode_id: "episode",
-        episode: episode(),
-        ready: false,
-        reasons: [],
-        graph_reasons: [],
-        governing_decisions: [],
-        decision_drift: [],
-        invocation_ceiling: 5,
-        invocations_used: 1,
-        invocations_remaining: 4,
-        health: recovered ? "agent_active" : "needs_action",
-        run_section: recovered ? "running" : "actionable",
-        recommendation: recovered ? "wait" : action,
-        task_control: recovered ? null : action,
-        can_start: false,
-        can_stop: true,
-        can_switch_provider: !recovered,
-        operational: {
-          current_operation_id: recovered ? next.operation_id : previous.operation_id,
-          current_active: recovered,
-          task_active: recovered,
-          episode_live: true,
-          current_invocation: 1,
-          session: {
-            provider: "claude",
-            model: "fable",
-            run_on: "local",
-            native_session_bound: true,
+          health: recovered ? "agent_active" : "needs_action",
+          run_section: recovered ? "running" : "actionable",
+          recommendation: recovered ? "wait" : action,
+          task_control: recovered ? null : action,
+          can_start: false,
+          can_stop: true,
+          can_switch_provider: !recovered,
+          operational: {
+            current_operation_id: recovered ? next.operation_id : previous.operation_id,
+            current_active: recovered,
+            task_active: recovered,
+            episode_live: true,
+            current_invocation: 1,
+            session: {
+              provider: "claude",
+              model: "fable",
+              run_on: "local",
+              native_session_bound: true,
+            },
           },
-        },
-      });
+        });
       const profile = { provider: "claude", model: "fable", reasoning: "high", run_on: "local" };
       const providers = Object.fromEntries(
         ["claude", "codex"].map((provider) => [
@@ -389,10 +395,9 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
       } else {
         await recovery.click();
       }
-      const busyRecovery = page.locator(".experiment-run-actions").getByRole("button", {
-        name: action === "resume" ? "Resume…" : "Retry…",
-        exact: true,
-      });
+      const busyRecovery = page.locator(
+        `.experiment-run-actions [data-task-action="${action}"][aria-busy="true"]`,
+      );
       await busyRecovery.waitFor();
       await refreshRequested.promise;
       assert.equal(await busyRecovery.isDisabled(), true);
@@ -404,10 +409,7 @@ for (const scenario of ["retry", "resume", "switch provider"]) {
       assert.equal(submissions[0].method, "POST");
       if (scenario === "switch provider") assert.equal(submissions[0].body.provider, "codex");
       releaseRefresh.resolve();
-      await page
-        .locator(".experiment-run-detail")
-        .getByText("Agent active", { exact: true })
-        .waitFor();
+      await page.locator(".experiment-run-detail .experiment-run-health.running").waitFor();
       await recovery.waitFor({ state: "detached" });
       assert.equal(await recovery.count(), 0);
       assert.equal(submissions.length, 1);

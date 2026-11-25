@@ -8,6 +8,7 @@ import { mockEpisodeReads, timelineFixture } from "./fixtures/timeline.mjs";
 import { mockEpisodeArtifacts } from "./fixtures/episodeArtifacts.mjs";
 import { chromium } from "playwright";
 import { rootTask, episode, withGraphBranch } from "./fixtures/campaigns.mjs";
+import { withEpisodeAnswers } from "./taskAnswers.mjs";
 
 test("a failed merge stays Merge, and a refused click marks it at phone width", async () => {
   const liveServer = await createServer({
@@ -48,7 +49,9 @@ test("a failed merge stays Merge, and a refused click marks it at phone width", 
     await page.route("**/api/projects/**/timeline", (route) =>
       route.fulfill({ json: timelineFixture(episode.episode_id, episode.mode) }),
     );
-    await page.route("**/fixture/episode", (route) => route.fulfill({ json: polledEpisode }));
+    await page.route("**/fixture/episode", (route) =>
+      route.fulfill({ json: withEpisodeAnswers(polledEpisode) }),
+    );
     let previews = 0;
     const previewFailure = "Preview unavailable";
     await page.route("**/api/projects/**/merge-preview*", (route) => {
@@ -75,7 +78,7 @@ test("a failed merge stays Merge, and a refused click marks it at phone width", 
           ? { status: 409, json: { detail: refusal } }
           : {
               status: 202,
-              json: {
+              json: withEpisodeAnswers({
                 ...failed,
                 can_merge: false,
                 graph_branch: {
@@ -84,7 +87,7 @@ test("a failed merge stays Merge, and a refused click marks it at phone width", 
                   merge_diagnostic: null,
                   active_merge_task_id: "fresh-merge-task",
                 },
-              },
+              }),
             },
       );
     });
@@ -206,14 +209,14 @@ test("a served exhausted card settles from wrapping up to a visible report failu
     );
     await page.route("**/fixture/episode", (route) => {
       polls += 1;
-      return route.fulfill({ json: projected });
+      return route.fulfill({ json: withEpisodeAnswers(projected) });
     });
     await page.goto(
       `http://127.0.0.1:${liveServer.httpServer.address().port}/tests/fixtures/branchMerge.html`,
     );
     await page.getByRole("button", { name: /^Collapse auto-research/ }).click();
     const header = page.locator(".campaign-run-heading");
-    assert.equal(await header.locator(".status-pill.wrapping_up").count(), 1);
+    assert.equal(await header.locator(".status-pill.running").count(), 1);
 
     projected = {
       ...projected,
@@ -227,11 +230,11 @@ test("a served exhausted card settles from wrapping up to a visible report failu
       can_continue: true,
     };
     await page.evaluate(() => window.refreshMergeEpisode());
-    await header.getByText("Needs action", { exact: true }).waitFor();
+    await header.locator(".status-pill.actionable").waitFor();
     // Newly available authorization opens the card; its collapsed header stays truthful too.
     await page.getByRole("button", { name: /^Collapse auto-research/ }).click();
 
-    assert.equal(await header.locator(".status-pill.needs_action").count(), 1);
+    assert.equal(await header.locator(".status-pill.actionable").count(), 1);
     assert.equal(await page.locator(".campaign-run-detail").count(), 0);
     await page.getByRole("button", { name: /^Expand auto-research/ }).click();
     await page.getByText("The authorized turns are spent. Add turns", { exact: true }).waitFor();
@@ -378,7 +381,9 @@ test("an envelope loads full text, reports fetch failure, and closes accessibly"
       if (message.type() === "error" && !message.text().includes("503 (Service Unavailable)"))
         errors.push(message.text());
     });
-    await page.route("**/fixture/episode", (route) => route.fulfill({ json: episode }));
+    await page.route("**/fixture/episode", (route) =>
+      route.fulfill({ json: withEpisodeAnswers(episode) }),
+    );
     const actor = (actor_id, kind, label) => ({
       actor_id,
       kind,
@@ -533,7 +538,9 @@ test("ended orchestrator message sends the edited budget and retains its id afte
     await page.route("**/api/projects/**/timeline", (route) =>
       route.fulfill({ json: timelineFixture(episode.episode_id, episode.mode) }),
     );
-    await page.route("**/fixture/episode", (route) => route.fulfill({ json: ended }));
+    await page.route("**/fixture/episode", (route) =>
+      route.fulfill({ json: withEpisodeAnswers(ended) }),
+    );
     const requests = [];
     await page.route("**/api/projects/**/messages", async (route) => {
       if (route.request().method() !== "POST") return route.fallback();

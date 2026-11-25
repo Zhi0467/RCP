@@ -9,12 +9,13 @@ import {
   type ExperimentRouteIdentity,
 } from "../../src/experiments/experimentBoardModel";
 import { ExecutionView } from "../../src/graph/GraphViews";
+import { withEpisodeAnswers, withExperimentControlAnswers } from "../taskAnswers.mjs";
 
 const coexisting = new URLSearchParams(window.location.search).has("coexisting");
 const projectId = "project-one";
 const experimentId = "experiment/branch-child";
 const parentEpisodeId = "auto-research-parent";
-const episode = {
+const episode = withEpisodeAnswers({
   episode_id: "child-experiment-episode",
   project_id: projectId,
   mode: "experiment_loop",
@@ -66,8 +67,8 @@ const episode = {
   recommendation: "review",
   task_control: null,
   run_section: "actionable",
-};
-const control = {
+});
+const control = withExperimentControlAnswers({
   ready: true,
   reasons: [],
   graph_reasons: [],
@@ -119,7 +120,7 @@ const control = {
       diagnostic: null,
     },
   },
-};
+});
 const entry = {
   project_id: projectId,
   project_name: "Project one",
@@ -157,7 +158,7 @@ const entry = {
   control,
   episode,
 };
-const parentEpisode = {
+const parentEpisode = withEpisodeAnswers({
   episode_id: parentEpisodeId,
   project_id: projectId,
   mode: "auto_research",
@@ -209,7 +210,7 @@ const parentEpisode = {
   recommendation: "review",
   task_control: null,
   run_section: "actionable",
-};
+});
 
 const mainEpisode = {
   ...episode,

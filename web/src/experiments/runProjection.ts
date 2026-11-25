@@ -5,16 +5,15 @@ import type {
   ExternalWatcherRecord,
   ExperimentControlState,
   ExperimentLoopHealth,
-  ExperimentRecommendedStep,
   GraphCondition,
   GraphWatcherRecord,
   GraphNode,
   GraphTargetRef,
   ProviderId,
+  RunPresentation,
   WatcherRecord,
 } from "../core/types";
 import { MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget.ts";
-import { blockedReasonLead, type EpisodeTaskControl } from "./campaigns.ts";
 import { isControlNode } from "../graph/researchType.ts";
 
 /** Unused turns an episode that paused for its human resumes with; null when it cannot. */
@@ -24,36 +23,9 @@ export function pausedResumeTurns(episode: Episode | null | undefined): number |
   return turns > 0 ? turns : null;
 }
 
-export function episodeControlProjection(
-  episode: Episode | null,
-  taskControl: EpisodeTaskControl | null,
-  experimentControl?: ExperimentControlState | null,
-) {
-  const experiment = episode?.mode === "experiment_loop" || Boolean(experimentControl);
-  const continuationVisible = Boolean(
-    episode?.can_continue && (!experiment || !experimentControl?.node_closed),
-  );
-  return {
-    taskControl: experiment
-      ? taskControl && experimentControl?.task_control
-        ? {
-            ...taskControl,
-            kind: experimentControl.task_control,
-            canSwitchProvider: experimentControl.can_switch_provider,
-          }
-        : null
-      : taskControl && {
-          ...taskControl,
-          canSwitchProvider: taskControl.canSwitchProvider && taskControl.kind === "retry",
-        },
-    canStop: experiment ? Boolean(experimentControl?.can_stop) : Boolean(episode?.can_stop),
-    stopPending: Boolean(experimentControl?.stop_pending),
-    continuationVisible,
-    continuationReady:
-      continuationVisible &&
-      (!experiment || Boolean(experimentControl?.can_start && !experimentControl.stop_pending)),
-    resumeTurns: continuationVisible ? pausedResumeTurns(episode) : null,
-  };
+/** The run as its Experiment publishes it, refined by node, watcher, and session rules. */
+export function runPresentation(control: ExperimentControlState): RunPresentation | null {
+  return control.presentation ?? control.episode?.presentation ?? null;
 }
 
 export interface AgentTaskGroup {
@@ -72,11 +44,6 @@ export interface ExperimentRun {
   watcherItems: ExperimentWatcherItem[];
   currentWatchers: WatcherRecord[];
   health: ExperimentLoopHealth;
-}
-
-export interface ExperimentRecommendation {
-  step: ExperimentRecommendedStep;
-  label: string;
 }
 
 export interface ExperimentWatcherCounts {
@@ -183,56 +150,6 @@ export function authorizedInvocationCount(input: string): number | null {
   if (!trimmed) return null;
   const value = Number(trimmed);
   return Number.isSafeInteger(value) && value >= 1 ? value : null;
-}
-
-/** Map the server's recommendation to presentation copy without re-deciding it. */
-export function experimentRecommendation(run: ExperimentRun): ExperimentRecommendation {
-  const step = run.control.recommendation;
-  const labels: Record<ExperimentRecommendedStep, string> = {
-    wait:
-      run.health === "stopping"
-        ? "Wait for the current turn to finish"
-        : run.health === "wrapping_up"
-          ? "Wrapping up visualization and report"
-          : run.health === "waiting_on_watchers"
-            ? "Wait for watcher completion"
-            : run.health === "completion_pending"
-              ? "Wait for continuation to start"
-              : "Wait for the active Experiment turn",
-    resume: run.control.can_switch_provider
-      ? "Resume this episode, or switch provider"
-      : "Resume this episode",
-    retry: "Retry this episode, or switch provider",
-    reauthenticate_provider: "Sign in on the machine, verify it above, then retry",
-    keep_loop: "Keep loop running; check now if needed",
-    start_episode: pausedResumeTurns(run.control.episode)
-      ? "Resume or start a new episode"
-      : run.health === "paused_at_limit" || run.control.episode?.can_continue
-        ? "Add turns or start a new episode"
-        : run.control.episode_id
-          ? "Start a new episode"
-          : "Start an episode",
-    stop_and_restart: "Stop loop, then start a new episode",
-    resolve_requirements: "Resolve the run requirements",
-    open_report: "Open report",
-    review: "Review the loop state",
-    none: run.control.node_closed
-      ? `Experiment is ${run.node.status}`
-      : run.control.episode?.wrapup_state === "legacy_unavailable"
-        ? "Episode report unavailable"
-        : run.health === "failed"
-          ? "Episode ended"
-          : "No action needed",
-  };
-  const blockedReason = run.control.episode?.blocked_reason;
-  const label = labels[step];
-  return {
-    step,
-    label:
-      blockedReason === "sign_in" && step === "reauthenticate_provider"
-        ? label
-        : blockedReasonLead(blockedReason, run.control.episode?.ending ?? null, label),
-  };
 }
 
 export function buildExperimentRun(

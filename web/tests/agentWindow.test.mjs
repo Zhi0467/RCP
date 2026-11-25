@@ -522,3 +522,39 @@ test("a plan card whose turn has no answer keeps the card place, still as a plan
   assert.match(markup, /data-plan="plan"/);
   assert.doesNotMatch(markup, /data-stack/);
 });
+
+test("a paused turn offers only the controls its task allows", () => {
+  const paused = (answers) =>
+    renderToStaticMarkup(
+      React.createElement(AgentWindowTranscript, {
+        transcript: [line("request", "human", "op1", "00"), line("paused", "status", "op1", "10")],
+        tasks: [
+          {
+            operation_id: "op1",
+            kind: "project_chat",
+            request: {},
+            paused: true,
+            status_message: "Paused",
+            ...answers,
+          },
+        ],
+        questions: [],
+        endpoints: projectAgentWindowEndpoints("p", "chat"),
+        artifacts: { renderArtifacts: () => null, repositoryFileErrors: new Map() },
+        comments: {},
+        compactionByLine: new Map(),
+        continuedTaskIds: new Set(),
+        latestGraphReceiptLineIds: new Set(),
+        readOnly: false,
+        onResumeTask() {},
+        onRetryTask() {},
+      }),
+    );
+  const resumeOnly = paused({ can_resume: true, can_retry: false });
+  assert.match(resumeOnly, /chat-task-inline paused/);
+  assert.match(resumeOnly, /data-task-action="resume"/);
+  assert.doesNotMatch(resumeOnly, /data-task-action="retry"/);
+  const both = paused({ can_resume: true, can_retry: true });
+  assert.match(both, /data-task-action="resume"/);
+  assert.match(both, /data-task-action="retry"/);
+});
