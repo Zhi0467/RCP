@@ -1101,7 +1101,9 @@ holds an `agentMessage` with `phase: "commentary"` and releases it on the next
 when a turn completes without another answer. Other phases, and a
 missing one, are the answer. Codex exec items carry no phase, so it holds every
 `agent_message`, releases it on the next `item.started`, and answers with the one
-still held at `turn.completed`. OpenCode and agy report none. The
+still held at `turn.completed`. agy holds the text deltas of one `agent_response`
+step and releases them when any other step starts; its result clears them and
+carries the answer. OpenCode reports none. The
 fold keeps the newest `AGENT_STATUS_MESSAGE_LIMIT`, cuts each at
 `AGENT_STATUS_MESSAGE_MAX_CHARS` with an ellipsis, stamps each when the
 background task sees it, and writes at once. Recovered turns replay their
@@ -1743,7 +1745,9 @@ An app-process service coalesces startup executable, version, authentication,
 model and machine probes. Navigation does not own warmup or block ordinary use.
 Profiles probe what their CLI can enumerate and declare the rest: Codex models
 and per-model efforts, Claude declared model aliases and probed provider-wide
-efforts, OpenCode models and optional reasoning variants. Unreadable catalogs
+efforts, OpenCode models and optional reasoning variants. Antigravity model ids
+name their effort, so its catalog lists none. Pickers offer no effort for a catalog
+whose model takes none and store an empty one, even over a saved effort. Unreadable catalogs
 use the declared list; that cannot approve an explicitly saved unknown model.
 
 Turns and credential-touching readiness/skill probes share one startup gate per
