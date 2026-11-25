@@ -223,11 +223,16 @@ class EpisodeStoreMixin(StoreMixinBase):
         with self.connection() as connection:
             return self._episode_started_from_chats(connection, episode_ids)
 
-    def chat_child_episodes(
-        self, project_id: str, chat_id: str, *, ended_since: str
-    ) -> list[EpisodeRecord]:
-        """The newest member of each continuation chain this chat started that is still
-        open or ended after ``ended_since``, newest first."""
+    def chat_dock_episodes(
+        self, project_id: str, chat_id: str, *, node_id: str | None, ended_limit: int
+    ) -> list[tuple[EpisodeRecord, Literal["chat", "node"]]]:
+        """The runs one chat lists, newest first, each with what makes it this chat's.
+
+        A run is the newest member of its continuation chain. ``chat`` runs are
+        those this chat started. ``node`` runs are Experiment runs of ``node_id``
+        that no chat and no Auto-research parent started. Open runs are all
+        listed; ended ones stop at the newest ``ended_limit``.
+        """
 
         with self.connection() as connection:
             candidates = [
@@ -240,24 +245,74 @@ class EpisodeStoreMixin(StoreMixinBase):
                           SELECT 1 FROM episodes AS successor
                           WHERE successor.continues_episode_id = episode.episode_id
                       )
-                      AND (
-                          episode.status NOT IN ('completed', 'stopped', 'failed')
-                          OR julianday(COALESCE(episode.ended_at, episode.updated_at))
-                             > julianday(?)
-                      )
                     ORDER BY episode.created_at DESC, episode.episode_id DESC
                     """,
-                    (project_id, ended_since),
+                    (project_id,),
                 )
             ]
             started = self._episode_started_from_chats(
                 connection, [episode.episode_id for episode in candidates]
             )
-        return [
-            episode
-            for episode in candidates
-            if (source := started.get(episode.episode_id)) is not None and source.chat_id == chat_id
-        ]
+            node_runs = (
+                self._node_started_episode_ids(
+                    connection,
+                    [
+                        episode.episode_id
+                        for episode in candidates
+                        if episode.control_node_id == node_id
+                        and episode.mode == "experiment_loop"
+                        and episode.episode_id not in started
+                    ],
+                )
+                if node_id is not None
+                else set()
+            )
+        listed: list[tuple[EpisodeRecord, Literal["chat", "node"]]] = []
+        ended = 0
+        for episode in candidates:
+            source = started.get(episode.episode_id)
+            if source is not None and source.chat_id == chat_id:
+                origin: Literal["chat", "node"] = "chat"
+            elif episode.episode_id in node_runs:
+                origin = "node"
+            else:
+                continue
+            if episode.status in {"completed", "stopped", "failed"}:
+                ended += 1
+                if ended > ended_limit:
+                    continue
+            listed.append((episode, origin))
+        return listed
+
+    @staticmethod
+    def _node_started_episode_ids(
+        connection: sqlite3.Connection, episode_ids: Sequence[str]
+    ) -> set[str]:
+        """Those of ``episode_ids`` whose chain no Auto-research parent dispatched."""
+
+        if not episode_ids:
+            return set()
+        placeholders = ",".join("?" for _ in episode_ids)
+        return {
+            str(row[0])
+            for row in connection.execute(
+                f"""
+                WITH RECURSIVE chain(episode_id, member_id, continues_episode_id) AS (
+                    SELECT episode_id, episode_id, continues_episode_id FROM episodes
+                    WHERE episode_id IN ({placeholders})
+                    UNION
+                    SELECT chain.episode_id, member.episode_id, member.continues_episode_id
+                    FROM chain JOIN episodes AS member
+                      ON member.episode_id = chain.continues_episode_id
+                )
+                SELECT episode_id FROM chain
+                GROUP BY episode_id
+                HAVING SUM(EXISTS (SELECT 1 FROM auto_research_child_experiments
+                                   WHERE child_episode_id = chain.member_id)) = 0
+                """,
+                list(episode_ids),
+            )
+        }
 
     @staticmethod
     def _episode_started_from_chats(

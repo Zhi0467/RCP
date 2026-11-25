@@ -2314,3 +2314,43 @@ def test_runs_keeps_archived_current_episode_projection(manifest, tmp_path, monk
     assert len(rows) == 1
     assert rows[0]["archived"] is True
     assert rows[0]["experiment_id"] == "exp/launched"
+
+
+def test_node_chat_dock_shows_a_run_as_runs_and_space_runs_do(manifest, tmp_path: Path) -> None:
+    """One presentation reaches the dock, the Experiment index, and Space Runs."""
+    from .test_storage import _task_record
+
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    project_id, current_episode = _seed_indexed_project(app)
+    store = app.state.background_tasks.store
+    store.create_agent_task(
+        _task_record(
+            store.now(),
+            operation_id="node-turn",
+            project_id=project_id,
+            kind="node_chat",
+            request={"chat_id": "node-chat", "chat_scope": "node", "node_id": "exp/launched"},
+        )
+    )
+    client = signed_in_client(app)
+    assert client.get(f"/api/projects/{project_id}").status_code == 200
+
+    index = client.get("/api/episodes?mode=experiment_loop").json()["entries"]
+    control = next(
+        entry["control"] for entry in index if entry["episode"]["episode_id"] == current_episode
+    )
+    dock = client.get(f"/api/projects/{project_id}/chats/node-chat/cards").json()["episodes"]
+    shown = {row["episode"]["episode_id"]: row for row in dock}
+    space = {row["episode_id"]: row for row in client.get("/api/space/runs").json()}
+
+    presentation = control["presentation"]
+    assert shown[current_episode]["source"] == "node"
+    assert shown[current_episode]["episode"]["presentation"] == presentation
+    assert control["episode"]["presentation"] == presentation
+    assert shown[current_episode]["title"] == presentation["title"] == "Launched loop"
+    assert space[current_episode]["health_label"] == presentation["label"]
+    assert space[current_episode]["health_tone"] == presentation["tone"]
+    assert presentation["needs_you"] == (control["run_section"] == "actionable")
+    older = [row for episode_id, row in shown.items() if episode_id != current_episode]
+    assert [row["episode"]["presentation"]["title"] for row in older] == ["Launched loop"]
+    assert [row["episode"]["presentation"]["section"] for row in older] == ["ended"]

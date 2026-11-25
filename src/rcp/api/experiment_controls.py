@@ -11,6 +11,7 @@ from rcp.core.models import (
     Experiment,
     GraphState,
 )
+from rcp.run_presentation import RunPresentation, RunState, present_run, run_actions
 from rcp.runs.experiment_admission import experiment_control_from_runtime
 from rcp.storage import ExperimentLoopRuntime
 
@@ -44,9 +45,31 @@ ExperimentRecommendationKind = Literal[
 ExperimentRunSection = Literal["running", "actionable", "completed"]
 ExperimentTaskControlKind = Literal["resume", "retry"]
 
+_RUN_STATES: dict[ExperimentLoopHealth, RunState] = {
+    "starting": "starting",
+    "agent_active": "active",
+    "waiting_on_watchers": "waiting_on_watchers",
+    "completion_pending": "completion_pending",
+    "degraded": "degraded",
+    "stopping": "stopping",
+    "wrapping_up": "wrapping_up",
+    "failed": "failed",
+    "human_stopped": "stopped",
+    "paused_at_limit": "paused_at_limit",
+    "needs_action": "needs_action",
+    "completed": "completed",
+}
+
 
 class ExperimentControlResponse(ExperimentControlState):
-    """One Experiment's graph control plus its decided Runs lifecycle."""
+    """One Experiment's graph control plus its decided Runs lifecycle.
+
+    ``presentation`` is the run's display value with this Experiment's node,
+    watcher, and session rules applied, and the embedded episode carries the
+    same value. It is None before the Experiment has a run. A run the member
+    stopped is ended and does not ask for them, though Runs keeps it under its
+    actionable section.
+    """
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -64,6 +87,7 @@ class ExperimentControlResponse(ExperimentControlState):
     report_episode_id: str | None
     report_is_current: bool
     node_closed: bool
+    presentation: RunPresentation | None
 
 
 def _experiment_control_response(
@@ -164,6 +188,32 @@ def _experiment_control_response(
     # change before it consults the old session, so another provider is the one
     # recovery that still works without the human repairing that sign-in first.
     can_switch_provider = bool(task_control is not None and task is not None and task.can_retry)
+    presentation = (
+        present_run(
+            state=_RUN_STATES[health],
+            title=node.title,
+            ended=run_section == "completed"
+            or health == "human_stopped"
+            or (episode is not None and episode.presentation.section == "ended"),
+            needs_you=run_section == "actionable" and health != "human_stopped",
+            recommendation=recommendation,
+            invocations_used=control.invocations_used,
+            invocation_ceiling=control.invocation_ceiling,
+            actions=run_actions(
+                episode_id=control.episode_id,
+                can_stop=can_stop,
+                task_control=task_control,
+                control_task_id=episode.current_control_task_id if episode is not None else None,
+                can_continue=episode is not None and episode.can_continue,
+                report_episode_id=report_episode_id,
+                start_node_id=experiment_id if control.ready else None,
+            ),
+        )
+        if control.episode_id is not None
+        else None
+    )
+    if episode is not None and presentation is not None:
+        episode = episode.model_copy(update={"presentation": presentation})
     return ExperimentControlResponse.model_validate(
         {
             **control.model_dump(mode="json"),
@@ -183,6 +233,9 @@ def _experiment_control_response(
                 report_episode_id is not None and report_episode_id == control.episode_id
             ),
             "node_closed": node.status in CLOSED_EXPERIMENT_STATUSES,
+            "presentation": (
+                presentation.model_dump(mode="json") if presentation is not None else None
+            ),
         }
     )
 

@@ -31,6 +31,7 @@ from rcp.loop_status import EpisodeLoopMetadata, episode_loop_metadata
 from rcp.projects import ProjectCatalog
 from rcp.providers import ProviderId
 from rcp.providers.browser_grant import BrowserTurnStatus
+from rcp.run_presentation import RunPresentation, present_episode, run_actions
 from rcp.storage import (
     AgentFailureKind,
     AgentTaskRecord,
@@ -296,6 +297,7 @@ class EpisodeResponse(EpisodeLoopMetadata):
     recommendation: EpisodeRecommendationKind
     task_control: EpisodeTaskControlKind | None
     run_section: EpisodeRunSection
+    presentation: RunPresentation
     # Whether this parent still occupies its Experiment, which is what admission
     # refuses a second episode against. Published so no client reconstructs the
     # storage status list to answer it.
@@ -362,8 +364,13 @@ def serialize_episode(
     projection_snapshot: ExperimentEpisodeProjectionSnapshot | None = None,
     include_graph_branch: bool = True,
     archive_state: EpisodeArchiveState | None = None,
+    title: str | None = None,
 ) -> EpisodeResponse:
-    """Serialize one project-owned parent from its current durable ledgers."""
+    """Serialize one project-owned parent from its current durable ledgers.
+
+    ``title`` is the run's display title when the caller holds the graph; without
+    it an Experiment run is titled by its node id.
+    """
 
     if episode.project_id != project_id:
         raise KeyError(episode.episode_id)
@@ -471,6 +478,24 @@ def serialize_episode(
         or episode.episode_id
     )
     isolation_state = store.episode_isolation_state(project_id, owner_id)
+    budget = (
+        projection_snapshot.budget
+        if projection_snapshot is not None
+        else store.episode_budget_meter(episode.episode_id)
+    )
+    can_stop = (
+        episode.status in _STOPPABLE_EPISODE_STATUSES
+        and episode.stop_requested_at is None
+        and episode.ending is None
+    )
+    can_continue = (
+        episode.status in _TERMINAL_EPISODE_STATUSES
+        and continued_by is None
+        and not any(task.status in {"queued", "running", "pausing"} for task in tasks)
+        and _continuable_session(store, episode)
+        and store.continuation_slot_open(episode)
+        and (episode.mode != "auto_research" or message_refusal is None)
+    )
     return EpisodeResponse(
         **episode_loop_metadata(store, episode, tasks=task_records).model_dump(),
         episode_id=episode.episode_id,
@@ -494,11 +519,7 @@ def serialize_episode(
         recovery=recovery,
         status=episode.status,
         starting_instruction=starting_instruction,
-        budget=(
-            projection_snapshot.budget
-            if projection_snapshot is not None
-            else store.episode_budget_meter(episode.episode_id)
-        ),
+        budget=budget,
         authorized_by=episode.authorized_by,
         via_agent=store.via_agent(episode.root_operation_id),
         stop_requested_at=episode.stop_requested_at,
@@ -526,22 +547,11 @@ def serialize_episode(
             for task in store.episode_artifact_edit_tasks(episode.episode_id)
         ],
         report=report,
-        can_stop=(
-            episode.status in _STOPPABLE_EPISODE_STATUSES
-            and episode.stop_requested_at is None
-            and episode.ending is None
-        ),
+        can_stop=can_stop,
         continues_episode_id=episode.continues_episode_id,
         continued_by_episode_id=continued_by.episode_id if continued_by is not None else None,
         chain=_chain_members(store, episode, continued=continued_by is not None, report=report),
-        can_continue=(
-            episode.status in _TERMINAL_EPISODE_STATUSES
-            and continued_by is None
-            and not any(task.status in {"queued", "running", "pausing"} for task in tasks)
-            and _continuable_session(store, episode)
-            and store.continuation_slot_open(episode)
-            and (episode.mode != "auto_research" or message_refusal is None)
-        ),
+        can_continue=can_continue,
         can_message=(
             message_refusal is None
             if episode.mode == "auto_research"
@@ -558,7 +568,37 @@ def serialize_episode(
         recommendation=next_step,
         task_control=task_control,
         run_section=_episode_run_section(health),
+        presentation=present_episode(
+            title=title or episode_run_title(episode),
+            status=episode.status,
+            ending=episode.ending,
+            health=health,
+            blocked_reason=blocked_reason,
+            recommendation=next_step,
+            invocations_used=budget.invocations_used,
+            invocation_ceiling=budget.invocation_ceiling,
+            actions=run_actions(
+                episode_id=episode.episode_id,
+                can_stop=can_stop,
+                task_control=task_control,
+                control_task_id=current_control_task_id,
+                can_continue=can_continue,
+                report_episode_id=(
+                    episode.episode_id
+                    if report is not None and episode.wrapup_state == "ready"
+                    else None
+                ),
+            ),
+        ),
     )
+
+
+def episode_run_title(episode: EpisodeRecord) -> str:
+    """A run's title without the graph: Auto-research by name, an Experiment by node id."""
+
+    if episode.mode == "auto_research":
+        return "Auto-research"
+    return episode.control_node_id or "Experiment history"
 
 
 def listed_episodes(

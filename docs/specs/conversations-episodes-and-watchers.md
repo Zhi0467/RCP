@@ -1409,6 +1409,20 @@ ending fence decides whether the episode is over. A terminal episode on a closed
 Experiment reads Completed even after human Stop, whose ending remains history.
 The browser neither rebuilds health from task rows nor suggests unavailable actions.
 
+Every run also carries one presentation,
+[`RunPresentation`](../../src/rcp/run_presentation.py): phase, title, label,
+state line, tone, pane section, whether it needs the member, recommendation,
+and actions that name the exact episode, turn, report, or node they act on.
+Chat, pane, dock, Runs and Space Runs render it as published, and that module
+holds the only label and tone table. The episode owner fills it from episode
+health. The Experiment owner refines it with its node, watcher and session
+rules, and its control's embedded episode carries the refined value, so one
+response never shows two states. A run that ended at its invocation limit
+shows as paused at the limit with the actionable tone, for both run kinds. A
+run the member stopped is ended and does not ask for them; Runs still groups a
+stopped Experiment under its actionable section. An Experiment with no run has
+no presentation.
+
 Report availability is independent of current episode: the newest surviving
 report for that Experiment and target remains linked to its owner. `report_is_current`
 selects **Open report** or **Previous episode report**.

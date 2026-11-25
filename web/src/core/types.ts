@@ -872,6 +872,43 @@ export type ExperimentRecommendedStep =
 export type ExperimentRunSection = "running" | "actionable" | "completed";
 export type ExperimentTaskControlKind = "resume" | "retry";
 
+export type RunPhase = "needs_you" | "running" | "ended";
+export type RunSection = "running" | "ended";
+export type RunTone =
+  "running" | "waiting" | "degraded" | "stopping" | "stopped" | "actionable" | "completed";
+export type RunRecommendation = EpisodeRecommendationKind | ExperimentRecommendedStep;
+export type RunActionKind =
+  "stop" | "pause" | "resume" | "retry" | "continue" | "open_report" | "start";
+
+/** One control a run offers now, with the exact record it acts on. */
+export interface RunAction {
+  kind: RunActionKind;
+  /** The episode Stop, Continue, or a turn control acts on. */
+  episode_id: string | null;
+  /** The turn Pause, Resume, or Retry acts on. */
+  operation_id: string | null;
+  /** The episode whose report Open report shows. */
+  report_episode_id: string | null;
+  /** The Experiment a new episode starts on. */
+  node_id: string | null;
+}
+
+/** The server-decided display of one run; every surface renders it as published. */
+export interface RunPresentation {
+  phase: RunPhase;
+  title: string;
+  /** The state in a few words, for a badge. */
+  label: string;
+  /** The label with the turns used. */
+  state_line: string;
+  tone: RunTone;
+  /** Where the pane lists the run. */
+  section: RunSection;
+  needs_you: boolean;
+  recommendation: RunRecommendation;
+  actions: RunAction[];
+}
+
 export interface ExperimentControlState {
   ready: boolean;
   reasons: string[];
@@ -900,6 +937,8 @@ export interface ExperimentControlState {
   report_episode_id: string | null;
   report_is_current: boolean;
   node_closed: boolean;
+  /** The run as this Experiment shows it; `episode.presentation` is the same value. Null before a run. */
+  presentation: RunPresentation | null;
 }
 
 export interface ExperimentLoopIndexEntry {
@@ -931,8 +970,7 @@ export interface ExperimentLoopIndex {
 
 export type SpaceRunSection = "actionable" | "running" | "completed";
 export type SpaceRunMode = "experiment_loop" | "auto_research";
-export type SpaceRunHealthTone =
-  "running" | "waiting" | "degraded" | "stopping" | "stopped" | "actionable" | "completed";
+export type SpaceRunHealthTone = RunTone;
 
 /** A space-level episode summary whose lifecycle placement is decided by the backend. */
 export interface SpaceRunIndexEntry extends Pick<
@@ -2765,6 +2803,8 @@ export interface Episode extends EpisodeLoopMetadata {
   recommendation: EpisodeRecommendationKind;
   task_control: EpisodeTaskControlKind | null;
   run_section: EpisodeRunSection;
+  /** An Experiment's control and a chat's dock publish it refined by the Experiment's rules. */
+  presentation: RunPresentation;
 }
 
 export interface EpisodeTimelineMember {
@@ -4262,6 +4302,10 @@ export interface ApprovalCard {
   state: "pending" | "running" | "expired";
   /** The settled outcome, once a tap or expiry resolved the card. */
   result?: Pick<ApprovalCardResult, "outcome" | "reason" | "rejected"> | null;
+  /** Plan cards only: the episode Start created; null until it starts. */
+  started_episode_id?: string | null;
+  /** Plan cards only: the newest episode of that run after its continuations. */
+  current_episode_id?: string | null;
 }
 
 export interface ExperimentStartOverrides {
@@ -4323,10 +4367,12 @@ export type RelayedQuestion = AgentQuestion & {
   source_label: string | null;
 };
 
-/** A direct child episode of a chat, with the open questions its chain asked. */
+/** A run a chat lists, with the open questions its chain asked. */
 export interface DockEpisode {
   episode: Episode;
   title: string;
+  /** `chat`: this chat started it. `node`: it started from this node chat's node page. */
+  source: "chat" | "node";
   /** The app hash that opens the episode on Runs. */
   link: string;
   questions: RelayedQuestion[];
@@ -4334,12 +4380,12 @@ export interface DockEpisode {
 
 /** `GET /api/agent-threads/cards`: open cards, each list newest first. */
 export interface AgentCardList {
-  /** When the next ended child leaves the dock; null when none will. */
+  /** Always null: ended runs stay listed, bounded by count. */
   next_expiry_at: string | null;
   proposal_cards: ProposalCardView[];
   asked_cards: AskedApprovalCardView[];
   questions?: RelayedQuestion[];
-  /** The named chat's child episodes, newest first. */
+  /** The named chat's runs, newest first: every open one and the newest ended ones. */
   episodes?: DockEpisode[];
 }
 

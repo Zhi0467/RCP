@@ -37,6 +37,7 @@ def _child(
     started_from: str | None,
     continues: str | None = None,
     mode: str = "experiment_loop",
+    node_id: str | None = None,
 ) -> str:
     root = f"{episode_id}-root"
     store.create_agent_task(
@@ -54,7 +55,7 @@ def _child(
             episode_id,
             project_id=project_id,
             mode=mode,
-            control_node_id=episode_id if mode == "experiment_loop" else None,
+            control_node_id=(node_id or episode_id) if mode == "experiment_loop" else None,
         )
     )
     with store.connection() as connection:
@@ -75,7 +76,7 @@ def _end(store: AppStore, episode_id: str, *, ago: timedelta = timedelta(0)) -> 
         )
 
 
-def test_chat_children_follow_continuations_and_drop_long_ended_runs(tmp_path) -> None:
+def test_chat_runs_follow_continuations_and_keep_long_ended_runs(tmp_path) -> None:
     store = AppStore(tmp_path / "app.sqlite3")
     _chat_turn(store, "project", "chat", "turn")
     _chat_turn(store, "project", "other-chat", "other-turn")
@@ -84,17 +85,78 @@ def test_chat_children_follow_continuations_and_drop_long_ended_runs(tmp_path) -
     _child(store, "project", "continued", started_from=None, continues="first")
     _child(store, "project", "elsewhere", started_from="other-turn")
     _child(store, "project", "stale", started_from="turn")
-    _end(store, "stale", ago=timedelta(days=3))
-    _child(store, "project", "recent", started_from="turn")
-    _end(store, "recent", ago=timedelta(hours=1))
-    since = (datetime.fromisoformat(store.now()) - timedelta(days=1)).isoformat()
+    _end(store, "stale", ago=timedelta(days=30))
 
-    children = store.chat_child_episodes("project", "chat", ended_since=since)
+    children = store.chat_dock_episodes("project", "chat", node_id=None, ended_limit=5)
 
-    assert {episode.episode_id for episode in children} == {"continued", "recent"}
+    assert {(episode.episode_id, source) for episode, source in children} == {
+        ("continued", "chat"),
+        ("stale", "chat"),
+    }
     started = store.episode_started_from_chat("continued")
     assert started is not None and started.chat_id == "chat"
     assert store.episode_started_from_chat("elsewhere").chat_id == "other-chat"  # type: ignore[union-attr]
+
+
+def test_node_chat_lists_runs_started_from_its_node_page(tmp_path) -> None:
+    store = AppStore(tmp_path / "app.sqlite3")
+    _chat_turn(store, "project", "other-chat", "other-turn")
+    _child(store, "project", "other-node", started_from=None, node_id="elsewhere")
+    _child(store, "project", "from-other-chat", started_from="other-turn", node_id="node")
+    _end(store, "from-other-chat")
+    _child(store, "project", "orchestrator", started_from=None, mode="auto_research")
+    _child(store, "project", "dispatched", started_from=None, node_id="node")
+    _end(store, "dispatched")
+    with store.connection() as connection:
+        connection.execute(
+            "INSERT INTO auto_research_child_experiments "
+            "(child_episode_id, auto_research_episode_id, project_id, control_node_id, state, "
+            "request_json, parent_operation_id, created_at, updated_at) "
+            "VALUES ('dispatched', 'orchestrator', 'project', 'node', 'terminal', '{}', "
+            "'orchestrator-root', ?, ?)",
+            (store.now(), store.now()),
+        )
+    _child(store, "project", "from-page", started_from=None, node_id="node")
+    _end(store, "from-page")
+    _child(
+        store, "project", "page-continued", started_from=None, continues="from-page", node_id="node"
+    )
+
+    def listed(node_id: str | None) -> set[tuple[str, str]]:
+        return {
+            (episode.episode_id, source)
+            for episode, source in store.chat_dock_episodes(
+                "project", "chat", node_id=node_id, ended_limit=5
+            )
+        }
+
+    assert listed("node") == {("page-continued", "node")}
+    assert listed(None) == set()
+
+
+def test_dock_bounds_ended_runs_and_keeps_every_open_one(questions_api, monkeypatch) -> None:
+    _app, client, store, project_id = questions_api
+    monkeypatch.setattr(agent_threads, "CHAT_DOCK_ENDED_EPISODE_LIMIT", 2)
+    thread_id = _project_thread(client)["thread_id"]
+    _chat_turn(store, project_id, thread_id, "thread-turn")
+    for age, child in enumerate(("newest", "newer", "old", "oldest")):
+        _child(store, project_id, child, started_from="thread-turn")
+        _end(store, child, ago=timedelta(days=10 * (age + 1)))
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE episodes SET created_at=ended_at WHERE episode_id=?", (child,)
+            )
+    for child in ("live-a", "live-b", "live-c"):
+        _child(store, project_id, child, started_from="thread-turn")
+
+    body = client.get(f"/api/agent-threads/cards?thread_id={thread_id}").json()
+
+    rows = {row["episode"]["episode_id"]: row for row in body["episodes"]}
+    assert set(rows) == {"live-a", "live-b", "live-c", "newest", "newer"}
+    assert {row["source"] for row in rows.values()} == {"chat"}
+    assert rows["newest"]["episode"]["presentation"]["section"] == "ended"
+    assert rows["live-a"]["episode"]["presentation"]["section"] == "running"
+    assert rows["newest"]["title"] == rows["newest"]["episode"]["presentation"]["title"]
 
 
 def test_dock_buckets_are_disjoint_and_space_skips_what_a_thread_shows(questions_api) -> None:
@@ -171,24 +233,24 @@ def test_dock_batches_archives_and_skips_unrelated_continuations(
     archives.assert_called_once_with(project_id)
 
 
-def test_dock_reports_next_expiry_and_expires_at_boundary(questions_api, monkeypatch) -> None:
+def test_node_chat_dock_shows_its_nodes_page_started_run_with_its_question(questions_api) -> None:
     _app, client, store, project_id = questions_api
-    thread_id = _project_thread(client)["thread_id"]
-    now = datetime.fromisoformat(store.now())
-    monkeypatch.setattr(store, "now", lambda: now.isoformat())
-    _chat_turn(store, project_id, thread_id, "thread-turn")
-    for child in ("live", "recent", "older"):
-        _child(store, project_id, child, started_from="thread-turn")
-    _end(store, "recent", ago=timedelta(hours=1))
-    _end(store, "older", ago=timedelta(hours=2))
-    url = f"/api/agent-threads/cards?thread_id={thread_id}"
-    first = client.get(url).json()
-    assert first["next_expiry_at"] == (now + timedelta(hours=22)).isoformat()
-    now += timedelta(hours=22)
-    second = client.get(url).json()
-    assert {row["episode"]["episode_id"] for row in second["episodes"]} == {"live", "recent"}
-    assert second["next_expiry_at"] == (now + timedelta(hours=1)).isoformat()
-    now += timedelta(hours=1)
-    last = client.get(url).json()
-    assert [row["episode"]["episode_id"] for row in last["episodes"]] == ["live"]
-    assert last["next_expiry_at"] is None
+    store.create_agent_task(
+        _task_record(
+            store.now(),
+            operation_id="node-turn",
+            project_id=project_id,
+            kind="node_chat",
+            request={"chat_id": "node-chat", "chat_scope": "node", "node_id": "node"},
+        )
+    )
+    _child(store, project_id, "from-page", started_from=None, node_id="node")
+    asked = _question(store, project_id, owner_kind="episode", owner_id="from-page", key="page")
+
+    body = client.get(f"/api/projects/{project_id}/chats/node-chat/cards").json()
+
+    assert [(row["episode"]["episode_id"], row["source"]) for row in body["episodes"]] == [
+        ("from-page", "node")
+    ]
+    assert [row["question_id"] for row in body["episodes"][0]["questions"]] == [asked.question_id]
+    assert body["questions"] == []
