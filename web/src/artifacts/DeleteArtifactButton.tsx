@@ -15,12 +15,15 @@ export function DeleteArtifactButton({
   label,
   className,
   iconSize,
+  onDeleted,
 }: {
   projectId: string;
   artifactId: string;
   label: string;
   className: string;
   iconSize: number;
+  /** A list that is not the project's Artifacts resource refreshes itself here. */
+  onDeleted?: () => void;
 }) {
   const { store } = useRefreshRuntime();
   const [deleting, setDeleting] = useState(false);
@@ -37,6 +40,7 @@ export function DeleteArtifactButton({
       );
       closeArtifactIfOpen(artifactId);
       store.invalidate(resourceKeyId(artifactsProfile(projectId).key));
+      onDeleted?.();
     } catch (cause) {
       setFailure(errorMessage(cause));
     } finally {

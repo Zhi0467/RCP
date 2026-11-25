@@ -1,9 +1,18 @@
 import { Download, File, FileText, Image, Table, X } from "lucide-react";
-import { useEffect, useId, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
 import type { AgentWindowEndpoints } from "../agentWindow/agentWindowEndpoints";
 import { chatArtifactsProfile } from "../artifacts/artifactResources";
 import { openArtifact, openSpaceArtifact } from "../artifacts/artifactViewerModel";
 import { StoredArtifactDownload } from "../artifacts/StoredArtifactDownload";
+import { DeleteArtifactButton } from "../artifacts/DeleteArtifactButton";
 import { isDesktopRuntime, openDesktopArtifactPdf } from "../core/desktopRuntime";
 import { CopyReferenceButton } from "../core/CopyReferenceButton";
 import { errorMessage } from "../core/errors";
@@ -33,7 +42,10 @@ export function useChatArtifacts(
     if (previous.revision !== revision) store.invalidate(id);
   }, [store, id, revision]);
   const resource = useResource(owner, profile);
-  return resource.value ?? NO_ARTIFACTS;
+  const refresh = useCallback(() => {
+    if (id) store.invalidate(id);
+  }, [store, id]);
+  return { artifacts: resource.value ?? NO_ARTIFACTS, refresh };
 }
 
 /** Where the open pane sits: below the dock's header, beside the chat when the dock
@@ -69,6 +81,7 @@ export function ChatArtifactsPane({
   artifacts,
   top,
   onOpened,
+  onDeleted,
   onClose,
 }: {
   endpoints: AgentWindowEndpoints;
@@ -76,6 +89,7 @@ export function ChatArtifactsPane({
   artifacts: RunArtifactEntry[];
   top?: number;
   onOpened: () => void;
+  onDeleted: () => void;
   onClose: () => void;
 }) {
   const projectId = endpoints.projectId;
@@ -158,7 +172,7 @@ export function ChatArtifactsPane({
                     artifact.artifact_id,
                     "download",
                   )}
-                  download={artifact.name}
+                  download={artifact.download_name}
                   aria-label={`Download ${artifact.name}`}
                   title="Download"
                 >
@@ -169,11 +183,22 @@ export function ChatArtifactsPane({
                   projectId={projectId}
                   artifactId={artifact.artifact_id}
                   name={artifact.name}
+                  fileName={artifact.download_name}
                   className="icon-button artifact-entry-action"
                   href={`/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifact.artifact_id)}/download`}
                 >
                   <Download size={15} />
                 </StoredArtifactDownload>
+              )}
+              {projectId !== null && artifact.can_delete && (
+                <DeleteArtifactButton
+                  projectId={projectId}
+                  artifactId={artifact.artifact_id}
+                  label={`Delete ${artifact.name}`}
+                  className="icon-button artifact-entry-action"
+                  iconSize={15}
+                  onDeleted={onDeleted}
+                />
               )}
               {!downloadOnly && (
                 <button

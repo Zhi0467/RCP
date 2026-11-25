@@ -38,6 +38,7 @@ import {
 import {
   type SettingsResource,
   settingsProfile,
+  readinessProfile,
   consolidationProfile,
   providerLoginsProfile,
   useProjectResource,
@@ -1779,6 +1780,7 @@ function MemberApp({
       const readiness = await loadProjectReadiness(apiBase, true);
       const current = store.view<SettingsResource>(id).value;
       mutation.settle(current ? new Map([[id, { ...current, ...readiness }]]) : undefined);
+      store.invalidate(resourceKeyId(readinessProfile(projectId).key));
     } catch (error) {
       mutation.fail();
       throw error;

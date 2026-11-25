@@ -66,6 +66,7 @@ export function RunArtifacts({
                     projectId={projectId}
                     artifactId={artifact.artifact_id}
                     name={artifact.name}
+                    fileName={artifact.download_name}
                     className="button compact secondary"
                     href={`/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifact.artifact_id)}/download`}
                   >

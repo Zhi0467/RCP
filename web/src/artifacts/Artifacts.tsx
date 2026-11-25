@@ -121,6 +121,7 @@ export function Artifacts({
             projectId={projectId}
             artifactId={entry.artifact_id}
             name={entry.name}
+            fileName={entry.download_name ?? entry.name}
             className="icon-button artifact-entry-action"
             href={entry.download_url}
           >

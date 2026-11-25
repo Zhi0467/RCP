@@ -6,6 +6,7 @@ export function StoredArtifactDownload({
   projectId,
   artifactId,
   name,
+  fileName,
   href,
   className,
   children,
@@ -13,6 +14,8 @@ export function StoredArtifactDownload({
   projectId: string;
   artifactId: string;
   name: string;
+  /** The saved file's name with its extension; `name` may be a display title. */
+  fileName: string;
   href: string;
   className?: string;
   children: React.ReactNode;
@@ -24,7 +27,7 @@ export function StoredArtifactDownload({
       <a
         className={className}
         href={href}
-        download={name}
+        download={fileName}
         aria-label={`Download ${name}`}
         title="Download"
       >
@@ -42,7 +45,7 @@ export function StoredArtifactDownload({
         onClick={() => {
           setError("");
           setSaving(true);
-          void downloadDesktopArtifact({ projectId, artifactId, suggestedName: name })
+          void downloadDesktopArtifact({ projectId, artifactId, suggestedName: fileName })
             .catch((failure) => setError(errorMessage(failure)))
             .finally(() => setSaving(false));
         }}

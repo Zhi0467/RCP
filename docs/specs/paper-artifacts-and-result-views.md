@@ -694,7 +694,9 @@ closed Archived fold. A single branch omits its header but retains row tags.
 Each branch is one raised box without row rules. It shows the five newest outputs
 and Show more. Rows lead with the title. The author, verified Source chat, and
 node link form one quiet line. Clicking a row opens it. Copy reference, Download,
-and Delete sit on the right as icons. Stored identities, times, and paths are
+and Delete sit on the right as icons. Every Download saves under the
+projection's `download_name`, the stored file name with its extension, never the
+display title. Stored identities, times, and paths are
 data rather than repetitive labels. Captured HTML metadata supplies titles
 without rereading the artifact or changing its digest or outcome. A missing title
 appears as Report. One origin resolver verifies the transcript and exact target
@@ -791,8 +793,9 @@ is not kept.
 Each row is a card, newest first: a type icon tile (table for CSV, image,
 text, or file), the title, and a quiet line with the kind, any worker label,
 and the relative time, with the full time on hover. Every card ends in a
-Download action, and a project agent's card adds Copy reference before it. The
-rest of the card opens the artifact in the viewer. A file, or a PDF outside the
+Download action, and a project agent's card adds Copy reference before it and
+Delete after it when the backend offers `can_delete`. The rest of the card opens
+the artifact in the viewer. A file, or a PDF outside the
 desktop app, opens nowhere and offers only those actions. A project agent's
 card drags as an artifact reference.
 

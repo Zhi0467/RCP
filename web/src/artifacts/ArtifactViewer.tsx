@@ -424,6 +424,7 @@ export function ArtifactViewer({ onMerge }: { onMerge?: BranchMergeRequest }) {
             projectId={target.projectId}
             artifactId={state.artifact_id}
             name={state.name}
+            fileName={state.download_name}
             className="artifact-viewer-control"
             href={state.download_url}
           >
@@ -470,6 +471,7 @@ export function ArtifactViewer({ onMerge }: { onMerge?: BranchMergeRequest }) {
           projectId={target.projectId}
           artifactId={state.artifact_id}
           name={state.name}
+          fileName={state.download_name}
           className="artifact-viewer-file"
           href={state.download_url}
         >

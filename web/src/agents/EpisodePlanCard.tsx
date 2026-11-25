@@ -23,6 +23,7 @@ import { SYNC_BEFORE_START } from "../experiments/experimentStart";
 import { formatNodeContext, formatNodeValue } from "../graph/GlossaryText";
 import type { GlossaryIndex } from "../graph/glossary";
 import { graphProfile, refsProfile } from "../graph/graphResources";
+import { readinessProfile } from "../projects/projectResources";
 import { requestNodeEdit } from "../graph/nodeEditRequest";
 import { hasStagedHumanDraft } from "../graph/projectSession";
 import { ApprovalCardShell, askedCardState, type Busy } from "./ApprovalCard";
@@ -242,6 +243,10 @@ export function EpisodePlanCard({
   const target = planGraphTarget(action);
   const profile = graphProfile(action.project_id, target);
   const graph = useResource(`experiment-plan:${question.question_id}`, profile);
+  const readiness = useResource(
+    `plan-readiness:${question.question_id}`,
+    readinessProfile(action.project_id),
+  );
   const refs = useResource(
     `plan-branches:${question.question_id}`,
     action.kind === "auto_research" ? refsProfile(action.project_id) : null,
@@ -251,7 +256,14 @@ export function EpisodePlanCard({
     <EpisodePlanCardView
       {...props}
       question={question}
-      snapshot={graph.value ?? null}
+      snapshot={
+        graph.value
+          ? {
+              ...graph.value,
+              provider_readiness: readiness.value?.provider_readiness ?? {},
+            }
+          : null
+      }
       branchNamesInUse={(refs.value ?? []).map((ref) => ref.name)}
       staged={() => hasStagedHumanDraft(localStorage, actorId, action.project_id, target)}
       onPlanChanged={() => store.invalidate(resourceKeyId(profile.key))}

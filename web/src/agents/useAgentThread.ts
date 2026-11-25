@@ -12,12 +12,14 @@ import {
   providerModels,
   type AgentConfigSource,
 } from "../core/AgentConfigControls";
-import { loadProjectReadiness, loadSpaceMachines, loadSpaceSkills } from "../core/api";
+import { loadSpaceMachines, loadSpaceSkills } from "../core/api";
+import { resourceKeyId } from "../core/resourceStore";
+import { readinessProfile } from "../projects/projectResources";
 import type { SkillSource } from "../core/SkillPicker";
 import { memberDraftKey } from "../core/draftStorage";
 import { errorMessage } from "../core/errors";
 import { EMPTY_SKILL_SELECTION, skillInvocationFields } from "../core/skillPickerModel";
-import { useResource } from "../core/useResource";
+import { useRefreshRuntime, useResource } from "../core/useResource";
 import { graphProfile } from "../graph/graphResources";
 import { providerChange } from "../projects/providers";
 import type { CommentScope } from "../comments/api.ts";
@@ -184,25 +186,23 @@ function threadTurnRequest(submission: ConversationTurnSubmission): AgentThreadT
  * signed-in provider with that provider's first model.
  */
 function useThreadPicker(thread: AgentThread | null): { picker: AgentPicker; reload: () => void } {
-  const [picker, setPicker] = useState<AgentPicker>(null);
+  const projectId = thread?.project_id ?? null;
+  const { store } = useRefreshRuntime();
+  const readinessResource = projectId ? readinessProfile(projectId) : null;
+  const readiness = useResource(`thread-picker:${projectId ?? ""}`, readinessResource);
+  const [space, setSpace] = useState<AgentPicker>(null);
   /** A sign-in from Settings changes readiness after mount; opening the pick reads it again. */
   const [reads, setReads] = useState(0);
-  const reload = useCallback(() => setReads((count) => count + 1), []);
-  const projectId = thread?.project_id ?? null;
-  const present = thread !== null;
+  const readinessId = readinessResource ? resourceKeyId(readinessResource.key) : null;
+  const reload = useCallback(() => {
+    if (readinessId) store.invalidate(readinessId);
+    else setReads((count) => count + 1);
+  }, [readinessId, store]);
+  const spaceThread = thread !== null && !projectId;
   useEffect(() => {
-    if (!present) return;
+    if (!spaceThread) return;
     let current = true;
     const load = async (): Promise<AgentPicker> => {
-      if (projectId) {
-        const readiness = await loadProjectReadiness(
-          `/api/projects/${encodeURIComponent(projectId)}`,
-        );
-        return {
-          source: { provider_readiness: readiness.provider_readiness },
-          value: profileRunConfig(readiness.agent_profiles.project_chat, readiness.run_on),
-        };
-      }
       /** The Space thread runs on the backend's own machine, the one with no host. */
       const machine = (await loadSpaceMachines()).find((item) => !item.host);
       if (!machine) return null;
@@ -226,13 +226,24 @@ function useThreadPicker(thread: AgentThread | null): { picker: AgentPicker; rel
     };
     /** Without readiness the pick stays away and the backend picks the provider. */
     load()
-      .then((loaded) => current && setPicker(loaded))
-      .catch(() => current && setPicker(null));
+      .then((loaded) => current && setSpace(loaded))
+      .catch(() => current && setSpace(null));
     return () => {
       current = false;
     };
-  }, [present, projectId, reads]);
-  return { picker, reload };
+  }, [spaceThread, reads]);
+  const loaded = readiness.value;
+  const projectPicker = useMemo<AgentPicker>(
+    () =>
+      loaded
+        ? {
+            source: { provider_readiness: loaded.provider_readiness },
+            value: profileRunConfig(loaded.agent_profiles.project_chat, loaded.run_on),
+          }
+        : null,
+    [loaded],
+  );
+  return { picker: projectId ? projectPicker : thread ? space : null, reload };
 }
 
 /**
