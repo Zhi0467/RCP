@@ -11,7 +11,7 @@ import {
 import type { AgentWindowEndpoints } from "../agentWindow/agentWindowEndpoints";
 import { chatArtifactsProfile } from "../artifacts/artifactResources";
 import { openArtifact, openSpaceArtifact } from "../artifacts/artifactViewerModel";
-import { StoredArtifactDownload } from "../artifacts/StoredArtifactDownload";
+import { ArtifactDownload, storedArtifactSave } from "../artifacts/ArtifactDownload";
 import { DeleteArtifactButton } from "../artifacts/DeleteArtifactButton";
 import { isDesktopRuntime, openDesktopArtifactPdf } from "../core/desktopRuntime";
 import { CopyReferenceButton } from "../core/CopyReferenceButton";
@@ -164,32 +164,27 @@ export function ChatArtifactsPane({
                   className="icon-button artifact-entry-action"
                 />
               )}
-              {projectId === null ? (
-                <a
-                  className="icon-button artifact-entry-action"
-                  href={endpoints.artifactUrl(
-                    artifact.origin_operation_id ?? "",
-                    artifact.artifact_id,
-                    "download",
-                  )}
-                  download={artifact.download_name}
-                  aria-label={`Download ${artifact.name}`}
-                  title="Download"
-                >
-                  <Download size={15} />
-                </a>
-              ) : (
-                <StoredArtifactDownload
-                  projectId={projectId}
-                  artifactId={artifact.artifact_id}
-                  name={artifact.name}
-                  fileName={artifact.download_name}
-                  className="icon-button artifact-entry-action"
-                  href={`/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifact.artifact_id)}/download`}
-                >
-                  <Download size={15} />
-                </StoredArtifactDownload>
-              )}
+              <ArtifactDownload
+                name={artifact.name}
+                fileName={artifact.download_name}
+                className="icon-button artifact-entry-action"
+                href={
+                  projectId === null
+                    ? endpoints.artifactUrl(
+                        artifact.origin_operation_id ?? "",
+                        artifact.artifact_id,
+                        "download",
+                      )
+                    : `/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifact.artifact_id)}/download`
+                }
+                save={
+                  projectId === null
+                    ? null
+                    : storedArtifactSave(projectId, artifact.artifact_id, artifact.download_name)
+                }
+              >
+                <Download size={15} />
+              </ArtifactDownload>
               {projectId !== null && artifact.can_delete && (
                 <DeleteArtifactButton
                   projectId={projectId}

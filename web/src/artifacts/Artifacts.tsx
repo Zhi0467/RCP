@@ -10,7 +10,7 @@ import { useRefreshRuntime } from "../core/useResource";
 import { useProjectResource } from "../projects/projectResources";
 import { artifactsProfile } from "./artifactResources";
 import { DeleteArtifactButton } from "./DeleteArtifactButton";
-import { StoredArtifactDownload } from "./StoredArtifactDownload";
+import { ArtifactDownload, storedArtifactSave } from "./ArtifactDownload";
 import { EpisodeAuthor } from "../experiments/EpisodeRunControls";
 import type { GraphRef, ProjectArtifact } from "../core/types";
 import { BranchTag } from "../core/BranchTag";
@@ -117,16 +117,19 @@ export function Artifacts({
           />
         )}
         {entry.can_download && entry.download_url && entry.artifact_id && (
-          <StoredArtifactDownload
-            projectId={projectId}
-            artifactId={entry.artifact_id}
+          <ArtifactDownload
+            save={storedArtifactSave(
+              projectId,
+              entry.artifact_id,
+              entry.download_name ?? entry.name,
+            )}
             name={entry.name}
             fileName={entry.download_name ?? entry.name}
             className="icon-button artifact-entry-action"
             href={entry.download_url}
           >
             <Download size={15} />
-          </StoredArtifactDownload>
+          </ArtifactDownload>
         )}
         {entry.can_open && (
           // The whole row is this link; the actions above it stay clickable.
