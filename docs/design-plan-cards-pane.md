@@ -216,6 +216,25 @@ Stored names do not change: approval action kinds (`experiment_start`,
 `auto_research`), table and column names, and API fields. Old-record replay depends on
 them.
 
+### Run here
+
+An Experiment task card offers three actions: **Start**, **Run here**, and **Park for
+later**. Run here starts no episode, budget, or separate agent. It is for work the member
+wants done but that is not a full Experiment, such as a short pilot.
+
+- Run here goes through the same decision route as Start, with `decision: "run_here"`.
+  It runs the same Part 1 order (staged-change check, then Sync of a pending node edit).
+  It settles the card with a `run_here` outcome and records the operation id of the turn
+  it sends.
+- The turn is the member's own message to this chat: the card's Handoff, Design, and
+  Done when, rendered from the card's current fields. It goes through the ordinary send
+  path, so a busy chat queues it. The member authorizes it as any message they send.
+- The card shows **Running here** while that turn is queued or running, and **Ran here**
+  with a link to the turn once it ends. Wakes from the chat's own watches continue in
+  the chat and do not reopen the card.
+- Auto-research cards have no Run here. Auto-research always runs as an episode on its
+  own branch.
+
 ### One task card for the plan's life
 
 The plan card and the run stay separate stored records: the approval card, and the
@@ -314,12 +333,14 @@ chat on a narrow one, full width at 390px.
   `revised_operation_id`, `revised_at`, and `revised_by_json`. Old rows read as open and
   never revised.
 - **Decision route.** `POST /api/approval-cards/{question_id}`:
-  - `decision` accepts `park`, and `start` carries the member's run fields;
+  - `decision` accepts `park` and `run_here` (Experiment cards only), and `start`
+    carries the member's run fields;
   - an old hash gets 409 `plan_revised`;
   - approve and decline accept parked cards.
 - **Card view.** The card view adds `shelved_at`, `revised_at`, the reviser's name, and
   `revised_operation_id`. Its state precedence is `expired`, then `running`, then
-  `parked`, then `pending`.
+  `parked`, then `pending`. A `run_here` card reads `running_here` while its turn is
+  queued or running, then `ran_here`.
 
 ## Not changed
 
@@ -348,6 +369,8 @@ chat on a narrow one, full width at 390px.
 - Start after a revision uses the revising turn's scope.
 - Crash recovery leaves a newer revision alone.
 - Old rows read correctly.
+- Run here sends one member turn with the card's fields, queues behind a busy chat,
+  settles the card, and starts no episode. Auto-research refuses `run_here`.
 
 **Part 2, web browser tests:**
 - Park folds the card and the pane lists it. Delete removes it from the pane.
