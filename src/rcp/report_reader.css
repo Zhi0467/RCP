@@ -48,8 +48,17 @@ body > article.report {
   grid-row: 1;
   padding: 4.5rem 0 6rem;
   min-width: 0;
+  overflow-wrap: anywhere;
   counter-reset: figure note;
 }
+body:has(> article.report) > :not(article.report, nav.reader-toc),
+body > article.report ~ article.report {
+  grid-column: 4;
+  grid-row: auto;
+  min-width: 0;
+}
+article.report :is(img, svg, video, canvas, iframe) { max-width: 100%; }
+article.report table { display: block; max-width: 100%; overflow-x: auto; }
 
 /* Title block */
 article.report > header { margin-bottom: 2.6rem; }
@@ -113,7 +122,6 @@ article.report table {
   border-collapse: collapse;
   font: 0.88rem/1.45 var(--reader-sans);
   margin: 1.4rem 0;
-  width: 100%;
   font-variant-numeric: tabular-nums;
 }
 article.report th, article.report td {

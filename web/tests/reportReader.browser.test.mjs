@@ -12,34 +12,45 @@ const report = `<!doctype html><html><head><title>R</title></head><body>
 <section><h2>Second finding</h2><p>More.</p></section>
 </article></body></html>`;
 
-const served = execFileSync(
-  "uv",
-  [
-    "run",
-    "python",
-    "-c",
-    `import sys
+const serve = (html) =>
+  execFileSync(
+    "uv",
+    [
+      "run",
+      "python",
+      "-c",
+      `import sys
 from rcp.artifacts import html_preview_document
 from rcp.report_reader import report_frame_addon
 print(html_preview_document(sys.stdin.read().encode(), frame_addon=report_frame_addon())[0])`,
-  ],
-  {
-    cwd: new URL("../..", import.meta.url),
-    encoding: "utf8",
-    input: report,
-    maxBuffer: 16 * 1024 * 1024,
-  },
-);
+    ],
+    {
+      cwd: new URL("../..", import.meta.url),
+      encoding: "utf8",
+      input: html,
+      maxBuffer: 16 * 1024 * 1024,
+    },
+  );
+const served = serve(report);
 
-const open = async (width) => {
+const messy = serve(`<!doctype html><title>M</title><body>
+<div id="stray">Written outside the article.</div>
+<article class="report"><aside>A note with no paragraph before it.</aside>
+<h1>No sections at all</h1>
+<p id="url">https://example.com/${"a".repeat(300)}</p>
+<table><tr>${"<td>wide-cell-content</td>".repeat(40)}</tr></table>
+</article>
+<article class="report" id="second"><p>A second article.</p></article>
+</body>`);
+const open = async (width, body = served) => {
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width, height: 900 } });
   await page.route("http://rcp.test/report", (route) =>
-    route.fulfill({ contentType: "text/html", body: served }),
+    route.fulfill({ contentType: "text/html", body }),
   );
   await page.goto("http://rcp.test/report");
   const frame = page.frames()[1];
-  await frame.waitForSelector("nav.reader-toc");
+  await frame.waitForSelector("article.report");
   return { browser, frame };
 };
 
@@ -98,6 +109,29 @@ for (const width of [1260, 390])
         ),
         "none",
       );
+    } finally {
+      await browser.close();
+    }
+  });
+
+for (const width of [1400, 390])
+  test(`a ${width}px report with stray content stays in one readable column`, async () => {
+    const { browser, frame } = await open(width, messy);
+    try {
+      const layout = await frame.evaluate(() => {
+        const box = (selector) => document.querySelector(selector).getBoundingClientRect();
+        const main = document.querySelector("article.report").getBoundingClientRect();
+        const within = (selector) =>
+          box(selector).left >= main.left - 1 && box(selector).right <= main.right + 1;
+        return {
+          fits: document.documentElement.scrollWidth <= window.innerWidth,
+          stray: within("#stray"),
+          second: within("#second") && box("#second").top >= main.bottom - 1,
+          url: within("#url"),
+          rail: Boolean(document.querySelector("nav.reader-toc")),
+        };
+      });
+      assert.deepEqual(layout, { fits: true, stray: true, second: true, url: true, rail: false });
     } finally {
       await browser.close();
     }

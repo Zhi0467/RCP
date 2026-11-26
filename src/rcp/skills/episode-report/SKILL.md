@@ -34,7 +34,7 @@ centre, and side notes in the right margin. RCP supplies that layout, the
 typography, figure numbering, and the phone layout. Write the structure below
 and nothing that positions the page: no page-level layout, column, font, or
 colour CSS, and no contents list of your own. Style only inside a figure.
-RCP rejects a report whose `<body>` does not directly contain the article.
+Without that article, RCP shows the page exactly as written, with none of the reader layout.
 
 ```html
 <!doctype html>

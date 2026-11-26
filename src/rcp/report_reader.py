@@ -8,66 +8,10 @@ from __future__ import annotations
 
 import importlib.resources
 import re
-from html.parser import HTMLParser
 
 from rcp.artifact_comments import selection_frame_addon
 from rcp.artifact_views import combined_addon
 from rcp.artifacts import FrameAddon
-
-_VOID = frozenset(
-    [
-        "area",
-        "base",
-        "br",
-        "col",
-        "embed",
-        "hr",
-        "img",
-        "input",
-        "link",
-        "meta",
-        "source",
-        "track",
-        "wbr",
-    ]
-)
-_PAGE = frozenset({"html", "head", "body"})
-
-
-class _ReportArticleFinder(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self.open: list[str] = []
-        self.found = False
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag == "body":
-            self.open = [name for name in self.open if name == "html"]
-        if tag == "article" and "p" in self.open:
-            del self.open[len(self.open) - 1 - self.open[::-1].index("p") :]
-        if tag == "article" and set(self.open) <= _PAGE:
-            classes = (dict(attrs).get("class") or "").split()
-            self.found = self.found or "report" in classes
-        if tag not in _VOID:
-            self.open.append(tag)
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag in self.open:
-            del self.open[len(self.open) - 1 - self.open[::-1].index(tag) :]
-
-
-def is_reader_report(document: str) -> bool:
-    """Whether the page body holds the ``<article class="report">`` the layout reads.
-
-    As in a browser, a body start ends an unclosed head and an article start ends an
-    open paragraph, so neither hides an article the reader would find.
-    """
-
-    finder = _ReportArticleFinder()
-    finder.feed(document)
-    finder.close()
-    return finder.found
-
 
 _HEAD = re.compile(r"<head\b[^>]*>", re.IGNORECASE)
 _PROLOGUE = re.compile(r"\s*(?:<!doctype[^>]*>\s*)?(?:<html\b[^>]*>)?", re.IGNORECASE)

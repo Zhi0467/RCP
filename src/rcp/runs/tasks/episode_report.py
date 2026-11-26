@@ -22,7 +22,6 @@ from rcp.limits import CHAT_ARTIFACT_MAX_FILE_BYTES
 from rcp.machine_cards import BACKEND_MACHINE_ID, card
 from rcp.providers import AgentCapability, ProviderId, profile_for
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
-from rcp.report_reader import is_reader_report
 from rcp.runs.codex_resume import REFUSAL, RETRY, record_refusal
 from rcp.runs.shared import (
     _ProviderOutcome,
@@ -921,11 +920,6 @@ def _read_valid_report(mailbox: RunStageMailbox, output_name: str) -> str:
         raise ValueError("episode report output is not HTML")
     if not text.strip():
         raise ValueError("episode report output is empty")
-    if not is_reader_report(text):
-        raise ValueError(
-            'the page body has no <article class="report">; '
-            "write the report in the episode-report skill's article skeleton"
-        )
     return text
 
 

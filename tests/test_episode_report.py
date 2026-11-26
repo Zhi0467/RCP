@@ -61,11 +61,6 @@ class _ReportLauncher:
             )
         elif outcome == "invalid":
             workspace.joinpath("episode-report.html").write_text("\x00", encoding="utf-8")
-        elif outcome == "unstructured":
-            workspace.joinpath("episode-report.html").write_text(
-                "<html><body><div><article class='report'>Nested</article></div></body></html>",
-                encoding="utf-8",
-            )
         elif outcome == "unsafe_output":
             workspace.joinpath("episode-report.html").mkdir()
 
@@ -718,20 +713,6 @@ async def test_missing_then_invalid_then_valid_uses_three_hidden_attempts(
         for master_section in ("master_pointer", "master_bootstrap", "master_rebootstrap"):
             assert SECTIONS[master_section].split("{path}")[0] not in prompt
         assert ("- exact report correction diagnostic: `" in contract.read_text()) == (number > 1)
-
-
-@pytest.mark.asyncio
-async def test_report_outside_the_article_skeleton_is_corrected(manifest, tmp_path) -> None:
-    service, store, request, execution, stage = _setup_report(manifest, tmp_path)
-    launcher = _ReportLauncher(["unstructured", "valid"])
-
-    events = await _events(stream_episode_report_run(service, launcher, request, execution))
-
-    assert [event.event for event in events] == ["message", "done"]
-    attempts = store.episode_report_attempts(EPISODE)
-    assert [attempt.status for attempt in attempts] == ["failed", "succeeded"]
-    contract = next(stage.glob("inputs/*-episode-report-contract-2.md"))
-    assert "- exact report correction diagnostic: `" in contract.read_text()
 
 
 @pytest.mark.parametrize(
