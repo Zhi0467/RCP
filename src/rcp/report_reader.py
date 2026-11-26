@@ -49,10 +49,14 @@ def reader_report_bytes(data: bytes) -> bytes:
 
 
 def downloadable_report(document: str) -> str:
-    """The stored report with the reader layout inlined, so a saved copy reads the same."""
+    """The stored report with the reader layout inlined, so a saved copy reads the same.
+
+    The charset leads the inlined reader so a copy opened from disk still decodes as
+    UTF-8; a declaration the report wrote later in its head would come too late.
+    """
 
     style, script = _reader_files()
-    reader = f"<style>{style}</style><script>{script}</script>"
+    reader = f'<meta charset="utf-8"><style>{style}</style><script>{script}</script>'
     document = layered_report(document)
     head = _HEAD.search(document)
     prologue = _PROLOGUE.match(document)
