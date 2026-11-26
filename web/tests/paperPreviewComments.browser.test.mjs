@@ -46,7 +46,7 @@ const htmlPreview = JSON.parse(
       `import json
 from dataclasses import replace
 from rcp.artifact_comments import selection_frame_addon
-from rcp.artifact_views import _combined_addon
+from rcp.artifact_views import combined_addon
 from rcp.paper.html_preview import source_frame_addon
 from rcp.artifact_views import artifact_content, inline_viewer_document
 source = b'''<!doctype html><html><body style="margin:0;font:20px Georgia;background:white;color:black">
@@ -58,7 +58,7 @@ source = b'''<!doctype html><html><body style="margin:0;font:20px Georgia;backgr
 shell, shell_csp = inline_viewer_document('figure.html', 'html', content_url='/html-preview-content', live=None, selectable=True)
 selection = selection_frame_addon()
 selection = replace(selection, frame_script=selection.frame_script + "\\nlisten(privatePort,'message',event=>{if(event.data?.kind==='rcp-artifact-selection-enable') document.documentElement.dataset.selectionReady='true';});")
-content, _, content_csp = artifact_content('figure.html', 'text/html', source, frame_addon=_combined_addon(selection, source_frame_addon()))
+content, _, content_csp = artifact_content('figure.html', 'text/html', source, frame_addon=combined_addon(selection, source_frame_addon()))
 print(json.dumps(dict(shell=shell,shell_csp=shell_csp,content=content,content_csp=content_csp,source=source.decode())))`,
     ],
     {

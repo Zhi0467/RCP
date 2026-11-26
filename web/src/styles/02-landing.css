@@ -132,7 +132,7 @@
 .feedback-panel[hidden] {
   display: none;
 }
-@media (max-width: 520px) {
+@media (max-width: 560px) {
   .feedback-panel {
     left: 16px;
     position: fixed;
@@ -154,10 +154,6 @@
   resize: vertical;
   width: 100%;
 }
-.feedback-panel textarea:focus-visible {
-  outline: 2px solid var(--landing-accent, var(--ink));
-  outline-offset: -2px;
-}
 .feedback-panel footer {
   display: flex;
   justify-content: flex-end;
@@ -170,15 +166,10 @@
   font: 600 0.82rem/1 var(--ui);
   padding: 9px 15px;
   text-decoration: none;
-  transition: opacity 0.16s ease;
 }
 .feedback-continue[aria-disabled="true"] {
   cursor: default;
   opacity: 0.38;
-}
-.feedback-continue:focus-visible {
-  outline: 2px solid var(--ink);
-  outline-offset: 2px;
 }
 .landing-identity-slip {
   background:
