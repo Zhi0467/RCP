@@ -488,6 +488,29 @@
   min-height: 36px;
   padding: 0 6px;
 }
+.project-menu-panel > .feedback-menu {
+  display: grid;
+}
+.project-menu-panel > .feedback-menu > .icon-button {
+  background: transparent;
+  background-image: none;
+  border: 0;
+  box-shadow: none;
+  color: var(--ink);
+  font-size: var(--type-sm);
+  gap: 12px;
+  justify-content: flex-start;
+  padding: 0 12px;
+  width: 100%;
+}
+.project-menu-panel > .feedback-menu > .icon-button::after {
+  content: attr(aria-label);
+}
+.project-menu-panel .feedback-panel {
+  margin: 4px 8px 8px;
+  position: static;
+  width: auto;
+}
 .project-menu-panel > .landing-identity-menu {
   margin: 4px 8px;
 }

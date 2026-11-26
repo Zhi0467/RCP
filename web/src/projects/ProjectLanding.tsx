@@ -35,6 +35,7 @@ import type { VoiceAgent } from "../voice/useVoiceAgent";
 import { SpaceRuns } from "../experiments/SpaceRuns";
 import type { SpaceSettingsSectionId } from "./SpaceSettings";
 import type { ArchiveEpisodeAction } from "../experiments/EpisodeRunControls";
+import { FeedbackButton } from "../feedback/FeedbackButton";
 import { LandingIdentityMenu } from "./LandingIdentityMenu";
 import { ProjectDock } from "./ProjectDock";
 import { TeamSpaceGroups } from "./TeamSpaceGroups";
@@ -661,6 +662,7 @@ export function ProjectLanding({
             <Settings size={16} aria-hidden="true" />
           </button>
         )}
+        <FeedbackButton className="landing-space-settings" />
         <LandingIdentityMenu
           identity={identity}
           identityError={identityError}
