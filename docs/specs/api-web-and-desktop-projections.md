@@ -1864,7 +1864,8 @@ characters, not `/`, and not inside RCP's own storage.
 A `PATCH` of `provider_autocompact` merges the given providers into the card's
 map of provider id to auto-compact setting; each provider profile validates its own value (Claude:
 `auto` or a token window, rendered as `--autocompact`; Codex: a token count,
-rendered as `model_auto_compact_token_limit`), an empty value restores the CLI
+rendered as `model_auto_compact_token_limit`; Antigravity: 30000 or more tokens,
+passed as `AGY_CLI_AUTO_COMPACT_OVERRIDE`), an empty value restores the CLI
 default, and a provider without the setting is refused. The launcher reads the
 card at every launch on that machine, so an edit applies from the next turn and
 is not recorded with any turn.

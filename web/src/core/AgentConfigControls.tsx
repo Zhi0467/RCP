@@ -131,6 +131,12 @@ export function AgentConfigChip({
   const shownModel = value.model || effectiveModel;
   const models = providerModels(project, value.run_on, value.provider);
   const effort = takesNoEffort(models, shownModel) ? "" : value.reasoning;
+  const notReady =
+    readiness !== undefined && !launchProviderReady(project, value, workLike)
+      ? readiness.reason ||
+        (workLike && readiness.work_like_reason) ||
+        `${providerName} is not ready`
+      : undefined;
   return (
     <button
       ref={ref}
@@ -139,6 +145,7 @@ export function AgentConfigChip({
       aria-busy={readiness === undefined}
       aria-expanded={open}
       aria-label={`${label}: ${providerName}`}
+      title={notReady}
       disabled={disabled}
       onClick={onToggle}
     >
@@ -148,15 +155,8 @@ export function AgentConfigChip({
       {optionCount ? <strong className="agent-config-chip-count">{optionCount}</strong> : null}
       {readiness === undefined ? (
         <LoaderCircle className="spin" size={12} aria-label="Checking provider" />
-      ) : !launchProviderReady(project, value, workLike) ? (
-        <TriangleAlert
-          size={12}
-          aria-label={
-            readiness.reason ||
-            (workLike && readiness.work_like_reason) ||
-            `${providerName} is not ready`
-          }
-        />
+      ) : notReady ? (
+        <TriangleAlert size={12} aria-label={notReady} />
       ) : (
         <ChevronDown size={12} aria-hidden="true" />
       )}

@@ -166,6 +166,8 @@ class _AgyStreamTurn(ProviderTurn):
         self.profile = profile
         self.prompt = request.prompt
         self.command = profile._command(request)
+        if request.autocompact:
+            self.environment = {"AGY_CLI_AUTO_COMPACT_OVERRIDE": request.autocompact}
         self.ids = [str(uuid.uuid4())]
         self.results = 0
         self.ready = False
@@ -262,6 +264,9 @@ class _AgyStreamRuntime(ProviderRuntime):
         return _AgyStreamTurn(AgyProfile(), request)
 
 
+_AUTOCOMPACT_MIN_TOKENS = 30_000
+
+
 class AgyProfile(ProviderProfile):
     id = "agy"
     label = "Antigravity"
@@ -275,6 +280,7 @@ class AgyProfile(ProviderProfile):
     usage_profile = "agy.step.v1"
     work_like_minimum_version = (1, 5, 8)
     shell_timeout_default_seconds = None
+    autocompact_hint = f"{_AUTOCOMPACT_MIN_TOKENS} or more tokens"
     hidden_read_gaps = ("shell_wrapper", "glob_rules")
     resume_keeps_tools = True
     login_credential_files = ("agy-home/.gemini/antigravity-cli/antigravity-oauth-token",)
@@ -364,6 +370,12 @@ class AgyProfile(ProviderProfile):
             "--mode",
             "accept-edits",
         ]
+
+    def canonical_autocompact(self, value: str) -> str:
+        value = value.strip()
+        if value.isascii() and value.isdecimal() and int(value) >= _AUTOCOMPACT_MIN_TOKENS:
+            return str(int(value))
+        raise ValueError(f"Antigravity auto-compact must be {self.autocompact_hint}")
 
     def project_write_enforcement_mode(self) -> str:
         return "agy.permission-rules.v1"

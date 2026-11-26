@@ -1720,6 +1720,7 @@ async def test_member_git_identity_reaches_local_and_remote_provider_turns(
         ("codex", "exec", "0.160.0", ["--config", "model_auto_compact_token_limit=200000"]),
         ("codex", "app-server", "0.160.0", ["--config", "model_auto_compact_token_limit=200000"]),
         ("opencode", None, "1.18.30", None),
+        ("agy", None, "1.5.18", {"AGY_CLI_AUTO_COMPACT_OVERRIDE": "400000"}),
     ],
 )
 @pytest.mark.asyncio
@@ -1735,7 +1736,12 @@ async def test_machine_autocompact_reaches_its_provider_argv(
     assert card is not None
     store.update_space_machine(
         card.machine_id,
-        provider_autocompact={"claude": "300000", "codex": "200000", "opencode": "1"},
+        provider_autocompact={
+            "claude": "300000",
+            "codex": "200000",
+            "opencode": "1",
+            "agy": "400000",
+        },
     )
     launcher = AgentLauncher(accounts=ProviderAccounts.for_store(store))
     monkeypatch.setattr(
@@ -1751,7 +1757,7 @@ async def test_machine_autocompact_reaches_its_provider_argv(
     )
     profile = profile_for(provider)
     runtime_id = profile.runtime_aliases[runtime] if runtime else profile.legacy_runtime_id
-    captured: list[list[str]] = []
+    captured: list[tuple[list[str], dict[str, str]]] = []
 
     class Captured(Exception):
         pass
@@ -1759,7 +1765,8 @@ async def test_machine_autocompact_reaches_its_provider_argv(
     original = type(profile.runtime(runtime_id)).turn
 
     def turn(self, request):
-        captured.append(original(self, request).command)
+        built = original(self, request)
+        captured.append((built.command, built.environment))
         raise Captured
 
     monkeypatch.setattr(type(profile.runtime(runtime_id)), "turn", turn)
@@ -1774,8 +1781,10 @@ async def test_machine_autocompact_reaches_its_provider_argv(
             runtime_id=runtime_id,
         ):
             pass
-    command = captured[0]
-    if flag is None:
+    command, environment = captured[0]
+    if isinstance(flag, dict):
+        assert flag.items() <= environment.items()
+    elif flag is None:
         assert not any("compact" in part for part in command)
     else:
         index = command.index(flag[1])
