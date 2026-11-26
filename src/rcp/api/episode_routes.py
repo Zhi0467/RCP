@@ -39,7 +39,7 @@ from rcp.api.episodes import (
 from rcp.api.experiments import continue_experiment_episode, stop_bound_experiment_episode
 from rcp.api.identity import IdentityAccess
 from rcp.api.tasks import _agent_task_response
-from rcp.artifact_comments import comment_panel, selection_frame_addon
+from rcp.artifact_comments import comment_panel
 from rcp.artifact_views import artifact_viewer_document
 from rcp.artifacts import AgentArtifactDescriptor, html_preview_document
 from rcp.background import BackgroundAgentTasks
@@ -53,6 +53,7 @@ from rcp.limits import (
     REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
 )
 from rcp.projects import ProjectCatalog
+from rcp.report_reader import report_frame_addon
 from rcp.runs.auto_research import AutoResearchStartRequest, settle_auto_research_stop
 from rcp.runs.auto_research_admission import (
     continue_auto_research,
@@ -1280,7 +1281,7 @@ def content_episode_report(
     try:
         document, csp = html_preview_document(
             store.read_artifact_bytes(report.artifact_id),
-            frame_addon=selection_frame_addon(),
+            frame_addon=report_frame_addon(),
         )
     except (UnicodeError, ValueError, KeyError, OSError) as exc:
         raise HTTPException(status_code=410, detail="Episode report unavailable") from exc

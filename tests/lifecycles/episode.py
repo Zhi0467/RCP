@@ -449,7 +449,7 @@ class Loop:
             ),
         )
         attempt = self.store.allocate_episode_report_attempt(self.episode_id)
-        html = "<html><body><figure>Result</figure></body></html>"
+        html = "<html><body><article class='report'><figure>Result</figure></article></body></html>"
         self.store.finish_episode_report_ready(
             attempt.attempt_id,
             stored_report(
@@ -1193,7 +1193,7 @@ def _report(world: World, operation_id: str, outcome: str) -> None:
     attempt = store.current_episode_report_attempt(episode_id)
     assert attempt is not None and attempt.status == "running"
     if outcome == "ready":
-        html = "<html><body><figure>Result</figure></body></html>"
+        html = "<html><body><article class='report'><figure>Result</figure></article></body></html>"
         store.finish_episode_report_ready(
             attempt.attempt_id,
             stored_report(

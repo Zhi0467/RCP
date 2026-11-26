@@ -56,11 +56,16 @@ class _ReportLauncher:
         workspace = Path(kwargs["cwd"])
         if outcome in {"valid", "pending"}:
             workspace.joinpath("episode-report.html").write_text(
-                "<html><body><figure>Evidence map</figure></body></html>",
+                "<html><body><article class='report'><figure>Evidence map</figure></article></body></html>",
                 encoding="utf-8",
             )
         elif outcome == "invalid":
             workspace.joinpath("episode-report.html").write_text("\x00", encoding="utf-8")
+        elif outcome == "unstructured":
+            workspace.joinpath("episode-report.html").write_text(
+                "<html><body><div><article class='report'>Nested</article></div></body></html>",
+                encoding="utf-8",
+            )
         elif outcome == "unsafe_output":
             workspace.joinpath("episode-report.html").mkdir()
 
@@ -715,6 +720,20 @@ async def test_missing_then_invalid_then_valid_uses_three_hidden_attempts(
         assert ("- exact report correction diagnostic: `" in contract.read_text()) == (number > 1)
 
 
+@pytest.mark.asyncio
+async def test_report_outside_the_article_skeleton_is_corrected(manifest, tmp_path) -> None:
+    service, store, request, execution, stage = _setup_report(manifest, tmp_path)
+    launcher = _ReportLauncher(["unstructured", "valid"])
+
+    events = await _events(stream_episode_report_run(service, launcher, request, execution))
+
+    assert [event.event for event in events] == ["message", "done"]
+    attempts = store.episode_report_attempts(EPISODE)
+    assert [attempt.status for attempt in attempts] == ["failed", "succeeded"]
+    contract = next(stage.glob("inputs/*-episode-report-contract-2.md"))
+    assert "- exact report correction diagnostic: `" in contract.read_text()
+
+
 @pytest.mark.parametrize(
     ("failure", "expected_error"),
     [("error", "provider temporarily failed"), ("raise", "provider launch failed")],
@@ -943,7 +962,7 @@ async def test_restart_reconciles_valid_output_from_running_attempt_without_rela
     attempt = store.allocate_episode_report_attempt(EPISODE)
     store.mark_episode_report_attempt_running(attempt.attempt_id)
     stage.joinpath("episode-report.html").write_text(
-        "<html><body><figure>Recovered report</figure></body></html>",
+        "<html><body><article class='report'><figure>Recovered report</figure></article></body></html>",
         encoding="utf-8",
     )
     launcher = _ReportLauncher([])
@@ -1287,7 +1306,8 @@ async def test_a_report_call_that_outlives_its_link_settles_from_its_stage(
         async def stream(self, _provider, prompt, *, browser_grant=None, **kwargs):
             self.calls += 1
             Path(kwargs["cwd"]).joinpath("episode-report.html").write_text(
-                "<html><body><figure>Written offline</figure></body></html>", encoding="utf-8"
+                "<html><body><article class='report'><figure>Written offline</figure></article></body></html>",
+                encoding="utf-8",
             )
             yield AgentEvent(event="session", session_id="native-session")
             yield AgentEvent(event="remote_result_pending")
