@@ -14,6 +14,7 @@ from rcp.artifact_views import combined_addon
 from rcp.artifacts import FrameAddon
 
 _HEAD = re.compile(r"<head\b[^>]*>", re.IGNORECASE)
+_STYLE = re.compile(r"(<style\b[^>]*>)(.*?)(</style\s*>)", re.IGNORECASE | re.DOTALL)
 _PROLOGUE = re.compile(r"\s*(?:<!doctype[^>]*>\s*)?(?:<html\b[^>]*>)?", re.IGNORECASE)
 
 
@@ -33,11 +34,26 @@ def report_frame_addon() -> FrameAddon:
     return combined_addon(selection_frame_addon(), reader)
 
 
+def layered_report(document: str) -> str:
+    """Put the report's own style blocks in the ``report`` cascade layer.
+
+    The reader stylesheet orders that layer below its own, so a reset, a page width
+    or a locked viewport the agent wrote cannot undo the reading layout.
+    """
+
+    return _STYLE.sub(lambda match: f"{match[1]}@layer report{{{match[2]}}}{match[3]}", document)
+
+
+def reader_report_bytes(data: bytes) -> bytes:
+    return layered_report(data.decode("utf-8")).encode("utf-8")
+
+
 def downloadable_report(document: str) -> str:
     """The stored report with the reader layout inlined, so a saved copy reads the same."""
 
     style, script = _reader_files()
     reader = f"<style>{style}</style><script>{script}</script>"
+    document = layered_report(document)
     head = _HEAD.search(document)
     prologue = _PROLOGUE.match(document)
     at = head.end() if head else prologue.end() if prologue else 0

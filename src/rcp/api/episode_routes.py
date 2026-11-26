@@ -53,7 +53,7 @@ from rcp.limits import (
     REMOTE_STATE_RECONCILE_WINDOW_SECONDS,
 )
 from rcp.projects import ProjectCatalog
-from rcp.report_reader import report_frame_addon
+from rcp.report_reader import reader_report_bytes, report_frame_addon
 from rcp.runs.auto_research import AutoResearchStartRequest, settle_auto_research_stop
 from rcp.runs.auto_research_admission import (
     continue_auto_research,
@@ -1280,7 +1280,7 @@ def content_episode_report(
         raise HTTPException(status_code=404, detail="Episode report not found")
     try:
         document, csp = html_preview_document(
-            store.read_artifact_bytes(report.artifact_id),
+            reader_report_bytes(store.read_artifact_bytes(report.artifact_id)),
             frame_addon=report_frame_addon(),
         )
     except (UnicodeError, ValueError, KeyError, OSError) as exc:

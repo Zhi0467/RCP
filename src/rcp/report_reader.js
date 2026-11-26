@@ -4,31 +4,23 @@ const installReportReader=(doc)=>{
   const body=doc.body;
   const narrow=window.matchMedia('(max-width: 1279px)');
   const headings=[...article.querySelectorAll('h2, h3')].filter(
-    (heading)=>!heading.closest('.summary, details, figure'));
-  const titles=headings.map((heading)=>(heading.textContent || '').trim());
+    (heading)=>!heading.closest('header, .summary, details, figure, aside'));
+  const titles=headings.map((heading)=>(heading.textContent || '').replace(/\s+/g,' ').trim());
 
-  const notes=[];
-  let noteNumber=0;
-  for(const note of article.querySelectorAll('aside')){
-    noteNumber+=1;
-    const anchor=note.previousElementSibling;
-    if(!anchor || anchor.tagName==='ASIDE') continue;
+  let number=0;
+  for(const note of article.querySelectorAll(':is(article, section) > aside')) {
+    const paragraph=note.nextElementSibling;
+    if(!paragraph || paragraph.tagName==='ASIDE') continue;
+    number+=1;
+    note.classList.add('reader-note');
+    note.setAttribute('data-reader-note',String(number));
     const ref=doc.createElement('sup');
     ref.className='note-ref';
     ref.setAttribute('aria-hidden','true');
     ref.setAttribute('data-rcp-selection','');
-    ref.textContent=String(noteNumber);
-    anchor.append(ref);
-    notes.push([note,anchor]);
+    ref.textContent=String(number);
+    paragraph.append(ref);
   }
-  const placeNotes=()=>{
-    for(const [note,anchor] of notes){
-      if(narrow.matches) anchor.after(note);
-      else anchor.before(note);
-    }
-  };
-  placeNotes();
-  narrow.addEventListener('change',placeNotes);
 
   if(headings.length<2) return;
   const nav=doc.createElement('nav');

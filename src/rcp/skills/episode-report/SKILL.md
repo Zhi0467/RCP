@@ -53,8 +53,8 @@ Without that article, RCP shows the page exactly as written, with none of the re
   </section>
   <section>
     <h2>A heading that states the finding</h2>
-    <p>The argument, in short paragraphs.</p>
     <aside>A definition, caveat, or number that would interrupt the sentence.</aside>
+    <p>The argument, in short paragraphs.</p>
     <figure>
       <svg viewBox="0 0 640 280" role="img" aria-label="What the chart shows">…</svg>
       <figcaption>What to see in the figure and how it was measured.</figcaption>
@@ -69,7 +69,8 @@ Without that article, RCP shows the page exactly as written, with none of the re
 - Order the sections as question, what was done, one section per main
   finding, limits, and the next decision. Each `<h2>` is a short sentence a
   reader could skim in the contents rail; use `<h3>` only for real subparts.
-- Put an `<aside>` right after the paragraph it annotates. Use side notes for
+- Put an `<aside>` directly inside its section, right before the paragraph it
+  annotates; RCP sets it in the margin beside that paragraph. Use side notes for
   what a careful reader wants but the argument does not need: definitions,
   configuration values, caveats, provenance, and pointers to other nodes. Keep
   each one under about forty words.
