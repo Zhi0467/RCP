@@ -96,7 +96,6 @@ export function FeedbackButton({ className }: { className: string }) {
                 return;
               }
               setOpen(false);
-              setText("");
             }}
           >
             Continue on GitHub

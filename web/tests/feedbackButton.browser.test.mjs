@@ -40,6 +40,15 @@ test("feedback opens inside the phone project menu and continues to a prefilled 
     const href = new URL(await send.getAttribute("href"));
     assert.equal(href.pathname, "/Zhi0467/RCP/issues/new");
     assert.equal(href.searchParams.get("title"), "Figures vanish in dark mode");
+
+    await page
+      .context()
+      .route("https://github.com/**", (route) =>
+        route.fulfill({ contentType: "text/html", body: "" }),
+      );
+    const [issue] = await Promise.all([page.context().waitForEvent("page"), send.click()]);
+    await issue.waitForLoadState();
+    assert.equal(new URL(issue.url()).searchParams.get("title"), "Figures vanish in dark mode");
   } finally {
     await browser?.close();
     await server.close();
