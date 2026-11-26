@@ -21,8 +21,8 @@ from rcp.api.paper_live import get_paper_live, paper_mutation
 from rcp.artifact_comments import selection_frame_addon
 from rcp.artifact_renderer import ArtifactRendererUnavailable, paper_math_addon
 from rcp.artifact_views import (
-    _combined_addon,
     artifact_content,
+    combined_addon,
     inline_viewer_document,
 )
 from rcp.limits import PAPER_MAX_UPLOAD_BYTES, PAPER_MULTIPART_OVERHEAD_BYTES
@@ -312,7 +312,7 @@ async def html_preview_content(
             preview.file.path,
             "text/html",
             preview.data,
-            frame_addon=_combined_addon(
+            frame_addon=combined_addon(
                 selection_frame_addon(),
                 paper_math_addon(preview.warnings),
                 source_frame_addon(),

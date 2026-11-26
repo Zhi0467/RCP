@@ -56,7 +56,7 @@ class _ReportLauncher:
         workspace = Path(kwargs["cwd"])
         if outcome in {"valid", "pending"}:
             workspace.joinpath("episode-report.html").write_text(
-                "<html><body><figure>Evidence map</figure></body></html>",
+                "<html><body><article class='report'><figure>Evidence map</figure></article></body></html>",
                 encoding="utf-8",
             )
         elif outcome == "invalid":
@@ -943,7 +943,7 @@ async def test_restart_reconciles_valid_output_from_running_attempt_without_rela
     attempt = store.allocate_episode_report_attempt(EPISODE)
     store.mark_episode_report_attempt_running(attempt.attempt_id)
     stage.joinpath("episode-report.html").write_text(
-        "<html><body><figure>Recovered report</figure></body></html>",
+        "<html><body><article class='report'><figure>Recovered report</figure></article></body></html>",
         encoding="utf-8",
     )
     launcher = _ReportLauncher([])
@@ -1287,7 +1287,8 @@ async def test_a_report_call_that_outlives_its_link_settles_from_its_stage(
         async def stream(self, _provider, prompt, *, browser_grant=None, **kwargs):
             self.calls += 1
             Path(kwargs["cwd"]).joinpath("episode-report.html").write_text(
-                "<html><body><figure>Written offline</figure></body></html>", encoding="utf-8"
+                "<html><body><article class='report'><figure>Written offline</figure></article></body></html>",
+                encoding="utf-8",
             )
             yield AgentEvent(event="session", session_id="native-session")
             yield AgentEvent(event="remote_result_pending")

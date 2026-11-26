@@ -101,8 +101,13 @@ RCP windows. Verify at 390px.
 
 The desktop project header is one row. From the left: Back, the panel picker,
 the open project tabs, and + to open another project. On the right: View, the
-branch picker, Sync, Auto-research, then History, Refresh, Space settings, and
-the identity menu.
+branch picker, Sync, Auto-research, then History, Refresh, Space settings, Send
+feedback, and the identity menu. The landing header carries the same Send feedback
+control beside its Space settings.
+Send feedback opens a small composer; in the ⋯ menu it opens inline and keeps the
+menu open. Continue on GitHub opens a prefilled new issue on the RCP repository:
+the first line is the title, and the body ends with the RCP version, build, and
+space kind. RCP sends nothing itself; the member reviews and submits on GitHub.
 The panel picker names the current panel. Hovering, clicking, or Enter drops
 one column of every panel with its icon and badge, the current one highlighted;
 choosing one or Escape closes it. Inbox's count always shows on the picker.

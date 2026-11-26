@@ -253,6 +253,7 @@
     .chat-dock,
     .project-cover-menu,
     .landing-identity-panel,
+    .feedback-panel,
     .agent-row-menu-list
   ) {
   border-radius: 13px;
@@ -467,4 +468,8 @@
 :root:is([data-theme="aqua"], [data-theme="snowbound"])
   .artifact-entry:has(.artifact-entry-open:focus-visible) {
   outline-color: var(--aqua-focus);
+}
+
+:root:is([data-theme="aqua"], [data-theme="snowbound"]) .feedback-panel {
+  overflow: hidden;
 }

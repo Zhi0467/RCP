@@ -48,6 +48,7 @@ from rcp.comments.send import artifact_thread_context
 from rcp.core.models import AuthorizedHuman
 from rcp.limits import ARTIFACT_CONTEXT_MAX_SELECTIONS
 from rcp.projects import ProjectCatalog
+from rcp.report_reader import downloadable_report, reader_report_bytes, report_frame_addon
 from rcp.runs.agent_threads import agent_turn_busy
 from rcp.runs.artifact_edit_admission import (
     ArtifactEditAvailability,
@@ -741,11 +742,16 @@ def stored_artifact_content(
     )
     try:
         data = store.read_artifact_bytes(artifact_id, version_id)
+        report = artifact.supplier == "episode_ending" and artifact.media_type == "text/html"
         document, media_type, csp = artifact_content(
             artifact.source_name,
             artifact.media_type,
-            data,
-            frame_addon=selection_frame_addon() if artifact.media_type == "text/html" else None,
+            reader_report_bytes(data) if report else data,
+            frame_addon=report_frame_addon()
+            if report
+            else selection_frame_addon()
+            if artifact.media_type == "text/html"
+            else None,
             inline=inline,
         )
     except (OSError, KeyError, ValueError) as exc:
@@ -902,6 +908,8 @@ def download_stored_artifact(
     artifact = _stored_artifact(store, project_id, artifact_id)
     try:
         data = store.read_artifact_bytes(artifact_id)
+        if artifact.supplier == "episode_ending" and artifact.media_type == "text/html":
+            data = downloadable_report(data.decode("utf-8")).encode("utf-8")
     except (OSError, KeyError, ValueError) as exc:
         raise HTTPException(status_code=410, detail="Artifact unavailable") from exc
     return Response(

@@ -1101,6 +1101,7 @@ def test_episode_report_preview_is_singular_and_sandboxed(manifest, tmp_path) ->
 
     assert preview.status_code == head.status_code == 200
     assert preview.content
+    assert b"nav.reader-toc" in preview.content
     assert head.content == b""
     expected_length = str(len(preview.content))
     assert preview.headers["content-length"] == expected_length
@@ -1149,7 +1150,8 @@ def test_report_save_is_retired_without_repository_writes(manifest, tmp_path) ->
         )
         download = client.get(f"/api/projects/{project_id}/artifacts/{report.artifact_id}/download")
     assert download.status_code == 200
-    assert download.content == store.read_artifact_bytes(report.artifact_id)
+    assert download.content.endswith(store.read_artifact_bytes(report.artifact_id))
+    assert b"installReportReader" in download.content
     assert not (manifest.path.parent.parent / "artifacts").exists()
 
 

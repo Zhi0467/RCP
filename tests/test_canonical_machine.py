@@ -136,6 +136,9 @@ def test_empty_model_resolves_to_the_first_catalogued_model(manifest, tmp_path) 
     no_efforts = service.resolve_agent_profile(
         "project_chat", provider="opencode", model="", reasoning="medium"
     )
+    stale_effort = service.resolve_agent_profile(
+        "project_chat", provider="opencode", model="opencode/big-pickle", reasoning="high"
+    )
 
     assert resolved.model == "gpt-5.6-sol"
     assert resolved.reasoning == "low"
@@ -145,6 +148,7 @@ def test_empty_model_resolves_to_the_first_catalogued_model(manifest, tmp_path) 
     assert explicit.reasoning == "medium"
     assert unknown_catalog.model == ""
     assert (no_efforts.model, no_efforts.reasoning) == ("opencode/big-pickle", "")
+    assert (stale_effort.model, stale_effort.reasoning) == ("opencode/big-pickle", "")
 
     effective = ProjectService.effective_profiles(manifest, service.launcher)
     assert effective["project_chat"]["model"] == ""

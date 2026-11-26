@@ -102,7 +102,7 @@ export function ProjectMenu({ children }: { children: ReactNode }) {
         hidden={!more.open}
         onClick={(event) => {
           const target = event.target as Element;
-          if (target.closest("button") && !target.closest(".landing-identity-menu"))
+          if (target.closest("button") && !target.closest(".landing-identity-menu, .feedback-menu"))
             more.setOpen(false);
         }}
       >

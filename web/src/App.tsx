@@ -329,6 +329,7 @@ import type {
 import { decodeProjectTransitionResponse, DISPLAY_NAME_MAX_LENGTH } from "./core/types";
 import { ProjectLanding } from "./projects/ProjectLanding";
 import { SpaceSettings, type SpaceSettingsSectionId } from "./projects/SpaceSettings";
+import { FeedbackButton } from "./feedback/FeedbackButton";
 import { LandingIdentityMenu } from "./projects/LandingIdentityMenu";
 import { ProjectOverview } from "./projects/ProjectOverview";
 import { isControlNode, primaryField } from "./graph/researchType";
@@ -4979,6 +4980,7 @@ function MemberApp({
       >
         <Settings size={16} />
       </button>
+      <FeedbackButton className="icon-button feedback-control" />
       <LandingIdentityMenu
         compact={!compactHeader}
         identity={actorIdentity}

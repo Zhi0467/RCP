@@ -97,7 +97,7 @@ def inline_frame_addon(appearance: InlineAppearance) -> FrameAddon:
     )
 
 
-def _combined_addon(*addons: FrameAddon | None) -> FrameAddon:
+def combined_addon(*addons: FrameAddon | None) -> FrameAddon:
     present = [addon for addon in addons if addon]
     return FrameAddon(
         frame_script="".join(addon.frame_script for addon in present),
@@ -460,7 +460,7 @@ def artifact_content(
         if view == "html":
             document, csp = html_preview_document(
                 data,
-                frame_addon=_combined_addon(
+                frame_addon=combined_addon(
                     live_frame_addon(),
                     frame_addon,
                     inline_frame_addon(inline) if inline else None,
