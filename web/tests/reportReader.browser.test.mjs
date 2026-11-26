@@ -77,26 +77,28 @@ test("a wide report gets a contents rail and margin notes beside the text", asyn
   }
 });
 
-test("a phone-width report folds the contents and keeps notes inline", async () => {
-  const { browser, frame } = await open(390);
-  try {
-    const layout = await frame.evaluate(() => {
-      const box = (selector) => document.querySelector(selector).getBoundingClientRect();
-      return {
-        listShown: getComputedStyle(document.querySelector("nav.reader-toc ol")).display !== "none",
-        noteBelow: box("aside").top > box("#claim").bottom,
-        fits: document.documentElement.scrollWidth <= window.innerWidth,
-      };
-    });
-    assert.deepEqual(layout, { listShown: false, noteBelow: true, fits: true });
-    await frame.click(".reader-toc-toggle");
-    assert.notEqual(
-      await frame.evaluate(
-        () => getComputedStyle(document.querySelector("nav.reader-toc ol")).display,
-      ),
-      "none",
-    );
-  } finally {
-    await browser.close();
-  }
-});
+for (const width of [1260, 390])
+  test(`a ${width}px report folds the contents and keeps notes inline`, async () => {
+    const { browser, frame } = await open(width);
+    try {
+      const layout = await frame.evaluate(() => {
+        const box = (selector) => document.querySelector(selector).getBoundingClientRect();
+        return {
+          listShown:
+            getComputedStyle(document.querySelector("nav.reader-toc ol")).display !== "none",
+          noteBelow: box("aside").top > box("#claim").bottom,
+          fits: document.documentElement.scrollWidth <= window.innerWidth,
+        };
+      });
+      assert.deepEqual(layout, { listShown: false, noteBelow: true, fits: true });
+      await frame.click(".reader-toc-toggle");
+      assert.notEqual(
+        await frame.evaluate(
+          () => getComputedStyle(document.querySelector("nav.reader-toc ol")).display,
+        ),
+        "none",
+      );
+    } finally {
+      await browser.close();
+    }
+  });

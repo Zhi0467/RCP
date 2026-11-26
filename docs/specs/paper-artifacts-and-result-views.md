@@ -690,7 +690,7 @@ a report without that article, so the agent's correction attempt rewrites it. RC
 owns the layout and adds it when it shows or downloads a report, never in the
 stored bytes: a collapsible contents rail from the section headings, a centred
 serif reading column, side notes in the right margin, and numbered figures. Below
-1120px the contents fold into a bar and notes sit under their paragraph. A report
+1280px the contents fold into a bar and notes sit under their paragraph. A report
 without the article shows unchanged.
 **Why:** one reader layout keeps every report equally readable, and adding it at
 display time keeps the agent's bytes as evidence and updates older reports.

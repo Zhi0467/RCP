@@ -2,7 +2,7 @@ const installReportReader=(doc)=>{
   const article=doc.querySelector('body > article.report');
   if(!article || doc.querySelector('body > nav.reader-toc')) return;
   const body=doc.body;
-  const narrow=window.matchMedia('(max-width: 1120px)');
+  const narrow=window.matchMedia('(max-width: 1279px)');
   const headings=[...article.querySelectorAll('h2, h3')].filter(
     (heading)=>!heading.closest('.summary, details, figure'));
   const titles=headings.map((heading)=>(heading.textContent || '').trim());
