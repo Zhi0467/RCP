@@ -3,6 +3,9 @@ const installReportReader=(doc)=>{
   if(!article || doc.querySelector('body > nav.reader-toc')) return;
   const body=doc.body;
   const narrow=window.matchMedia('(max-width: 1120px)');
+  const headings=[...article.querySelectorAll('h2, h3')].filter(
+    (heading)=>!heading.closest('.summary, details, figure'));
+  const titles=headings.map((heading)=>(heading.textContent || '').trim());
 
   const notes=[];
   let noteNumber=0;
@@ -13,6 +16,7 @@ const installReportReader=(doc)=>{
     const ref=doc.createElement('sup');
     ref.className='note-ref';
     ref.setAttribute('aria-hidden','true');
+    ref.setAttribute('data-rcp-selection','');
     ref.textContent=String(noteNumber);
     anchor.append(ref);
     notes.push([note,anchor]);
@@ -26,22 +30,14 @@ const installReportReader=(doc)=>{
   placeNotes();
   narrow.addEventListener('change',placeNotes);
 
-  const headings=[...article.querySelectorAll('h2, h3')].filter(
-    (heading)=>!heading.closest('.summary, details, figure'));
   if(headings.length<2) return;
-  const used=new Set();
-  const slug=(text)=>{
-    const base=text.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'') || 'section';
-    let id=base, n=2;
-    while(used.has(id) || doc.getElementById(id)) id=`${base}-${n++}`;
-    used.add(id);
-    return id;
-  };
   const nav=doc.createElement('nav');
   nav.className='reader-toc';
   nav.setAttribute('aria-label','Contents');
+  nav.setAttribute('data-rcp-selection','');
   const toggle=doc.createElement('button');
   toggle.type='button';
+  toggle.className='reader-toc-toggle';
   toggle.innerHTML='<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="reader-toc-label">Contents</span>';
   const flag=()=>narrow.matches?'reader-toc-open':'reader-toc-closed';
   const sync=()=>{
@@ -53,23 +49,22 @@ const installReportReader=(doc)=>{
   toggle.addEventListener('click',()=>{ body.classList.toggle(flag()); sync(); });
   narrow.addEventListener('change',sync);
   const list=doc.createElement('ol');
-  const links=new Map();
-  for(const heading of headings){
-    if(!heading.id) heading.id=slug(heading.textContent || '');
+  const entries=new Map();
+  headings.forEach((heading,index)=>{
     const item=doc.createElement('li');
     if(heading.tagName==='H3') item.className='sub';
-    const link=doc.createElement('a');
-    link.textContent=heading.textContent || '';
-    link.href='#'+heading.id;
-    link.addEventListener('click',(event)=>{
-      event.preventDefault();
+    const entry=doc.createElement('button');
+    entry.type='button';
+    entry.className='reader-toc-entry';
+    entry.textContent=titles[index];
+    entry.addEventListener('click',()=>{
       heading.scrollIntoView({behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth'});
       if(narrow.matches){ body.classList.remove('reader-toc-open'); sync(); }
     });
-    item.append(link);
+    item.append(entry);
     list.append(item);
-    links.set(heading,link);
-  }
+    entries.set(heading,entry);
+  });
   nav.append(toggle,list);
   article.before(nav);
   sync();
@@ -82,8 +77,8 @@ const installReportReader=(doc)=>{
       else break;
     }
     if(active===current) return;
-    links.get(current)?.removeAttribute('aria-current');
-    links.get(active)?.setAttribute('aria-current','true');
+    entries.get(current)?.removeAttribute('aria-current');
+    entries.get(active)?.setAttribute('aria-current','true');
     current=active;
   };
   let pending=false;

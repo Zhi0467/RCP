@@ -49,7 +49,9 @@ test("a wide report gets a contents rail and margin notes beside the text", asyn
     const layout = await frame.evaluate(() => {
       const box = (selector) => document.querySelector(selector).getBoundingClientRect();
       return {
-        entries: [...document.querySelectorAll("nav.reader-toc a")].map((a) => a.textContent),
+        entries: [...document.querySelectorAll(".reader-toc-entry")].map((a) => a.textContent),
+        headingIds: [...document.querySelectorAll("h2")].filter((h) => h.id).length,
+        railExcluded: document.querySelector("nav.reader-toc").hasAttribute("data-rcp-selection"),
         navRight: box("nav.reader-toc").right,
         textLeft: box("#claim").left,
         textRight: box("#claim").right,
@@ -60,14 +62,15 @@ test("a wide report gets a contents rail and margin notes beside the text", asyn
       };
     });
     assert.deepEqual(layout.entries, ["First finding", "Second finding"]);
+    assert.equal(layout.headingIds, 0);
+    assert.equal(layout.railExcluded, true);
     assert.ok(layout.navRight < layout.textLeft);
     assert.ok(layout.noteLeft > layout.textRight);
     assert.ok(Math.abs(layout.noteTop - layout.claimTop) < 20);
     assert.equal(layout.marker, "1");
-    await frame.click("nav.reader-toc button");
+    await frame.click(".reader-toc-toggle");
     await frame.waitForFunction(
-      () =>
-        document.querySelector("nav.reader-toc button").getAttribute("aria-expanded") === "false",
+      () => document.querySelector(".reader-toc-toggle").getAttribute("aria-expanded") === "false",
     );
   } finally {
     await browser.close();
@@ -86,7 +89,7 @@ test("a phone-width report folds the contents and keeps notes inline", async () 
       };
     });
     assert.deepEqual(layout, { listShown: false, noteBelow: true, fits: true });
-    await frame.click("nav.reader-toc button");
+    await frame.click(".reader-toc-toggle");
     assert.notEqual(
       await frame.evaluate(
         () => getComputedStyle(document.querySelector("nav.reader-toc ol")).display,

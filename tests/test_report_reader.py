@@ -17,6 +17,9 @@ from rcp.report_reader import downloadable_report, is_reader_report
         ("<body><main><article class='report'></article></main></body>", False),
         ("<body><article><p>No class</p></article></body>", False),
         ("<body><p>Open<br><img src=x></p><article class='report'></article></body>", True),
+        ("<head><title>T</title><body><article class='report'></article></body>", True),
+        ("<body><p>Intro<article class='report'></article></body>", True),
+        ("<BODY><ARTICLE CLASS='report'></ARTICLE></BODY>", True),
     ],
 )
 def test_report_article_must_sit_directly_in_the_page_body(document: str, expected: bool) -> None:
@@ -29,3 +32,9 @@ def test_a_downloaded_report_carries_the_reader_inside_its_head() -> None:
     assert head.startswith("<html><HEAD lang='en'><style>")
     assert "installReportReader" in head
     assert rest == "T</title></HEAD><body></body></html>"
+
+
+def test_a_report_without_a_head_keeps_its_doctype_first_when_downloaded() -> None:
+    saved = downloadable_report("<!doctype html><html lang='en'><meta charset='utf-8'><p>x</p>")
+    assert saved.startswith("<!doctype html><html lang='en'><style>")
+    assert saved.endswith("</script><meta charset='utf-8'><p>x</p>")

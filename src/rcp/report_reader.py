@@ -31,7 +31,7 @@ _VOID = frozenset(
         "wbr",
     ]
 )
-_PAGE = frozenset({"html", "body"})
+_PAGE = frozenset({"html", "head", "body"})
 
 
 class _ReportArticleFinder(HTMLParser):
@@ -41,6 +41,10 @@ class _ReportArticleFinder(HTMLParser):
         self.found = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "body":
+            self.open = [name for name in self.open if name == "html"]
+        if tag == "article" and "p" in self.open:
+            del self.open[len(self.open) - 1 - self.open[::-1].index("p") :]
         if tag == "article" and set(self.open) <= _PAGE:
             classes = (dict(attrs).get("class") or "").split()
             self.found = self.found or "report" in classes
@@ -53,7 +57,11 @@ class _ReportArticleFinder(HTMLParser):
 
 
 def is_reader_report(document: str) -> bool:
-    """Whether the page body holds the ``<article class="report">`` the layout reads."""
+    """Whether the page body holds the ``<article class="report">`` the layout reads.
+
+    As in a browser, a body start ends an unclosed head and an article start ends an
+    open paragraph, so neither hides an article the reader would find.
+    """
 
     finder = _ReportArticleFinder()
     finder.feed(document)
@@ -62,6 +70,7 @@ def is_reader_report(document: str) -> bool:
 
 
 _HEAD = re.compile(r"<head\b[^>]*>", re.IGNORECASE)
+_PROLOGUE = re.compile(r"\s*(?:<!doctype[^>]*>\s*)?(?:<html\b[^>]*>)?", re.IGNORECASE)
 
 
 def _reader_files() -> tuple[str, str]:
@@ -86,6 +95,6 @@ def downloadable_report(document: str) -> str:
     style, script = _reader_files()
     reader = f"<style>{style}</style><script>{script}</script>"
     head = _HEAD.search(document)
-    if head is None:
-        return reader + document
-    return document[: head.end()] + reader + document[head.end() :]
+    prologue = _PROLOGUE.match(document)
+    at = head.end() if head else prologue.end() if prologue else 0
+    return document[:at] + reader + document[at:]

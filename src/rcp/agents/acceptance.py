@@ -1288,7 +1288,7 @@ def _campaign_report_html(contract: str) -> str:
 <html lang="en">
 <meta charset="utf-8">
 <title>Acceptance episode report</title>
-<article>
+<article class="report">
   <h1>Acceptance episode conclusion</h1>
   <p>{outcome}</p>
   <figure aria-label="Episode progression">

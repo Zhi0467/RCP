@@ -1,5 +1,6 @@
 /* Reader layout for episode reports written as article.report.
-   Placed before the page's own styles, so a report's figure CSS still wins. */
+   Layered, so any style the report writes itself wins. */
+@layer rcp-reader {
 :root:has(body > article.report) {
   --reader-ink: var(--rcp-ink, #23211d);
   --reader-muted: var(--rcp-muted, #6d675d);
@@ -171,6 +172,7 @@ article.report .note-ref {
   vertical-align: super;
   line-height: 0;
   margin-left: 0.1em;
+  user-select: none;
 }
 
 /* Operational appendix */
@@ -199,7 +201,7 @@ body > nav.reader-toc {
   font: 0.8rem/1.45 var(--reader-sans);
   min-width: 0;
 }
-nav.reader-toc button {
+nav.reader-toc .reader-toc-toggle {
   all: unset;
   display: flex;
   align-items: center;
@@ -210,9 +212,9 @@ nav.reader-toc button {
   margin-bottom: 0.9rem;
   white-space: nowrap;
 }
-nav.reader-toc button:focus-visible { outline: 2px solid var(--reader-accent); outline-offset: 3px; border-radius: 2px; }
-nav.reader-toc button svg { width: 14px; height: 14px; flex: none; transition: transform 0.28s ease; }
-body.reader-toc-closed nav.reader-toc button svg { transform: rotate(-90deg); }
+nav.reader-toc :is(.reader-toc-toggle, .reader-toc-entry):focus-visible { outline: 2px solid var(--reader-accent); outline-offset: 3px; border-radius: 2px; }
+nav.reader-toc .reader-toc-toggle svg { width: 14px; height: 14px; flex: none; transition: transform 0.28s ease; }
+body.reader-toc-closed nav.reader-toc .reader-toc-toggle svg { transform: rotate(-90deg); }
 nav.reader-toc ol {
   list-style: none;
   margin: 0;
@@ -221,8 +223,12 @@ nav.reader-toc ol {
   transition: opacity 0.2s ease;
 }
 body.reader-toc-closed nav.reader-toc ol,
-body.reader-toc-closed nav.reader-toc .reader-toc-label { opacity: 0; pointer-events: none; }
-nav.reader-toc li a {
+body.reader-toc-closed nav.reader-toc .reader-toc-label { opacity: 0; visibility: hidden; transition: opacity 0.2s ease, visibility 0s 0.2s; }
+nav.reader-toc .reader-toc-entry {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  width: 100%;
   display: block;
   padding: 0.28rem 0 0.28rem 0.85rem;
   margin-left: -1px;
@@ -230,9 +236,9 @@ nav.reader-toc li a {
   color: var(--reader-muted);
   text-decoration: none;
 }
-nav.reader-toc li.sub a { padding-left: 1.6rem; font-size: 0.95em; }
-nav.reader-toc li a:hover { color: var(--reader-ink); }
-nav.reader-toc li a[aria-current="true"] { color: var(--reader-ink); border-left-color: var(--reader-accent); }
+nav.reader-toc li.sub .reader-toc-entry { padding-left: 1.6rem; font-size: 0.95em; }
+nav.reader-toc .reader-toc-entry:hover { color: var(--reader-ink); }
+nav.reader-toc .reader-toc-entry[aria-current="true"] { color: var(--reader-ink); border-left-color: var(--reader-accent); }
 
 /* Narrow screens: contents fold into a bar above the article, notes sit inline */
 @media (max-width: 1120px) {
@@ -250,10 +256,10 @@ nav.reader-toc li a[aria-current="true"] { color: var(--reader-ink); border-left
     border-bottom: 1px solid var(--reader-rule);
   }
   nav.reader-toc ol { margin-bottom: 0.8rem; display: none; }
-  body.reader-toc-open nav.reader-toc ol { display: block; opacity: 1; pointer-events: auto; }
-  body.reader-toc-closed nav.reader-toc .reader-toc-label { opacity: 1; pointer-events: auto; }
-  nav.reader-toc button svg { transform: rotate(-90deg); }
-  body.reader-toc-open nav.reader-toc button svg { transform: none; }
+  body.reader-toc-open nav.reader-toc ol { display: block; opacity: 1; visibility: visible; }
+  body.reader-toc-closed nav.reader-toc .reader-toc-label { opacity: 1; visibility: visible; }
+  nav.reader-toc .reader-toc-toggle svg { transform: rotate(-90deg); }
+  body.reader-toc-open nav.reader-toc .reader-toc-toggle svg { transform: none; }
   article.report aside {
     float: none;
     width: auto;
@@ -269,5 +275,6 @@ nav.reader-toc li a[aria-current="true"] { color: var(--reader-ink); border-left
   article.report .dek { font-size: 1.08rem; }
 }
 @media (prefers-reduced-motion: reduce) {
-  body:has(> article.report), nav.reader-toc button svg, nav.reader-toc ol { transition: none; }
+  body:has(> article.report), nav.reader-toc .reader-toc-toggle svg, nav.reader-toc ol { transition: none; }
+}
 }
