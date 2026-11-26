@@ -670,8 +670,12 @@ agent, so artifact edits on agy (`resume_keeps_tools`) always start a recorded
 fresh session instead of resuming the master. agy has no fork; branching an agy
 chat starts a fresh session with the tail-transcript fallback. agy history is
 SQLite, so RCP indexes no agy sessions, and session summaries refuse because
-the profile does not support that capability. agy has no shell-timeout or auto-compact
-lever, so the machine card shows neither field for it. Usage is read from each
+the profile does not support that capability. agy's auto-compact is the
+`AGY_CLI_AUTO_COMPACT_OVERRIDE` variable on the turn's process, a token count of
+30000 or more: 5000 fails every turn with `maxMessageTokens must be positive`, while
+30000 runs (agy 1.5.18). agy has no shell-timeout lever; `NotificationTimeoutSeconds`
+only wakes the agent and never ends a command, so the machine card shows no
+timeout field for it. Usage is read from each
 completed `agent_response` step, never from `result.usage`, which is cumulative
 over the whole conversation.
 

@@ -363,11 +363,13 @@ def test_machine_autocompact_round_trip_and_refusal(app) -> None:
     assert {option["provider"] for option in machine["autocompact_providers"]} == {
         "claude",
         "codex",
+        "agy",
     }
     url = f"/api/space/machines/{machine['machine_id']}"
-    saved = {"claude": "300000", "codex": "200000"}
+    saved = {"claude": "300000", "codex": "200000", "agy": "30000"}
     response = client.patch(
-        url, json={"provider_autocompact": {"claude": " 300000 ", "codex": "200000"}}
+        url,
+        json={"provider_autocompact": {"claude": " 300000 ", "codex": "200000", "agy": "030000"}},
     )
     assert response.json()["provider_autocompact"] == saved
     assert client.patch(url, json={"name": "Renamed"}).json()["provider_autocompact"] == saved
@@ -376,15 +378,17 @@ def test_machine_autocompact_round_trip_and_refusal(app) -> None:
         {"claude": "1e6"},
         {"codex": "auto"},
         {"codex": "0"},
+        {"agy": "29999"},
+        {"agy": "80%"},
         {"opencode": "100000"},
         {"unknown": "100000"},
     ):
         assert client.patch(url, json={"provider_autocompact": refused}).status_code == 422
     assert _store(app).space_machine(str(machine["machine_id"])).provider_autocompact == saved
     merged = client.patch(url, json={"provider_autocompact": {"claude": "AUTO"}})
-    assert merged.json()["provider_autocompact"] == {"claude": "auto", "codex": "200000"}
+    assert merged.json()["provider_autocompact"] == {**saved, "claude": "auto"}
     cleared = client.patch(url, json={"provider_autocompact": {"codex": ""}})
-    assert cleared.json()["provider_autocompact"] == {"claude": "auto"}
+    assert cleared.json()["provider_autocompact"] == {"claude": "auto", "agy": "30000"}
 
 
 def test_machine_shell_timeout_round_trip_and_refusal(app) -> None:

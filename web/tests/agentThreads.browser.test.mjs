@@ -1478,6 +1478,66 @@ test("a pick stored by a send reads its default machine's readiness", async () =
   });
 });
 
+test("a signed-out agent chip says why on hover and keeps its warning upright when open", async () => {
+  await withFixture(async (browser, base) => {
+    for (const width of [1280, 390]) {
+      const page = await browser.newPage({ viewport: { width, height: 844 } });
+      await mockApi(page, []);
+      const reason = "Sign in to Claude on this machine.";
+      await page.route("**/api/space/machines", (route) =>
+        route.fulfill({
+          json: {
+            machines: [
+              {
+                machine_id: "local",
+                host: "",
+                provider_readiness: {
+                  claude: { ...readiness, authenticated: false, reason },
+                  codex: codexReadiness,
+                },
+              },
+            ],
+          },
+        }),
+      );
+      const picked = { provider: "claude", model: "opus", reasoning: "high", run_on: null };
+      await page.route("**/api/agent-threads", (route) =>
+        route.fulfill({
+          json: {
+            threads: threads.map((item) => ({
+              ...item,
+              agent: picked,
+              capabilities: capabilities[item.kind],
+            })),
+          },
+        }),
+      );
+      await page.goto(`${base}#/agent/space`);
+      const thread = page.getByRole("region", { name: "Pip" });
+      await thread.getByRole("textbox", { name: "Message" }).waitFor();
+      await thread.getByRole("button", { name: "Chat menu" }).click();
+      const row = thread.getByRole("button", { name: /^Chat agent:/ });
+      await row.waitFor();
+      await page.waitForFunction(() =>
+        document.querySelector(".agent-config-chip svg.lucide-triangle-alert"),
+      );
+      assert.equal(await row.getAttribute("title"), reason);
+      await row.click();
+      assert.equal(await row.getAttribute("aria-expanded"), "true");
+      await page.waitForTimeout(250);
+      assert.equal(
+        await row
+          .locator("svg.lucide-triangle-alert")
+          .evaluate((icon) => getComputedStyle(icon).transform),
+        "none",
+      );
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), width);
+      if (shots) await page.screenshot({ path: `${shots}/signed-out-chip-${width}.png` });
+      await page.close();
+    }
+  });
+});
+
 test("an empty thread welcomes the member until its first turn, and a starter only fills the composer", async () => {
   await withFixture(async (browser, base) => {
     for (const width of [1280, 390]) {

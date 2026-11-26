@@ -978,7 +978,7 @@ button.agent-provider-label {
   flex: none;
   transition: transform 0.16s ease;
 }
-.agent-pick-row .agent-config-chip[aria-expanded="true"] > svg {
+.agent-pick-row .agent-config-chip[aria-expanded="true"] > svg.lucide-chevron-down {
   transform: rotate(180deg);
 }
 .agent-pick-row .agent-config.compact {
