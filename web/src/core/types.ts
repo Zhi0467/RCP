@@ -3707,6 +3707,8 @@ export interface ProviderLoginState {
   /** Null for the machine sign-in. */
   added_by_display_name: string | null;
   added_at: string | null;
+  /** The member who last finished a sign-in here; null after sign-out or when signed in outside RCP. */
+  signed_in_by_display_name: string | null;
   /** Set only while the usage-limit mark is active. */
   limited_at: string | null;
   /** Set while the login is being removed. */

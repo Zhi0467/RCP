@@ -4425,3 +4425,12 @@ button.agent-provider-label {
     transition: none;
   }
 }
+.sign-ins-title {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+.sign-ins-help {
+  color: var(--muted);
+  cursor: help;
+}

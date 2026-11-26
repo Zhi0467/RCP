@@ -173,6 +173,7 @@ class AppStoreBase:
         (94, "agent_thread_queue_picks_v1"),
         (95, "plan_card_revisions_v1"),
         (96, "chat_dock_run_indexes_v1"),
+        (97, "provider_login_signed_in_by_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -1233,6 +1234,12 @@ class AppStoreBase:
             version=96,
             name="chat_dock_run_indexes_v1",
             migration=self._migrate_chat_dock_run_indexes,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=97,
+            name="provider_login_signed_in_by_v1",
+            migration=self._migrate_provider_login_signed_in_by,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -3082,6 +3089,10 @@ class AppStoreBase:
                 PRIMARY KEY (provider, host)
             )
         """)
+
+    @classmethod
+    def _migrate_provider_login_signed_in_by(cls, connection: sqlite3.Connection) -> None:
+        cls._ensure_column(connection, "provider_login_states", "signed_in_by", "TEXT")
 
     @classmethod
     def _migrate_episode_report_titles(cls, connection: sqlite3.Connection) -> None:

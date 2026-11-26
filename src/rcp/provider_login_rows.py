@@ -32,6 +32,7 @@ def provider_login_row(
     visible = state.member_id is None or state.member_id == viewer_id
     owner = store.space_user(state.member_id) if state.member_id else None
     added_by = store.space_user(state.added_by) if state.added_by else None
+    signed_in_by = store.space_user(state.signed_in_by) if state.signed_in_by else None
     status = sign_ins.running_sign_in(key) if sign_ins else None
     if status and status.started_by != viewer_id:
         status = status.model_copy(
@@ -57,6 +58,7 @@ def provider_login_row(
         "owner_display_name": owner.display_name if owner else None,
         "added_by_display_name": added_by.display_name if added_by else None,
         "added_at": state.added_at,
+        "signed_in_by_display_name": signed_in_by.display_name if signed_in_by else None,
         "limited_at": assignment.limited_at if store.provider_login_limited(key) else None,
         "draining_since": state.draining_since,
         "bound_running": provider_login.bound_running_count(store, key)
@@ -92,6 +94,7 @@ def missing_own_login_row(provider: str, machine_id: str, viewer_id: str) -> dic
         "owner_display_name": None,
         "added_by_display_name": None,
         "added_at": None,
+        "signed_in_by_display_name": None,
         "limited_at": None,
         "draining_since": None,
         "bound_running": 0,

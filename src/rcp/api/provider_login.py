@@ -111,6 +111,7 @@ class ProviderLoginAccount(BaseModel):
     owner_display_name: str | None
     added_by_display_name: str | None
     added_at: str | None
+    signed_in_by_display_name: str | None
     limited_at: str | None
     draining_since: str | None
     bound_running: int

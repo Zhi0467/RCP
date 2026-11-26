@@ -12,6 +12,7 @@ export function loginRow(overrides = {}) {
     owner_display_name: null,
     added_by_display_name: null,
     added_at: null,
+    signed_in_by_display_name: null,
     limited_at: null,
     draining_since: null,
     bound_running: 0,
@@ -70,6 +71,7 @@ export const everyState = [
     login_id: "ana",
     added_by_display_name: "Ana",
     added_at: "2026-10-20T10:00:00Z",
+    signed_in_by_display_name: "Abe",
     limited_at: "2026-10-28T08:00:00Z",
   }),
   loginRow({

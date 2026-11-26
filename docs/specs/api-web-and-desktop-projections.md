@@ -1811,8 +1811,13 @@ usable login, work tries the other group. At phone width the trays stack in
 the same order. Each tray title carries its rank, 1 filled and 2 outlined. The swap
 button between them reverses the order and saves it immediately. A ＋ slot ends the Shared tray, and the personal tray offers a ＋
 while the member has no own login. Adding starts the provider's sign-in flow
-or opens token entry on the new card. The built-in card is named "Shared sign-in".
-An added shared card shows who added it, with the date on hover. The viewer's
+or opens token entry on the new card. A shared card is named by the member who
+last finished a sign-in or token save on it, so the team sees whose account the
+pool uses. A "Check sign-in" by someone else keeps that name, and sign-out clears
+it. Without a signer, as after a sign-in outside RCP, the built-in card is named
+"Shared sign-in" and an added card is named by who added it; the adder and date
+are on hover. A help icon beside the fold title explains personal and shared
+sign-ins and the tray order on hover. The viewer's
 own card is unnamed, and a Members card is named by its owner. A card shows, first match wins, Being removed,
 signing in (an Open sign-in button and any device code only to the starter; others see who), Signed out
 (flat and dashed, with no label; a Sign in button on the viewer's own and shared
