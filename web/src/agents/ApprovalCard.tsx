@@ -41,7 +41,7 @@ export type Busy = "approve" | "decline" | null;
  * line. It decides nothing itself; its adapter runs each tap. A card with a `body`
  * shows it always, in place of See details, and names its own chip and buttons.
  * `actions` replaces the buttons, on a settled card too; `onOpen` makes the head
- * the one control of a folded card.
+ * the control that folds and unfolds the card.
  */
 export function ApprovalCardShell({
   icon: Icon,
@@ -116,7 +116,7 @@ export function ApprovalCardShell({
     >
       <Head
         className="approval-head"
-        {...(onOpen ? { type: "button", "aria-expanded": false, onClick: onOpen } : {})}
+        {...(onOpen ? { type: "button", "aria-expanded": open, onClick: onOpen } : {})}
       >
         <span className="approval-icon" aria-hidden="true">
           <Icon size={pending ? 16 : 14} />

@@ -491,7 +491,7 @@ function usePlanTaps(
     parked,
     folded: parked && !expanded,
     label: parked ? "Parked" : view.label,
-    unfold: () => setExpanded(true),
+    toggleFold: () => setExpanded((open) => !open),
     locked: !question.can_answer || busy !== null || card.state === "running",
     send,
   };
@@ -747,7 +747,7 @@ function ExperimentPlanCardView({
       chip={<PlanNodeChip action={action} onOpenNode={onOpenNode} />}
       askedAt={question.created_at}
       body={taps.folded ? undefined : body}
-      onOpen={taps.folded ? taps.unfold : undefined}
+      onOpen={taps.parked ? taps.toggleFold : undefined}
       error={taps.error}
       actions={
         taps.folded ? null : (
@@ -915,7 +915,7 @@ function AutoResearchPlanCardView({
       }
       askedAt={question.created_at}
       body={taps.folded ? undefined : body}
-      onOpen={taps.folded ? taps.unfold : undefined}
+      onOpen={taps.parked ? taps.toggleFold : undefined}
       error={taps.error}
       actions={
         taps.folded ? null : (
