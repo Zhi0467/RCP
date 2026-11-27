@@ -1381,3 +1381,14 @@ test("a selected inventory row cannot mount the composer on another target", () 
   assert.doesNotMatch(render({ kind: "main" }), /class="chat-composer/);
   assert.match(render({ kind: "branch", branch_id: "b" }), /class="chat-composer/);
 });
+
+test("a provider update takes precedence over the previous update warning", () => {
+  assert.deepEqual(
+    providerPathPresentation(
+      { updating: true, path_state: "resolved", update_warning: "Previous failure" },
+      "/bin/provider",
+      "/bin/provider",
+    ),
+    { label: "Updating", kind: "pending" },
+  );
+});

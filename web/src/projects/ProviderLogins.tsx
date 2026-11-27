@@ -47,6 +47,7 @@ import type {
 } from "../core/types";
 import { formatServerTimestamp } from "./ServerSettings";
 import { OverflowMenu } from "../ui/OverflowMenu";
+import { askedLabel } from "../agents/agentThreadModel";
 
 const SIGN_IN_POLL_MS = 2000;
 const SIGN_IN_POLL_FAILURE_LIMIT = 5;
@@ -808,7 +809,9 @@ export function SignInCard({
         className="sign-in-state"
         title={`Hit a usage limit ${formatServerTimestamp(row.limited_at)}. Used when nothing else is free.`}
       >
-        Usage limit
+        {row.limit_resets_at
+          ? `Limit until ${askedLabel(row.limit_resets_at, new Date())}`
+          : "Usage limit"}
       </span>
     );
   } else {

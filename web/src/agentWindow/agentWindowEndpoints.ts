@@ -4,6 +4,7 @@ import { api } from "../core/api";
 import { artifactUrl } from "../agents/agentTasks";
 import {
   controlThreadTask,
+  declineLimitResume,
   loadThreadTask,
   steerThreadTurn,
   threadPath,
@@ -45,6 +46,7 @@ export interface AgentWindowEndpoints {
     requestId: string,
   ) => Promise<AgentTask>;
   steer: (operationId: string, request: SteerRequest) => Promise<ChatMessage>;
+  declineLimitResume: (operationId: string) => Promise<unknown>;
   questionsApiBase: string | null;
   /** The member project a Space reply's path or saved artifact id belongs to; a
    *  project window resolves its own references, so it has none. */
@@ -83,6 +85,7 @@ export function projectAgentWindowEndpoints(
     control: (operationId, action, requestId) =>
       controlThreadTask(owner, operationId, action, requestId),
     steer: (operationId, request) => steerThreadTurn(owner, operationId, request),
+    declineLimitResume: (operationId) => declineLimitResume(owner, operationId),
     questionsApiBase: base,
     referenceProject: null,
   };
@@ -112,6 +115,7 @@ export function spaceAgentWindowEndpoints(thread: AgentThread): AgentWindowEndpo
     control: (operation, action, requestId) =>
       controlThreadTask(thread, operation, action, requestId),
     steer: (operation, request) => steerThreadTurn(thread, operation, request),
+    declineLimitResume: (operation) => declineLimitResume(thread, operation),
     questionsApiBase: null,
     referenceProject: (query) =>
       api<{ project_id: string }>(`${base}/references?${new URLSearchParams(query)}`).then(

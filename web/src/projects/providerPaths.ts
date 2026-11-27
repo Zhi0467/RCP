@@ -7,6 +7,7 @@ export function providerPathPresentation(
   recorded: string,
 ): { label: string; kind: "ready" | "warning" | "error" | "pending"; note?: string } {
   if (value !== recorded) return { label: "Unsaved", kind: "pending" };
+  if (readiness?.updating) return { label: "Updating", kind: "pending" };
   if (readiness?.path_state === "unreachable")
     return { label: "Machine unreachable", kind: "error" };
   if (readiness?.path_state === "denied") return { label: "Recorded path unusable", kind: "error" };

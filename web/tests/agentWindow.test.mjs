@@ -558,3 +558,82 @@ test("a paused turn offers only the controls its task allows", () => {
   assert.match(both, /data-task-action="resume"/);
   assert.match(both, /data-task-action="retry"/);
 });
+
+test("limit failures replace the error with only their permitted recovery controls", () => {
+  const renderLimit = (limit, permissions = {}) =>
+    renderToStaticMarkup(
+      React.createElement(AgentWindowTranscript, {
+        transcript: [line("request", "human", "op1", "00"), line("quota", "error", "op1", "10")],
+        tasks: [
+          {
+            operation_id: "op1",
+            kind: "project_chat",
+            request: {},
+            failed: true,
+            provider_label: "Codex",
+            can_resume: true,
+            can_retry: true,
+            ...permissions,
+            limit_reset: limit,
+          },
+        ],
+        questions: [],
+        endpoints: projectAgentWindowEndpoints("p", "chat"),
+        artifacts: { renderArtifacts: () => null, repositoryFileErrors: new Map() },
+        comments: {},
+        compactionByLine: new Map(),
+        continuedTaskIds: new Set(),
+        latestGraphReceiptLineIds: new Set(),
+        readOnly: false,
+        onResumeTask() {},
+        onRetryTask() {},
+        onDeclineLimitResume: async () => {},
+      }),
+    );
+  const reset = {
+    resets_at: new Date(Date.now() + 3600_000).toISOString(),
+    estimated: false,
+    state: "waiting",
+    reason: null,
+  };
+  const waiting = renderLimit(reset);
+  assert.match(waiting, /data-limit-state="waiting"/);
+  assert.match(waiting, /data-limit-action="decline"/);
+  assert.doesNotMatch(waiting, /data-task-action="(?:resume|retry)"/);
+  assert.doesNotMatch(waiting, />quota</);
+  assert.match(renderLimit({ ...reset, estimated: true }), /Resumes later/);
+  const stopped = renderLimit({ ...reset, state: "stopped", reason: "Lost access" });
+  assert.match(stopped, /title="Lost access"/);
+  assert.match(stopped, /data-task-action="resume"/);
+  assert.match(stopped, /data-task-action="retry"/);
+  assert.doesNotMatch(stopped, /data-limit-action="decline"/);
+  assert.doesNotMatch(
+    renderLimit({ ...reset, state: "stopped" }, { can_resume: false, can_retry: false }),
+    /data-task-action=/,
+  );
+});
+
+test("limit decline sends one encoded POST for project and Space threads", async () => {
+  const { declineLimitResume } = await server.ssrLoadModule("/src/agents/agentThreadsApi.ts");
+  const calls = [];
+  const request = async (...args) => {
+    calls.push(args);
+    return { ok: true };
+  };
+  for (const kind of ["project", "space"])
+    assert.deepEqual(
+      await declineLimitResume(
+        { kind, project_id: kind === "project" ? "p" : null, thread_id: `${kind}/chat` },
+        "op/a",
+        request,
+      ),
+      { ok: true },
+    );
+  assert.deepEqual(
+    calls,
+    ["project", "space"].map((kind) => [
+      `/api/agent-threads/${kind}%2Fchat/tasks/op%2Fa/limit-resume/decline`,
+      { method: "POST" },
+    ]),
+  );
+});
