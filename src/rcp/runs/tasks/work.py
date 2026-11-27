@@ -1361,6 +1361,9 @@ def _stage_plans(
             chat_id,
             workspace,
             remote_stage,
+            continues=(
+                task.parent_operation_id if execution.continuation in {"resume", "retry"} else None
+            ),
         )
 
 
@@ -1974,9 +1977,7 @@ async def _settle_watch_deliverable(
                 settled.turn_outcome = TurnOutcome(status="not_stated")
                 if correction_rounds < TURN_OUTCOME_CORRECTION_MAX_ROUNDS:
                     outcome_failure = f"Write a valid outcome.json for the completed turn: {exc}"
-        plan_failure = (
-            _plan_failure(turn) if correction_rounds <= TURN_OUTCOME_CORRECTION_MAX_ROUNDS else None
-        )
+        plan_failure = _plan_failure(turn)
         if failure is None and outcome_failure is None and plan_failure is None:
             return
         watch_failure = failure

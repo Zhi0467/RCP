@@ -116,10 +116,13 @@ class _Member:
         chat_id = self.store.agent_task(operation_id).request["chat_id"]  # type: ignore[union-attr]
         stage_plan_folder(self.store, operation_id, self.project_id, chat_id, self.workspace, None)
         goal = (self.workspace / "goal.md").read_text(encoding="utf-8")
-        (self.workspace / "plans" / f"{name}.json").write_text(
-            json.dumps({"kind": "auto_research", "goal": goal, "invocation_limit": 3}),
-            encoding="utf-8",
-        )
+        body = {"kind": "auto_research", "goal": goal, "invocation_limit": 3}
+        target = self.workspace / "plans" / f"{name}.json"
+        for staged in (self.workspace / "plans").glob("*.json"):
+            held = json.loads(staged.read_text(encoding="utf-8"))
+            if held["kind"] == "auto_research":
+                target, body = staged, {**held, **body}
+        target.write_text(json.dumps(body), encoding="utf-8")
         return record_plan_folder(self.executions[operation_id], self.workspace, None)
 
     def land(self, operation_id: str):
@@ -334,6 +337,7 @@ def test_auto_research_recovery_does_not_replace_a_newer_plan(
     assert member.propose("lost-turn", "lost") is None
     member.store.complete_agent_task("lost-turn", applied_revision=None, result={"messages": []})
     member.turn("newer-turn")
+    (member.workspace / "goal.md").write_text("Find why warmup diverges at scale.")
     assert member.propose("newer-turn", "newer") is None
     member.store.complete_agent_task("newer-turn", applied_revision=None, result={"messages": []})
     member.background.experiment_card_raiser(member.executions["newer-turn"])

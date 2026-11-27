@@ -987,7 +987,10 @@ Auto-research `code_worktree`, `worktree_repository` and `branch_name`. `state`
 (`waiting` or `parked`) and `version` (the card's hash) are RCP's. When the turn
 ends, a new file asks for a new card and a changed file revises its card, only
 while the card still carries the staged `version`; a member's edit during the
-turn wins and the turn gets a warning event. Deleting a file changes nothing. An
+turn wins and the turn gets a warning event. Within one turn the last edit of a
+card wins. A new file for a node, or for Auto-research, whose card is already
+staged, and an edit that changes a card's kind or node, are corrections: the agent
+edits the staged file instead. Deleting a file changes nothing. An
 invalid file, a node whose run is live, or a turn without the grants becomes a
 correction the agent fixes in the same turn, like a watcher file. The retired
 `episode --kick-off-*` commands answer `plan_files_replace_kickoff`. The Work

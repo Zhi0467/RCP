@@ -586,8 +586,8 @@ export function AgentChatView({
     feed ? revision : null,
   );
   const cardsChanged = async () => {
-    await cards.refetch();
     questionState.refresh();
+    await cards.refetch();
   };
   const ownQuestionIds = new Set(questionState.questions.map((question) => question.question_id));
   const relayedPlans = cards.plans.filter(

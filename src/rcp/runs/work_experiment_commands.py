@@ -362,6 +362,15 @@ def raise_plan_cards(execution: AgentTaskExecution, catalog: ProjectCatalog) -> 
         if receipt.payload.get("phase") == "card_pending"
         and receipt.payload["kickoff_id"] not in raised
     }
+    last_for_card = {
+        payload["question_id"]: kickoff_id
+        for kickoff_id, (_kind, payload) in requests.items()
+        if payload.get("question_id")
+    }
+    for kickoff_id, (_kind, payload) in list(requests.items()):
+        if payload.get("question_id") and last_for_card[payload["question_id"]] != kickoff_id:
+            _mark_raised(store, execution.operation_id, kickoff_id)
+            del requests[kickoff_id]
     if not requests:
         return
     from rcp.runs.agent_threads import task_owner

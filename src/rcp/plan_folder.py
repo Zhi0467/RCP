@@ -97,12 +97,14 @@ class PlanFile(BaseModel):
 
 
 def _plan(card: dict[str, Any]) -> PlanFile:
+    """The stored card as a file, unvalidated: the card's own write paths own its limits."""
+
     action: dict[str, Any] = card["action"]
     auto = action["kind"] == "auto_research"
-    return PlanFile(
+    return PlanFile.model_construct(
         kind="auto_research" if auto else "experiment",
         node=None if auto else action["node_id"],
-        goal=str(action.get("starting_instruction") if auto else action["goal"]),
+        goal=(action.get("starting_instruction") if auto else action["goal"]) or "",
         invocation_limit=action.get("invocation_ceiling"),
         provider=action.get("provider"),
         model=action.get("model"),
@@ -139,15 +141,27 @@ def stage_plan_folder(
     chat_id: str,
     workspace: Path,
     remote_stage: RemoteRunStage | None,
+    *,
+    continues: str | None = None,
 ) -> None:
-    """Write the chat's cards once per turn and keep that view as the turn's baseline."""
+    """Write the chat's cards once per turn and keep that view as the turn's baseline.
+
+    A Resume or Retry (`continues` names the turn it continues) keeps that turn's
+    baseline and the files its agent already wrote, so unsubmitted plans survive.
+    """
 
     saved = store.agent_task_contract(operation_id, _BASELINE)
+    inherited = False
+    if saved is None and continues is not None:
+        saved = store.agent_task_contract(continues, _BASELINE)
+        inherited = saved is not None
     if saved is None:
         saved = json.dumps(plan_files(store, project_id, chat_id), sort_keys=True)
-        store.record_agent_task_contract(
-            operation_id, _BASELINE, saved, hashlib.sha256(saved.encode()).hexdigest()
-        )
+    store.record_agent_task_contract(
+        operation_id, _BASELINE, saved, hashlib.sha256(saved.encode()).hexdigest()
+    )
+    if inherited and read_plan_folder(workspace, remote_stage):
+        return
     files = json.loads(saved)
     if remote_stage is None:
         replace_watcher_folder(workspace, files, PLANS)
@@ -187,6 +201,9 @@ def record_plan_folder(
     if saved is None:
         return None
     baseline: dict[str, str] = json.loads(saved)
+    staged_plans = {
+        name: PlanFile.model_construct(**json.loads(text)) for name, text in baseline.items()
+    }
     problems: list[str] = []
     for name, text in sorted(read_plan_folder(workspace, remote_stage).items()):
         if baseline.get(name) == text:
@@ -198,8 +215,20 @@ def record_plan_folder(
             problems.append(f"plans/{name}: {exc}")
             continue
         revises = None
+        if name not in baseline:
+            held = next(
+                (
+                    other
+                    for other, staged in staged_plans.items()
+                    if (staged.kind, staged.node) == (plan.kind, plan.node)
+                ),
+                None,
+            )
+            if held is not None:
+                problems.append(f"plans/{name}: plans/{held} already holds this plan; edit it")
+                continue
         if name in baseline:
-            staged = PlanFile.model_validate_json(baseline[name])
+            staged = staged_plans[name]
             if plan.intent() == staged.intent():
                 continue
             if (plan.kind, plan.node) != (staged.kind, staged.node):

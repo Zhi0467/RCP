@@ -295,7 +295,7 @@ def with_started(store: AppStore, receipt: dict[str, Any]) -> dict[str, Any]:
         return receipt
     request = root.request
     started = {
-        "goal": request.get("message"),
+        "goal": request.get("message") or request.get("instruction"),
         "invocation_ceiling": episode.invocation_ceiling,
         "provider": request.get("provider"),
         "model": request.get("model"),

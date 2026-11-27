@@ -74,8 +74,13 @@ def _propose(
     limit: int | None = None,
     node_id: str | None = EXPERIMENT_ID,
     kind: str = "experiment",
+    edit_staged: bool = True,
 ):
-    """Stage the chat's plans/, write one plan file as the agent would, and record it."""
+    """Stage the chat's plans/, write the plan as the agent would, and record it.
+
+    A plan whose card is already staged edits that card's file, unless `edit_staged`
+    is off, which writes a second file for it.
+    """
 
     from rcp.plan_folder import record_plan_folder, stage_plan_folder
 
@@ -94,7 +99,12 @@ def _propose(
         "goal": (plan.workspace / goal_file).read_text(encoding="utf-8"),
         "invocation_limit": limit,
     }
-    (plan.workspace / "plans" / f"{name}.json").write_text(
+    target = plan.workspace / "plans" / f"{name}.json"
+    for staged in (plan.workspace / "plans").glob("*.json") if edit_staged else ():
+        held = json.loads(staged.read_text(encoding="utf-8"))
+        if (held["kind"], held.get("node")) == (kind, node_id):
+            target, body = staged, {**held, **body}
+    target.write_text(
         json.dumps({key: value for key, value in body.items() if value is not None}),
         encoding="utf-8",
     )
@@ -601,6 +611,7 @@ def test_an_auto_research_card_parks_and_is_revised_in_place(plan):
     )
     assert parked.json() == {"outcome": "parked", "pinned_sha256": card["card"]["pinned_sha256"]}
 
+    (plan.workspace / "goal.md").write_text("Pursue the smaller batch.", encoding="utf-8")
     revised = _auto_plan_card(plan, key="again")
 
     assert revised["question_id"] == card["question_id"]
@@ -1291,3 +1302,80 @@ def test_an_edit_that_moves_a_card_to_another_node_is_refused(plan):
 
     (kept,) = _cards(plan, "shared-chat")
     assert kept["card"]["action"]["node_id"] == EXPERIMENT_ID
+
+
+def _stage_and_edit(plan, card, operation_id, **changes):
+    from rcp.plan_folder import stage_plan_folder
+
+    stage_plan_folder(
+        plan.store, operation_id, plan.project_id, "shared-chat", plan.workspace, None
+    )
+    path = plan.workspace / "plans" / f"{card['question_id']}.json"
+    path.write_text(json.dumps({**json.loads(path.read_text("utf-8")), **changes}), "utf-8")
+
+
+def test_the_last_edit_of_a_card_in_one_turn_wins(plan):
+    from rcp.plan_folder import record_plan_folder
+
+    card = _plan_card(plan, key="older")
+    execution, _call = _turn(plan, "turn-edit", chat_id="shared-chat")
+    _stage_and_edit(plan, card, "turn-edit", goal="First edit.")
+    assert record_plan_folder(execution, plan.workspace, None) is None
+    path = plan.workspace / "plans" / f"{card['question_id']}.json"
+    path.write_text(json.dumps({**json.loads(path.read_text("utf-8")), "goal": "Last edit."}))
+    assert record_plan_folder(execution, plan.workspace, None) is None
+    _land(plan, execution)
+
+    (kept,) = _cards(plan, "shared-chat")
+    assert kept["card"]["action"]["goal"] == "Last edit."
+
+
+def test_a_new_file_for_a_node_with_a_staged_card_is_a_correction(plan):
+    card = _plan_card(plan, key="older")
+    execution, _call = _turn(plan, "turn-dup", chat_id="shared-chat")
+    problem = _propose(plan, execution, "dup", edit_staged=False)
+    assert problem is not None and card["question_id"] in problem
+    _land(plan, execution)
+    (kept,) = _cards(plan, "shared-chat")
+    assert kept["card"]["pinned_sha256"] == card["card"]["pinned_sha256"]
+
+
+def test_a_stored_card_past_the_file_limits_still_stages(plan):
+    from rcp.limits import AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES
+    from rcp.plan_folder import stage_plan_folder
+
+    card = _plan_card(plan, key="older")
+    with plan.store.connection() as connection:
+        connection.execute(
+            "UPDATE approval_cards SET action_json=json_set(action_json,'$.goal',?)",
+            ("é" * AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES,),
+        )
+    _turn(plan, "turn-big", chat_id="shared-chat")
+    stage_plan_folder(plan.store, "turn-big", plan.project_id, "shared-chat", plan.workspace, None)
+    assert (plan.workspace / "plans" / f"{card['question_id']}.json").exists()
+
+
+def test_a_retry_keeps_the_plan_files_its_predecessor_wrote(plan):
+    from rcp.plan_folder import record_plan_folder, stage_plan_folder
+
+    _turn(plan, WORK_TURN, chat_id="shared-chat")
+    stage_plan_folder(plan.store, WORK_TURN, plan.project_id, "shared-chat", plan.workspace, None)
+    body = {"kind": "experiment", "node": EXPERIMENT_ID, "goal": "Unsubmitted plan."}
+    (plan.workspace / "plans" / "draft.json").write_text(json.dumps(body), "utf-8")
+    plan.store.fail_agent_task(WORK_TURN, "The provider stopped.")
+
+    retry, _call = _turn(plan, "work-retry", chat_id="shared-chat", parent=WORK_TURN)
+    stage_plan_folder(
+        plan.store,
+        "work-retry",
+        plan.project_id,
+        "shared-chat",
+        plan.workspace,
+        None,
+        continues=WORK_TURN,
+    )
+    assert (plan.workspace / "plans" / "draft.json").exists()
+    assert record_plan_folder(retry, plan.workspace, None) is None
+    _land(plan, retry)
+    (card,) = _cards(plan, "shared-chat")
+    assert card["card"]["action"]["goal"] == "Unsubmitted plan."
