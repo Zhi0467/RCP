@@ -118,8 +118,8 @@ def test_a_provider_the_account_has_not_installed_is_skipped(tmp_path, monkeypat
 def test_a_cli_installed_outside_the_account_home_is_left_alone(tmp_path, monkeypatch) -> None:
     backend = _Backend(tmp_path, monkeypatch)
     monkeypatch.setattr(
-        "rcp.runs.provider_auto_update.installed_provider",
-        lambda _account, provider: Path("/usr/local/bin") / provider,
+        "rcp.server_ops.provider_update.LocalUpdateTarget.discover",
+        lambda _target, provider: str(Path("/usr/local/bin") / provider),
     )
 
     backend.run_pass()
@@ -143,3 +143,78 @@ def test_the_backends_configured_executable_is_the_one_updated(tmp_path, monkeyp
 
     assert backend.upgrades == 1
     assert all(str(configured) in " ".join(call) for call in backend.calls)
+
+
+@pytest.mark.parametrize("machine_id", [BACKEND_MACHINE_ID, "remote"])
+def test_on_demand_refuses_busy_machine_inside_hold(tmp_path, monkeypatch, machine_id) -> None:
+    from rcp.runs.provider_auto_update import update_provider
+    from rcp.server_ops.provider_update import (
+        LocalUpdateTarget,
+        ProviderUpdateRefused,
+        RemoteUpdateTarget,
+    )
+    from tests.test_provider_update_targets import Transport
+
+    backend = _Backend(tmp_path, monkeypatch)
+    _seed_turn(backend.layout, "opencode", "running", machine_id)
+    store = AppStore(backend.layout.data_dir / "rcp.sqlite3")
+    transport = Transport("/home/worker")
+    target = (
+        LocalUpdateTarget(backend.account, backend.runner)
+        if machine_id == BACKEND_MACHINE_ID
+        else RemoteUpdateTarget("machine", "worker", runner=transport.ssh)
+    )
+    admitted = []
+    from contextlib import contextmanager
+
+    @contextmanager
+    def guard():
+        admitted.append(True)
+        yield
+
+    try:
+        with pytest.raises(ProviderUpdateRefused):
+            update_provider(
+                store,
+                backend.launcher,
+                "opencode",
+                machine_id,
+                target=target,
+                stop=threading.Event(),
+                guard=guard,
+            )
+        assert admitted == []
+        assert backend.calls == []
+        assert transport.calls == []
+    finally:
+        store.close()
+
+
+def test_daily_pass_defers_to_an_on_demand_hold(tmp_path, monkeypatch) -> None:
+    backend = _Backend(tmp_path, monkeypatch)
+    with backend.launcher.provider_update("opencode", BACKEND_MACHINE_ID):
+        backend.run_pass()
+    assert backend.upgrades == 0
+
+
+def test_on_demand_refuses_outside_home_after_admission(tmp_path, monkeypatch) -> None:
+    from rcp.runs.provider_auto_update import update_provider
+    from rcp.server_ops.provider_update import LocalUpdateTarget, ProviderUpdateRefused
+
+    backend = _Backend(tmp_path, monkeypatch)
+    monkeypatch.setattr(backend.launcher, "provider_binary", lambda *_: "/usr/bin/opencode")
+    store = AppStore(tmp_path / "store.sqlite3")
+    try:
+        with pytest.raises(ProviderUpdateRefused):
+            update_provider(
+                store,
+                backend.launcher,
+                "opencode",
+                BACKEND_MACHINE_ID,
+                target=LocalUpdateTarget(backend.account, backend.runner),
+                stop=threading.Event(),
+            )
+        assert backend.calls == []
+        assert backend.launcher.readiness(_LOGIN).update_warning
+    finally:
+        store.close()

@@ -21,6 +21,7 @@ from rcp.phone_listener import PhoneListener
 from rcp.projects import ProjectCatalog, ProjectDisplayCache
 from rcp.release_check import ReleaseCheck
 from rcp.runs.provider_sign_in import ProviderSignInRunner
+from rcp.runs.provider_update import ProviderUpdateRunner
 from rcp.server_ops.backup import BackupArchiveReceipt
 from rcp.server_ops.doctor import ServerDoctorReport
 from rcp.server_runtime import ServerMetadata
@@ -78,6 +79,7 @@ class ApiServices:
     release_check: ReleaseCheck
     provider_credentials: ProviderCredentialStore
     provider_sign_ins: ProviderSignInRunner
+    provider_updates: ProviderUpdateRunner
     episode_reconciliation: Callable[[], int]
     terminals: TerminalManager
     notification_sender: NotificationSender
@@ -125,6 +127,10 @@ def get_provider_credentials(request: Request) -> ProviderCredentialStore:
 
 def get_provider_sign_ins(request: Request) -> ProviderSignInRunner:
     return _api_services(request).provider_sign_ins
+
+
+def get_provider_updates(request: Request) -> ProviderUpdateRunner:
+    return _api_services(request).provider_updates
 
 
 def get_episode_reconciliation(request: Request) -> Callable[[], int]:

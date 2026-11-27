@@ -46,6 +46,7 @@ RUNNERS = {
     "_run_process_group",
     "_run_read_only",
     "_require_command",
+    "_checked",
     "_run_as_account",
     "_run_as_service",
     "_ssh",
@@ -334,6 +335,7 @@ def _programs(source: str) -> set[str]:
                     isinstance(value, ast.JoinedStr)
                     and value.values
                     and isinstance(value.values[0], ast.Constant)
+                    and isinstance(value.values[0].value, str)
                 ):
                     text = value.values[0].value.split(" ")[0]
                 if text:
@@ -557,3 +559,7 @@ heredoc-word
 DOC
 """
     assert _shell_programs(script) == {"assigned-tool", "plain-tool", "cat-like-tool"}
+
+
+def test_inventory_reads_checked_remote_commands() -> None:
+    assert _programs('self._checked(("stat", "-c", "%u", path))') == {"stat"}

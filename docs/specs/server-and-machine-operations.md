@@ -129,19 +129,49 @@ Product login behavior belongs to
 [Providers and containment](providers-and-containment.md#login-state-and-failure). Operator actions belong to
 [server.md](../server.md#11-provider-authentication).
 
-A team backend runs the same native update itself once a day
-(`PROVIDER_AUTO_UPDATE_INTERVAL_SECONDS`), as the service account and without
-root, from
-[provider_auto_update.py](../../src/rcp/runs/provider_auto_update.py). It
-covers only the backend machine, and updates the executable its card names,
-else the discovered one, only when it lies inside the account's home. A
-provider with a backend turn running, pausing or queued waits for the next
-pass. While a provider updates, new local launches of it wait, so no turn
-starts between that check and the update. A failed update changes nothing else: the installed version keeps
-running and the reason is the provider's `update_warning` in machine-card
-readiness until an update succeeds. The warning is process memory, so a restart
-clears it until the next pass. A changed version re-probes that provider's
-readiness.
+### In-app provider updates
+
+The machine provider menu starts a native CLI update on that machine. In a team
+space, the caller must be a member allowed to edit the machine card; in a personal
+space, the owner may update it. The update routes return the in-memory job defined
+by [ProviderUpdateJob](../../src/rcp/runs/provider_update.py): one live job per
+provider and machine, with running, succeeded, or failed state and before/after
+versions. A restart clears jobs.
+
+The daily backend pass and on-demand jobs share
+[update_provider](../../src/rcp/runs/provider_auto_update.py). The daily pass runs
+once per `PROVIDER_AUTO_UPDATE_INTERVAL_SECONDS`, without root, and skips missing
+installations and executables outside the account home. On-demand updates report
+those failures. Both use the machine card's configured executable, or discover one
+when no path is configured. Native updates may change a stable command path's target;
+verification discovers the resulting executable again.
+
+[UpdateTarget](../../src/rcp/server_ops/provider_update.py) owns command execution,
+discovery and installer staging. The local target uses the account environment and
+checks staging directory ownership and permissions. The remote target uses the
+machine's SSH transport as its OS account (discovering that account through the saved
+route when the card omits it), discovers its home and executable there,
+and creates and verifies a private directory under `~/.rcp/tmp`. Removal is limited
+to that created directory. Provider profiles stay on the backend: only plain
+command argv crosses SSH for maintenance. Remote agy maintenance disables browser
+opening directly, without its ordinary RCP launch wrapper. Executables outside the
+target account's home are refused.
+
+A try-acquire hold is keyed by provider and machine. A second update is refused;
+inside the hold, queued, running and pausing turns on that pair are counted and
+refuse the update with their count. The API returns 409 for either refusal. New
+local and remote launches wait before readiness, credential resolution, argv
+construction or a remote-start event. The updater's own commands bypass that wait.
+Readiness and login probes return cached readiness marked `updating`, ignoring
+refresh; without a cache they return minimal readiness with unknown authentication.
+Sign-ins are refused during the hold, and an update is refused while sign-in or
+credential verification work on that pair is active. Admission is atomic in both
+directions.
+
+Success clears the in-memory `update_warning`, invalidates readiness for all logins
+on that provider and machine, and refreshes readiness without reusing pre-update probes. Failure sets
+the warning with the reason. The warning lasts until a successful update or process
+restart. The update does not collect credentials or change login assignments.
 
 **Why:** a native updater needs only the account that installed the CLI, so
 keeping it current should not wait for an operator or for an RCP update.
