@@ -842,10 +842,9 @@ def test_start_in_a_private_chat_runs_the_members_edited_plan(plan):
     started = _start(plan, card)
     assert started.status_code == 200, started.text
     assert started.json()["outcome"] == "approved"
-    assert plan.store.approval_card(card["question_id"])["result"]["result"]["started"] == {
-        "goal": "Compare warmup schedules at lr 1e-4.",
-        "invocation_ceiling": 2,
-    }
+    started_plan = plan.store.approval_card(card["question_id"])["result"]["result"]["started"]
+    assert started_plan["goal"] == "Compare warmup schedules at lr 1e-4."
+    assert (started_plan["invocation_ceiling"], started_plan["provider"]) == (2, "codex")
     request_id = plan.store.approval_card(card["question_id"])["request_id"]
     episode = plan.store.episode(plan_card_episode_id(request_id, "experiment_start"))
     assert episode is not None and episode.invocation_ceiling == 2
@@ -950,7 +949,8 @@ def test_an_interrupted_start_settles_from_its_episode(plan):
     )
     settled = plan.store.approval_card(card["question_id"])
     assert settled["result"]["outcome"] == "approved"
-    assert settled["result"]["result"] == {"episode_id": episode_id}
+    assert settled["result"]["result"]["episode_id"] == episode_id
+    assert settled["result"]["result"]["started"]["invocation_ceiling"] >= 1
     again = _start_directly(plan, card["operation_id"], episode_id, "Interrupted goal.")
     assert again.operation_id == root.operation_id
     assert _experiment_loops(plan) == [episode_id]
@@ -1131,7 +1131,8 @@ def test_interrupted_auto_research_start_settles_from_its_episode(plan, monkeypa
     )
     settled = plan.store.approval_card(card["question_id"])
     assert settled["result"]["outcome"] == "approved"
-    assert settled["result"]["result"] == {"episode_id": episode_id}
+    assert settled["result"]["result"]["episode_id"] == episode_id
+    assert settled["result"]["result"]["started"]["invocation_ceiling"] >= 1
     assert len(plan.store.episodes(plan.project_id, limit=None)) == 1
     assert episode.root_operation_id is not None
     wait_for_task(plan.store, episode.root_operation_id)
@@ -1242,3 +1243,23 @@ def test_old_pending_receipts_recover_after_database_reopen(plan, kind):
     assert any(
         event.level == "info" for event in reopened.agent_task_events(execution.operation_id)
     )
+
+
+def test_a_start_with_a_picked_profile_launches_and_reports_that_profile(plan, monkeypatch):
+    monkeypatch.setattr(
+        "rcp.runs.auto_research_admission.auto_research_child_profile_choices",
+        lambda *_args, **_kwargs: {"codex": {"gpt-picked": ["high"]}},
+    )
+    card = _plan_card(plan)
+
+    started = _start(plan, card, provider="codex", model="gpt-picked", reasoning="high")
+
+    assert started.status_code == 200, started.text
+    assert started.json()["outcome"] == "approved", started.text
+    episode = plan.store.episode(started_episode(plan, card))
+    root = plan.store.agent_task(episode.root_operation_id)
+    launched = tuple(root.request[key] for key in ("provider", "model", "reasoning"))
+    assert launched == ("codex", "gpt-picked", "high")
+    reported = started.json()["result"]["started"]
+    assert tuple(reported[key] for key in ("provider", "model", "reasoning")) == launched
+    wait_for_task(plan.store, root.operation_id)

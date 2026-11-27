@@ -276,10 +276,32 @@ def settle_interrupted_approval_cards(
             continue
         store.settle_approval_card(
             card["question_id"],
-            {"outcome": "approved", "result": receipt}
+            {"outcome": "approved", "result": with_started(store, receipt)}
             if receipt is not None
             else {"outcome": "failed", "reason": "interrupted"},
         )
+
+
+def with_started(store: AppStore, receipt: dict[str, Any]) -> dict[str, Any]:
+    """Add what a started episode's first turn launched with, read from that turn."""
+
+    episode = store.episode(receipt["episode_id"]) if receipt.get("episode_id") else None
+    root = (
+        store.agent_task(episode.root_operation_id)
+        if episode and episode.root_operation_id
+        else None
+    )
+    if episode is None or root is None:
+        return receipt
+    request = root.request
+    started = {
+        "goal": request.get("message"),
+        "invocation_ceiling": episode.invocation_ceiling,
+        "provider": request.get("provider"),
+        "model": request.get("model"),
+        "reasoning": request.get("reasoning"),
+    }
+    return {**receipt, "started": {key: value for key, value in started.items() if value}}
 
 
 def run_here_receipt(queue_id: str) -> dict[str, Any]:

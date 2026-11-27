@@ -428,9 +428,9 @@ def _resolve(
             card["request_id"],
         )
         if result["outcome"] == "approved" and body.start is not None:
-            result["result"]["started"] = body.start.model_dump(
-                mode="json", exclude={"kind", "node_rev"}, exclude_none=True
-            )
+            from rcp.runs.approval_cards import with_started
+
+            result["result"] = with_started(store, result["result"])
         return result
 
 

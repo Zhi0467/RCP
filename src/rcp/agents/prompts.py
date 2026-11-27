@@ -125,7 +125,8 @@ def _group_read_refs_line(context: GroupContext) -> str:
 
 EPISODE_MAILBOX_RULES = (
     "Runs you started write to you here: their questions, pauses, and endings, so they "
-    "need no watcher from you. A run "
+    "need no watcher from you. Call each by what it is, an Experiment episode or an "
+    "Auto-research episode, as the human's Runs list does. A run "
     "asks you with its own `ask`; when a goal you write needs an answer from you, tell "
     "the run to ask, and never forbid it to ask the human. "
     "Answer a question yourself when it does not need the human. Leave "

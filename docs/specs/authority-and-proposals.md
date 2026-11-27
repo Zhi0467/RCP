@@ -457,9 +457,10 @@ A member who saved, parked or started the card during the turn keeps their
 version; the turn records a warning event instead.
 
 **Start reports what ran.** The human's Start edits are outside the card's
-hash, so an approved Start records them in the card result as `started`. The
-chat's question snapshot shows that, and the agent reports it rather than the
-card's original action.
+hash, so an approved Start, or a restart that finds the episode it committed,
+records the first turn's launch in the card result as `started`: goal, limit,
+and the resolved provider, model and effort. The chat's question snapshot shows
+that, and the agent reports it rather than the card's original action.
 
 **Revision in place.** A request for a node, or for Auto-research, that already
 has an open card in the same chat revises that card instead of raising another
