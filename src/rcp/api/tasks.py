@@ -1858,6 +1858,8 @@ def decline_limit_resume(
     if task.authorized_by is None or task.authorized_by.user_id != member.user_id:
         raise HTTPException(status_code=403, detail="Only the authorizing member may decline.")
     with get_experiment_operation_lock(request)(task.project_id):
+        if store.agent_task_has_continuation(operation_id):
+            raise HTTPException(status_code=409, detail="This turn already has a continuation.")
         if task_limit_reset(store, task) is None:
             raise HTTPException(
                 status_code=409, detail="This turn is not waiting for a usage limit."

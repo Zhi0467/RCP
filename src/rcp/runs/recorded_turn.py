@@ -256,6 +256,7 @@ def decode_recorded_turn(
                 text=item.text,
                 session_id=item.session_id,
                 usage=item.usage,
+                rate_limit=item.rate_limit,
                 status=item.status,
             )
             for item in step.events

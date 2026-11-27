@@ -186,7 +186,7 @@ def absorb_recorded_events(
 ) -> list[str]:
     """Read the decoded pass into one outcome, as the live loop would.
 
-    The same five event kinds, meaning the same five things. A recorded turn is
+    Provider events retain their live meaning. A recorded turn is
     not handed a conclusion; it reaches one by reading its own events, which is
     why a failure recorded on a host stays a failure here.
     """
@@ -195,7 +195,7 @@ def absorb_recorded_events(
     for event in verdict.events:
         if event.session_id:
             outcome.session_id = event.session_id
-        if event.event == "session":
+        if event.event in {"session", "rate_limit"}:
             frames.append(_sse(event))
             continue
         if event.event == "error":

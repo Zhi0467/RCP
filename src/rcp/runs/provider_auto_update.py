@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.providers import PROVIDER_IDS, ProviderId, profile_for
+from rcp.runs.provider_login import run_on_machine
 from rcp.server_ops.provider_update import (
     LocalUpdateTarget,
     ProviderUpdateRefused,
@@ -35,14 +36,17 @@ logger = logging.getLogger(__name__)
 def turns_using(store: AppStore, provider: ProviderId, machine_id: str) -> int:
     """Count active and admitted turns on the exact provider and machine."""
     with store.connection() as connection:
-        row = connection.execute(
-            "SELECT COUNT(*) FROM graph_runs "
-            "WHERE json_extract(request_json, '$.provider')=? "
-            "AND COALESCE(NULLIF(stage_machine_id,''),?)=? "
+        rows = connection.execute(
+            "SELECT project_id, stage_machine_id, json_extract(request_json, '$.run_on') AS run_on "
+            "FROM graph_runs WHERE json_extract(request_json, '$.provider')=? "
             "AND status IN ('queued','running','pausing')",
-            (provider, BACKEND_MACHINE_ID, machine_id),
-        ).fetchone()
-    return int(row[0])
+            (provider,),
+        ).fetchall()
+    return sum(
+        (row["stage_machine_id"] or run_on_machine(store, row["project_id"], row["run_on"]))
+        == machine_id
+        for row in rows
+    )
 
 
 def update_provider(

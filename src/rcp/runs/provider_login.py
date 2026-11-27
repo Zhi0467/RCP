@@ -578,6 +578,21 @@ def delete_removed_credential(store: AppStore, key: LoginKey, *, defer: bool = F
     return deleted
 
 
+def unstarted_limit_resumes(store: AppStore) -> list[AgentTaskRecord]:
+    with store.connection() as connection:
+        rows = connection.execute(
+            "SELECT task.* FROM graph_runs task WHERE task.status='queued' "
+            "AND task.episode_id IS NULL "
+            "AND EXISTS (SELECT 1 FROM graph_run_receipts marker "
+            "WHERE marker.operation_id=task.operation_id AND marker.category='limit_auto_resume')"
+        ).fetchall()
+    return [
+        store._agent_task_record(row)
+        for row in rows
+        if store.agent_task_dispatch_was_proven_not_started(row["operation_id"])
+    ]
+
+
 def limit_resume_candidates(store: AppStore) -> list[AgentTaskRecord]:
     retry_before = (
         datetime.fromisoformat(store.now()) - timedelta(seconds=LIMIT_RESUME_RETRY_SECONDS)
@@ -627,6 +642,8 @@ def _stop_limit_resume(store: AppStore, task: AgentTaskRecord, reason: str) -> N
     store.record_agent_task_receipt(
         task.operation_id, "limit_auto_resume_stopped", {"reason": reason}
     )
+    if task.status == "queued":
+        store.fail_agent_task(task.operation_id, reason)
 
 
 def _resume_limited_turn(
@@ -642,7 +659,7 @@ def _resume_limited_turn(
 
     store = background.store
     try:
-        if _limit_resume_capped(store, task):
+        if task.status != "queued" and _limit_resume_capped(store, task):
             _stop_limit_resume(store, task, "Automatic resume limit reached.")
             return
         if not task.native_session_id:
@@ -656,6 +673,23 @@ def _resume_limited_turn(
         with task_write_admission_as(
             task, authorized_by, store=store, operation_lock=operation_lock
         ):
+            if task.status == "queued":
+                if not store.agent_task_dispatch_was_proven_not_started(task.operation_id):
+                    return
+                deferred = store.agent_task_receipts_by_category(
+                    task.operation_id, "limit_auto_resume_deferred"
+                )
+                if (
+                    deferred
+                    and (
+                        datetime.fromisoformat(store.now())
+                        - datetime.fromisoformat(deferred[-1].created_at)
+                    ).total_seconds()
+                    < LIMIT_RESUME_RETRY_SECONDS
+                ):
+                    return
+                background.launch_admitted(task.operation_id)
+                return
             if not any(
                 candidate.operation_id == task.operation_id
                 for candidate in limit_resume_candidates(store)
@@ -699,7 +733,10 @@ def resume_limited_turns(
     experiment_admission: ExperimentAdmission,
     operation_lock: KeyedLocks,
 ) -> None:
-    for task in limit_resume_candidates(background.store):
+    for task in [
+        *unstarted_limit_resumes(background.store),
+        *limit_resume_candidates(background.store),
+    ]:
         try:
             _resume_limited_turn(
                 background,

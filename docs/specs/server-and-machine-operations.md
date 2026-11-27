@@ -144,7 +144,8 @@ once per `PROVIDER_AUTO_UPDATE_INTERVAL_SECONDS`, without root, and skips missin
 installations and executables outside the account home. On-demand updates report
 those failures. Both use the machine card's configured executable, or discover one
 when no path is configured. Native updates may change a stable command path's target;
-verification discovers the resulting executable again.
+verification probes that same selected path, so another installation cannot supply
+the reported version.
 
 [UpdateTarget](../../src/rcp/server_ops/provider_update.py) owns command execution,
 discovery and installer staging. The local target uses the account environment and
@@ -159,13 +160,16 @@ target account's home are refused.
 
 A try-acquire hold is keyed by provider and machine. A second update is refused;
 inside the hold, queued, running and pausing turns on that pair are counted and
-refuse the update with their count. The API returns 409 for either refusal. New
+refuse the update with their count. A captured stage determines the machine; before
+staging, the saved execution target resolves through the ordinary launch rules.
+The API returns 409 for either refusal. New
 local and remote launches wait before readiness, credential resolution, argv
 construction or a remote-start event. The updater's own commands bypass that wait.
 Readiness and login probes return cached readiness marked `updating`, ignoring
 refresh; without a cache they return minimal readiness with unknown authentication.
 Sign-ins are refused during the hold, and an update is refused while sign-in or
-credential verification work on that pair is active. Admission is atomic in both
+credential verification or readiness probes on that pair are active, including
+probes whose cache generation was invalidated. Admission is atomic in both
 directions.
 
 Success clears the in-memory `update_warning`, invalidates readiness for all logins

@@ -1231,8 +1231,10 @@ The existing five-second watcher-poll completion pass resumes a failed member ch
 turn when its `provider_limit_reset` receipt is due. The receipt, rather than the
 login mark, survives another turn's success or re-sign-in. Old turns without this
 receipt never resume automatically. Startup reconciliation precedes the first
-poll; overdue receipts need no separate restart mechanism. Episode turns retain
-their existing recovery owner.
+poll. A committed automatic continuation with durable proof that dispatch never
+started stays queued through startup and the poll launches that same admitted
+operation. Ambiguous dispatch attempts follow ordinary interruption handling.
+Episode turns retain their existing recovery owner.
 
 One candidate query excludes turns with a continuation, a later turn or an active
 turn in the same chat, a stopped receipt, or a recent deferred receipt. The member's
@@ -1241,6 +1243,8 @@ space's local owner. `GET` and `PUT /api/providers/limit-resume` read and set th
 member's switch. Only the authorizing member may decline a turn through the
 project task or agent-thread task `limit-resume/decline` route. Decline records
 `limit_auto_resume_stopped` with reason `declined`; manual Resume remains available.
+Under the operation lock, an existing continuation makes Decline return 409
+without recording a stop.
 
 Automatic resume uses current member identity and request-free write admission,
 with the same operation lock, project membership and new-work checks and
@@ -1248,7 +1252,8 @@ single-entry exemption. Space chats require current space membership. Missing
 membership or display name stops recovery. `resume_task` revalidates the saved
 request and skills and takes chat worktree recovery admission; the HTTP wrapper
 owns status-code mapping. A continuation is created with `limit_auto_resume`
-atomically. An already-created continuation also completes the attempt.
+atomically. An already-created continuation completes allocation; a proven-unstarted
+queued continuation still needs dispatch through ordinary admitted-launch validation.
 
 Limited logins, admission conflicts, active-task conflicts, operating-system
 errors and unavailable state defer with `limit_auto_resume_deferred`. Another

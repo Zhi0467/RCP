@@ -345,17 +345,11 @@ def update_installed_provider(
     provider: ProviderId,
     binary: str,
 ) -> ProviderVersionChange:
-    """Update a home-owned executable and verify the newly discovered command."""
+    """Update and verify the same home-owned executable used for launches."""
     _require_home(target, binary)
     before = _provider_version(target, provider, binary)
     _update_provider(target, provider, binary)
-    after_binary = target.discover(provider)
-    if after_binary is None:
-        raise ProviderUpdateRefused("The updated provider executable cannot be discovered.")
-    _require_home(target, after_binary)
-    return ProviderVersionChange(
-        before=before, after=_provider_version(target, provider, after_binary)
-    )
+    return ProviderVersionChange(before=before, after=_provider_version(target, provider, binary))
 
 
 def run_provider_process_as_self(

@@ -1584,7 +1584,8 @@ Clearing the login never clears the turn's receipt.
 The pure readers in `providers/usage_limits.py` prefer the last usage snapshot:
 Codex `account/rateLimits/updated` exhausted windows, then Claude
 `rate_limit_event` exhausted unified windows. Each decoder emits `rate_limit`,
-and the execution keeps only the last raw snapshot in memory. Settlement retains
+and both live delivery and recorded-result recovery forward it to the execution,
+which keeps only the last raw snapshot in memory. Settlement retains
 that snapshot only inside the reset receipt as diagnostic data. When multiple
 windows are exhausted, the latest reset governs. With no usable snapshot, Gemini's
 `Resets in` duration or Codex's explicit-zone `try again at` timestamp supplies the

@@ -218,3 +218,36 @@ def test_on_demand_refuses_outside_home_after_admission(tmp_path, monkeypatch) -
         assert backend.launcher.readiness(_LOGIN).update_warning
     finally:
         store.close()
+
+
+@pytest.mark.parametrize(
+    "stage,run_on,expected", [(None, "remote", "remote"), ("other", "remote", "other")]
+)
+def test_busy_count_uses_queued_target_until_stage_is_captured(tmp_path, stage, run_on, expected):
+    from rcp.runs.provider_auto_update import turns_using
+
+    layout = _layout(tmp_path)
+    _seed_turn(layout, "opencode", "queued", stage)
+    store = AppStore(layout.data_dir / "rcp.sqlite3")
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET request_json=json_set(request_json, '$.run_on', ?)",
+            (run_on,),
+        )
+    assert turns_using(store, "opencode", expected) == 1
+    assert turns_using(store, "opencode", BACKEND_MACHINE_ID) == 0
+    assert turns_using(store, "claude", expected) == 0
+
+
+def test_busy_count_resolves_unstaged_default_to_project_base_machine(tmp_path):
+    from rcp.runs.provider_auto_update import turns_using
+
+    layout = _layout(tmp_path)
+    _seed_turn(layout, "opencode", "queued", None)
+    store = AppStore(layout.data_dir / "rcp.sqlite3")
+    project = store.project("project")
+    assert project is not None
+    manifest = Path(project.locator)
+    manifest.write_text(manifest.read_text().replace('"backend"', '"remote"'))
+    assert turns_using(store, "opencode", "remote") == 1
+    assert turns_using(store, "opencode", BACKEND_MACHINE_ID) == 0

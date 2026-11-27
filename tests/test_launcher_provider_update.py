@@ -168,3 +168,40 @@ def test_sign_in_and_update_admission_are_exclusive() -> None:
         pytest.fail("sign-in admitted during update")
     with launcher.provider_sign_in("codex", BACKEND_MACHINE_ID):
         pass
+
+
+@pytest.mark.parametrize("invalidate", [False, True])
+def test_update_refuses_inflight_readiness_even_after_invalidation(monkeypatch, invalidate):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    launcher = AgentLauncher()
+    monkeypatch.setattr(launcher, "machine_host", lambda _: "host")
+    started = threading.Event()
+    finish = threading.Event()
+
+    def probe(*args, **kwargs):
+        started.set()
+        assert finish.wait(5)
+        return ProviderReadiness(provider="codex", installed=True, authenticated=True)
+
+    monkeypatch.setattr(launcher, "_readiness_uncached", probe)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(
+            launcher.readiness, LoginKey("codex", "remote", "member"), refresh=True
+        )
+        assert started.wait(5)
+        try:
+            if invalidate:
+                launcher.invalidate_provider_readiness("codex", "remote")
+            with pytest.raises(ProviderUpdateRefused), launcher.provider_update("codex", "remote"):
+                pass
+            with launcher.provider_update("codex", "other"):
+                pass
+            with launcher.provider_update("claude", "remote"):
+                pass
+        finally:
+            finish.set()
+        pending.result(timeout=2)
+    with launcher.provider_update("codex", "remote"):
+        pass

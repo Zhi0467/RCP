@@ -211,3 +211,49 @@ def test_permanent_refusal_and_caps_stop(limited, monkeypatch, reason):
         len(store.agent_task_receipts_by_category(task.operation_id, "limit_auto_resume_deferred"))
         <= 60
     )
+
+
+@pytest.mark.parametrize("attempted", [False, True])
+def test_restart_preserves_only_proven_unstarted_auto_resume(limited, monkeypatch, attempted):
+    store, clock, task, calls, tick, background = limited
+    child = store.create_agent_task(
+        task.model_copy(
+            update={
+                "operation_id": "committed-child",
+                "parent_operation_id": task.operation_id,
+                "status": "queued",
+                "finished_at": None,
+            }
+        ),
+        continuation_cause="resume",
+        marker="limit_auto_resume",
+    )
+    if attempted:
+        store.record_agent_task_receipt(
+            child.operation_id,
+            "operation_dispatch_attempt",
+            {
+                "dispatch_attempt_id": "ambiguous",
+            },
+        )
+    launched = []
+
+    def launch(operation_id):
+        launched.append(operation_id)
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE graph_runs SET status='running' WHERE operation_id=?", (operation_id,)
+            )
+        return store.agent_task(operation_id)
+
+    monkeypatch.setattr(background, "launch_admitted", launch)
+    monkeypatch.setattr(background, "_schedule_remote_reconciliation", lambda **_: None)
+    background.recover_at_startup()
+    clock[0] += timedelta(seconds=60)
+    tick()
+    tick()
+    assert launched == ([] if attempted else [child.operation_id])
+    assert store.agent_task(child.operation_id).status == (
+        "interrupted" if attempted else "running"
+    )
+    assert calls == []

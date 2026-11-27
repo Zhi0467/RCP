@@ -757,6 +757,7 @@ class AgentLauncher:
         self._update_warnings: dict[tuple[str, str], str] = {}
         self._updating_providers: set[tuple[str, str]] = set()
         self._provider_sign_ins: dict[tuple[str, str], int] = {}
+        self._active_readiness_probes: dict[tuple[str, str], int] = {}
         #: Shared so every process that can rotate this login is staggered,
         #: not only task turns.
         self.credential_gate = ProviderCredentialGate()
@@ -819,6 +820,8 @@ class AgentLauncher:
                 raise ProviderUpdateRefused("Already updating.")
             if self._provider_sign_ins.get(key, 0):
                 raise ProviderUpdateRefused("A provider sign-in is in progress.")
+            if self._active_readiness_probes.get(key, 0):
+                raise ProviderUpdateRefused("A provider readiness probe is in progress.")
             self._updating_providers.add(key)
         try:
             yield
@@ -904,6 +907,7 @@ class AgentLauncher:
         """
 
         key = self._readiness_key(login, binary)
+        provider_key = (login.provider, login.machine_id)
         with self._readiness_lock:
             if (login.provider, login.machine_id) in self._updating_providers:
                 return self._updating_readiness(login, key)
@@ -923,6 +927,9 @@ class AgentLauncher:
                     self._readiness_cache.pop(key, None)
                     self._readiness_generations[key] = self._readiness_generations.get(key, 0) + 1
                 self._readiness_probes[probe_key] = probe
+                self._active_readiness_probes[provider_key] = (
+                    self._active_readiness_probes.get(provider_key, 0) + 1
+                )
             generation = self._readiness_generations.get(key, 0)
 
         if not owner:
@@ -943,6 +950,13 @@ class AgentLauncher:
                 probe.error = exc
                 probe.completed.set()
             raise
+        finally:
+            with self._readiness_lock:
+                remaining = self._active_readiness_probes[provider_key] - 1
+                if remaining:
+                    self._active_readiness_probes[provider_key] = remaining
+                else:
+                    self._active_readiness_probes.pop(provider_key)
 
         with self._readiness_lock:
             # A host that did not answer is a fact about one moment, not about

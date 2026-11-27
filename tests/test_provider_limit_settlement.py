@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+import pytest
+
 from rcp.agents import AgentProcessControl
 from rcp.background import AgentTaskExecution, BackgroundAgentTasks
 from rcp.runs.provider_login import settle_provider_login
@@ -123,3 +125,95 @@ def test_later_success_clears_login_but_preserves_failed_turn_reset(accounts, mo
     assert assignment.limited_at is None
     assert assignment.limit_resets_at is None
     assert store.agent_task_receipts(failed.operation_id) == receipts
+
+
+@pytest.mark.parametrize("provider", ["claude", "codex"])
+def test_recorded_limit_snapshot_reaches_failure_settlement(accounts, tmp_path, provider):
+    import asyncio
+    import json
+
+    from rcp.background import TaskFailed
+    from rcp.runs.recorded_settlement import absorb_recorded_events, provider_turn_request
+    from rcp.runs.recorded_turn import RecordedProviderTurn, decode_recorded_turn
+    from rcp.runs.shared import _ProviderOutcome
+    from rcp.service import RunRequest
+
+    store = accounts.store
+    key = _login(accounts, provider)
+    record = _turn(accounts, key)
+    assert record is not None
+    resets_at = datetime.fromisoformat(store.now()).replace(microsecond=0) + timedelta(hours=2)
+    snapshot = {
+        "unifiedWindows": {
+            "five_hour": {
+                "status": "rejected",
+                "resetsAt": int(resets_at.timestamp()),
+            }
+        }
+    }
+    runtime_id = "claude.stream-json.v1"
+    events = [{"type": "rate_limit_event", "rate_limit_info": snapshot}]
+    if provider == "codex":
+        runtime_id = "codex.app-server-stdio.v1"
+        snapshot = {"primary": {"usedPercent": 100, "resetsAt": int(resets_at.timestamp())}}
+        events = [
+            {"id": 1, "result": {}},
+            {"id": 2, "result": {"config": {}}},
+            {
+                "id": 3,
+                "result": {
+                    "thread": {"id": record.native_session_id},
+                    "approvalPolicy": "never",
+                    "sandbox": {"type": "dangerFullAccess"},
+                },
+            },
+            {"id": 4, "result": {"turn": {"id": "recorded-turn"}}},
+            {"method": "account/rateLimits/updated", "params": {"rateLimits": snapshot}},
+        ]
+    recorded = RecordedProviderTurn(
+        pid_file="/tmp/pass.pid",
+        provider=provider,
+        runtime_id=runtime_id,
+        provider_version=None,
+        outcome={"journal_complete": True},
+        accepted=True,
+        events="".join(json.dumps(event) + "\n" for event in events),
+        stderr="",
+        patch=None,
+    )
+    verdict = decode_recorded_turn(
+        recorded, provider_turn_request(tmp_path, recorded, capability="discuss")
+    )
+    outcome = _ProviderOutcome()
+    frames = absorb_recorded_events(outcome, verdict)
+    from rcp.agents import AgentEvent
+
+    frames.append(
+        f"data: {AgentEvent(event='error', text='usage limit reached').model_dump_json()}\n\n"
+    )
+
+    async def source():
+        for frame in frames:
+            yield frame
+
+    background = BackgroundAgentTasks(store, _unused_stream)
+    execution = AgentTaskExecution(record.operation_id, store, AgentProcessControl())
+    with pytest.raises(TaskFailed):
+        asyncio.run(
+            background._consume(
+                record.project_id,
+                record.kind,
+                RunRequest(provider=provider),
+                execution,
+                source=source(),
+                recorded=True,
+            )
+        )
+    store.record_agent_task_receipt(
+        record.operation_id, "provider_terminal_error", {"classification": "session_limit"}
+    )
+    settle_provider_login(background, record, execution=execution)
+    reset = store.agent_task_receipts_by_category(record.operation_id, "provider_limit_reset")[-1]
+    assert reset.payload["snapshot"] == snapshot
+    assert reset.payload["estimated"] is False
+    assert datetime.fromisoformat(reset.payload["resets_at"]) == resets_at

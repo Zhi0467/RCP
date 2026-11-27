@@ -195,3 +195,22 @@ def test_remote_target_resolves_unspecified_account_lazily(host: str) -> None:
     assert (change.before, change.after) == ("1.0", "2.0")
     assert transport.destinations[0] == host
     assert set(transport.destinations[1:]) == {"worker@machine"}
+
+
+def test_update_verifies_the_selected_executable_when_discovery_differs(target):
+    destination, transport = target
+    binary = destination.home + "/custom/codex"
+    if isinstance(destination, LocalUpdateTarget):
+        discovered = Path(destination.home) / ".local/bin/codex"
+        discovered.parent.mkdir(parents=True)
+        discovered.touch(mode=0o755)
+    original = transport.run
+
+    def run(argv, timeout):
+        if argv[-1] == "--version":
+            return subprocess.CompletedProcess(argv, 0, "1.0" if argv[-2] == binary else "2.0", "")
+        return original(argv, timeout)
+
+    transport.run = run
+    change = update_installed_provider(destination, "codex", binary)
+    assert (change.before, change.after) == ("1.0", "1.0")

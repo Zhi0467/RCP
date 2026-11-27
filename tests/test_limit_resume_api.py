@@ -84,7 +84,10 @@ def test_request_free_admission_requires_current_member(tmp_path: Path) -> None:
         pass
 
 
-def test_resume_marker_is_present_before_worker_starts(tmp_path: Path) -> None:
+@pytest.mark.parametrize("restart", [False, True])
+def test_resume_marker_is_present_before_worker_starts(
+    tmp_path: Path, monkeypatch, restart
+) -> None:
     from rcp.agents import AgentEvent
     from rcp.background import BackgroundAgentTasks
     from tests.helpers import wait_for_task
@@ -109,15 +112,27 @@ def test_resume_marker_is_present_before_worker_starts(tmp_path: Path) -> None:
         yield f"data: {AgentEvent(event='done').model_dump_json()}\n\n"
 
     tasks = BackgroundAgentTasks(store, stream)
+    launch = tasks.launch_admitted
+    if restart:
+        monkeypatch.setattr(tasks, "launch_admitted", store.agent_task)
     resumed = tasks.resume(
         previous.operation_id, authorized_by=previous.authorized_by, marker="limit_auto_resume"
     )
+    if restart:
+        assert store.agent_task_dispatch_was_proven_not_started(resumed.operation_id)
+        monkeypatch.setattr(tasks, "launch_admitted", launch)
+        tasks.recover_at_startup()
+        assert store.agent_task(resumed.operation_id).status == "queued"
+        tasks.launch_admitted(resumed.operation_id)
     wait_for_task(store, resumed.operation_id, expect="succeeded")
     assert seen == [True]
 
 
 @pytest.mark.parametrize("surface", ["project", "agent", "space"])
-def test_limit_decline_route_and_task_projection(manifest, tmp_path: Path, surface: str) -> None:
+@pytest.mark.parametrize("continued", [False, True])
+def test_limit_decline_route_and_task_projection(
+    manifest, tmp_path: Path, surface: str, continued: bool
+) -> None:
     from tests.helpers import create_named_app, signed_in_client
 
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
@@ -156,7 +171,23 @@ def test_limit_decline_route_and_task_projection(manifest, tmp_path: Path, surfa
         )
         url = f"{base}/tasks/{task.operation_id}"
         assert client.get(url).json()["limit_reset"]["state"] == "waiting"
+        if continued:
+            child = store.create_agent_task(
+                task.model_copy(
+                    update={
+                        "operation_id": "continuation",
+                        "parent_operation_id": task.operation_id,
+                        "status": "running",
+                    }
+                ),
+                continuation_cause="resume",
+            )
         response = client.post(f"{url}/limit-resume/decline", json={})
+        if continued:
+            assert response.status_code == 409, response.text
+            assert not store.agent_task_has_receipt(task.operation_id, "limit_auto_resume_stopped")
+            assert store.agent_task(child.operation_id).status == "running"
+            return
         assert response.status_code == 202, response.text
         assert response.json() == {"ok": True}
         assert client.get(url).json()["limit_reset"]["reason"] == "declined"

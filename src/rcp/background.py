@@ -656,8 +656,12 @@ class BackgroundAgentTasks:
             for task in self.store.every_pending_chat_wake()
             if self.store.agent_task_dispatch_was_proven_not_started(task.operation_id)
         ]
+        from rcp.runs.provider_login import unstarted_limit_resumes
+
+        limit_resumes = unstarted_limit_resumes(self.store)
         self.store.interrupt_active_agent_tasks(
             preserve_operation_ids={
+                *[task.operation_id for task in limit_resumes],
                 *chat_wakes,
                 *consolidation_dispatches,
                 *[item.operation_id for item in preserved_dispatches],
@@ -1956,6 +1960,8 @@ class BackgroundAgentTasks:
         try:
             launch = self.validate_admitted_launch(operation_id)
         except AdmissionRefused:
+            if self.store.agent_task_has_receipt(operation_id, "limit_auto_resume"):
+                raise
             return self._require_operation(operation_id)
         if isinstance(launch, AgentTaskRecord):
             return launch
@@ -2016,6 +2022,7 @@ class BackgroundAgentTasks:
             machine_id=(record.stage_machine_id or BACKEND_MACHINE_ID)
             if record.stage_root
             else None,
+            automatic=self.store.agent_task_has_receipt(operation_id, "limit_auto_resume"),
         )
 
         intent = self.store.agent_task_admission_intent(operation_id)
