@@ -71,27 +71,37 @@ owning specs and this file is deleted.
      - Its newest `limit_auto_resume_deferred`, if any, is at least
        `LIMIT_RESUME_RETRY_SECONDS` (60, in `limits.py`) old.
    - **Resume.** `resume_task_as` (`api/tasks.py`) splits in two:
-     - `resume_task(store, catalog, operation_lock, task, member)` raises the original
-       exceptions.
-     - The HTTP route wraps it and maps exceptions to status codes, as today.
+     - `resume_task(previous, authorized_by, *, catalog, background_tasks,
+       experiment_admission, marker=None)` holds today's body without the HTTP parts. It
+       re-validates the stored request and skills, takes the chat's worktree recovery
+       admission, and raises the original exceptions.
+     - The HTTP route keeps write admission and the mapping from exceptions to status
+       codes, as today.
 
-     Write admission gets a form that takes no FastAPI `Request`, built from the
-     catalog, the experiment operation lock and `require_project_accepts_new_work`.
-     `project_write_admission` and the tick both use it. The tick calls `resume_task` as
-     the authorizing member, so the wake runs the same checks as the Resume button:
-     - write admission for the turn;
-     - re-validation of the stored request and skills;
-     - the chat's worktree recovery admission;
-     - that member's current role.
+     `BackgroundAgentTasks.resume` gains `marker`, a receipt category written on the new
+     record when it is created. The tick passes `limit_auto_resume`.
+
+     The tick builds its inputs without a request:
+     - **Write admission:** a form of `task_write_admission` that takes no FastAPI
+       `Request`. It keeps the single-entry exemption and is modeled on
+       `WorkEpisodes._admitted` (`api/work_episodes.py`). That function takes the
+       operation lock, runs `require_project_accepts_new_work` and checks
+       `is_project_member`, all without a request. A Space chat checks the member's
+       space role instead.
+     - **`AuthorizedHuman`:** built from the member's current `space_users` row.
+     - **Lost access:** a member who is no longer a project member, with no space role,
+       or with no display name raises `LimitResumeMemberGone`, a `ValueError`.
    - **Outcomes**, checked in this order:
      1. A continuation is created, or `AgentTaskAlreadyContinued` is raised: done. The
         continuation records `limit_auto_resume`.
-     2. `AgentTaskAdmissionConflict` and its subclasses, `ProjectActiveTaskConflict`,
-        `AdmissionRefused` (including `ProviderLoginsLimited`), `OSError` or
-        `StateUnavailable`: write `limit_auto_resume_deferred`, and try again after the
-        retry wait.
-     3. Any other `ValueError`, a lost role, or no native session: write
-        `limit_auto_resume_stopped` with the reason.
+     2. Short-lived: `ProviderLoginsLimited`, `AgentTaskAdmissionConflict` and its
+        subclasses, `ProjectActiveTaskConflict`, `OSError`, `StateUnavailable`. Append a
+        `limit_auto_resume_deferred` receipt with the reason, and try again after
+        `LIMIT_RESUME_RETRY_SECONDS`. At `LIMIT_RESUME_DEFER_MAX` (60, about an hour)
+        deferrals the turn is stopped, so a turn holds at most 60 of these receipts.
+     3. Anything else is stopped with its reason: `ProviderSignedOut`,
+        `MachineDependenciesMissing`, `LimitResumeMemberGone`, any other `ValueError`, or
+        no native session. This writes `limit_auto_resume_stopped`.
 
      A crash between the check and the resume leaves no receipt. The next tick simply
      tries again.
@@ -238,8 +248,10 @@ the name, tag and ⋯ share one line, and the path field is full width below.
   - Wake tests on the test clock:
     - A limited chat turn resumes at its reset, exactly once, across a restart.
     - It still resumes after another turn's success clears the login's mark.
-    - `ProviderLoginsLimited` from `resume` is deferred and retried. A `ValueError` stops
-      the turn. A fourth limit in a row stops.
+    - `ProviderLoginsLimited` from `resume` is deferred and retried.
+    - `ProviderSignedOut` and a lost membership stop the turn.
+    - Deferrals stop at their cap.
+    - A fourth limit in a row stops.
     - It stays failed when the switch is off or "Don't resume" was pressed.
     - An episode turn is untouched.
     - An old limited turn with no `provider_limit_reset` is untouched.
