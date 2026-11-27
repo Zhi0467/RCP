@@ -2428,22 +2428,25 @@ class ExperimentStoreMixin(StoreMixinBase):
             )
         }
         member_turns = {
-            str(row["chat_id"]): (
+            (str(row["chat_id"]), str(row["session_id"])): (
                 (str(row["created_at"]), int(row["storage_rowid"])),
                 json.loads(row["request_json"]),
             )
             for row in _connection.execute(
                 """
-                SELECT chat_id, request_json, created_at, storage_rowid FROM (
-                    SELECT json_extract(request_json, '$.chat_id') AS chat_id, request_json,
-                           created_at, rowid AS storage_rowid,
+                SELECT chat_id, session_id, request_json, created_at, storage_rowid FROM (
+                    SELECT json_extract(request_json, '$.chat_id') AS chat_id,
+                           json_extract(request_json, '$.session_id') AS session_id,
+                           request_json, created_at, rowid AS storage_rowid,
                            ROW_NUMBER() OVER (
-                               PARTITION BY json_extract(request_json, '$.chat_id')
+                               PARTITION BY json_extract(request_json, '$.chat_id'),
+                                            json_extract(request_json, '$.session_id')
                                ORDER BY created_at DESC, rowid DESC
                            ) AS latest
                     FROM graph_runs
                     WHERE project_id = ? AND json_extract(request_json, '$.trigger') = 'human'
                       AND json_extract(request_json, '$.chat_id') IS NOT NULL
+                      AND json_extract(request_json, '$.session_id') IS NOT NULL
                 ) WHERE latest = 1
                 """,
                 (project_id,),
@@ -2595,7 +2598,8 @@ class ExperimentStoreMixin(StoreMixinBase):
         receipt_categories: dict[str, set[str]],
         episodes: dict[str, ExperimentEpisodeRecord],
         parent: EpisodeRecord | None,
-        member_turns: dict[str, tuple[tuple[str, int], dict[str, object]]] | None = None,
+        member_turns: dict[tuple[str, str], tuple[tuple[str, int], dict[str, object]]]
+        | None = None,
     ) -> ExperimentLoopRuntime:
         """Purely derive one runtime from an already-loaded project ledger.
 
@@ -2696,13 +2700,16 @@ class ExperimentStoreMixin(StoreMixinBase):
             (root_row, root_request),
         )
         pick_request = binding_request
-        member = (member_turns or {}).get(agent_id) if isinstance(agent_id, str) else None
+        member = (
+            (member_turns or {}).get((agent_id, episode.native_session_id))
+            if isinstance(agent_id, str) and episode is not None and episode.native_session_id
+            else None
+        )
         if (
             member is not None
             and episode is not None
             and member[0] > (binding_row["created_at"], binding_row["storage_rowid"])
             and member[1].get("provider") == episode.provider
-            and member[1].get("session_id") == episode.native_session_id
         ):
             pick_request = member[1]
         picked_model = pick_request.get("model")

@@ -724,3 +724,5 @@ def test_a_members_later_pick_in_the_loop_session_drives_the_next_wake(tmp_path:
     assert runtime().model == "gpt-5"
     _member_turn(store, "member-pick", session_id="native-session", model="gpt-6-astra")
     assert (runtime().model, runtime().reasoning) == ("gpt-6-astra", "high")
+    _member_turn(store, "later-elsewhere", session_id="fresh-session", model="gpt-later")
+    assert runtime().model == "gpt-6-astra"
