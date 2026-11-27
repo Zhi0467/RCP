@@ -27,7 +27,8 @@ owning specs and this file is deleted.
 
 ### Change
 
-1. **Reset time, read at the failure and kept on the turn.** Settlement writes a
+1. **Reset time, read at the failure and kept on the turn.** `settle_provider_login`,
+   when `_failure_classified_as(record, "session_limit")`, writes a
    `provider_limit_reset` receipt on the failed turn: `{resets_at, estimated}`. The
    login keeps a copy in a new `provider_login_assignments.limit_resets_at` column, added
    in the `provider_logins.py` table setup. The turn's copy drives the wake. The login's
@@ -43,36 +44,49 @@ owning specs and this file is deleted.
       settlement.
    3. Otherwise `limited_at + PROVIDER_LOGIN_LIMIT_HINT_SECONDS`, with `estimated: true`.
       The row then reads "Resumes later" with no clock time.
-   A reset that is not at least one minute after the failure counts as unknown and falls
-   to source 3. The readers live in one pure module, `providers/usage_limits.py`:
+   A reset that is not at least `LIMIT_RESET_MIN_SECONDS` (60, in `limits.py`) after
+   the failure counts as unknown and falls to source 3. The readers live in one pure module, `providers/usage_limits.py`:
    `limit_reset(provider, snapshot, error, *, failed_at) -> LimitReset`, with one small
-   reader per provider. The snapshot reaches it as a `provider_rate_limit` receipt the
-   stream decoder writes. The task row carries `limit_reset` (`resets_at`, `estimated`)
-   for the web.
+   reader per provider. The stream decoder keeps the last snapshot in memory, and the turn
+   writes one `provider_rate_limit` receipt with it at settlement. The task row carries
+   `limit_reset` (`resets_at`, `estimated`, `state`: `waiting` or `stopped`) for the web.
 2. **Classification.** The Gemini quota wording joins the shared session-limit markers.
 3. **Wake on the existing 5-second tick.** There are no watchers, schedules or new timers.
    `after_watcher_poll` (`api/app.py`) already runs `provider_sign_ins.reconcile_recovery()`
    every 5 s. It gains one call, `resume_limited_turns(background)`, in
-   `runs/provider_login.py`, wrapped so one turn's error never stops the tick. A turn
-   qualifies when all of these hold:
-   - It failed with a `session_limit` classification.
-   - It is a member chat turn (no `episode_id`, so episode limit handling is
-     untouched).
-   - It has `can_resume`, a native session, and no later turn in the same chat (the
-     `auth_retry_candidates` rule).
-   - Its `provider_limit_reset.resets_at <= now`.
-   - The authorizing member's switch is on, and the turn has no `limit_resume_declined`.
-   - It has no live `limit_auto_resume` claim. A claim is live unless a later
-     `limit_auto_resume_deferred` receipt follows it.
-   - Fewer than 3 `limit_auto_resume` claims sit on its continuation chain. This stops a
-     wrong reset time from looping.
-
-   The tick writes the claim, then calls
-   `background.resume(operation_id, authorized_by=task.authorized_by)`. If `resume`
-   raises, the tick writes `limit_auto_resume_deferred` and the next tick tries again.
-   Rows written before this release have no `provider_limit_reset`, so nothing old
-   resumes. A restart needs nothing extra. The first tick runs after startup
-   reconciliation and sees resets that are already past.
+   `runs/provider_login.py`, wrapped so one turn's error never stops the tick.
+   - **Candidates.** One SQL query, like `auth_retry_candidates`, finds failed turns
+     that have a `provider_limit_reset` receipt and no continuation. Only member chat
+     turns count (no `episode_id`), so episode limit handling is untouched. A turn
+     qualifies when all of these hold:
+     - It has no later turn in the same chat, and no active turn in that chat.
+     - Its `resets_at <= now`.
+     - The authorizing member's switch is on.
+     - It has no `limit_resume_declined` and no `limit_auto_resume_stopped`.
+     - Its newest `limit_auto_resume_deferred`, if any, is at least
+       `LIMIT_RESUME_RETRY_SECONDS` (60) old.
+   - **Resume.** The non-HTTP body of `resume_task_as` (`api/tasks.py`) moves into a
+     shared function. The tick calls it as the authorizing member, so the wake runs the
+     same checks as the Resume button:
+     - write admission for the turn;
+     - re-validation of the stored request and skills;
+     - the chat's worktree recovery admission;
+     - that member's current role.
+   - **Outcomes:**
+     - A continuation was created: done. The continuation records
+       `limit_auto_resume`.
+     - A permanent refusal (`ValueError`, lost role, no native session): write
+       `limit_auto_resume_stopped` with the reason.
+     - Anything short-lived (admission conflict, maintenance, unreachable machine): write
+       `limit_auto_resume_deferred`, and try again after the retry wait.
+     - A crash between the check and the resume leaves no receipt. The next tick simply
+       tries again. The continuation insert refuses a second child
+       (`AgentTaskAlreadyContinued`), so a race with the member's own Resume is safe.
+   - **Loop stop.** If the turn's last `LIMIT_AUTO_RESUME_MAX` (3) resume ancestors were
+     all automatic, the turn gets `limit_auto_resume_stopped` instead.
+   - **Old data and restart.** Rows written before this release have no
+     `provider_limit_reset`, so nothing old resumes. A restart needs nothing extra: the
+     first tick runs after startup reconciliation and sees resets already past.
 4. **Member switch.** A column on `space_users`, `auto_resume_after_limits INTEGER
    NOT NULL DEFAULT 1`, added in the `storage/base.py` migrations. A personal space
    uses its `local_owner` row. API, in `api/provider_login.py` beside the other
@@ -90,8 +104,8 @@ owning specs and this file is deleted.
   member's own setting and reads the same in every chat.
 - **Limit row** (the existing paused-turn row): one line with its action at the end.
   - Waiting: `Codex usage limit. Resumes at 4:10 PM.` with **Don't resume**.
-  - Switch off, or declined: `Codex usage limit until 4:10 PM.` with the existing
-    Resume and Retry.
+  - Switch off, declined, or stopped: `Codex usage limit until 4:10 PM.` with the
+    existing Resume and Retry. A stopped turn shows its reason on hover.
 - **Sign-in card:** a limited card reads `Limit until 4:10 PM` instead of `Usage limit`.
 
 ## 2. Gemini 4x quota drain
@@ -100,6 +114,20 @@ Google bills custom-agent requests (`--agent`) at 4x (antigravity-cli #1890, con
 2026-11-27). RCP passes `--agent rcp-<hash>` on every agy turn
 (`providers/agy/profile.py` `_command` and `work_like_probe_command`). The agent file
 carries a tool allowlist (`_tools`).
+
+**Status: on hold until the billing is confirmed.** The probe so far:
+- Without `--agent`, agy offers 60 tools: browser control, `schedule`, `send_message`,
+  `manage_inbox`, `generate_image`, MCP and more. `--settings` cannot remove a tool. It
+  only gates the actions `command`, `read_file`, `write_file`, `mcp`, `read_url` and
+  `execute_url`.
+- On agy's Claude models, the same short turn cost about the same with and without
+  `--agent` (0.78% vs 0.93% of the 5-hour bucket, matching its token count). There was
+  no 4x.
+- The Gemini comparison runs when that bucket resets.
+
+If Gemini also shows no 4x, this section is dropped and only the quota-error classifier
+ships. If Gemini shows 4x, the change is the one below, and a turn must first show that
+`schedule` and `send_message` are refused without `--agent`.
 
 Change, for Work and orchestrator turns only, which are nearly all agy traffic:
 
@@ -138,23 +166,40 @@ Remote machines and on-demand updates need an operator in a terminal.
 
 ### Change
 
-- **One update body, two targets.** `update_installed_provider` already takes a
-  `runner`. It gains an `UpdateTarget` with `run(argv, timeout)`, `temp_dir()` and
-  `home`. `_update_provider` stages the installer in `target.temp_dir()` instead of the
-  local `~/.rcp/tmp`. There are two targets:
-  - The local account: today's `_run_as_account` and `_account_temp_dir`.
-  - A remote machine: runs over the machine's SSH transport as its `os_account`. It
-    resolves `$HOME` and `mktemp -d ~/.rcp/tmp/...` on the machine. Profile data
-    (`native_update`, `installer_url`, `command_prefix`) stays on the backend, which
-    builds each argv. Only plain commands cross SSH, so no `rcp.*` code ships.
+- **One update body, two targets.** `UpdateTarget` replaces the `(account, runner)` pair
+  in `server_ops/provider_update.py`. It has:
+  - `home`
+  - `run(argv, timeout)`
+  - `discover(provider) -> str | None`, which replaces the local `_discover_provider`
+  - `temp_dir()`, which creates and safety-checks `~/.rcp/tmp/rcp-provider-*`
+  - `remove(path)`
+
+  `binary` becomes a target-side `str`, and the home rule compares it to `target.home`.
+  There are two targets:
+  - **Local account:** today's `_run_as_account`, `_account_temp_dir` (with its chown,
+    chmod and owner checks) and `shutil.rmtree`.
+  - **Remote machine:** runs over the machine's SSH transport as its `os_account`.
+    - `home` is the machine's `$HOME`.
+    - `discover` runs `command -v` plus the profile's `install_paths`.
+    - `temp_dir` runs `mktemp -d` and then checks owner and mode with `stat`.
+    - `remove` runs `rm -rf` on that directory only.
+
+    Profile data (`native_update`, `installer_url`, `command_prefix`) stays on the
+    backend, which builds each argv. Only plain commands cross SSH, so no `rcp.*` code
+    ships.
 - `update_provider(store, launcher, provider, machine_id, *, target, stop, guard)`
   holds the per-provider body of `auto_update_providers`. The daily pass calls it for
   the backend machine. The endpoint calls it on a worker thread, the way a sign-in
   attempt runs.
-- **Hold.** `launcher.provider_update` becomes a try-acquire lock keyed by
-  `(provider, machine_id)` that refuses a second holder. Every spawn of that binary
-  waits while it is held: local and remote launches, readiness and login probes, and
-  sign-ins. `backend_turns_using` takes the machine and counts turns there.
+- **Hold.** `launcher.provider_update` becomes a try-acquire keyed by
+  `(provider, machine_id)`. A second acquire raises `ProviderUpdateRefused`
+  ("already updating"), which the API returns as 409. While the hold is taken:
+  - Launches wait, remote ones too. The `not host` exemption at `launcher.py:1616` goes.
+    The wait is async, as today.
+  - Readiness and login probes do not wait. They return the cached readiness marked
+    `updating`, which is what the row's **Updating** tag shows.
+  - Sign-ins are refused with "Updating".
+  - The updater's own `run` calls do not check the hold.
 - **Busy rule.** If turns are running on that provider and machine, the on-demand update
   is refused with the count ("2 turns are using Codex"). It does not wait. A daily pass
   and an on-demand job for the same pair meet at the lock, and the second is refused.
@@ -184,9 +229,9 @@ the name, tag and ⋯ share one line, and the path field is full width below.
 ## Tests
 
 - **Limits:**
-  - Reader tests per provider, using captured output: the Gemini quota error and
-    `/usage` JSON, Codex `rateLimits/updated` and `usageLimitExceeded`, and Claude
-    `rate_limit_event`.
+  - Reader tests per provider, using captured output: the Gemini quota error, Codex `rateLimits/updated` and `usageLimitExceeded`, and Claude
+    `rate_limit_event`. The captured Gemini error is
+    `Individual quota reached … Resets in 2h57m1s.`
   - Wake tests on the test clock:
     - A limited chat turn resumes at its reset, exactly once, across a restart.
     - It still resumes after another turn's success clears the login's mark.
