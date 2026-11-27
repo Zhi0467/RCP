@@ -990,7 +990,9 @@ while the card still carries the staged `version`; a member's edit during the
 turn wins and the turn gets a warning event. Within one turn the last edit of a
 card wins. A new file for a node, or for Auto-research, whose card is already
 staged, and an edit that changes a card's kind or node, are corrections: the agent
-edits the staged file instead. Deleting a file changes nothing. An
+edits the staged file instead. A chat holds at most `OPEN_PLAN_CARDS_MAX` (32) open
+plan cards, half the folder's read bound; a new file past that is a correction.
+Deleting a file changes nothing. An
 invalid file, a node whose run is live, or a turn without the grants becomes a
 correction the agent fixes in the same turn, like a watcher file. A chat's
 `episode --kick-off-experiment` answers `plan_files_replace_kickoff`; there is no

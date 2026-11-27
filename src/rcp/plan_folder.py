@@ -19,6 +19,7 @@ from rcp.limits import (
     AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES,
     EPISODE_TEXT_MAX_LENGTH,
     JSON_SAFE_INTEGER_MAX,
+    OPEN_PLAN_CARDS_MAX,
 )
 from rcp.providers import ProviderId
 from rcp.transport.watcher_workspace import direct_json_stem, replace_agent_folder
@@ -212,6 +213,7 @@ def record_plan_folder(
         name: PlanFile.model_construct(**json.loads(text)) for name, text in baseline.items()
     }
     problems: list[str] = []
+    held = len(staged_plans)
     for name, text in sorted(read_plan_folder(workspace, remote_stage).items()):
         if baseline.get(name) == text:
             continue
@@ -223,7 +225,7 @@ def record_plan_folder(
             continue
         staged = staged_plans.get(name)
         if staged is None:
-            problem = _new_plan_problem(plan, staged_plans)
+            problem = _new_plan_problem(plan, staged_plans, held)
             revises = None
         elif plan.intent() == staged.intent():
             continue
@@ -232,16 +234,19 @@ def record_plan_folder(
             assert staged.version is not None
             revises = (Path(name).stem, staged.version)
         problem = problem or record_plan_card(execution, name, plan, revises=revises)
+        held += staged is None and not problem
         if problem:
             problems.append(f"plans/{name}: {problem}")
     return "\n".join(problems) or None
 
 
-def _new_plan_problem(plan: PlanFile, staged_plans: dict[str, PlanFile]) -> str | None:
-    held = next(
+def _new_plan_problem(plan: PlanFile, staged_plans: dict[str, PlanFile], held: int) -> str | None:
+    if held >= OPEN_PLAN_CARDS_MAX:
+        return f"this chat already holds {OPEN_PLAN_CARDS_MAX} open plan cards"
+    same = next(
         (name for name, staged in staged_plans.items() if staged.subject == plan.subject), None
     )
-    return None if held is None else f"plans/{held} already holds this plan; edit it"
+    return None if same is None else f"plans/{same} already holds this plan; edit it"
 
 
 def _revision_problem(plan: PlanFile, staged: PlanFile) -> str | None:

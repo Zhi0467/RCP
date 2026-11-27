@@ -1340,6 +1340,17 @@ def test_a_new_file_for_a_node_with_a_staged_card_is_a_correction(plan):
     assert kept["card"]["pinned_sha256"] == card["card"]["pinned_sha256"]
 
 
+def test_a_new_plan_past_the_open_card_limit_is_a_correction(plan, monkeypatch):
+    monkeypatch.setattr("rcp.plan_folder.OPEN_PLAN_CARDS_MAX", 1)
+    card = _plan_card(plan, key="older")
+    execution, _call = _turn(plan, "turn-full", chat_id="shared-chat")
+    problem = _propose(plan, execution, "more", kind="auto_research", node_id=None, limit=5)
+    assert problem is not None and "open plan cards" in problem
+    _land(plan, execution)
+    (kept,) = _cards(plan, "shared-chat")
+    assert kept["question_id"] == card["question_id"]
+
+
 def test_a_stored_card_past_the_file_limits_still_stages(plan):
     from rcp.limits import AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES
     from rcp.plan_folder import stage_plan_folder
