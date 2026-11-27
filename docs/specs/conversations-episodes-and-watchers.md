@@ -565,7 +565,9 @@ chat had in another native session since that session's last turn.
   to the last turn then Settings, but not machine selection.
 - A wake continues the chat's current agent: it takes the provider, model,
   reasoning and runtime of the chat's latest session, so a human's provider or
-  model switch after arming does not strand it. Only a recorded machine that
+  model switch after arming does not strand it. An Experiment loop's automatic
+  turns follow the same rule: a member's later turn in the loop's own session and
+  provider sets the model and effort they run with. Only a recorded machine that
   differs from that session's claims completion once and records a failed
   notification task without provider launch or Retry. Deferred wakes replace one
   visible reason until admitted.

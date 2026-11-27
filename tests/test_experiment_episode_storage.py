@@ -677,3 +677,50 @@ def test_legacy_combined_rows_and_missing_state_roots_migrate_one_way(
         )
     reopened_again = AppStore(path)
     assert reopened_again.experiment_episode(old_episode_id).native_session_id == "legacy-session"
+
+
+def _member_turn(store: AppStore, operation_id: str, *, session_id: str, model: str) -> None:
+    now = store.now()
+    store.create_agent_task(
+        AgentTaskRecord(
+            operation_id=operation_id,
+            project_id="project",
+            kind="node_chat",
+            status="succeeded",
+            request={
+                "provider": "codex",
+                "model": model,
+                "reasoning": "high",
+                "run_on": BACKEND_MACHINE_ID,
+                "chat_id": "episode-chat",
+                "node_id": "exp-one",
+                "message": "keep going",
+                "mode": "work",
+                "trigger": "human",
+                "session_id": session_id,
+            },
+            created_at=now,
+            updated_at=now,
+            status_message="Done.",
+            native_session_id=session_id,
+            phase="done",
+            last_activity_at=now,
+            authorized_by=_identity(store),
+        )
+    )
+
+
+def test_a_members_later_pick_in_the_loop_session_drives_the_next_wake(tmp_path: Path) -> None:
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    episode_id, root = _admit_root(store)
+    store.complete_agent_task(root.operation_id, applied_revision=None, result={})
+    _bind(store, episode_id, root.operation_id, invocation=1)
+
+    def runtime():
+        return store.experiment_loop_runtime("project", "exp-one", graph_target=GraphTargetRef())
+
+    assert (runtime().model, runtime().reasoning) == ("gpt-5", "medium")
+    _member_turn(store, "other-session", session_id="fresh-session", model="gpt-other")
+    assert runtime().model == "gpt-5"
+    _member_turn(store, "member-pick", session_id="native-session", model="gpt-6-astra")
+    assert (runtime().model, runtime().reasoning) == ("gpt-6-astra", "high")
