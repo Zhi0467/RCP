@@ -706,10 +706,10 @@ Proposal cards first, then asked cards, then plain questions relayed from the
 member's projects, each naming its project. A relayed question also names the
 run or chat that asked, and an answer removes it. A Project Agent uses the same
 dock for its own open Proposal and asked cards, then pending plan cards relayed
-from other chats, then its runs' questions, then that project's relayed
-questions, then the runs that need the member. Parked plan cards never dock.
-Only its
-Proposal and asked cards drop the project chip; its plain questions stay inline. A
+from other chats, then its own open plain questions, then its runs' questions,
+then that project's relayed questions, then the runs that need the member.
+Parked plan cards never dock. Its own Proposal, asked and plain question cards
+drop the project chip; an answered plain question stays in the transcript. A
 run that does not need the member is not a card; the
 [agent pane](paper-artifacts-and-result-views.md#a-chats-tasks-and-artifacts)
 lists it. A run card names the run,

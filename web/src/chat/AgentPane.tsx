@@ -1,4 +1,4 @@
-import { ChevronDown, Download, File, FileText, Image, Table, X } from "lucide-react";
+import { ChevronDown, Download, File, FileText, Image, Table } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -136,7 +136,6 @@ export function AgentPane({
   renderTask,
   onOpened,
   onDeleted,
-  onClose,
 }: {
   title: string;
   endpoints: AgentWindowEndpoints;
@@ -147,7 +146,6 @@ export function AgentPane({
   renderTask: (section: PaneSection, index: number) => ReactNode;
   onOpened: () => void;
   onDeleted: () => void;
-  onClose: () => void;
 }) {
   const artifacts = content.artifacts;
   const projectId = endpoints.projectId;
@@ -168,9 +166,6 @@ export function AgentPane({
     <aside className="agent-pane" style={{ top }} aria-label="Tasks and artifacts">
       <header>
         <strong>{title}</strong>
-        <button className="icon-button" type="button" aria-label="Close" onClick={onClose}>
-          <X size={15} />
-        </button>
       </header>
       {PANE_SECTIONS.filter((section) => section !== "artifacts").map(
         (section) =>

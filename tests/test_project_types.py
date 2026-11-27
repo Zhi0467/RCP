@@ -50,6 +50,7 @@ RESEARCH_LAYER = frozenset(
         "runs/experiment_loop.py",
         "runs/tasks/experiment_loop.py",
         "runs/auto_research_experiments.py",
+        "plan_folder.py",
         "api/experiments.py",
         "api/experiment_controls.py",
     }

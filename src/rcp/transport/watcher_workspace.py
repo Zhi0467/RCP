@@ -1,4 +1,4 @@
-"""Replace the agent's editable watcher folder locally or on an SSH stage."""
+"""Replace one of the agent's editable file folders (watchers, plans) locally or on an SSH stage."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from contextlib import suppress
 from pathlib import Path
 
 
-def watcher_id(name: str) -> str:
+def direct_json_stem(name: str) -> str:
     path = Path(name)
     if (
         path.name != name
@@ -19,21 +19,23 @@ def watcher_id(name: str) -> str:
         or "\\" in name
         or any(ord(char) < 32 for char in name)
     ):
-        raise ValueError("use a direct watchers/<watcher_id>.json file")
+        raise ValueError("use a direct <folder>/<name>.json file")
     return path.stem
 
 
-def replace_watcher_folder(workspace: Path, files: dict[str, str]) -> None:
+def replace_agent_folder(workspace: Path, folder: str, files: dict[str, str]) -> None:
+    if folder not in {"watchers", "plans"}:
+        raise ValueError("unknown agent folder")
     if workspace.is_symlink() or not workspace.is_dir():
-        raise ValueError("watcher workspace is unavailable")
-    with tempfile.TemporaryDirectory(dir=workspace, prefix=".rcp-watchers-") as temp:
+        raise ValueError("the run workspace is unavailable")
+    with tempfile.TemporaryDirectory(dir=workspace, prefix=f".rcp-{folder}-") as temp:
         staging = Path(temp) / "new"
         staging.mkdir(mode=0o700)
         for name, text in files.items():
-            watcher_id(name)
+            direct_json_stem(name)
             with (staging / name).open("x", encoding="utf-8") as out:
                 out.write(text)
-        current = workspace / "watchers"
+        current = workspace / folder
         previous = Path(temp) / "old"
         with suppress(FileNotFoundError):
             os.replace(current, previous)
@@ -46,4 +48,4 @@ def replace_watcher_folder(workspace: Path, files: dict[str, str]) -> None:
 
 
 if __name__ == "__main__":
-    replace_watcher_folder(Path(sys.argv[1]), json.load(sys.stdin))
+    replace_agent_folder(Path(sys.argv[1]), sys.argv[2], json.load(sys.stdin))

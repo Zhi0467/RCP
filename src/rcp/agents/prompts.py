@@ -125,13 +125,15 @@ def _group_read_refs_line(context: GroupContext) -> str:
 
 EPISODE_MAILBOX_RULES = (
     "Runs you started write to you here: their questions, pauses, and endings, so they "
-    "need no watcher from you. A run "
+    "need no watcher from you. Call each by what it is, an Experiment episode or an "
+    "Auto-research episode, as the human's Runs list does. A run "
     "asks you with its own `ask`; when a goal you write needs an answer from you, tell "
     "the run to ask, and never forbid it to ask the human. "
     "Answer a question yourself when it does not need the human. Leave "
     "consequential decisions to the human: experiment design, upstream decisions, "
-    "and starting runs that use significant compute. Ask the human in your reply "
-    "and pass their answer down. Never invent an answer the human did not give."
+    "and starting runs that use significant compute. The run's question already shows "
+    "the human as its own card, so never ask it again; add your advice in your reply. "
+    "Never invent an answer the human did not give."
 )
 
 
@@ -152,8 +154,8 @@ def episode_mailbox_child_rule(allowed_verbs: Iterable[str], *, parent_chat: boo
     if "ask" not in allowed_verbs:
         return "Your ending also reaches the agent that started you."
     return (
-        f"The agent that started you reads your questions first: `{COMMAND_CLIENT} ask` "
-        "reaches it, and it answers you or asks the human for you. Use `ask` for any "
+        f"`{COMMAND_CLIENT} ask` reaches the agent that started you and the human at once: "
+        "it answers what it can, and the human answers the rest. Use `ask` for any "
         "question to the agent that started you or to the human; no other command reaches "
         "them. Your ending also reaches the agent that started you."
     )
@@ -934,7 +936,7 @@ _INLINE_CONTINUATION_RULES = {
     ),
     "watch_correction": (
         "If requested, rewrite `outcome.json` using the Work contract schema. If requested, rewrite\n"
-        "the watcher files using the current contract, keeping literal\n"
+        "the watcher files or the named `plans/` files using the current contract, keeping literal\n"
         "identifiers. If the diagnostic names running work without observers, recover its\n"
         "watcher from the launch receipt or real state. Do not change `patch.json` or repeat an\n"
         "external effect. Preserve the reply and artifacts; your final response only confirms the rewrite."
@@ -1503,8 +1505,9 @@ Graph Patch (optional):
                 "Preserve the completed operational result."
             ),
             "watch_correction": (
-                "Correct only the watcher request file. Preserve the completed operational result "
-                "and use the watcher diagnostic only to locate the invalidity."
+                "Correct only the handoff files the diagnostic names: watcher files, `outcome.json`, "
+                "or `plans/` files. Preserve the completed operational result and use the "
+                "diagnostic only to locate the invalidity."
             ),
         }[mode]
         if mode == "work_patch_correction":
@@ -1549,7 +1552,8 @@ Work watcher-correction instruction:
   context needed to correct the retained watcher request.
 - Preserve the completed operational result. Do not repeat the human task, rerun an experiment,
   resubmit work, or cause another external side effect merely to repair the watcher request.
-- Correct the watcher definitions under `{watch_path}`.
+- Correct the watcher definitions under `{watch_path}`, and any `plans/` file the diagnostic
+  names, under the plan-file rules of your original contract.
   Graph items retain one of the two condition shapes from the original contract. Preserve literal
   identifiers. Do not create or change `patch.json`.
 {WATCHER_FOLDER_CONTRACT}

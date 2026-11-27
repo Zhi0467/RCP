@@ -589,9 +589,10 @@ refusals, 403, 404, 422 or 503. The
 [authority spec](authority-and-proposals.md#private-thread-approval-cards) owns
 pinning, admission and delivery.
 
-Node and project chats show resolved cards read-only in transcript order and
-open question cards at the end of the transcript, scrolling with it. The
-composer retains its steering behavior.
+Node and project chats show resolved cards read-only in transcript order. Every
+open question the member may answer, the chat's own and its runs', sits in one
+place: the dock above the composer, one card in front. The composer retains its
+steering behavior.
 A single choice submits immediately; multiple choices use toggles and explicit
 submission. Free text remains available with either choice format, and
 Cmd+Enter (Ctrl+Enter) in it submits like the submit control. A parked

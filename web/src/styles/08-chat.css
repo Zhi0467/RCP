@@ -364,7 +364,6 @@
     transform: translateY(-4px);
   }
 }
-.agent-pane > header > .icon-button,
 .agent-pane .artifact-entry-action {
   background: none;
   border-color: transparent;

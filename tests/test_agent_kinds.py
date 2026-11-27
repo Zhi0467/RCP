@@ -44,6 +44,7 @@ EPISODE_OWNERS = frozenset(
         "runs/auto_research_delivery.py",
         "runs/auto_research_experiments.py",
         "runs/tasks/auto_research_stream.py",
+        "plan_folder.py",
     }
 )
 NOT_YET_BUILT = frozenset({PROFILE_MODULE, AGENT_OWNER_MODULE})

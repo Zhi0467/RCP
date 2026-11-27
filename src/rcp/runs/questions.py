@@ -74,8 +74,6 @@ def handle_ask(
     store operations. Producing this response does not prove the client received it.
     """
     try:
-        if request.arguments.relays is not None:
-            _check_relay(store, origin, request.arguments.relays)
         arguments = request.arguments.model_dump(exclude={"action"})
         card = None
         if request.arguments.action is not None:
@@ -100,21 +98,6 @@ def handle_ask(
         status="ok",
         result=_ask_result(store, request, question, parked).model_dump(exclude_none=True),
     )
-
-
-def _check_relay(store: AppStore, origin: QuestionOrigin, question_id: str) -> None:
-    from rcp.runs.work_episode_controls import chat_started_episode
-
-    relayed = store.get_question(question_id)
-    task = store.agent_task(origin.operation_id)
-    if (
-        origin.owner_kind != "chat"
-        or relayed is None
-        or relayed.origin.owner_kind != "episode"
-        or task is None
-        or not chat_started_episode(store, task, relayed.origin.owner_id)
-    ):
-        raise ValueError("A relay names a question from a run this chat started.")
 
 
 def _ask_result(

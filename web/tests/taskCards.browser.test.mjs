@@ -280,6 +280,11 @@ test("Park folds the card into the pane, and Delete takes it out", async () => {
 
     await card.locator("button.approval-head").click();
     await card.getByRole("button", { name: "Start", exact: true }).waitFor();
+    assert.equal(await card.locator("button.approval-head").getAttribute("aria-expanded"), "true");
+    await card.locator("button.approval-head").click();
+    await page.locator(`${CARD}.folded`).waitFor();
+    await card.locator("button.approval-head").click();
+    await card.getByRole("button", { name: "Start", exact: true }).waitFor();
     assert.equal(await card.locator(".plan-note").count(), 0);
     assert.equal(await card.getByRole("button", { name: "Save", exact: true }).count(), 0);
     assert.equal(

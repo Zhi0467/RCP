@@ -17,7 +17,6 @@ from rcp.agents.command_protocol import (
     ApplyArguments,
     ApplyCommandRequest,
     AskCommandRequest,
-    AutoResearchKickoffArguments,
     BranchArguments,
     BranchCommandRequest,
     BulletinCommandRequest,
@@ -1054,7 +1053,7 @@ class AutoResearchCommandDispatcher:
                 result={"code": "episode_action_not_granted"},
             )
         if isinstance(request, EpisodeCommandRequest) and (
-            isinstance(request.arguments, (AutoResearchKickoffArguments, EpisodeAnswerArguments))
+            isinstance(request.arguments, EpisodeAnswerArguments)
             or (
                 isinstance(request.arguments, WorkEpisodeControlArguments)
                 and request.arguments.action != "message"
