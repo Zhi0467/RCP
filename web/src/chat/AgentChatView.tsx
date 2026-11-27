@@ -1904,7 +1904,6 @@ export function AgentChatView({
             if (!paneLayout.beside) setPaneOpen(false);
           }}
           onDeleted={refreshChatArtifacts}
-          onClose={() => setPaneOpen(false)}
         />
       )}
       {watcherRows.length > 0 && watchersOpen && (
