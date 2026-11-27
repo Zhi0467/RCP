@@ -275,6 +275,8 @@ class ProviderSignInRunner:
         binary: str,
         binaries: set[str],
         member_id: str,
+        *,
+        signed_in: bool = False,
     ) -> ProviderLoginStateRecord:
         current = self.require_login(login, member_id=member_id)
         profile = profile_for(login.provider)
@@ -330,6 +332,7 @@ class ProviderSignInRunner:
                 login,
                 member_id=member_id,
                 detail="Authenticated request succeeded.",
+                signed_in=signed_in,
             )
         except ValueError as exc:
             raise ProviderLoginRefused(str(exc)) from exc
@@ -638,7 +641,9 @@ class ProviderSignInRunner:
                 try:
                     environment = self.launcher.process_environment(login)
                     self._device_login(status, auth.device_login(), binary, environment)
-                    state = self._verify_locked(login, binary, set(), status.started_by)
+                    state = self._verify_locked(
+                        login, binary, set(), status.started_by, signed_in=True
+                    )
                 except Exception as exc:
                     # The fence above says a sign-in is running. However this
                     # attempt ended, the account must say so rather than keep
@@ -726,7 +731,7 @@ class ProviderSignInRunner:
                     )
                 except (OSError, ValueError) as exc:
                     raise ProviderLoginRefused("Could not persist the credential.") from exc
-                state = self._verify_locked(login, binary, binaries, member_id)
+                state = self._verify_locked(login, binary, binaries, member_id, signed_in=True)
             except ProviderLoginRefused as exc:
                 # The fence above says a credential is awaiting verification;
                 # once it is not, the account must say why rather than keep

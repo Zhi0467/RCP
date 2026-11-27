@@ -208,7 +208,7 @@ class ProviderLoginStoreMixin(StoreMixinBase):
         return record
 
     def mark_provider_login_verified(
-        self, key: LoginKey, *, member_id: str, detail: str
+        self, key: LoginKey, *, member_id: str, detail: str, signed_in: bool = False
     ) -> ProviderLoginStateRecord:
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -223,6 +223,7 @@ class ProviderLoginStoreMixin(StoreMixinBase):
                     "source": "verify",
                     "changed_at": self.now(),
                     "changed_by": member_id,
+                    "signed_in_by": member_id if signed_in else current.signed_in_by,
                 }
             )
             self._write_provider_login_state(connection, record)
@@ -255,6 +256,7 @@ class ProviderLoginStoreMixin(StoreMixinBase):
                     "source": source,
                     "changed_at": self.now(),
                     "changed_by": member_id,
+                    "signed_in_by": None,
                 }
             )
             self._write_provider_login_state(connection, record)

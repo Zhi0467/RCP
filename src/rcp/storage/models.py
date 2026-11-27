@@ -3755,6 +3755,7 @@ class ProviderLoginStateRecord(BaseModel):
     source: Literal["turn", "report", "probe", "verify", "sign_out", "restore"] | None = None
     changed_at: str = ""
     changed_by: str | None = None
+    signed_in_by: str | None = None
 
     def permits_member(self, member_id: str | None) -> bool:
         return self.member_id is None or self.member_id == member_id

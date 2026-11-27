@@ -173,6 +173,8 @@ test("Sign-ins fold draws trays per setting, unmanaged rules, and device-code pr
       ["own", "shared"],
     );
     assert.match(claude, />Shared sign-in</);
+    assert.match(claude, /class="sign-in-name"[^>]*>Abe</);
+    assert.doesNotMatch(claude, /class="sign-in-name"[^>]*>Ana</);
     assert.deepEqual(
       [...claude.matchAll(/data-card-state="(\w+)"/g)].map((match) => match[1]),
       ["ready", "ready", "limited", "signed_out", "draining", "ready"],

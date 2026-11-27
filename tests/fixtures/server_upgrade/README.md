@@ -269,3 +269,8 @@ keep the member's skill and agent picks (migration 94). Exact source
 parking and in-place revision columns (migration 95). Exact source
 `76fe9294917aa1a2bbf522acc6be8a7008ffea95` upgrades a copy of
 `pre-queue-picks-v52-1a806a8` through the existing fixture builder.
+
+`pre-signed-in-by-v54-e23cf4c` freezes migration 96 before provider logins record who signed
+them in (migration 97). Exact source
+`e23cf4cd79107f0f68dd881b501b983ab0eb5abb` upgrades a copy of
+`pre-plan-revisions-v53-76fe929` through the existing fixture builder.

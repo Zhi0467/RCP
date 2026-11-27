@@ -1,6 +1,7 @@
 import {
   ArrowLeftRight,
   ArrowUpDown,
+  CircleHelp,
   ExternalLink,
   Info,
   LoaderCircle,
@@ -51,6 +52,8 @@ const SIGN_IN_POLL_MS = 2000;
 const SIGN_IN_POLL_FAILURE_LIMIT = 5;
 /** How often the list refreshes while another member's sign-in runs. */
 const OTHERS_SIGN_IN_REFRESH_MS = 5000;
+const SIGN_INS_HELP =
+  "Personal sign-ins are yours: only your agents use them. Shared sign-ins on this machine are open to every member's agents. Your agents try tray 1 first and use tray 2 when 1 has no usable sign-in; ⇄ swaps the order. A shared card names the member who signed it in. Members lists who has a personal sign-in.";
 
 /** One recoverable failure: a red edge and one icon that offers the action again. */
 type Failure = { message: string; retry: () => void };
@@ -177,7 +180,14 @@ export function SignInsFold({
   return (
     <Fold
       className={`machine-sign-ins${data.error ? " failed" : ""}`}
-      title="Sign-ins"
+      title={
+        <span className="sign-ins-title">
+          Sign-ins
+          <CircleHelp size={13} className="sign-ins-help" role="img" aria-label={SIGN_INS_HELP}>
+            <title>{SIGN_INS_HELP}</title>
+          </CircleHelp>
+        </span>
+      }
       data-machine-fold="sign-ins"
     >
       {data.error ? (
@@ -260,14 +270,16 @@ function ProviderPanel({
   const sharedCards = entry.shared.map((row) =>
     row.login_id === ""
       ? card(row, {
-          name: "Shared sign-in",
-          nameHover: `The built-in ${label} login on ${machineName}.`,
+          name: row.signed_in_by_display_name ?? "Shared sign-in",
+          nameHover: row.signed_in_by_display_name
+            ? `Signed in by ${row.signed_in_by_display_name}. The built-in ${label} login on ${machineName}.`
+            : `The built-in ${label} login on ${machineName}.`,
           actions: entry.managed,
         })
       : card(row, {
-          name: row.added_by_display_name ?? "",
+          name: row.signed_in_by_display_name ?? row.added_by_display_name ?? "",
           nameHover: row.added_at
-            ? `Added by ${row.added_by_display_name ?? ""} on ${formatServerTimestamp(row.added_at)}.`
+            ? `${row.signed_in_by_display_name ? `Signed in by ${row.signed_in_by_display_name}. ` : ""}Added by ${row.added_by_display_name ?? ""} on ${formatServerTimestamp(row.added_at)}.`
             : undefined,
           removable: true,
         }),

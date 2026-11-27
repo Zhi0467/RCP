@@ -199,12 +199,17 @@ def test_codex_device_sign_in_shows_the_code_holds_the_gate_and_verifies(
     state = store.provider_login_state(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID))
     assert state.state == "signed_in"
     assert state.generation == 2 and state.changed_by == "member" and state.source == "verify"
+    assert state.signed_in_by == "member"
     argv = _argv_log(tmp_path)
     assert argv[0] == ["app-server"]
     assert argv[1][:2] == ["exec", "--ignore-user-config"], "success was not proven by a request"
     assert wait_until(lambda: gate.acquire(False) or None), "the gate was never released"
     gate.release()
     assert runner.running_sign_in(LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)) is None
+    checked = runner.verify(
+        LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), member_id="other"
+    )
+    assert checked.changed_by == "other" and checked.signed_in_by == "member"
 
 
 def test_a_denied_device_sign_in_fails_with_the_provider_detail_and_stays_signed_out(
@@ -270,6 +275,7 @@ def test_claude_token_paste_stores_privately_verifies_and_never_leaks(
         LoginKey("claude", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID), TOKEN, member_id="member"
     )
     assert state.state == "signed_in" and state.changed_by == "member"
+    assert state.signed_in_by == "member"
     path = runner.credentials.token_path("claude", BACKEND_MACHINE_ID, login_id=MACHINE_LOGIN_ID)
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     record = runner.credentials.token_record(
@@ -337,6 +343,7 @@ def test_sign_out_fences_launches_like_a_failed_login(
         LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
         member_id="member",
         detail="verified",
+        signed_in=True,
     )
 
     state = runner.sign_out(
@@ -344,6 +351,7 @@ def test_sign_out_fences_launches_like_a_failed_login(
     )
     assert state.state == "signed_out" and state.source == "sign_out"
     assert state.changed_by == "other" and state.generation == 2
+    assert state.signed_in_by is None
     assert _argv_log(tmp_path) == [["logout"]]
     refusal = runner.launcher._login_refusal(
         LoginKey("codex", BACKEND_MACHINE_ID, MACHINE_LOGIN_ID)
