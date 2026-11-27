@@ -269,6 +269,7 @@ class AgentTaskExecution:
     operation_id: str
     store: AppStore
     control: AgentProcessControl
+    rate_limit: dict[str, object] | None = None
     runtime_id: str = ""
     git_access: ProviderGitAccess | None = None
     login_generation: int = 0
@@ -842,6 +843,7 @@ class BackgroundAgentTasks:
         *,
         skills: SkillSelection | None = None,
         authorized_by: AuthorizedHuman | None = None,
+        marker: str | None = None,
     ) -> AgentTaskRecord:
         self._require_startup_effects_open("provider task resume")
         previous = self._require_operation(operation_id)
@@ -875,6 +877,7 @@ class BackgroundAgentTasks:
                 authorized_by=authorized_by or previous.authorized_by,
                 parent=previous,
                 continuation="resume",
+                marker=marker,
             )
         if isinstance(original, AutoResearchRunRequest):
             preflight_auto_research_task_resume(self, previous)
@@ -887,7 +890,7 @@ class BackgroundAgentTasks:
             if self.store.agent_task_continuation_cause(previous.operation_id) == "graph_repair"
             else "resume"
         )
-        return self._create_and_spawn(
+        resumed = self._create_and_spawn(
             previous.project_id,
             previous.kind,
             request,
@@ -898,7 +901,10 @@ class BackgroundAgentTasks:
             stage_machine_id=previous.stage_machine_id,
             stage_root=previous.stage_root,
             authorized_by=authorized_by,
+            marker=marker,
         )
+        assert resumed is not None
+        return resumed
 
     def retry(
         self,
@@ -1619,6 +1625,7 @@ class BackgroundAgentTasks:
         ensure_graph_target: Callable[[EpisodeRecord], None] | None = None,
         continues_episode_id: str | None = None,
         continuation_request_id: str | None = None,
+        marker: str | None = None,
     ) -> AgentTaskRecord | None:
         """Insert one admitted task row and start it.
 
@@ -1688,9 +1695,10 @@ class BackgroundAgentTasks:
                 machine_id=(stage_machine_id or BACKEND_MACHINE_ID) if stage_root else None,
                 isolation_episode_id=parent.episode_id if parent else None,
                 graph_target=parent.graph_target if parent else graph_target,
+                automatic=marker == "limit_auto_resume",
             )
         except ProviderSignedOut as exc:
-            if parent is None:
+            if parent is None or marker == "limit_auto_resume":
                 raise
             # The human already authorized this exact continuation. Keep its
             # durable admission queued so sign-in can launch it without Retry.
@@ -1871,6 +1879,7 @@ class BackgroundAgentTasks:
                     handoff_id=handoff_id,
                     handoff_wake_id=handoff_wake_id,
                     queue_id=queue_id,
+                    marker=marker,
                 )
         if claim_graph_repair_parent:
             assert parent is not None
@@ -3259,7 +3268,7 @@ class BackgroundAgentTasks:
         from rcp.runs.provider_login import settle_provider_login
 
         if isinstance(request, EpisodeReportRunRequest):
-            settle_provider_login(self, record)
+            settle_provider_login(self, record, execution=execution)
             return
         from rcp.runs.codex_resume import retry_refused_resume
 
@@ -3314,7 +3323,7 @@ class BackgroundAgentTasks:
                         tier="diagnostic",
                     )
 
-        settle_provider_login(self, record)
+        settle_provider_login(self, record, execution=execution)
         self._after_settle(record)
 
     def _release_paper(self, record: AgentTaskRecord) -> None:
@@ -3397,6 +3406,9 @@ class BackgroundAgentTasks:
                     record_provider_usage(
                         self.store, execution.operation_id, event.usage, recorded=recorded
                     )
+                if event.event == "rate_limit":
+                    execution.rate_limit = event.rate_limit
+                    continue
                 if event.event == "remote_result_pending":
                     awaiting_remote_result = (
                         event.text

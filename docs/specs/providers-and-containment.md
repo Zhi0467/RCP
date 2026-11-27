@@ -1578,9 +1578,25 @@ captured generation cannot authorize a new fence.
 
 Settlement marks a login limited from the existing `session_limit` classification.
 A later successful turn or Verify clears the mark; an overlapping older turn
-cannot clear newer evidence. The mark lapses after
-`PROVIDER_LOGIN_LIMIT_HINT_SECONDS`; a continued session still counts a lapsed
-mark on any login other than its previous one. When every allowed login carries
+cannot clear newer evidence. Settlement records a `provider_limit_reset` receipt on
+the failed turn and copies its reset into the login assignment's `limit_resets_at`.
+Both fresh and continued admission stop treating the login as limited at that reset.
+Clearing the login never clears the turn's receipt.
+
+The pure readers in `providers/usage_limits.py` prefer the last usage snapshot:
+Codex `account/rateLimits/updated` exhausted windows, then Claude
+`rate_limit_event` exhausted unified windows. Each decoder emits `rate_limit`,
+and the execution keeps only the last raw snapshot in memory. Settlement retains
+that snapshot only inside the reset receipt as diagnostic data. When multiple
+windows are exhausted, the latest reset governs. With no usable snapshot, Gemini's
+`Resets in` duration or Codex's explicit-zone `try again at` timestamp supplies the
+reset. Gemini's `individual quota reached` is a session-limit classification.
+No usage probe runs at settlement. Missing or malformed evidence, ambiguous local
+times, and resets less than `LIMIT_RESET_MIN_SECONDS` after failure use failure time
+plus `PROVIDER_LOGIN_LIMIT_HINT_SECONDS`, marked `estimated`. An estimated reset
+has no clock time in its human presentation.
+
+When every allowed login carries
 a live mark, an automatic launch (a watcher wake, a scheduled agent wake, or an
 episode report) is refused at admission like a signed-out one, so its pending
 input waits and the next poll after the earliest mark lapses launches it. A

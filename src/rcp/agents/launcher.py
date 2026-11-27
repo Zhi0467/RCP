@@ -201,6 +201,7 @@ class AgentEvent(BaseModel):
     # the reply.
     event: Literal[
         "session",
+        "rate_limit",
         "message",
         "answer",
         "artifact",
@@ -228,6 +229,7 @@ class AgentEvent(BaseModel):
     text: str = ""
     session_id: str | None = None
     artifact: AgentArtifactDescriptor | None = None
+    rate_limit: dict[str, object] | None = None
     usage: ProviderUsage | None = None
     status: AgentStatusDelta | None = None
     #: Typed cause on an `error` the launcher can name itself. Set only for a
@@ -1860,6 +1862,7 @@ class AgentLauncher:
                         text=decoded.text,
                         session_id=decoded.session_id,
                         usage=decoded.usage,
+                        rate_limit=decoded.rate_limit,
                         status=decoded.status,
                     )
                     event_counts[event.event] = event_counts.get(event.event, 0) + 1

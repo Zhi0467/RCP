@@ -682,6 +682,9 @@ class ClaudeProfile(ProviderProfile):
         event_type = str(value.get("type") or "")
         subtype = str(value.get("subtype") or "")
         usage = self.decode_usage(value, raw)
+        rate_limit = value.get("rate_limit_info")
+        if event_type == "rate_limit_event" and isinstance(rate_limit, dict):
+            return ProviderStreamEvent(event="rate_limit", rate_limit=rate_limit)
         if event_type == "system" and value.get("session_id"):
             return ProviderStreamEvent(
                 event="session",

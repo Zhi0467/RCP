@@ -91,6 +91,14 @@ def migrate_per_member_provider_logins(connection: sqlite3.Connection) -> None:
     install_provider_readiness_deadline(connection)
 
 
+def migrate_provider_limit_resets(connection: sqlite3.Connection) -> None:
+    columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(provider_login_assignments)")
+    }
+    if "limit_resets_at" not in columns:
+        connection.execute("ALTER TABLE provider_login_assignments ADD COLUMN limit_resets_at TEXT")
+
+
 class ProviderLoginStoreMixin(StoreMixinBase):
     @contextmanager
     def _login_connection(
@@ -228,7 +236,8 @@ class ProviderLoginStoreMixin(StoreMixinBase):
             )
             self._write_provider_login_state(connection, record)
             connection.execute(
-                f"UPDATE provider_login_assignments SET limited_at=NULL WHERE {_KEY_WHERE}", key
+                f"UPDATE provider_login_assignments SET limited_at=NULL, limit_resets_at=NULL WHERE {_KEY_WHERE}",
+                key,
             )
         return record
 
@@ -420,11 +429,7 @@ class ProviderLoginStoreMixin(StoreMixinBase):
         now: str | None = None,
         connection: sqlite3.Connection | None = None,
     ) -> bool:
-        mark = self.provider_login_assignment(key, connection=connection).limited_at
-        return mark is not None and (
-            continued
-            or self.provider_login_limit_lapses_in(key, connection=connection, now=now) > 0
-        )
+        return self.provider_login_limit_lapses_in(key, connection=connection, now=now) > 0
 
     def provider_login_limit_lapses_in(
         self,
@@ -434,14 +439,24 @@ class ProviderLoginStoreMixin(StoreMixinBase):
         connection: sqlite3.Connection | None = None,
     ) -> float:
         """Seconds until this login's limit mark lapses; 0 when it has none or it lapsed."""
-        mark = self.provider_login_assignment(key, connection=connection).limited_at
-        if mark is None:
+        assignment = self.provider_login_assignment(key, connection=connection)
+        if assignment.limited_at is None:
             return 0.0
-        elapsed = datetime.fromisoformat(now or self.now()) - datetime.fromisoformat(mark)
+        current = datetime.fromisoformat(now or self.now())
+        if assignment.limit_resets_at is not None:
+            return max(
+                0.0, (datetime.fromisoformat(assignment.limit_resets_at) - current).total_seconds()
+            )
+        elapsed = current - datetime.fromisoformat(assignment.limited_at)
         return max(0.0, PROVIDER_LOGIN_LIMIT_HINT_SECONDS - elapsed.total_seconds())
 
     def set_provider_login_limit(
-        self, key: LoginKey, *, provider_started_at: str, limited: bool
+        self,
+        key: LoginKey,
+        *,
+        provider_started_at: str,
+        limited: bool,
+        resets_at: str | None = None,
     ) -> bool:
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -451,9 +466,9 @@ class ProviderLoginStoreMixin(StoreMixinBase):
             ) <= datetime.fromisoformat(current.limited_at):
                 return False
             connection.execute(
-                """INSERT INTO provider_login_assignments(provider,machine_id,login_id,limited_at) VALUES(?,?,?,?)
-                ON CONFLICT(provider,machine_id,login_id) DO UPDATE SET limited_at=excluded.limited_at""",
-                (*key, self.now() if limited else None),
+                """INSERT INTO provider_login_assignments(provider,machine_id,login_id,limited_at,limit_resets_at) VALUES(?,?,?,?,?)
+                ON CONFLICT(provider,machine_id,login_id) DO UPDATE SET limited_at=excluded.limited_at,limit_resets_at=excluded.limit_resets_at""",
+                (*key, self.now() if limited else None, resets_at if limited else None),
             )
         return True
 

@@ -99,6 +99,11 @@ def downgrade_resource_watermarks(connection: sqlite3.Connection) -> None:
     for (name,) in triggers:
         connection.execute(f'DROP TRIGGER "{name}"')
     if any(
+        row[1] == "auto_resume_after_limits"
+        for row in connection.execute("PRAGMA table_info(space_users)")
+    ):
+        connection.execute("ALTER TABLE space_users DROP COLUMN auto_resume_after_limits")
+    if any(
         row[1] == "state_machine_id" for row in connection.execute("PRAGMA table_info(projects)")
     ):
         connection.execute("ALTER TABLE projects DROP COLUMN state_machine_id")
@@ -338,6 +343,7 @@ def downgrade_artifacts(
     connection.execute("ALTER TABLE episode_reports DROP COLUMN artifact_version_id")
     for table in ("artifacts", "artifact_versions", "artifact_operations", "artifact_imports"):
         connection.execute(f"DROP TABLE IF EXISTS {table}")
+    assert AppStore._legacy_storage_schema_cache is not None
     for row in AppStore._legacy_storage_schema_cache:
         if row[0] == "table" and row[1] == "result_views":
             connection.execute(row[3])

@@ -171,7 +171,7 @@ def test_limit_retry_is_once_per_session_login_and_not_rearmed(
     reloaded = reopened.agent_task(record.operation_id)
     assert reloaded is not None
     settle_provider_login(restarted, reloaded)
-    assert calls == ([] if alternative_lapsed else [record.operation_id])
+    assert calls == [record.operation_id]
     assert store.provider_login_assignment(own).limited_at is not None
 
 

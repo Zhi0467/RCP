@@ -53,3 +53,27 @@ def test_background_usage_replay_keeps_one_receipt(tmp_path, first_recorded):
     assert records[0].processed_input_tokens == 12 and records[0].generated_tokens == 7
     assert receipts[0].payload["usage_id"] == records[0].usage_id
     assert receipts[0].payload["counted"] is True
+
+
+def test_background_keeps_only_latest_rate_snapshot_in_memory(tmp_path):
+    store = _store(tmp_path)
+    request = RunRequest(provider="codex", model="test-model")
+    task = store.create_agent_task(
+        _task_record(
+            store.now(), operation_id="limits-task", request=request.model_dump(mode="json")
+        )
+    )
+    receipts_before = store.agent_task_receipts(task.operation_id)
+    first: dict[str, object] = {"primary": {"usedPercent": 20}}
+    last: dict[str, object] = {"primary": {"usedPercent": 100}}
+
+    async def stream(*_args):
+        yield encode_sse(AgentEvent(event="rate_limit", rate_limit=first))
+        yield encode_sse(AgentEvent(event="rate_limit", rate_limit=last))
+        yield encode_sse(AgentEvent(event="done"))
+
+    background = BackgroundAgentTasks(store, stream)
+    execution = AgentTaskExecution(task.operation_id, store, AgentProcessControl())
+    asyncio.run(background._consume(task.project_id, task.kind, request, execution))
+    assert execution.rate_limit == last
+    assert store.agent_task_receipts(task.operation_id) == receipts_before
