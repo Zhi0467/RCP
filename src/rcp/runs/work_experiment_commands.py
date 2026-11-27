@@ -273,7 +273,7 @@ def record_plan_card(
     """
     from rcp.runs.questions import work_ask_authorized
 
-    auto = plan.kind == "auto_research"
+    auto = plan.auto_research
     category = _AUTO_RESEARCH_RECEIPT if auto else _RECEIPT
     if not (member_work_chat_turn(execution) and work_ask_authorized(execution)):
         return "This turn cannot raise a plan card."

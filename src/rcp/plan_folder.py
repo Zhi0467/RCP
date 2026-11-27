@@ -77,6 +77,10 @@ class PlanFile(BaseModel):
             raise ValueError("an auto_research plan names an invocation_limit and no node")
         return self
 
+    @property
+    def auto_research(self) -> bool:
+        return self.kind == "auto_research"
+
     def intent(self) -> dict[str, object]:
         return self.model_dump(mode="json", exclude=_RCP_OWNED, exclude_none=True)
 
