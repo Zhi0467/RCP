@@ -397,30 +397,6 @@ class ExperimentKickoffArguments(_ChildTargetArguments):
         return stripped
 
 
-class AutoResearchKickoffArguments(BaseModel):
-    """A member's Work chat starting the Auto-research episode they asked for."""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    action: Literal["kick_off_auto_research"]
-    goal_file: str = Field(min_length=1, max_length=255, pattern=_SAFE_WORKSPACE_FILENAME)
-    invocation_limit: int = Field(gt=0)
-    code_worktree: bool | None = Field(default=None, exclude_if=lambda value: value is None)
-    worktree_repository: str | None = Field(
-        default=None, min_length=1, max_length=200, exclude_if=lambda value: value is None
-    )
-    branch_name: str | None = Field(
-        default=None, min_length=1, max_length=200, exclude_if=lambda value: value is None
-    )
-    provider: ProviderId | None = Field(default=None, exclude_if=lambda value: value is None)
-    model: str | None = Field(
-        default=None, min_length=1, max_length=200, exclude_if=lambda value: value is None
-    )
-    reasoning: str | None = Field(
-        default=None, min_length=1, max_length=100, exclude_if=lambda value: value is None
-    )
-
-
 class _EpisodeTargetArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -481,7 +457,6 @@ class EpisodeAnswerArguments(BaseModel):
 
 EpisodeArguments: TypeAlias = Annotated[
     ExperimentKickoffArguments
-    | AutoResearchKickoffArguments
     | EpisodeControlArguments
     | WorkEpisodeControlArguments
     | EpisodeAnswerArguments,
@@ -526,14 +501,11 @@ class AskArguments(BaseModel):
     )
     multiple: bool = False
     action: ApprovalAction | None = None
-    relays: str | None = Field(default=None, min_length=1, max_length=200)
 
     @model_validator(mode="after")
     def valid_choices(self) -> AskArguments:
         if self.action is not None and (self.choices or self.multiple):
             raise ValueError("approval actions cannot supply choices or multiple")
-        if self.action is not None and self.relays is not None:
-            raise ValueError("approval actions cannot relay a question")
         if not self.question.strip() or any(not choice.strip() for choice in self.choices):
             raise ValueError("question and choices must not be blank")
         if len(set(self.choices)) != len(self.choices):

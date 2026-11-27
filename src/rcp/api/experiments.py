@@ -248,11 +248,6 @@ def start_work_experiment(
             state, start.node_id
         ):
             raise PlanChanged(start.node_id)
-        if start.invocation_limit is not None and start.invocation_limit > node.invocation_ceiling:
-            raise ValueError(
-                "The invocation limit exceeds this Experiment's limit of "
-                f"{node.invocation_ceiling}."
-            )
         source_request = RunRequest.model_validate(source.request)
         supplied = RunRequest(
             chat_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"rcp:work-experiment:{start.episode_id}")),

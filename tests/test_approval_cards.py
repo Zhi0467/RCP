@@ -939,7 +939,7 @@ def test_auto_research_start_refuses_a_provider_that_cannot_launch(
 
 
 def test_a_new_auto_research_ask_is_refused_and_a_stored_card_still_answers(questions_api):
-    from rcp.runs.approval_cards import AUTO_RESEARCH_USES_EPISODE, approval_card_for_ask
+    from rcp.runs.approval_cards import AUTO_RESEARCH_USES_PLAN_FILE, approval_card_for_ask
     from tests.helpers import authorized_human
     from tests.test_ask_protocol import ask_request
 
@@ -953,13 +953,13 @@ def test_a_new_auto_research_ask_is_refused_and_a_stored_card_still_answers(ques
         request = ask_request(idempotency_key=key, arguments={"question": "Go?", "action": action})
         return approval_card_for_ask(store, request, question.origin, service, member)
 
-    with pytest.raises(ValueError, match=AUTO_RESEARCH_USES_EPISODE):
+    with pytest.raises(ValueError, match=AUTO_RESEARCH_USES_PLAN_FILE):
         ask("new")
     assert ask("card")["pinned"] == stored["pinned"]
 
 
 def test_an_experiment_start_ask_is_refused(questions_api):
-    from rcp.runs.approval_cards import EXPERIMENT_START_USES_EPISODE, approval_card_for_ask
+    from rcp.runs.approval_cards import EXPERIMENT_START_USES_PLAN_FILE, approval_card_for_ask
     from tests.helpers import authorized_human
     from tests.test_ask_protocol import ask_request
 
@@ -973,7 +973,7 @@ def test_an_experiment_start_ask_is_refused(questions_api):
         "invocation_ceiling": 1,
     }
     request = ask_request(idempotency_key="start", arguments={"question": "Go?", "action": action})
-    with pytest.raises(ValueError, match=EXPERIMENT_START_USES_EPISODE):
+    with pytest.raises(ValueError, match=EXPERIMENT_START_USES_PLAN_FILE):
         approval_card_for_ask(
             store,
             request,

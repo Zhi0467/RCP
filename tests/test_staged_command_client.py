@@ -461,7 +461,6 @@ async def test_apply_accepts_only_this_workspace_patch_json(tmp_path) -> None:
         ("episode", "--key", "episode-once", "--add-turns", "episode-1"),
         ("episode", "--key", "episode-once", "--pause", "episode-1", "--invocation-limit", "2"),
         ("episode", "--key", "episode-once", "--message", "episode-1"),
-        ("episode", "--key", "episode-once", "--kick-off-auto-research", "--handoff-file", "g.md"),
         ("resume", "--key", "resume-once", "worker-1", "--model", "gpt-5"),
         (
             "episode",
@@ -1037,20 +1036,6 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
         ),
         ("episode", "--stop", "episode-1", "--key", "k-episode-stop"),
         ("episode", "--resume", "episode-1", "--key", "k-episode-resume"),
-        (
-            "episode",
-            "--kick-off-auto-research",
-            "--handoff-file",
-            str(goal),
-            "--invocation-limit",
-            "4",
-            "--code-worktree",
-            "off",
-            "--branch-name",
-            "warmup",
-            "--key",
-            "k-auto-start",
-        ),
         ("episode", "--pause", "episode-1", "--key", "k-episode-pause"),
         (
             "episode",
@@ -1121,7 +1106,6 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
         "episode",
         "episode",
         "episode",
-        "episode",
         "inbox",
         "inbox",
         "finish",
@@ -1154,13 +1138,6 @@ async def test_every_mutating_verb_survives_the_real_broker_round_trip(tmp_path)
         arguments["action"]: arguments
         for verb, arguments in seen
         if verb == "episode" and arguments["action"] != "kick_off_experiment"
-    }
-    assert controls["kick_off_auto_research"] == {
-        "action": "kick_off_auto_research",
-        "goal_file": "experiment-goal.md",
-        "invocation_limit": 4,
-        "code_worktree": False,
-        "branch_name": "warmup",
     }
     assert controls["pause"] == {"action": "pause", "episode_id": "episode-1"}
     assert controls["add_turns"] == {
@@ -2137,7 +2114,6 @@ async def test_ask_polls_fresh_requests_through_broker_and_mailbox(tmp_path, sta
         "choices": ["A", "B"],
         "multiple": True,
         "action": None,
-        "relays": None,
     }
     assert not any(seen[0].request_id in name for name in os.listdir(staged.workspace))
     assert not any(seen[0].request_id in name for name in responses)

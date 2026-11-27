@@ -373,7 +373,7 @@ def _episode_usage(profile: AgentProfile, context: UsageContext) -> str:
         (
             work_episode_control_usage(context.client),
             work_experiment_command_usage(context.client, choices("node_chat")),
-            work_auto_research_command_usage(context.client, choices("orchestrator")),
+            work_auto_research_command_usage(choices("orchestrator")),
         )
     )
 

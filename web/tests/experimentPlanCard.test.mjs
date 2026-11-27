@@ -115,14 +115,12 @@ test("Start waits for a live node, a goal, and a limit within the node's cap", (
     /disabled/,
   );
   const inputs = model.initialPlanInputs(action(), null);
-  assert.equal(model.planInputsReady(inputs, node, 30), true);
-  assert.equal(model.planInputsReady({ ...inputs, goal: "  " }, node, 30), false);
-  assert.equal(model.planInputsReady({ ...inputs, invocationCeiling: 31 }, node, 30), false);
-  assert.equal(model.planInputsReady({ ...inputs, invocationCeiling: 0 }, node, 30), false);
-  assert.equal(model.planInputsReady({ ...inputs, invocationCeiling: 2.5 }, node, 30), false);
-  assert.equal(model.planInputsReady(inputs, null, 30), false);
-  assert.equal(model.planTurnCap(action(), node), 30);
-  assert.equal(model.planTurnCap(action(), null), 20);
+  assert.equal(model.planInputsReady(inputs, node), true);
+  assert.equal(model.planInputsReady({ ...inputs, goal: "  " }, node), false);
+  assert.equal(model.planInputsReady({ ...inputs, invocationCeiling: 31 }, node), true);
+  assert.equal(model.planInputsReady({ ...inputs, invocationCeiling: 0 }, node), false);
+  assert.equal(model.planInputsReady({ ...inputs, invocationCeiling: 2.5 }, node), false);
+  assert.equal(model.planInputsReady(inputs, null), false);
 });
 
 test("a card reads its phase from the server's card state, and a run's display wins", () => {

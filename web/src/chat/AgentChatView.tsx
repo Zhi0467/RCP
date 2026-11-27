@@ -38,6 +38,7 @@ import {
   ApprovalCardStack,
   askedCardKey,
   dockStackCards,
+  ownQuestionCardKey,
   proposalCardKey,
   useAgentCards,
   type StackCard,
@@ -585,8 +586,8 @@ export function AgentChatView({
     feed ? revision : null,
   );
   const cardsChanged = async () => {
-    await cards.refetch();
     questionState.refresh();
+    await cards.refetch();
   };
   const ownQuestionIds = new Set(questionState.questions.map((question) => question.question_id));
   const relayedPlans = cards.plans.filter(
@@ -620,11 +621,26 @@ export function AgentChatView({
     projectName,
   });
   const runsNeedingMember = cards.episodes.filter((run) => run.episode.presentation.needs_you);
+  const ownQuestionCards: StackCard[] = questionApiBase
+    ? questionState.questions
+        .filter(
+          (question) => questionIsOpen(question) && !question.card && !question.withdrawn_readonly,
+        )
+        .map((question) => ({
+          kind: "own-question",
+          key: ownQuestionCardKey(question),
+          question,
+          apiBase: questionApiBase,
+          continueChat:
+            !readOnly && !questionEpisodeId && question.state === "parked" && !relatedActive,
+        }))
+    : [];
   const dockCards: StackCard[] = [
     ...cards.proposals.filter((view) => !view.stale).map(proposalStackCard),
     ...cards.asked.map((question) =>
       askedStackCard(question, relayed ? question.project_name : null),
     ),
+    ...ownQuestionCards,
     ...dockStackCards(relayedPlans, runsNeedingMember, [
       ...cards.episodes
         .filter((run) => !runsNeedingMember.includes(run))
@@ -1904,7 +1920,6 @@ export function AgentChatView({
             if (!paneLayout.beside) setPaneOpen(false);
           }}
           onDeleted={refreshChatArtifacts}
-          onClose={() => setPaneOpen(false)}
         />
       )}
       {watcherRows.length > 0 && watchersOpen && (
@@ -2131,24 +2146,6 @@ export function AgentChatView({
             {questionState.error}
           </div>
         )}
-        {questionState.questions
-          .filter(
-            (question) =>
-              questionIsOpen(question) && !question.card && !question.withdrawn_readonly,
-          )
-          .map((question) =>
-            questionApiBase ? (
-              <QuestionCard
-                key={question.question_id}
-                question={question}
-                apiBase={questionApiBase}
-                onResolved={questionState.refresh}
-                continueChat={
-                  !readOnly && !questionEpisodeId && question.state === "parked" && !relatedActive
-                }
-              />
-            ) : null,
-          )}
         {submitError && (
           <div className="agent-chat-view-line error" role="alert">
             {submitError}

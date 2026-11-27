@@ -1783,13 +1783,13 @@ def test_experiment_runtime_batch_select_count_is_constant(tmp_path) -> None:
     all_experiment_selects = store.select_count
 
     assert set(runtimes) == set(control_node_ids)
-    assert one_experiment_selects == all_experiment_selects == 7
+    assert one_experiment_selects == all_experiment_selects == 8
 
     store.select_count = 0
     assert store.active_experiment_control_ids(project_id, graph_target=GraphTargetRef()) == set(
         control_node_ids
     )
-    assert store.select_count == 7
+    assert store.select_count == 8
 
 
 def test_multiple_active_agent_tasks_can_share_a_project(tmp_path) -> None:

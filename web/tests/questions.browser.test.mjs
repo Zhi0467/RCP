@@ -3,6 +3,14 @@ import test from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 
+async function toFront(page, id) {
+  const card = page.locator(`.approval-dock [data-question-id="${id}"]`);
+  for (let step = 0; step < 10 && !(await card.isVisible()); step += 1) {
+    await page.getByRole("button", { name: "Next card", exact: true }).click();
+  }
+  await card.waitFor();
+}
+
 test("chat question answers stay separate from steering and resolved cards enter the transcript", async () => {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
@@ -77,14 +85,20 @@ test("chat question answers stay separate from steering and resolved cards enter
     });
     await page.waitForTimeout(150);
     assert.equal(questionReads, 1);
-    await single.getByText("Agent is waiting", { exact: true }).waitFor();
+    await toFront(page, "single");
+    await page
+      .locator('.approval-dock [data-question-id="single"][data-agent-waiting="true"]')
+      .waitFor();
     questions[0].agent_waiting = false;
     await page.evaluate(() => window.refreshQuestions("project", "v1"));
-    await single.getByText("Needs you", { exact: true }).waitFor();
+    await page
+      .locator('.approval-dock [data-question-id="single"][data-agent-waiting="false"]')
+      .waitFor();
     await single.getByRole("button", { name: "a", exact: true }).click();
     await page
       .locator('.agent-chat-view-lines [data-question-id="single"][data-question-state="answered"]')
       .waitFor();
+    await toFront(page, "multiple");
     const multi = page.locator('[data-question-id="multiple"]');
     await multi.getByRole("button", { name: "a", exact: true }).click();
     await multi.getByRole("button", { name: "b", exact: true }).click();
@@ -92,12 +106,14 @@ test("chat question answers stay separate from steering and resolved cards enter
     await multi.getByRole("textbox").fill("detail");
     await multi.getByRole("textbox").press("ControlOrMeta+Enter");
     await page.locator('.agent-chat-view-lines [data-question-id="multiple"]').waitFor();
+    await toFront(page, "dismiss");
     await page
       .locator('[data-question-id="dismiss"]')
       .getByRole("button", { name: "Dismiss", exact: true })
       .click();
     await page.locator('.agent-chat-view-lines [data-question-id="dismiss"]').waitFor();
     // An ended episode's last card names the turns its answer adds.
+    await toFront(page, "turns");
     const turns = page.locator('[data-question-id="turns"]');
     await turns.getByRole("spinbutton", { name: "Turns this answer adds" }).fill("4");
     await turns.getByRole("button", { name: "b", exact: true }).click();
@@ -164,12 +180,14 @@ test("chat question answers stay separate from steering and resolved cards enter
         steer_visible: false,
       }),
     );
+    await toFront(page, "parked");
     await page
       .locator('[data-question-id="parked"]')
       .getByRole("button", { name: "Answer and continue", exact: true })
       .waitFor();
     questions.push({ ...questions[4], question_id: "discuss", capability: "discuss" });
     await page.evaluate(() => window.refreshQuestions("project", "v4"));
+    await toFront(page, "discuss");
     const discuss = page.locator('[data-question-id="discuss"]');
     await discuss.getByRole("textbox").fill("Discuss this route");
     await discuss.getByRole("button", { name: "Answer and continue Discuss", exact: true }).click();

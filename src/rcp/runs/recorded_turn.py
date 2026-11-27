@@ -52,6 +52,7 @@ class RecordedProviderTurn:
     accepted: bool
 
     watcher_folder: dict[str, str] | None = None
+    plan_folder: dict[str, str] | None = None
 
     @property
     def intact(self) -> bool:
@@ -209,6 +210,11 @@ def recorded_provider_turn(pid_file: str, journal: dict[str, object]) -> Recorde
         watcher_folder=(
             _verified_watcher_files(journal, outcome, "watcher_folder")
             if outcome.get("watcher_folder_sha256") is not None
+            else None
+        ),
+        plan_folder=(
+            _verified_watcher_files(journal, outcome, "plan_folder")
+            if outcome.get("plan_folder_sha256") is not None
             else None
         ),
         accepted=accepted,

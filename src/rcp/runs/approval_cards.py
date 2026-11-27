@@ -38,9 +38,9 @@ from rcp.storage.question_models import QuestionOrigin, QuestionRecord
 from rcp.transport.state import StateUnavailable
 
 PROPOSAL_CARD_SHOWN = "proposal_card_shown"
-AUTO_RESEARCH_USES_EPISODE = "auto_research_uses_episode_verb"
+AUTO_RESEARCH_USES_PLAN_FILE = "auto_research_uses_plan_file"
 """A new Auto-research ask's refusal; stored Auto-research cards still render and settle."""
-EXPERIMENT_START_USES_EPISODE = "experiment_start_uses_episode"
+EXPERIMENT_START_USES_PLAN_FILE = "experiment_start_uses_plan_file"
 PLAN_CARD_KINDS = frozenset({"experiment_start", "auto_research"})
 
 
@@ -229,9 +229,9 @@ def approval_card_for_ask(
     )
     existing = store.approval_card(previous.question_id) if previous else None
     if existing is None and action.kind == "auto_research":
-        raise ValueError(AUTO_RESEARCH_USES_EPISODE)
+        raise ValueError(AUTO_RESEARCH_USES_PLAN_FILE)
     if action.kind == "experiment_start":
-        raise ValueError(EXPERIMENT_START_USES_EPISODE)
+        raise ValueError(EXPERIMENT_START_USES_PLAN_FILE)
     thread = _asking_thread(store, origin, member, action, replay=existing is not None)
     if service is None or member is None or thread is None:
         raise ValueError("approval_requires_own_thread")
@@ -276,10 +276,32 @@ def settle_interrupted_approval_cards(
             continue
         store.settle_approval_card(
             card["question_id"],
-            {"outcome": "approved", "result": receipt}
+            {"outcome": "approved", "result": with_started(store, receipt)}
             if receipt is not None
             else {"outcome": "failed", "reason": "interrupted"},
         )
+
+
+def with_started(store: AppStore, receipt: dict[str, Any]) -> dict[str, Any]:
+    """Add what a started episode's first turn launched with, read from that turn."""
+
+    episode = store.episode(receipt["episode_id"]) if receipt.get("episode_id") else None
+    root = (
+        store.agent_task(episode.root_operation_id)
+        if episode and episode.root_operation_id
+        else None
+    )
+    if episode is None or root is None:
+        return receipt
+    request = root.request
+    started = {
+        "goal": request.get("message") or request.get("instruction"),
+        "invocation_ceiling": episode.invocation_ceiling,
+        "provider": request.get("provider"),
+        "model": request.get("model"),
+        "reasoning": request.get("reasoning"),
+    }
+    return {**receipt, "started": {key: value for key, value in started.items() if value}}
 
 
 def run_here_receipt(queue_id: str) -> dict[str, Any]:
@@ -362,7 +384,8 @@ def approved_receipt(response: object) -> dict[str, Any]:
 #: What each card outcome means to the asking agent, keyed by `ApprovalOutcome`.
 APPROVAL_OUTCOMES: dict[ApprovalOutcome, str] = {
     "approved": "RCP ran the action as the member; result names any episode_id or "
-    "operation_id it created.",
+    "operation_id it created. A plan card's result.started is the plan the member "
+    "started, which may differ from the card's action: report that, not the action.",
     "declined": "the member said no; do not ask again unless they change their mind. "
     "Declining a card that approves a Proposal also tries to reject that Proposal; read "
     "its status from graph state.",
@@ -420,10 +443,9 @@ def approval_card_usage(client: str) -> str:
         "for every Proposal this thread's turns raise once it is pending on main, so never "
         "ask for one; that ask is refused with "
         f"{PROPOSAL_CARD_SHOWN}. Ask a proposal card only when the member names a pending "
-        "Proposal this thread did not raise. Start Auto-research with the episode command, "
-        f"which raises its plan card; that ask is refused with {AUTO_RESEARCH_USES_EPISODE}. An Experiment "
-        "plan card comes only from the episode kickoff; asking for one is refused with "
-        f"{EXPERIMENT_START_USES_EPISODE}. "
+        "Proposal this thread did not raise. Experiment and Auto-research plan cards come "
+        "only from plans/ files; asking for one is refused with "
+        f"{EXPERIMENT_START_USES_PLAN_FILE} or {AUTO_RESEARCH_USES_PLAN_FILE}. "
         "The question snapshot shows each card's action and result."
     )
 

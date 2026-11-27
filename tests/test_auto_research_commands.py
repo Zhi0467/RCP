@@ -1107,7 +1107,6 @@ def test_an_orchestrator_cannot_use_a_members_episode_actions(tmp_path) -> None:
 
     for index, arguments in enumerate(
         (
-            {"action": "kick_off_auto_research", "goal_file": "goal.md", "invocation_limit": 2},
             {"action": "pause", "episode_id": auto_research.episode_id},
             {"action": "add_turns", "episode_id": auto_research.episode_id, "invocation_limit": 2},
             {

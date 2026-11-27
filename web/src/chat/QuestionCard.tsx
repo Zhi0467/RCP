@@ -1,4 +1,4 @@
-import { useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { answerQuestion, dismissQuestion } from "../core/api";
 import { askedLabel } from "../agents/agentThreadModel";
 import { MarkdownAnswer } from "../core/chatMarkdown";
@@ -13,6 +13,11 @@ export function AskedTime({ at }: { at: string }) {
     </time>
   );
 }
+
+type QuestionDraft = { text: string; choices: string[]; turns: string };
+
+/** Unsent answers by question, so a card the dock stack sets aside keeps its draft. */
+const drafts = new Map<string, QuestionDraft>();
 
 export function QuestionCard({
   question,
@@ -31,11 +36,15 @@ export function QuestionCard({
   onLater?: () => void;
 }) {
   const labelId = useId();
-  const [text, setText] = useState("");
-  const [choices, setChoices] = useState<string[]>([]);
+  const draft = drafts.get(question.question_id);
+  const [text, setText] = useState(draft?.text ?? "");
+  const [choices, setChoices] = useState<string[]>(draft?.choices ?? []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [turns, setTurns] = useState("3");
+  const [turns, setTurns] = useState(draft?.turns ?? "3");
+  useEffect(() => {
+    drafts.set(question.question_id, { text, choices, turns });
+  }, [question.question_id, text, choices, turns]);
   // A retry reuses its request id while the turns asked are unchanged.
   const continuation = useRef<{ turns: number; id: string } | null>(null);
   const open = questionIsOpen(question) && !question.withdrawn_readonly;
@@ -69,6 +78,7 @@ export function QuestionCard({
             : {}),
         });
       } else await dismissQuestion(apiBase, question.question_id);
+      drafts.delete(question.question_id);
       onResolved();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));

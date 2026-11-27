@@ -68,6 +68,8 @@ def _supervise(
         patch_path or str(stage / "workspace" / "patch.json"),
         "--watchers-path",
         str(stage / "workspace" / "watchers"),
+        "--plans-path",
+        str(stage / "workspace" / "plans"),
         "--provider-version",
         "0.153.4",
         "--max-journal-bytes",
@@ -391,7 +393,8 @@ def test_a_turn_with_an_empty_watcher_folder_says_so(tmp_path) -> None:
     assert not (journal / "watchers").exists()
 
 
-def test_recovery_restores_only_the_verified_watcher_folder(tmp_path):
+@pytest.mark.parametrize("name", ["watchers", "plans"])
+def test_recovery_restores_only_the_verified_agent_folder(tmp_path, name):
     from rcp.runs.recorded_settlement import write_recorded_patch
     from rcp.runs.recorded_turn import recorded_provider_turn
     from rcp.transport.remote_turn_journal import read_journal
@@ -399,7 +402,7 @@ def test_recovery_restores_only_the_verified_watcher_folder(tmp_path):
     stage = tmp_path / "stage"
     stage.mkdir(mode=0o700)
     workspace = stage / "workspace"
-    folder = workspace / "watchers"
+    folder = workspace / name
     folder.mkdir(parents=True)
     (folder / "keep.json").write_text('{"purpose":"test"}')
     completed, _ = _supervise(
@@ -485,6 +488,7 @@ def test_supervised_launch_ships_the_supervisor_as_a_staged_file():
         provider_version=None,
         patch_path="/stage/workspace/patch.json",
         watchers_path="/stage/workspace/watchers",
+        plans_path="/stage/workspace/plans",
         close_input_after_initial=False,
     )
 

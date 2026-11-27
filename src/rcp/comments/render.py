@@ -20,8 +20,7 @@ def render_anchor(anchor: CommentAnchor | dict[str, Any]) -> str:
         lines.append("Whole target")
     elif selection.kind == "text":
         lines.append(f"Quote: {selection.text}")
-        if selection.surrounding_text:
-            lines.append(f"Context: {selection.surrounding_text}")
+        lines.extend(_surrounding_lines(selection.text, selection.surrounding_text))
     elif selection.kind == "element":
         lines.append(f"Element: {selection.path}")
         if selection.label:
@@ -56,6 +55,22 @@ def render_anchor(anchor: CommentAnchor | dict[str, Any]) -> str:
         if selection.labels:
             lines.append(f"Nearby text: {selection.labels}")
     return "\n".join(lines)
+
+
+def _surrounding_lines(quote: str, surrounding: str | None) -> list[str]:
+    """The text around a quote, without repeating the quote it already holds."""
+    if not surrounding:
+        return []
+    words = quote.split()
+    matches = list(re.finditer(r"\s+".join(map(re.escape, words)), surrounding)) if words else []
+    if len(matches) == 1:
+        before = surrounding[: matches[0].start()].strip()
+        after = surrounding[matches[0].end() :].strip()
+        return [
+            *([f"Before: {before}"] if before else []),
+            *([f"After: {after}"] if after else []),
+        ]
+    return [f"Context: {surrounding}"]
 
 
 def render_thread(thread: dict[str, Any], *, until: str | None = None) -> str:

@@ -1010,13 +1010,11 @@ are bounded task events. Broker notices are signed under a notice-only prefix
 and bound to their filename.
 
 `ask --key K --question TEXT` accepts repeated `--choice` and optional `--multiple`
-(which requires choices). A chat may add `--relays <question-id>`, never with
-an approval action, to relay a question from a run it started
-([relays](conversations-episodes-and-watchers.md#work-started-episodes)). It binds immutable origin and arguments; identical
+(which requires choices). It binds immutable origin and arguments; identical
 keys reuse a question, changed arguments fail. Its result carries `question_id`
 and `pending`, `answered`, `dismissed`, `parked` or `withdrawn`; answered includes
-text and choices, and `withdrawn` means the human answered the relayed run
-directly. Fresh transport ids poll the same key under one deadline. Once any round
+text and choices, and `withdrawn` means the human answered the run's question
+that an older relay copy repeated. Fresh transport ids poll the same key under one deadline. Once any round
 delivered, later transport failure stays `unknown`. At deadline the agent may
 repeat exactly or end its turn.
 

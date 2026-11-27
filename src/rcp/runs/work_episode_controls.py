@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 from rcp.agents.command_protocol import (
-    AutoResearchKickoffArguments,
     CommandResponse,
     EpisodeAnswerArguments,
     EpisodeCommandRequest,
@@ -29,8 +28,6 @@ from rcp.agents.staged_command_client import (
     EPISODE_RESUME,
     EPISODE_STOP,
     KICKOFF_LIMIT,
-    ask_relay_usage,
-    auto_research_kickoff_usage,
     episode_control_usage,
 )
 from rcp.limits import AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES
@@ -446,50 +443,22 @@ def handle_work_episode_controls(
     return _attempt(request, "episode_message_refused", message)
 
 
-def handle_work_auto_research_kickoff(
-    execution: AgentTaskExecution,
-    mailbox: RunStageMailbox | None,
-    request: EpisodeCommandRequest,
-    arguments: AutoResearchKickoffArguments,
-) -> CommandResponse:
-    """Record an Auto-research plan card, preserving old direct-start receipt replays."""
-
-    from rcp.runs.work_experiment_commands import record_plan_card_request
-
-    task = execution.store.agent_task(execution.operation_id)
-    if task is not None and task.graph_target.kind != "main":
-        return _refuse(
-            request,
-            "Auto-research branches from main; propose it from a chat on main.",
-            "auto_research_starts_from_main",
-        )
-    return record_plan_card_request(execution, mailbox, request, arguments)
-
-
-def work_auto_research_command_usage(client: str, orchestrator_profiles: str) -> str:
+def work_auto_research_command_usage(orchestrator_profiles: str) -> str:
     """The Auto-research plan card usage of a Work turn granted ``episode``."""
 
     from rcp.runs.approval_cards import APPROVAL_OUTCOMES
 
     return (
-        "Auto-research plan card: propose a new episode for the human to review, edit, and Start, "
-        "only when the human asks for Auto-research: "
-        f"`{client} {auto_research_kickoff_usage()}`. Write the handoff file first, as for an "
-        "Experiment handoff: what the human asked the orchestrator to pursue, with the specifics "
-        "from this chat. The limit is the orchestrator's turn budget. --code-worktree on gives "
-        "it a code worktree, --worktree-repository names its one writable repository, and "
-        "--branch-name names the branch. Omit any of these, and the provider, model, and "
-        "effort, for Settings. Ready orchestrator profiles:\n"
+        "Auto-research plan card: propose one only when the human asks for Auto-research, "
+        "as a plans/ file with kind auto_research and no node, from a chat on main. The goal is "
+        "what the human asked the orchestrator to pursue, with the specifics from this chat; "
+        "the limit is the orchestrator's turn budget. code_worktree gives it a code worktree, "
+        "worktree_repository names its one writable repository, branch_name names the branch. "
+        "Omit any of these, and the provider, model, and effort, for Settings. Ready "
+        "orchestrator profiles:\n"
         f"{orchestrator_profiles}\n"
-        "A successful command returns card_pending; finish your turn so RCP raises the card "
-        "after your Patch lands. Nothing starts until the human taps Start. The question "
-        "snapshot shows the card outcome: "
+        "The question snapshot shows the card outcome: "
         + "; ".join(f"{outcome}: {meaning}" for outcome, meaning in APPROVAL_OUTCOMES.items())
-        + " The human may park the card for later, which the snapshot shows as shelved; a "
-        "parked plan waits for the human. To revise the plan after the human comments, "
-        "run the command again with a new key: it revises the open Auto-research card in "
-        "place, pending or parked, and raises no second card. Once approved, tell the human "
-        "what started (handoff, limit, branch)."
     )
 
 
@@ -506,9 +475,7 @@ def work_episode_control_usage(client: str) -> str:
         "Episode controls (Experiments and Auto-research alike):\n"
         f"{EPISODE_MAILBOX_RULES}\n"
         f"Answer a child question with `{client} episode --answer <question-id> "
-        "--answer-file <filename> [--choice <choice>] --key <key>`. "
-        f"When you ask the human a child question, add `{ask_relay_usage()}` to your `ask`; "
-        "RCP withdraws your copy once the child question is resolved.\n"
+        "--answer-file <filename> [--choice <choice>] --key <key>`.\n"
         "Episode controls act only on episodes this chat started, as the human's Runs card "
         "would; tell the human to use Runs for any other. Pick the control from the "
         "episode's state:\n"

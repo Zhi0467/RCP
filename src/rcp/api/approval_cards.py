@@ -47,6 +47,7 @@ from rcp.runs.approval_cards import (
     plan_card_actor,
     plan_card_episode_id,
     run_here_receipt,
+    with_started,
 )
 from rcp.runs.experiment_admission import experiment_node, run_here_message
 from rcp.service import ProjectService
@@ -312,8 +313,6 @@ def _require_seen_plan(
         raise _NotNow(422, {"code": "experiment_start_required"})
     if overrides.node_rev != node.updated_rev:
         raise _NotNow(409, {"code": "plan_changed"})
-    if overrides.invocation_ceiling > node.invocation_ceiling:
-        raise _NotNow(422, {"code": "invocation_ceiling_above_node"})
     _require_goal(overrides.goal)
 
 
@@ -412,7 +411,7 @@ def _resolve(
                 raise _NotNow(
                     422, {"code": "auto_research_start_invalid", "message": str(exc)}
                 ) from exc
-        return _run(
+        result = _run(
             lambda: _execute(
                 action,
                 card["request_id"],
@@ -429,6 +428,9 @@ def _resolve(
             ),
             card["request_id"],
         )
+        if result["outcome"] == "approved" and body.start is not None:
+            result["result"] = with_started(store, result["result"])
+        return result
 
 
 def _run_here(

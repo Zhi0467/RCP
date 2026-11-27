@@ -2552,7 +2552,7 @@ test("Pip's dock relays a project question with its origin and time, and answeri
   });
 });
 
-test("Moss docks its own cards and relayed questions above its composer, keeping its plain questions inline", async () => {
+test("Moss docks its own cards, its own open questions and relayed questions above its composer", async () => {
   await withFixture(async (browser, base) => {
     for (const width of [1440, 390]) {
       const page = await browser.newPage({
@@ -2605,15 +2605,21 @@ test("Moss docks its own cards and relayed questions above its composer, keeping
       const question = dock.locator(".question-card[data-question-id='q-project-relay']");
       await dock.locator(".approval-card").waitFor();
       releaseQuestions();
-      await thread.locator(".question-card[data-question-id='q-own']").waitFor();
-      assert.equal(await thread.locator(".question-card[data-question-id='q-own']").count(), 1);
-      assert.equal(await dock.locator(".question-card[data-question-id='q-own']").count(), 0);
-      assert.equal(await thread.locator(".approval-card").count(), 1);
-      assert.equal(await dock.locator(".approval-card").count(), 1);
-      assert.equal(await dock.locator(".approval-stack-nav").count(), 1);
-      await dock.getByRole("button", { name: "Next card" }).click();
-      await dock.getByRole("button", { name: "Next card" }).click();
-      await question.waitFor();
+      await dock.locator(".approval-stack-nav", { hasText: "of 4" }).waitFor();
+      const fronts = new Set();
+      for (let step = 0; step < 4; step += 1) {
+        assert.equal(
+          await thread.locator(".question-card").count(),
+          await dock.locator(".question-card").count(),
+        );
+        const front = dock.locator(".question-card");
+        if (await front.count()) fronts.add(await front.getAttribute("data-question-id"));
+        await dock.getByRole("button", { name: "Next card" }).click();
+      }
+      assert.deepEqual([...fronts].sort(), ["q-own", "q-project-relay"]);
+      while (!(await question.count())) {
+        await dock.getByRole("button", { name: "Next card" }).click();
+      }
       assert.match(await question.locator(".question-origin").textContent(), /Validation sweep/);
       assert.equal(
         await question.locator(".entity-chip.project").getAttribute("href"),
@@ -2628,8 +2634,11 @@ test("Moss docks its own cards and relayed questions above its composer, keeping
         answer: "",
         choices: ["3e-4"],
       });
-      assert.equal(await thread.locator(".question-card[data-question-id='q-own']").count(), 1);
-      assert.equal(await thread.locator(".approval-card[data-state='pending']").count(), 1);
+      await dock.locator(".approval-stack-nav", { hasText: "of 3" }).waitFor();
+      assert.equal(
+        await thread.locator(".question-card").count(),
+        await dock.locator(".question-card").count(),
+      );
       assert.deepEqual(errors, []);
       await page.close();
     }

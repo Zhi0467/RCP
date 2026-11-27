@@ -71,18 +71,6 @@ CHILD_SEED_OPTION = ("seed_file", "--seed-file", "<filename>")
 KICKOFF_NODE = ("node", "--node", "<node-id>")
 KICKOFF_GOAL = ("goal_file", "--handoff-file", "<filename>")
 KICKOFF_LIMIT = ("invocation_limit", "--invocation-limit", "<positive-int>")
-AUTO_RESEARCH_CODE_WORKTREE = ("code_worktree", "--code-worktree", "on|off")
-AUTO_RESEARCH_WORKTREE_REPOSITORY = (
-    "worktree_repository",
-    "--worktree-repository",
-    "<repository>",
-)
-AUTO_RESEARCH_BRANCH_NAME = ("branch_name", "--branch-name", "<branch-name>")
-AUTO_RESEARCH_OPTIONS = (
-    AUTO_RESEARCH_CODE_WORKTREE,
-    AUTO_RESEARCH_WORKTREE_REPOSITORY,
-    AUTO_RESEARCH_BRANCH_NAME,
-)
 # Parser enforcement and every usage renderer share these option records.
 KEY_OPTION = ("key", "--key", "<key>")
 MERGE_SOURCE = ("branch_id", "<branch-id>")
@@ -108,7 +96,6 @@ EPISODE_MESSAGE = ("message", "--message", "<episode-id>")
 EPISODE_ANSWER = ("answer", "--answer", "<question-id>")
 EPISODE_ANSWER_FILE = ("answer_file", "--answer-file", "<filename>")
 EPISODE_BODY = ("body_file", "--body-file", "<filename>")
-ASK_RELAYS = ("relays", "--relays", "<question-id>")
 EPISODE_CONTROLS = (
     EPISODE_STOP,
     EPISODE_RESUME,
@@ -131,10 +118,6 @@ def projects_usages():
 def _option_usage(option):
     _, flag, value = option
     return f"{flag} {value}" if value else flag
-
-
-def ask_relay_usage():
-    return _option_usage(ASK_RELAYS)
 
 
 def episode_control_usage(option, *, required=(), optional=()):
@@ -221,19 +204,6 @@ def experiment_kickoff_usage(*, goal_required, child_targets):
         *([child_target_usage()] if child_targets else []),
         goal if goal_required else f"[{goal}]",
         f"[{limit_flag} {limit_value}]",
-        *(f"[{flag} <{flag[2:]}>]" for _, flag in _PROFILE_PICK_FLAGS),
-    ]
-    return " ".join(parts)
-
-
-def auto_research_kickoff_usage():
-    """The ``--kick-off-auto-research`` arguments a member's Work chat may use."""
-
-    parts = [
-        f"episode {_option_usage(KEY_OPTION)} --kick-off-auto-research",
-        _option_usage(KICKOFF_GOAL),
-        _option_usage(KICKOFF_LIMIT),
-        *(f"[{_option_usage(option)}]" for option in AUTO_RESEARCH_OPTIONS),
         *(f"[{flag} <{flag[2:]}>]" for _, flag in _PROFILE_PICK_FLAGS),
     ]
     return " ".join(parts)
@@ -445,7 +415,6 @@ def _parser():
     ask.add_argument("--choice", action="append", default=[])
     ask.add_argument("--multiple", action="store_true")
     ask.add_argument("--action", help="Approval action JSON; private project threads only")
-    ask.add_argument(ASK_RELAYS[1], dest=ASK_RELAYS[0], metavar=ASK_RELAYS[2])
 
     validate = subparsers.add_parser("validate")
     validate.add_argument("patch_path")
@@ -499,13 +468,12 @@ def _parser():
     episode.add_argument("--key", required=True)
     episode_action = episode.add_mutually_exclusive_group(required=True)
     episode_action.add_argument("--kick-off-experiment", action="store_true")
-    episode_action.add_argument("--kick-off-auto-research", action="store_true")
     for dest, flag, value in EPISODE_CONTROLS:
         episode_action.add_argument(flag, dest=dest, metavar=value)
     episode.add_argument(KICKOFF_NODE[1])
     episode.add_argument(KICKOFF_GOAL[1], dest=KICKOFF_GOAL[0])
     episode.add_argument(KICKOFF_LIMIT[1], type=int)
-    for dest, flag, value in (*AUTO_RESEARCH_OPTIONS, EPISODE_BODY, EPISODE_ANSWER_FILE):
+    for dest, flag, value in (EPISODE_BODY, EPISODE_ANSWER_FILE):
         episode.add_argument(flag, dest=dest, metavar=value)
     episode.add_argument("--choice", action="append", default=[])
     _add_profile_pick_arguments(episode)
@@ -750,10 +718,6 @@ def _request_arguments(namespace, workspace):
             if not isinstance(action, dict):
                 raise ClientInputError("--action must be a JSON object")
             arguments["action"] = action
-        if namespace.relays is not None:
-            if namespace.action is not None:
-                raise ClientInputError("--relays cannot be combined with --action")
-            arguments["relays"] = _nonblank(namespace.relays, "relayed question id")
     elif verb == "apply":
         patch_file = _keyed_command_file(
             workspace, namespace.patch_path, "patch.json", required_name="patch.json"
@@ -789,44 +753,11 @@ def _request_arguments(namespace, workspace):
         invocation_limit = namespace.invocation_limit
         if invocation_limit is not None and invocation_limit <= 0:
             raise ClientInputError("invocation limit must be a positive integer")
-        if not namespace.kick_off_auto_research:
-            for dest, flag, _ in AUTO_RESEARCH_OPTIONS:
-                if getattr(namespace, dest) is not None:
-                    raise ClientInputError(f"{flag} is available only for Auto-research kickoff")
-        kickoff = namespace.kick_off_auto_research or namespace.kick_off_experiment
-        if kickoff and namespace.body_file is not None:
+        if namespace.kick_off_experiment and namespace.body_file is not None:
             raise ClientInputError("--body-file is available only for --message")
         if not namespace.answer and (namespace.answer_file is not None or namespace.choice):
             raise ClientInputError("--answer-file and --choice require --answer")
-        if namespace.kick_off_auto_research:
-            if namespace.node is not None:
-                raise ClientInputError("--node is available only for Experiment kickoff")
-            for dest, flag, _ in (*CHILD_TARGET_OPTIONS, CHILD_SEED_OPTION):
-                if getattr(namespace, dest) is not None:
-                    raise ClientInputError(f"{flag} is available only for Experiment kickoff")
-            if namespace.goal_file is None:
-                raise ClientInputError(f"Auto-research kickoff requires {KICKOFF_GOAL[1]}")
-            if invocation_limit is None:
-                raise ClientInputError("Auto-research kickoff requires --invocation-limit")
-            code_worktree = namespace.code_worktree
-            if code_worktree not in (None, "on", "off"):
-                raise ClientInputError("--code-worktree takes on or off")
-            arguments = {
-                "action": "kick_off_auto_research",
-                "goal_file": _keyed_command_file(workspace, namespace.goal_file, "handoff file"),
-                "invocation_limit": invocation_limit,
-                **({} if code_worktree is None else {"code_worktree": code_worktree == "on"}),
-                **{
-                    dest: _nonblank(getattr(namespace, dest), flag)
-                    for dest, flag, _ in (
-                        AUTO_RESEARCH_WORKTREE_REPOSITORY,
-                        AUTO_RESEARCH_BRANCH_NAME,
-                    )
-                    if getattr(namespace, dest) is not None
-                },
-                **_profile_pick(namespace),
-            }
-        elif namespace.kick_off_experiment:
+        if namespace.kick_off_experiment:
             node_id = namespace.node
             if node_id is None:
                 raise ClientInputError("Experiment kickoff requires --node")

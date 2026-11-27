@@ -116,9 +116,9 @@ the same dock for their own plan cards and children; a node chat also lists the
 runs of its node that no chat and no Auto-research parent started, such as a
 start from the node page. A question a
 child asks shows only under that child, so the Space dock leaves out the ones
-a member's Project Agent dock lists. Its plain questions
-stay inline, and a card shows inline only after it leaves the dock, so nothing
-appears twice in the thread. The same recipient, private
+a member's Project Agent dock lists. Its own open plain questions
+dock too, and a question or card shows inline only after it leaves the dock, so
+nothing appears twice in the thread. The same recipient, private
 owner and answer checks apply; another member's private thread never relays.
 
 Both reads refresh on the member's `agent_cards` version, which never moves on
@@ -565,7 +565,9 @@ chat had in another native session since that session's last turn.
   to the last turn then Settings, but not machine selection.
 - A wake continues the chat's current agent: it takes the provider, model,
   reasoning and runtime of the chat's latest session, so a human's provider or
-  model switch after arming does not strand it. Only a recorded machine that
+  model switch after arming does not strand it. An Experiment loop's automatic
+  turns follow the same rule: a member's later turn in the loop's own session and
+  provider sets the model and effort they run with. Only a recorded machine that
   differs from that session's claims completion once and records a failed
   notification task without provider launch or Retry. Deferred wakes replace one
   visible reason until admitted.
@@ -975,19 +977,36 @@ Experiment turns, Auto-research child Work, consolidation and artifact edits do
 not get the `episode` verb, and an orchestrator that names a member-only action
 is refused with `episode_action_not_granted`.
 
-**Experiment start.** `episode --kick-off-experiment --node <id> --handoff-file
-<file>` raises a [plan card](authority-and-proposals.md#episode-plan-cards)
-on the chat's own graph target instead of starting. The card appears when the
-turn's Patch lands, so the agent writes and fixes the node in the same turn.
-`--invocation-limit` may shorten the episode but never exceed the node's limit,
-and the handoff file is required. The handoff is the text the agent hands to the
-experiment agent, and the run starts with it as that agent's first message.
-Running the command again for the same node with a new key revises the open card
-in place, and a node whose run is live refuses the kickoff with
-`experiment_run_live`. Provider, model and effort are the agent's pick
-from the ready profiles, otherwise Settings; the human may change all three on
-the card. Readiness is checked at Start. The Experiment's ending reaches the chat
-through the episode mailbox, so the agent arms no watcher for it.
+**Plan files.** A member's Work turn proposes and edits
+[plan cards](authority-and-proposals.md#episode-plan-cards) as files in `plans/`
+of its run workspace. At turn start RCP writes every open or parked plan card of
+the chat there as `<card id>.json`, from the card as it stands, and keeps that
+view as the turn's baseline. The file holds `kind`, `node`, `goal`,
+`invocation_limit`, and optional `provider`, `model`, `reasoning`, and the
+Auto-research `code_worktree`, `worktree_repository` and `branch_name`. `state`
+(`waiting` or `parked`) and `version` (the card's hash) are RCP's. When the turn
+ends, a new file asks for a new card and a changed file revises its card, only
+while the card still carries the staged `version`; a member's edit during the
+turn wins and the turn gets a warning event. Within one turn the last edit of a
+card wins. A new file for a node, or for Auto-research, whose card is already
+staged, and an edit that changes a card's kind or node, are corrections: the agent
+edits the staged file instead. A chat holds at most `OPEN_PLAN_CARDS_MAX` (32) open
+plan cards, half the folder's read bound; a new file past that is a correction.
+Deleting a file changes nothing. An
+invalid file, a node whose run is live, or a turn without the grants becomes a
+correction the agent fixes in the same turn, like a watcher file. A chat's
+`episode --kick-off-experiment` answers `plan_files_replace_kickoff`; there is no
+Auto-research kickoff command. The Work
+prompt asks the agent to raise a card once the discussion settles on a study and
+to edit an open card's file when the talk changes its plan.
+
+**Experiment start.** An `experiment` plan raises its card on the chat's own
+graph target when the turn's Patch lands, so the agent writes and fixes the node
+in the same turn. The goal is the handoff, the experiment agent's first message.
+The limit defaults to the node's. Provider, model and effort are the agent's
+pick from the ready profiles, otherwise Settings; the human may change all three
+on the card. Readiness is checked at Start. The Experiment's ending reaches the
+chat through the episode mailbox, so the agent arms no watcher for it.
 
 **Choosing the route.** The Work prompt sends work that answers a research
 question and needs more than one shot (iteration, debugging, hours of compute,
@@ -995,21 +1014,18 @@ or results that could change project beliefs) to an Experiment. Infrastructure
 and tooling of any size, and short one-shot checks, stay in the chat with a
 launch and a watch. This is guidance; nothing caps a direct launch.
 
-**Auto-research start.** `episode --kick-off-auto-research --handoff-file <file>
---invocation-limit <n>` records a request and answers `card_pending`. The card
-appears after the Work turn succeeds; only the human's Start creates the episode
-on its own branch from main. A branch chat is refused early with
-`auto_research_starts_from_main`; a turn without the member Work and ask grants
-is refused with `auto_research_card_unavailable`. The human may edit the starting
+**Auto-research start.** An `auto_research` plan names no node and needs an
+`invocation_limit`. The card appears after the Work turn succeeds; only the
+human's Start creates the episode on its own branch from main. A plan from a
+branch chat is a correction. The human may edit the starting
 instruction, budget, branch name, code worktree and repository, and orchestrator
 provider, model and effort. Readiness is checked at Start, with correction and
 settlement rules owned by the [plan card spec](authority-and-proposals.md#episode-plan-cards).
 Open-ended exploration and questions pursued across several dependent Experiments
 route to Auto-research; a single designed study routes to Experiment.
 
-Both kickoffs persist receipts on the turn. Resume or Retry recovers the same
-card; an older Auto-research receipt whose episode already exists answers
-`existing`. The card request determines the episode id. The tapping member
+Both plan kinds persist receipts on the turn. Resume or Retry recovers the same
+card. The card request determines the episode id. The tapping member
 authorizes the start, and the episode's root names the raising turn, so Runs
 shows **Started from** that chat, for each continuation too.
 
@@ -1121,12 +1137,10 @@ cards require the human (`question_needs_human`). If answering the chain's last
 open question would need continuation turns, or the episode is still ending,
 the parent receives `question_needs_continuation`; it does not allocate a new child budget. The human
 can answer and add turns through the existing question controls.
-A parent that asks the human a child question names it with
-`ask --relays <question_id>`. RCP accepts the link only while that question is
-pending and comes from a child chain this chat started, and never on an approval
-card. When anyone resolves the child question, each pending copy linked to it
-becomes withdrawn and read-only, so the human never answers a stale copy. Other
-questions and cards from the same turn stay open.
+A child question that needs the human is already the member's card in the chat's
+dock, so the parent never asks it again; it answers what it can and advises in its
+reply. A copy an older parent linked with `relays_question_id` still becomes
+withdrawn and read-only when anyone resolves the child question.
 
 `episode --message <id> --body-file <file>` also accepts a running Experiment
 chain. Its mail waits for the next invocation, which claims it in the episode's

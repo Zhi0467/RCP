@@ -81,6 +81,13 @@ export type StackCard =
     }
   | { kind: "asked"; key: string; question: AgentQuestion; projectName: string | null }
   | { kind: "question"; key: string; question: RelayedQuestion }
+  | {
+      kind: "own-question";
+      key: string;
+      question: AgentQuestion;
+      apiBase: string;
+      continueChat: boolean;
+    }
   | { kind: "plan"; key: string; question: AgentQuestion }
   | { kind: "run"; key: string; run: DockEpisode };
 
@@ -122,6 +129,10 @@ export function askedCardKey(question: AgentQuestion): string {
 
 export function questionCardKey(question: RelayedQuestion): string {
   return `question:${question.question_id}`;
+}
+
+export function ownQuestionCardKey(question: AgentQuestion): string {
+  return `own-question:${question.question_id}`;
 }
 
 function planCardKey(question: AgentQuestion): string {
@@ -207,7 +218,7 @@ export function ApprovalCardStack({
   cards: StackCard[];
   onDecided: (view: ProposalCardView, status: Decision) => void;
   onResolved: (question: AgentQuestion, result: ApprovalCardResult) => void;
-  onAnswered: (question: RelayedQuestion) => void;
+  onAnswered: (question: AgentQuestion) => void;
   onChanged: () => void | Promise<unknown>;
   /** Draws a plan card; the view that owns the stack supplies it. */
   renderPlanCard?: (question: AgentQuestion) => ReactNode;
@@ -323,6 +334,19 @@ export function ApprovalCardStack({
             )}
           </span>
         }
+        onResolved={() => {
+          focusNext.current = "front";
+          onAnswered(card.question);
+          onChanged();
+        }}
+        onLater={onLater}
+      />
+    ) : card.kind === "own-question" ? (
+      <QuestionCard
+        key={card.key}
+        question={card.question}
+        apiBase={card.apiBase}
+        continueChat={card.continueChat}
         onResolved={() => {
           focusNext.current = "front";
           onAnswered(card.question);
@@ -646,7 +670,7 @@ export function useAgentCards(source: CardSource, revision: string | null) {
     ...run,
     questions: run.questions.filter((question) => !answered.has(question.question_id)),
   }));
-  const markAnswered = useCallback((question: RelayedQuestion) => {
+  const markAnswered = useCallback((question: AgentQuestion) => {
     setAnswered((known) => new Set(known).add(question.question_id));
   }, []);
   const decisionOf = (view: ProposalCardView): Decision | null => {

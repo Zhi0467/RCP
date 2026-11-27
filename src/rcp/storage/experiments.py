@@ -2427,6 +2427,31 @@ class ExperimentStoreMixin(StoreMixinBase):
                 (project_id,),
             )
         }
+        member_turns = {
+            (str(row["chat_id"]), str(row["session_id"])): (
+                (str(row["created_at"]), int(row["storage_rowid"])),
+                json.loads(row["request_json"]),
+            )
+            for row in _connection.execute(
+                """
+                SELECT chat_id, session_id, request_json, created_at, storage_rowid FROM (
+                    SELECT json_extract(request_json, '$.chat_id') AS chat_id,
+                           json_extract(request_json, '$.session_id') AS session_id,
+                           request_json, created_at, rowid AS storage_rowid,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY json_extract(request_json, '$.chat_id'),
+                                            json_extract(request_json, '$.session_id')
+                               ORDER BY created_at DESC, rowid DESC
+                           ) AS latest
+                    FROM graph_runs
+                    WHERE project_id = ? AND json_extract(request_json, '$.trigger') = 'human'
+                      AND json_extract(request_json, '$.chat_id') IS NOT NULL
+                      AND json_extract(request_json, '$.session_id') IS NOT NULL
+                ) WHERE latest = 1
+                """,
+                (project_id,),
+            )
+        }
         receipt_rows = _connection.execute(
             """
                 SELECT receipt.operation_id, receipt.category
@@ -2522,6 +2547,7 @@ class ExperimentStoreMixin(StoreMixinBase):
                     receipt_categories,
                     episodes,
                     parent,
+                    member_turns,
                 )
                 binding = episodes.get(parent.episode_id) if parent is not None else None
                 if binding is not None and binding.session_bound:
@@ -2572,8 +2598,13 @@ class ExperimentStoreMixin(StoreMixinBase):
         receipt_categories: dict[str, set[str]],
         episodes: dict[str, ExperimentEpisodeRecord],
         parent: EpisodeRecord | None,
+        member_turns: dict[tuple[str, str], tuple[tuple[str, int], dict[str, object]]],
     ) -> ExperimentLoopRuntime:
-        """Purely derive one runtime from an already-loaded project ledger."""
+        """Purely derive one runtime from an already-loaded project ledger.
+
+        A member's later turn in the loop's own session sets the model and effort
+        that the loop's next automatic turns run with.
+        """
 
         if parent is None:
             return ExperimentLoopRuntime()
@@ -2585,7 +2616,7 @@ class ExperimentStoreMixin(StoreMixinBase):
         ]
         if not root_entries:
             raise ValueError("Stored Experiment episode is missing its paid root task.")
-        _, root_request = max(
+        root_row, root_request = max(
             root_entries,
             key=lambda entry: (entry[0]["created_at"], entry[0]["storage_rowid"]),
         )
@@ -2659,14 +2690,28 @@ class ExperimentStoreMixin(StoreMixinBase):
             episode_entries,
             key=lambda entry: (entry[0]["created_at"], entry[0]["storage_rowid"]),
         )
-        binding_request = next(
+        binding_row, binding_request = next(
             (
-                request
+                (row, request)
                 for row, request in episode_entries
                 if episode is not None and row["operation_id"] == episode.last_turn_operation_id
             ),
-            root_request,
+            (root_row, root_request),
         )
+        pick_request = binding_request
+        member = (
+            member_turns.get((agent_id, episode.native_session_id))
+            if isinstance(agent_id, str) and episode is not None and episode.native_session_id
+            else None
+        )
+        if (
+            member is not None
+            and episode is not None
+            and member[0] > (binding_row["created_at"], binding_row["storage_rowid"])
+            and member[1].get("provider") == episode.provider
+        ):
+            pick_request = member[1]
+        picked_model = pick_request.get("model")
         current_invocation = current_request.get("control_invocation")
         return ExperimentLoopRuntime(
             episode_id=episode_id,
@@ -2703,10 +2748,8 @@ class ExperimentStoreMixin(StoreMixinBase):
             session_diagnostic=episode.session_diagnostic if episode else None,
             provider=(episode.provider if episode is not None else None)
             or _optional_str(binding_request.get("provider")),
-            model=(
-                binding_request["model"] if isinstance(binding_request.get("model"), str) else None
-            ),
-            reasoning=_optional_str(binding_request.get("reasoning")),
+            model=picked_model if isinstance(picked_model, str) else None,
+            reasoning=_optional_str(pick_request.get("reasoning")),
             workflow_ids=binding_request.get("workflow_ids") or [],
             skill_ids=binding_request.get("skill_ids") or [],
             resolved_skill_packages=binding_request.get("resolved_skill_packages") or [],

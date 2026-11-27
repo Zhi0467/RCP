@@ -17,7 +17,7 @@ from rcp.storage.question_models import QuestionOrigin
 from rcp.transport.workspace_mailbox import RunStageMailbox
 
 from .helpers import signed_in_client, wait_for_task, wait_until
-from .test_work_episode_controls import KICKOFF, THREAD_CHAT, _Member
+from .test_work_episode_controls import THREAD_CHAT, _Member
 
 
 def _orchestrator_question(member: _Member, episode_id: str, root_id: str, key: str):
@@ -43,8 +43,8 @@ def _orchestrator_question(member: _Member, episode_id: str, root_id: str, key: 
 
 
 def _started(member: _Member) -> str:
-    kickoff = member.turn("kickoff-turn")
-    assert kickoff("go", KICKOFF).result["disposition"] == "card_pending"
+    member.turn("kickoff-turn")
+    assert member.propose("kickoff-turn") is None
     tapped = member.start(member.land("kickoff-turn"))
     assert tapped.status_code == 200, tapped.text
     return str(tapped.json()["result"]["episode_id"])
@@ -272,7 +272,7 @@ def _chat_ask(member: _Member, operation_id: str, key: str, **arguments: object)
     return response
 
 
-def test_a_human_answer_to_the_child_withdraws_only_the_parents_linked_relay(
+def test_a_human_answer_to_the_child_withdraws_only_an_old_linked_relay(
     manifest, tmp_path: Path, monkeypatch
 ) -> None:
     member = _Member(manifest, tmp_path, monkeypatch)
@@ -295,25 +295,20 @@ def test_a_human_answer_to_the_child_withdraws_only_the_parents_linked_relay(
     )
     _settled(member)
 
-    relayed = _chat_ask(
-        member, "relay-turn", "relay", question="Which dataset?", relays=question.question_id
+    chat_origin = question.origin.model_copy(
+        update={"owner_kind": "chat", "owner_id": THREAD_CHAT, "operation_id": wake["operation_id"]}
     )
-    assert relayed.status == "ok", relayed.message
+    old_relay = store.create_or_get_question(
+        origin=chat_origin, key="relay", question="Which dataset?"
+    )
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE questions SET relays_question_id=? WHERE question_id=?",
+            (question.question_id, old_relay.question_id),
+        )
     same_wake = store.create_or_get_question(
-        origin=question.origin.model_copy(
-            update={
-                "owner_kind": "chat",
-                "owner_id": THREAD_CHAT,
-                "operation_id": wake["operation_id"],
-            }
-        ),
-        key="other",
-        question="Anything else?",
+        origin=chat_origin, key="other", question="Anything else?"
     )
-    stranger = _chat_ask(
-        member, "stranger-turn", "relay", question="Which dataset?", relays="missing"
-    )
-    assert stranger.status == "invalid"
 
     answered = signed_in_client(member.app).post(
         f"/api/projects/{member.project_id}/questions/{question.question_id}/answer",
@@ -321,27 +316,15 @@ def test_a_human_answer_to_the_child_withdraws_only_the_parents_linked_relay(
     )
 
     assert answered.status_code == 200, answered.text
-    relay_record = store.get_question(relayed.result["question_id"])
+    relay_record = store.get_question(old_relay.question_id)
     other_record = store.get_question(same_wake.question_id)
     assert relay_record is not None and relay_record.withdrawn_readonly
     assert other_record is not None and not other_record.withdrawn_readonly
-    replay = _chat_ask(
-        member, "replay-turn", "relay", question="Which dataset?", relays=question.question_id
-    )
-    assert (replay.status, replay.result["state"]) == ("ok", "withdrawn")
-    late = _chat_ask(
-        member, "late-turn", "late", question="Which dataset?", relays=question.question_id
-    )
-    assert late.status == "invalid"
 
 
-def test_the_client_sends_a_relay_and_refuses_it_on_an_approval_card(tmp_path: Path) -> None:
-    from rcp.agents.command_protocol import AskArguments
-    from rcp.agents.staged_command_client import ClientInputError, _parser, _request_arguments
+def test_the_client_has_no_relay_option(tmp_path: Path) -> None:
+    from rcp.agents.staged_command_client import ClientInputError, _parser
 
     args = ["--broker", "broker", "--timeout", "1", "--workspace", str(tmp_path), "ask"]
-    ask = [*args, "--key", "relay", "--question", "Which?", "--relays", "q1"]
-    _verb, _key, arguments = _request_arguments(_parser().parse_args(ask), tmp_path)
-    assert AskArguments.model_validate(arguments).relays == "q1"
     with pytest.raises(ClientInputError):
-        _request_arguments(_parser().parse_args([*ask, "--action", "{}"]), tmp_path)
+        _parser().parse_args([*args, "--key", "relay", "--question", "Which?", "--relays", "q1"])
