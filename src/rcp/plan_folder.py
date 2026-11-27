@@ -15,7 +15,11 @@ from typing import TYPE_CHECKING, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from rcp.limits import AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES, EPISODE_TEXT_MAX_LENGTH
+from rcp.limits import (
+    AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES,
+    EPISODE_TEXT_MAX_LENGTH,
+    JSON_SAFE_INTEGER_MAX,
+)
 from rcp.providers import ProviderId
 from rcp.transport.watcher_workspace import direct_json_stem, replace_agent_folder
 
@@ -55,7 +59,7 @@ class PlanFile(BaseModel):
     kind: Literal["experiment", "auto_research"]
     node: str | None = Field(default=None, min_length=1, max_length=200)
     goal: str = Field(min_length=1)
-    invocation_limit: int | None = Field(default=None, gt=0)
+    invocation_limit: int | None = Field(default=None, gt=0, le=JSON_SAFE_INTEGER_MAX)
     provider: ProviderId | None = None
     model: str | None = Field(default=None, min_length=1, max_length=200)
     reasoning: str | None = Field(default=None, min_length=1, max_length=100)
@@ -169,13 +173,22 @@ def stage_plan_folder(
     store.record_agent_task_contract(
         operation_id, _BASELINE, saved, hashlib.sha256(saved.encode()).hexdigest()
     )
-    if inherited and read_plan_folder(workspace, remote_stage):
+    if inherited and _written_plans(workspace, remote_stage):
         return
     files = json.loads(saved)
     if remote_stage is None:
         replace_agent_folder(workspace, PLANS, files)
     else:
         remote_stage.replace_agent_folder(PLANS, files)
+
+
+def _written_plans(workspace: Path, remote_stage: RemoteRunStage | None) -> bool:
+    """Whether the continued turn left plan files here; a new workspace has none."""
+
+    try:
+        return bool(read_plan_folder(workspace, remote_stage))
+    except (OSError, ValueError):
+        return False
 
 
 def read_plan_folder(workspace: Path, remote_stage: RemoteRunStage | None) -> dict[str, str]:

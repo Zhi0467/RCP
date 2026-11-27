@@ -1379,3 +1379,11 @@ def test_a_retry_keeps_the_plan_files_its_predecessor_wrote(plan):
     _land(plan, retry)
     (card,) = _cards(plan, "shared-chat")
     assert card["card"]["action"]["goal"] == "Unsubmitted plan."
+
+
+def test_a_plan_budget_past_the_start_maximum_is_a_correction(plan):
+    from rcp.limits import JSON_SAFE_INTEGER_MAX
+
+    execution, _call = _turn(plan, WORK_TURN, chat_id="shared-chat")
+    problem = _propose(plan, execution, "huge", limit=JSON_SAFE_INTEGER_MAX + 1)
+    assert problem is not None and problem.startswith("plans/huge.json:")

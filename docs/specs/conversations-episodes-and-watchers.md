@@ -116,9 +116,9 @@ the same dock for their own plan cards and children; a node chat also lists the
 runs of its node that no chat and no Auto-research parent started, such as a
 start from the node page. A question a
 child asks shows only under that child, so the Space dock leaves out the ones
-a member's Project Agent dock lists. Its plain questions
-stay inline, and a card shows inline only after it leaves the dock, so nothing
-appears twice in the thread. The same recipient, private
+a member's Project Agent dock lists. Its own open plain questions
+dock too, and a question or card shows inline only after it leaves the dock, so
+nothing appears twice in the thread. The same recipient, private
 owner and answer checks apply; another member's private thread never relays.
 
 Both reads refresh on the member's `agent_cards` version, which never moves on
