@@ -229,9 +229,9 @@ the name, tag and ⋯ share one line, and the path field is full width below.
 ## Tests
 
 - **Limits:**
-  - Reader tests per provider, using captured output: the Gemini quota error, Codex `rateLimits/updated` and `usageLimitExceeded`, and Claude
-    `rate_limit_event`. The captured Gemini error is
-    `Individual quota reached … Resets in 2h57m1s.`
+  - Reader tests per provider, using captured output: the Gemini quota error
+    (`Individual quota reached … Resets in 2h57m1s.`), Codex `rateLimits/updated` and
+    `usageLimitExceeded`, and Claude `rate_limit_event`.
   - Wake tests on the test clock:
     - A limited chat turn resumes at its reset, exactly once, across a restart.
     - It still resumes after another turn's success clears the login's mark.
