@@ -1125,7 +1125,9 @@ inventory coherent.
 
 Absolute host paths with an optional line resolve against configured repository
 roots. Exactly one match opens escaped, numbered, script-free text that only RCP
-can frame. Reads go through the repository's machine card: SSH to the card's
+can frame. An SVG, PNG, JPEG, GIF or WebP file cited without a line, up to the
+preview size limit, shows as an image instead: a data URL in an `<img>`, so an
+SVG's scripts never run. Reads go through the repository's machine card: SSH to the card's
 host without local retention, or a local read on the backend card. A repository
 with no machine is refused. Missing, ambiguous, or nested-root matches produce a
 nonnavigating error. So do unavailable hosts and files that are nonregular or

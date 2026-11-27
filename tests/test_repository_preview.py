@@ -498,3 +498,24 @@ def test_repository_preview_route_reloads_the_registered_manifest(manifest, tmp_
     assert response.status_code == 200
     assert ">live</span>" in response.text
     assert ">stale</span>" not in response.text
+
+
+def test_repository_preview_route_shows_an_image_file_as_an_image(manifest, tmp_path) -> None:
+    import base64
+
+    svg = b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script><rect/></svg>'
+    source_path = Path(manifest.repository_map["repo-b"].path) / "figure.svg"
+    source_path.write_bytes(svg)
+    app = create_app(str(manifest.path), data_dir=tmp_path / "data")
+    client = signed_in_client(app)
+    url = f"/api/projects/{app.state.default_project_id}/repositories/files/preview"
+
+    response = client.get(url, params={"path": str(source_path)})
+
+    assert response.status_code == 200
+    encoded = base64.b64encode(svg).decode()
+    assert f'<img src="data:image/svg+xml;base64,{encoded}"' in response.text
+    assert "<script>" not in response.text
+    assert "img-src data:" in response.headers["content-security-policy"]
+    cited = client.get(url, params={"path": str(source_path), "line": 1})
+    assert 'id="L1"' in cited.text and "<img" not in cited.text

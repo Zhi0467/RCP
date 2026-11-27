@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import html
 import inspect
 import json
@@ -27,7 +28,7 @@ if TYPE_CHECKING:
     from rcp.storage import AppStore
 
 REPOSITORY_PREVIEW_CSP = (
-    "sandbox; default-src 'none'; style-src 'unsafe-inline'; "
+    "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; "
     "base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
 )
 
@@ -40,6 +41,18 @@ class RepositorySource:
     start_line: int = 1
     complete: bool = True
     total_bytes: int = 0
+    image_type: str | None = None
+    image: bytes = b""
+
+
+_IMAGE_TYPES = {
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
 
 
 def load_repository_source(
@@ -70,6 +83,16 @@ def load_repository_source(
         )
     else:
         window = _read_local_file(repository.path, parts, line=line, max_bytes=max_bytes)
+    image_type = _IMAGE_TYPES.get(PurePosixPath(relative_path).suffix.lower())
+    if image_type and line is None and window.complete:
+        return RepositorySource(
+            repository_alias=repository_alias,
+            relative_path=relative_path,
+            text="",
+            total_bytes=window.total_bytes,
+            image_type=image_type,
+            image=window.data,
+        )
     data = window.data if window.complete else _trim_partial_utf8_tail(window.data)
     try:
         text = data.decode("utf-8")
@@ -136,8 +159,10 @@ def repository_for_path(manifest: Manifest, absolute_path: str) -> tuple[str, Pu
 
 
 def repository_source_document(source: RepositorySource, *, line: int | None = None) -> bytes:
-    """Render escaped source as a standalone, script-free HTML document."""
+    """Render escaped source, or an image as a data URL, as a script-free HTML document."""
 
+    if source.image_type:
+        return _image_document(source)
     lines = source.text.split("\n")
     last_line = source.start_line + len(lines) - 1
     if line is not None and (line < source.start_line or line > last_line):
@@ -316,3 +341,28 @@ def _read_remote_file(
     if len(window.data) > max_bytes:
         raise ValueError("Repository file exceeds the preview size limit")
     return window
+
+
+def _image_document(source: RepositorySource) -> bytes:
+    title = html.escape(f"{source.repository_alias}: {source.relative_path}", quote=True)
+    encoded = base64.b64encode(source.image).decode("ascii")
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<style>
+:root {{ color-scheme: light dark; }}
+body {{ margin: 0; font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }}
+header {{ position: sticky; top: 0; padding: 10px 16px; background: Canvas; border-bottom: 1px solid GrayText; }}
+main {{ padding: 16px; }}
+img {{ display: block; max-width: 100%; height: auto; margin: 0 auto; background: white; }}
+</style>
+</head>
+<body>
+<header>{title}</header>
+<main><img src="data:{source.image_type};base64,{encoded}" alt="{title}"></main>
+</body>
+</html>
+""".encode()
