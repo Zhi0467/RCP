@@ -55,11 +55,24 @@ _SUBAGENT_TOOLS = ("define_subagent", "invoke_subagent", "manage_subagents", "wa
 _WORK = {"work_auto", "orchestrate"}
 
 
-def _tools(capability: AgentCapability) -> tuple[str, ...]:
-    result = _FILE_TOOLS + _WEB_TOOLS
+def _tools(capability: AgentCapability) -> tuple[str, ...] | None:
+    """A narrower launch's tools, pinned through an agy agent; Work keeps agy's own set.
+
+    agy bills a request made through `--agent` as a custom-agent request, so Work and
+    orchestrator turns, which are nearly all agy traffic, launch without one.
+    """
     if capability in _WORK:
-        return result + _SHELL_TOOLS + _SUBAGENT_TOOLS
-    return result
+        return None
+    return _FILE_TOOLS + _WEB_TOOLS
+
+
+def _policy_head(
+    binary: str, policy: dict[str, object], tools: tuple[str, ...] | None, *, probe: bool = False
+) -> tuple[list[str], list[str]]:
+    """The wrapper options before the provider flags, and the `--agent` pair if any."""
+    head = [binary] + (["--rcp-agy-tools", json.dumps(tools)] if tools is not None else [])
+    agent = ["--agent", agy_agent_name(policy, tools)] if tools is not None else []
+    return head + (["--rcp-agy-probe"] if probe else []), agent
 
 
 def _protected_write_denies(scope: ProviderWriteScope | None) -> list[str]:
@@ -353,18 +366,14 @@ class AgyProfile(ProviderProfile):
 
     def work_like_probe_command(self, binary: str) -> list[str]:
         policy = _policy("work_auto", Path.cwd(), [], None, None)
-        tools = _tools("work_auto")
+        head, agent = _policy_head(binary, policy, _tools("work_auto"), probe=True)
         return [
-            binary,
-            "--rcp-agy-tools",
-            json.dumps(tools),
-            "--rcp-agy-probe",
+            *head,
             "--input-format",
             "stream-json",
             "--output-format",
             "stream-json",
-            "--agent",
-            agy_agent_name(policy, tools),
+            *agent,
             "--settings",
             json.dumps(policy),
             "--mode",
@@ -442,17 +451,14 @@ class AgyProfile(ProviderProfile):
             request.hidden_read_scope,
             request.invocation_gate,
         )
-        tools = _tools(request.capability)
+        head, agent = _policy_head(request.binary, policy, _tools(request.capability))
         command = [
-            request.binary,
-            "--rcp-agy-tools",
-            json.dumps(tools),
+            *head,
             "--input-format",
             "stream-json",
             "--output-format",
             "stream-json",
-            "--agent",
-            agy_agent_name(policy, tools),
+            *agent,
             "--settings",
             json.dumps(policy, separators=(",", ":")),
             "--mode",

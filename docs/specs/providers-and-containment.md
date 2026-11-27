@@ -635,10 +635,13 @@ never reach an RCP launch. Every capability but session summaries runs with
 `--mode accept-edits`; RCP never passes `-p`, `--sandbox`, `--mode auto`,
 `--mode plan`, `--effort` or the skip-permissions flag.
 
-The tool set is a staged agent, `<cwd>/.agents/agents/rcp-<digest>.md`, named by
-a digest of its tools and policy and selected with `--agent`. Work, orchestrate
-and the paper coach get file, web, shell and subagent tools with `command(*)`.
-Discuss and the artifact edit get file and web tools and no shell tools. agy ends a headless turn when it meets an action no rule
+Work, orchestrate and the paper coach run agy's own tool set with `command(*)`
+and no `--agent`, because agy bills a custom-agent request at a higher rate.
+That set includes agy's scheduler and background tools; the shared watcher
+prompt tells every agent that a watcher is its only way to be woken later.
+Discuss and the artifact edit get file and web tools and no shell tools, as a
+staged agent, `<cwd>/.agents/agents/rcp-<digest>.md`, named by a digest of its
+tools and policy and selected with `--agent`. agy ends a headless turn when it meets an action no rule
 allows; RCP shows that as an error naming the refused action. An explicit deny
 instead fails the tool and the turn goes on.
 
@@ -661,7 +664,7 @@ shell; the `.agents` deny keeps an agent from planting a stage hook.
 Every agy process RCP starts runs through one host wrapper, shipped from
 `providers/agy/remote.py`: it puts failing `open`, `xdg-open` and
 `sensible-browser` shims first on `PATH` and in `BROWSER`, then execs agy. For
-turns and the startup probe it also writes the staged agent and adds the host's
+turns and the startup probe it also writes any staged agent and adds the host's
 temp, `provider-homes` and shim-folder denies. A signed-out agy never opens
 a browser on any desktop.
 

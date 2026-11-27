@@ -134,13 +134,16 @@ owning specs and this file is deleted.
     existing Resume and Retry. A stopped turn shows its reason on hover.
 - **Sign-in card:** a limited card reads `Limit until 4:10 PM` instead of `Usage limit`.
 
-## 2. Gemini quota error
+## 2. agy: quota error and Work launches
 
 agy's quota error (`Individual quota reached … Resets in …`) joins the shared
-session-limit markers (section 1, step 2). agy launches are otherwise unchanged. Like
-every provider, they declare the exact tool set RCP grants, through the provider's own
-mechanism: `--tools` for Claude, feature flags for Codex, `--agent` for agy. A vendor's
-billing for that mechanism is not a reason to drop it.
+session-limit markers (section 1, step 2).
+
+Work and orchestrator turns drop `--agent`, because agy bills a custom-agent request at
+a higher rate, and run agy's own tool set. That set includes a scheduler and background
+agents. The shared watcher prompt tells every agent, on every provider, that a watcher
+is its only way to be woken later. Discuss and the artifact edit keep their staged
+agent.
 
 ## 3. In-app provider update
 

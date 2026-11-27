@@ -144,7 +144,8 @@ def _agy_host_policy(
     )
     permissions["deny"] = list(dict.fromkeys(permissions["deny"]))
     command[index] = json.dumps(policy, separators=(",", ":"))
-    command[command.index("--agent") + 1] = agy_agent_name(policy, tools)
+    if tools:
+        command[command.index("--agent") + 1] = agy_agent_name(policy, tools)
 
 
 def _agy_arguments(
@@ -190,8 +191,9 @@ def agy_run(arguments: list[str]) -> None:
         workspace = Path.home() / ".rcp" / "agy-probe"
         workspace.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chdir(workspace)
-    if tools:
+    if "--settings" in command:
         _agy_host_policy(command, tools, probe=probe, data_dir=data_dir)
+    if tools:
         _agy_stage_agent(command, list(tools))
     with run_home(home, Path.home(), AGY_HOME_LAYOUT) if home is not None else nullcontext():
         if home is not None:
