@@ -15,10 +15,10 @@ from rcp.agents.command_protocol import (
 from rcp.agents.staged_command_client import (
     EPISODE_RESUME,
     episode_control_usage,
-    experiment_kickoff_usage,
 )
 from rcp.approval_actions import AutoResearchAction, ExperimentStartAction
 from rcp.limits import EPISODE_TEXT_MAX_LENGTH
+from rcp.plan_folder import plan_folder_contract
 from rcp.runs.approval_cards import (
     APPROVAL_OUTCOMES,
     PLAN_RUN_HERE,
@@ -34,11 +34,9 @@ from rcp.runs.work_episode_controls import (
     _AUTO_RESEARCH_RECEIPT,
     chat_started_episode,
     control_own_turn,
-    handle_work_auto_research_kickoff,
     handle_work_episode_controls,
     intent_sha256,
     previous_receipt,
-    read_workspace_text,
     stop_own_episode,
     turn_keyed_branch_id,
     turn_keyed_id,
@@ -51,6 +49,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from rcp.background import AgentTaskExecution
+    from rcp.plan_folder import PlanFile
     from rcp.projects import ProjectCatalog
     from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord
     from rcp.storage.question_models import QuestionOrigin
@@ -148,7 +147,7 @@ def handle_work_episode_command(
     if isinstance(arguments, ExperimentKickoffArguments):
         return _handle_work_experiment_kickoff(execution, mailbox, request, arguments)
     if isinstance(arguments, AutoResearchKickoffArguments):
-        return handle_work_auto_research_kickoff(execution, mailbox, request, arguments)
+        return _handle_work_experiment_kickoff(execution, mailbox, request, arguments)
     if not isinstance(arguments, EpisodeControlArguments):
         return handle_work_episode_controls(execution, mailbox, request, arguments)
     if arguments.action == "stop":
@@ -247,126 +246,65 @@ def _handle_work_experiment_kickoff(
     execution: AgentTaskExecution,
     mailbox: RunStageMailbox | None,
     request: EpisodeCommandRequest,
-    arguments: ExperimentKickoffArguments,
-) -> CommandResponse:
-    """Record a plan card request for when this turn lands, or replay the same key.
-
-    A key that started an episode before plan cards still answers with that episode.
-    """
-
-    if arguments.at is not None or arguments.target is not None or arguments.seed_file is not None:
-        return CommandResponse(
-            request_id=request.request_id,
-            status="invalid",
-            message="A Work turn starts the Experiment on its own graph; omit the branch options.",
-        )
-    if arguments.goal_file is None:
-        return CommandResponse(
-            request_id=request.request_id,
-            status="invalid",
-            message="An Experiment plan card from Work requires --handoff-file.",
-        )
-    return record_plan_card_request(execution, mailbox, request, arguments)
-
-
-def record_plan_card_request(
-    execution: AgentTaskExecution,
-    mailbox: RunStageMailbox | None,
-    request: EpisodeCommandRequest,
     arguments: ExperimentKickoffArguments | AutoResearchKickoffArguments,
 ) -> CommandResponse:
-    """Record either plan request, preserving legacy direct-start identities and receipts."""
+    """Chat turns propose plans as files in plans/, never through this command."""
+
+    return CommandResponse(
+        request_id=request.request_id,
+        status="invalid",
+        message="Write the plan as a file in plans/ instead; RCP raises the card when "
+        "this turn ends.",
+        result={"code": "plan_files_replace_kickoff"},
+    )
+
+
+def record_plan_card(
+    execution: AgentTaskExecution,
+    name: str,
+    plan: PlanFile,
+    *,
+    revises: tuple[str, str] | None = None,
+) -> str | None:
+    """Record one plan file's card request for when this turn lands, or say why not.
+
+    `revises` names the open card the file was staged from and the version it showed,
+    so the card is revised only if nobody changed it during the turn.
+    """
     from rcp.runs.questions import work_ask_authorized
 
-    auto = isinstance(arguments, AutoResearchKickoffArguments)
+    auto = plan.kind == "auto_research"
     category = _AUTO_RESEARCH_RECEIPT if auto else _RECEIPT
-    prefix = "auto_research_" if auto else "experiment_"
-
-    def refuse(message: str, suffix: str) -> CommandResponse:
-        return CommandResponse(
-            request_id=request.request_id,
-            status="invalid",
-            message=message,
-            result={"code": f"{prefix}{suffix}"},
-        )
-
     if not (member_work_chat_turn(execution) and work_ask_authorized(execution)):
-        return refuse("This turn cannot raise a plan card.", "card_unavailable")
-    if mailbox is None or execution.experiment_card_raiser is None:
-        return CommandResponse(
-            request_id=request.request_id,
-            status="unavailable",
-            message="Plan cards are unavailable for this turn.",
-            result={"code": f"{prefix}card_unavailable"},
-        )
-    assert arguments.goal_file is not None
-    try:
-        goal = read_workspace_text(mailbox, arguments.goal_file, "Handoff file")
-        if auto and len(goal) > EPISODE_TEXT_MAX_LENGTH:
-            raise ValueError(f"Handoff exceeds {EPISODE_TEXT_MAX_LENGTH} characters.")
-    except ValueError as exc:
-        return refuse(str(exc), "goal_invalid")
+        return "This turn cannot raise a plan card."
+    if execution.experiment_card_raiser is None:
+        return "Plan cards are unavailable for this turn."
     store = execution.store
+    task = store.agent_task(execution.operation_id)
+    assert task is not None
+    if auto and task.graph_target.kind != "main":
+        return "Auto-research branches from main; propose it from a chat on main."
+    if auto and len(plan.goal) > EPISODE_TEXT_MAX_LENGTH:
+        return f"The goal exceeds {EPISODE_TEXT_MAX_LENGTH} characters."
+    intent = intent_sha256(plan.intent())
     lineage = turn_lineage(execution)
+    key = f"plan:{name}:{intent[:16]}"
     kickoff_id = (
-        turn_keyed_branch_id(lineage, "auto-research", request.idempotency_key)
+        turn_keyed_branch_id(lineage, "auto-research", key)
         if auto
-        else turn_keyed_id(lineage, "episode", request.idempotency_key)
+        else turn_keyed_id(lineage, "episode", key)
     )
-    intent = intent_sha256({**arguments.model_dump(mode="json"), "goal": goal})
-    episode = store.episode(kickoff_id)
-    previous = previous_receipt(
-        store,
-        lineage,
-        category,
-        **({"episode_id": kickoff_id} if episode is not None else {"kickoff_id": kickoff_id}),
-    )
-    if previous is not None and previous.get("intent_sha256") != intent:
-        return refuse("This key already proposed a different plan; use a new key.", "key_conflict")
-    subject = (
-        {"node_id": arguments.node_id} if isinstance(arguments, ExperimentKickoffArguments) else {}
-    )
-    if episode is not None:
-        return CommandResponse(
-            request_id=request.request_id,
-            status="ok",
-            result={
-                "disposition": "existing",
-                "episode_id": kickoff_id,
-                **subject,
-                **({"branch_id": episode.graph_target.branch_id} if auto else {}),
-                "status": episode.status,
-                "invocation_limit": episode.invocation_ceiling,
-            },
-        )
-    if previous is None and isinstance(arguments, ExperimentKickoffArguments):
-        task = store.agent_task(execution.operation_id)
-        assert task is not None
+    if not auto:
+        assert plan.node is not None
         runtime = store.experiment_loop_runtime(
-            task.project_id, arguments.node_id, graph_target=task.graph_target
+            task.project_id, plan.node, graph_target=task.graph_target
         )
         if runtime.episode_live:
-            return CommandResponse(
-                request_id=request.request_id,
-                status="invalid",
-                message="This Experiment's run is live. Wait for it to end, or ask the human "
-                "to stop it, before proposing another plan.",
-                result={
-                    "code": EXPERIMENT_RUN_LIVE,
-                    "episode_id": runtime.episode_id,
-                    **subject,
-                },
+            return (
+                f"{plan.node}'s run is live. Wait for it to end, or ask the human to stop "
+                "it, before proposing another plan."
             )
     if previous_receipt(store, (execution.operation_id,), category, kickoff_id=kickoff_id) is None:
-        options = (
-            {
-                "code_worktree": arguments.code_worktree,
-                "worktree_repository": arguments.worktree_repository,
-                "branch_name": arguments.branch_name,
-            }
-            if isinstance(arguments, AutoResearchKickoffArguments)
-            else subject
-        )
         store.record_agent_task_receipt(
             execution.operation_id,
             category,
@@ -374,20 +312,29 @@ def record_plan_card_request(
                 "phase": "card_pending",
                 "kickoff_id": kickoff_id,
                 "intent_sha256": intent,
-                "goal": goal,
-                "invocation_ceiling": arguments.invocation_limit,
-                "provider": arguments.provider,
-                "model": arguments.model,
-                "reasoning": arguments.reasoning,
-                **options,
+                "goal": plan.goal,
+                "invocation_ceiling": plan.invocation_limit,
+                "provider": plan.provider,
+                "model": plan.model,
+                "reasoning": plan.reasoning,
+                **(
+                    {
+                        "code_worktree": plan.code_worktree,
+                        "worktree_repository": plan.worktree_repository,
+                        "branch_name": plan.branch_name,
+                    }
+                    if auto
+                    else {"node_id": plan.node}
+                ),
+                **(
+                    {"question_id": revises[0], "expected_sha256": revises[1]}
+                    if revises is not None
+                    else {}
+                ),
             },
             tier="diagnostic",
         )
-    return CommandResponse(
-        request_id=request.request_id,
-        status="ok",
-        result={"disposition": "card_pending", **subject},
-    )
+    return None
 
 
 def raise_plan_cards(execution: AgentTaskExecution, catalog: ProjectCatalog) -> None:
@@ -448,7 +395,15 @@ def raise_plan_cards(execution: AgentTaskExecution, catalog: ProjectCatalog) -> 
                     **{
                         key: value
                         for key, value in payload.items()
-                        if key not in {"phase", "kickoff_id", "intent_sha256", "goal"}
+                        if key
+                        not in {
+                            "phase",
+                            "kickoff_id",
+                            "intent_sha256",
+                            "goal",
+                            "question_id",
+                            "expected_sha256",
+                        }
                     },
                 }
             )
@@ -487,8 +442,11 @@ def raise_plan_cards(execution: AgentTaskExecution, catalog: ProjectCatalog) -> 
         }
         text = f"Start {title}?"
         open_cards = _open_cards(store, origin, subject)
+        target = payload.get("question_id")
+        if target is not None:
+            open_cards = [item for item in open_cards if item[0] == target]
         kept = None
-        if open_cards and (
+        revised = bool(open_cards) and (
             store.revise_approval_card(
                 open_cards[-1][0],
                 revised_by={"kind": "agent", "name": _agent_name(store, origin.owner_id)},
@@ -497,9 +455,20 @@ def raise_plan_cards(execution: AgentTaskExecution, catalog: ProjectCatalog) -> 
                 question=text,
                 operation_id=execution.operation_id,
                 raised_kickoff_id=kickoff_id,
+                expected_sha256=str(payload["expected_sha256"]) if target else None,
             )
             is not None
-        ):
+        )
+        if target is not None and not revised:
+            store.record_agent_task_event(
+                execution.operation_id,
+                f"Plan card for {subject} was not revised: the human changed or closed it "
+                "during this turn.",
+                level="warning",
+            )
+            _mark_raised(store, execution.operation_id, kickoff_id)
+            continue
+        if revised:
             kept = open_cards[-1][0]
             store.record_agent_task_event(
                 execution.operation_id, f"Plan card revised for {subject}."
@@ -617,43 +586,27 @@ def work_experiment_command_usage(client: str, profile_choices: str) -> str:
         "changes, then use the episode controls above in a later turn: message it while it "
         "runs, or add turns with a note once it has ended. The human's message is the "
         "authorization.\n"
-        "Experiment plan card: propose a new episode for the human to review, edit, and Start. "
-        "Propose one only when the human asks you "
-        "to run or start an Experiment (in a chat on that Experiment, 'run it' counts) and no "
-        "episode of that Experiment can resume or take added turns. If the human did not ask, "
-        "suggest a run in your reply; if an episode can continue, use the episode controls "
-        "instead. "
+        "Experiment plan card: propose a new episode for the human to review, edit, and Start "
+        "only when the human asks to run an Experiment, or the discussion settles on running "
+        "one, and no episode of it can resume or take added turns; otherwise use the episode "
+        "controls. "
         "Before proposing, audit the Experiment and every node one edge away (its Hypotheses, "
         "Decisions, Blockers, and Evidence). Write or fix the Experiment and its neighbors in "
-        "this same turn's Patch: graph edits land when the turn ends, and the card appears "
-        "then, drawn from the settled graph. A node that is missing or not an Experiment by "
-        "then gets no card and a task event.\n"
-        f"`{client} episode --key <key> "
-        f"{experiment_kickoff_usage(goal_required=True, child_targets=False)}`\n"
-        "Write the handoff first as a direct regular UTF-8 file in this run workspace, beside "
-        "the Patch, never a nested path or symlink. The handoff is what you hand to the "
-        "experiment agent, and the run starts with it as that agent's first message: what the "
-        "human asked to run and the specifics from this chat (settings, data, what to "
-        "compare). How this episode runs (who builds what, which agent, receipts to collect) "
-        "goes in the handoff, never in the "
-        "Experiment's fields, which state only its scientific design. The limit may not exceed "
-        "the Experiment's own invocation limit; it defaults to that limit. Pick the provider, "
-        "model, and effort that fit the work, or omit them for Settings. Ready profiles:\n"
+        "this same turn's Patch: the card appears when the turn ends, drawn from the settled "
+        "graph. A node that is missing or not an Experiment by then gets no card and a task "
+        "event.\n"
+        f"{plan_folder_contract()}\n"
+        "The goal is the handoff the experiment agent starts with: what the human asked to "
+        "run and the specifics from this chat (settings, data, what to compare). How the "
+        "episode runs (who builds what, which agent, receipts to collect) goes in the goal, "
+        "never in the Experiment's fields, which state only its scientific design. The limit "
+        "defaults to the Experiment's own. Pick the provider, model, and effort that fit the "
+        "work, or omit them for Settings. Ready profiles:\n"
         f"{profile_choices}\n"
-        "The command only proposes: it answers card_pending and starts nothing. The run starts only when a human "
-        "presses Start on the card, after reviewing and possibly editing the handoff, limit, "
-        "and profile. The human may instead park the card for later, which the question "
-        "snapshot shows as shelved: a parked plan waits for the human, so do not raise it "
-        "again unasked. While the Experiment's run is live the command is refused with "
-        f"{EXPERIMENT_RUN_LIVE}: message or stop the run with the episode controls if this "
-        "chat started it; otherwise ask the human to stop it in Runs. "
-        "Tell the human the plan card will appear when this reply ends. The question snapshot "
-        "shows the card's outcome: "
+        "While the Experiment's run is live a new plan for it is refused: message or stop the "
+        "run with the episode controls if this chat started it; otherwise ask the human to "
+        "stop it in Runs. The question snapshot shows each card's outcome: "
         + "; ".join(f"{outcome}: {meaning}" for outcome, meaning in APPROVAL_OUTCOMES.items())
         + f"; {PLAN_RUN_HERE}: {PLAN_RUN_HERE_MEANING}"
-        + " To revise the plan after the human comments, run the command again for the same "
-        "node with a new key: it revises the open card in place, pending or parked, and "
-        "raises no second card. Once the card is approved, "
-        "tell the human what started (node, handoff, limit, profile). Its ending reaches this "
-        "chat through the episode mailbox."
+        + " Its ending reaches this chat through the episode mailbox."
     )

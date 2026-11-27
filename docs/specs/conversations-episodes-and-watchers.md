@@ -977,19 +977,30 @@ Experiment turns, Auto-research child Work, consolidation and artifact edits do
 not get the `episode` verb, and an orchestrator that names a member-only action
 is refused with `episode_action_not_granted`.
 
-**Experiment start.** `episode --kick-off-experiment --node <id> --handoff-file
-<file>` raises a [plan card](authority-and-proposals.md#episode-plan-cards)
-on the chat's own graph target instead of starting. The card appears when the
-turn's Patch lands, so the agent writes and fixes the node in the same turn.
-`--invocation-limit` may shorten the episode but never exceed the node's limit,
-and the handoff file is required. The handoff is the text the agent hands to the
-experiment agent, and the run starts with it as that agent's first message.
-Running the command again for the same node with a new key revises the open card
-in place, and a node whose run is live refuses the kickoff with
-`experiment_run_live`. Provider, model and effort are the agent's pick
-from the ready profiles, otherwise Settings; the human may change all three on
-the card. Readiness is checked at Start. The Experiment's ending reaches the chat
-through the episode mailbox, so the agent arms no watcher for it.
+**Plan files.** A member's Work turn proposes and edits
+[plan cards](authority-and-proposals.md#episode-plan-cards) as files in `plans/`
+of its run workspace. At turn start RCP writes every open or parked plan card of
+the chat there as `<card id>.json`, from the card as it stands, and keeps that
+view as the turn's baseline. The file holds `kind`, `node`, `goal`,
+`invocation_limit`, and optional `provider`, `model`, `reasoning`, and the
+Auto-research `code_worktree`, `worktree_repository` and `branch_name`. `state`
+(`waiting` or `parked`) and `version` (the card's hash) are RCP's. When the turn
+ends, a new file asks for a new card and a changed file revises its card, only
+while the card still carries the staged `version`; a member's edit during the
+turn wins and the turn gets a warning event. Deleting a file changes nothing. An
+invalid file, a node whose run is live, or a turn without the grants becomes a
+correction the agent fixes in the same turn, like a watcher file. The retired
+`episode --kick-off-*` commands answer `plan_files_replace_kickoff`. The Work
+prompt asks the agent to raise a card once the discussion settles on a study and
+to edit an open card's file when the talk changes its plan.
+
+**Experiment start.** An `experiment` plan raises its card on the chat's own
+graph target when the turn's Patch lands, so the agent writes and fixes the node
+in the same turn. The goal is the handoff, the experiment agent's first message.
+The limit defaults to the node's. Provider, model and effort are the agent's
+pick from the ready profiles, otherwise Settings; the human may change all three
+on the card. Readiness is checked at Start. The Experiment's ending reaches the
+chat through the episode mailbox, so the agent arms no watcher for it.
 
 **Choosing the route.** The Work prompt sends work that answers a research
 question and needs more than one shot (iteration, debugging, hours of compute,
@@ -997,21 +1008,18 @@ or results that could change project beliefs) to an Experiment. Infrastructure
 and tooling of any size, and short one-shot checks, stay in the chat with a
 launch and a watch. This is guidance; nothing caps a direct launch.
 
-**Auto-research start.** `episode --kick-off-auto-research --handoff-file <file>
---invocation-limit <n>` records a request and answers `card_pending`. The card
-appears after the Work turn succeeds; only the human's Start creates the episode
-on its own branch from main. A branch chat is refused early with
-`auto_research_starts_from_main`; a turn without the member Work and ask grants
-is refused with `auto_research_card_unavailable`. The human may edit the starting
+**Auto-research start.** An `auto_research` plan names no node and needs an
+`invocation_limit`. The card appears after the Work turn succeeds; only the
+human's Start creates the episode on its own branch from main. A plan from a
+branch chat is a correction. The human may edit the starting
 instruction, budget, branch name, code worktree and repository, and orchestrator
 provider, model and effort. Readiness is checked at Start, with correction and
 settlement rules owned by the [plan card spec](authority-and-proposals.md#episode-plan-cards).
 Open-ended exploration and questions pursued across several dependent Experiments
 route to Auto-research; a single designed study routes to Experiment.
 
-Both kickoffs persist receipts on the turn. Resume or Retry recovers the same
-card; an older Auto-research receipt whose episode already exists answers
-`existing`. The card request determines the episode id. The tapping member
+Both plan kinds persist receipts on the turn. Resume or Retry recovers the same
+card. The card request determines the episode id. The tapping member
 authorizes the start, and the episode's root names the raising turn, so Runs
 shows **Started from** that chat, for each continuation too.
 

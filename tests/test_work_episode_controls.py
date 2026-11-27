@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from pathlib import Path
 from unittest.mock import Mock
@@ -107,6 +108,20 @@ class _Member:
         )
         return lambda key, arguments: handler(_episode(key, arguments), identity)
 
+    def propose(self, operation_id: str, name: str = "go") -> str | None:
+        """Write an Auto-research plan file in this turn's plans/ and record it."""
+
+        from rcp.plan_folder import record_plan_folder, stage_plan_folder
+
+        chat_id = self.store.agent_task(operation_id).request["chat_id"]  # type: ignore[union-attr]
+        stage_plan_folder(self.store, operation_id, self.project_id, chat_id, self.workspace, None)
+        goal = (self.workspace / "goal.md").read_text(encoding="utf-8")
+        (self.workspace / "plans" / f"{name}.json").write_text(
+            json.dumps({"kind": "auto_research", "goal": goal, "invocation_limit": 3}),
+            encoding="utf-8",
+        )
+        return record_plan_folder(self.executions[operation_id], self.workspace, None)
+
     def land(self, operation_id: str):
         self.store.complete_agent_task(operation_id, applied_revision=None, result={"messages": []})
         self.background.experiment_card_raiser(self.executions[operation_id])
@@ -155,9 +170,6 @@ class _Member:
         self.background.stream = stream
 
 
-KICKOFF = {"action": "kick_off_auto_research", "goal_file": "goal.md", "invocation_limit": 3}
-
-
 def test_a_work_chat_starts_pauses_resumes_steers_stops_and_extends_its_auto_research(
     manifest, tmp_path: Path, monkeypatch
 ) -> None:
@@ -167,9 +179,7 @@ def test_a_work_chat_starts_pauses_resumes_steers_stops_and_extends_its_auto_res
     member.pausable_orchestrator()
     act = member.turn("kickoff-turn")
 
-    started = act("go", KICKOFF)
-    assert started.status == "ok", started.message
-    assert started.result["disposition"] == "card_pending"
+    assert member.propose("kickoff-turn") is None
     card = member.land("kickoff-turn")
     tapped = member.start(card)
     assert tapped.status_code == 200, tapped.text
@@ -179,8 +189,6 @@ def test_a_work_chat_starts_pauses_resumes_steers_stops_and_extends_its_auto_res
     assert episode.authorized_by == member.human
     assert episode.invocation_ceiling == 3
     assert store.episode_started_from_chat(episode_id).chat_id == THREAD_CHAT  # type: ignore[union-attr]
-    replayed = act("go", KICKOFF)
-    assert (replayed.status, replayed.result["disposition"]) == ("ok", "card_pending")
     repeated_tap = member.start(card)
     assert repeated_tap.status_code == 409
     assert repeated_tap.json()["detail"]["code"] == "card_taken"
@@ -249,9 +257,8 @@ def test_another_chat_cannot_control_the_episode(manifest, tmp_path: Path, monke
     member = _Member(manifest, tmp_path, monkeypatch)
     store = member.store
     member.settling_orchestrator()
-    kickoff = member.turn("kickoff-turn")
-    pending = kickoff("go", KICKOFF)
-    assert pending.result["disposition"] == "card_pending"
+    member.turn("kickoff-turn")
+    assert member.propose("kickoff-turn") is None
     card = member.land("kickoff-turn")
     unready = member.start(card)
     assert unready.json()["detail"]["code"] == "provider_not_ready"
@@ -282,7 +289,7 @@ def test_a_refused_start_retries_with_edited_arguments(
     store = member.store
     member.settling_orchestrator()
     kickoff = member.turn("kickoff-turn")
-    assert kickoff("go", KICKOFF).result["disposition"] == "card_pending"
+    assert member.propose("kickoff-turn") is None
     card = member.land("kickoff-turn")
     unready = member.start(card)
     assert unready.json()["detail"]["code"] == "provider_not_ready"
@@ -292,8 +299,6 @@ def test_a_refused_start_retries_with_edited_arguments(
     episode_id = started.json()["result"]["episode_id"]
     episode = store.episode(episode_id)
     assert episode is not None and episode.invocation_ceiling == 4
-    changed = kickoff("go", {**KICKOFF, "invocation_limit": 4})
-    assert changed.status == "invalid"
 
     root_id = store.episode(episode_id).root_operation_id  # type: ignore[union-attr]
     wait_for_task(store, root_id, expect="succeeded")
@@ -301,16 +306,14 @@ def test_a_refused_start_retries_with_edited_arguments(
     assert (paused.status, paused.result["code"]) == ("invalid", "episode_not_pausable")
 
 
-def test_auto_research_kickoff_waits_for_turn_success_and_a_human_start(
+def test_an_auto_research_plan_file_waits_for_turn_success_and_a_human_start(
     manifest, tmp_path: Path, monkeypatch
 ) -> None:
     member = _Member(manifest, tmp_path, monkeypatch)
-    call = member.turn("plan-turn")
-    response = call("go", KICKOFF)
-    assert (response.status, response.result) == ("ok", {"disposition": "card_pending"})
+    member.turn("plan-turn")
+    assert member.propose("plan-turn") is None
+    assert member.propose("plan-turn") is None
     assert member.store.episodes(member.project_id, limit=None) == []
-    assert call("go", KICKOFF).result == response.result
-    assert call("go", {**KICKOFF, "invocation_limit": 4}).status == "invalid"
     receipts = member.store.agent_task_receipts_by_category(
         "plan-turn", "work_auto_research_kickoff"
     )
@@ -324,14 +327,14 @@ def test_auto_research_recovery_does_not_replace_a_newer_plan(
     from rcp.runs.work_experiment_commands import raise_pending_experiment_cards
 
     member = _Member(manifest, tmp_path, monkeypatch)
-    call = member.turn("old-turn")
-    assert call("go", KICKOFF).result["disposition"] == "card_pending"
+    member.turn("old-turn")
+    assert member.propose("old-turn") is None
     older = member.land("old-turn")
-    call = member.turn("lost-turn")
-    assert call("lost", KICKOFF).result["disposition"] == "card_pending"
+    member.turn("lost-turn")
+    assert member.propose("lost-turn", "lost") is None
     member.store.complete_agent_task("lost-turn", applied_revision=None, result={"messages": []})
-    newer_call = member.turn("newer-turn")
-    assert newer_call("newer", KICKOFF).result["disposition"] == "card_pending"
+    member.turn("newer-turn")
+    assert member.propose("newer-turn", "newer") is None
     member.store.complete_agent_task("newer-turn", applied_revision=None, result={"messages": []})
     member.background.experiment_card_raiser(member.executions["newer-turn"])
     raise_pending_experiment_cards(member.store, member.background.recorded_execution)
@@ -342,77 +345,16 @@ def test_auto_research_recovery_does_not_replace_a_newer_plan(
     assert member.store.pending_experiment_card_tasks() == []
 
 
-def test_auto_research_old_direct_start_receipt_still_replays(
-    manifest, tmp_path: Path, monkeypatch
-) -> None:
-    from rcp.runs.work_episode_controls import (
-        WorkAutoResearchStart,
-        intent_sha256,
-        turn_keyed_branch_id,
-    )
-
-    member = _Member(manifest, tmp_path, monkeypatch)
-    member.provider_ready()
-    member.settling_orchestrator()
-    call = member.turn("old-writer")
-    episode_id = turn_keyed_branch_id(("old-writer",), "auto-research", "old")
-    goal = (member.workspace / "goal.md").read_text()
-    arguments = _episode("old", KICKOFF).arguments
-    member.store.record_agent_task_receipt(
-        "old-writer",
-        "work_auto_research_kickoff",
-        {
-            "episode_id": episode_id,
-            "intent_sha256": intent_sha256({**arguments.model_dump(mode="json"), "goal": goal}),
-        },
-        tier="diagnostic",
-    )
-    from rcp.api.work_episodes import start_work_auto_research
-
-    episode = start_work_auto_research(
-        member.app.state.catalog,
-        member.background,
-        member.app.state.services.experiment_operation_lock,
-        WorkAutoResearchStart(
-            source_operation_id="old-writer",
-            episode_id=episode_id,
-            goal=goal,
-            invocation_ceiling=3,
-            code_worktree=None,
-            worktree_repository=None,
-            branch_name=None,
-            provider=None,
-            model=None,
-            reasoning=None,
-        ),
-        authorized_by=member.human,
-    )
-    replayed = call("old", KICKOFF)
-    assert replayed.status == "ok"
-    assert (replayed.result["disposition"], replayed.result["episode_id"]) == (
-        "existing",
-        episode_id,
-    )
-    assert call("old", {**KICKOFF, "invocation_limit": 4}).status == "invalid"
-    member.store.complete_agent_task("old-writer", applied_revision=None, result={"messages": []})
-    member.background.experiment_card_raiser(member.executions["old-writer"])
-    assert member.store.list_questions(project_id=member.project_id) == []
-    assert len(member.store.episodes(member.project_id, limit=None)) == 1
-    assert episode.root_operation_id is not None
-    wait_for_task(member.store, episode.root_operation_id)
-
-
 def test_auto_research_card_requires_an_authorized_work_turn_on_main(
     manifest, tmp_path: Path, monkeypatch
 ) -> None:
     from rcp.core.transition_models import GraphTargetRef
 
     member = _Member(manifest, tmp_path, monkeypatch)
-    call = member.turn("gated-turn")
+    member.turn("gated-turn")
     with monkeypatch.context() as patch:
         patch.setattr("rcp.runs.questions.work_ask_authorized", lambda _execution: False)
-        refused = call("go", KICKOFF)
-        assert refused.result == {"code": "auto_research_card_unavailable"}
+        assert member.propose("gated-turn") is not None
     source = member.store.agent_task("gated-turn")
     assert source is not None
     on_branch = source.model_copy(
@@ -427,8 +369,7 @@ def test_auto_research_card_requires_an_authorized_work_turn_on_main(
                 on_branch if operation_id == "gated-turn" else original(operation_id)
             ),
         )
-        refused = call("go", KICKOFF)
-        assert refused.result == {"code": "auto_research_starts_from_main"}
+        assert member.propose("gated-turn") is not None
     assert (
         member.store.agent_task_receipts_by_category("gated-turn", "work_auto_research_kickoff")
         == []
@@ -439,14 +380,12 @@ def test_auto_research_goal_length_refusal_records_no_card(manifest, tmp_path, m
     from rcp.limits import EPISODE_TEXT_MAX_LENGTH
 
     member = _Member(manifest, tmp_path, monkeypatch)
-    call = member.turn("long-goal")
+    member.turn("long-goal")
     (member.workspace / "goal.md").write_text("x" * (EPISODE_TEXT_MAX_LENGTH + 1))
-    refused = call("long", KICKOFF)
-    assert refused.status == "invalid"
-    assert refused.result == {"code": "auto_research_goal_invalid"}
+    assert member.propose("long-goal", "long") is not None
     assert (
         member.store.agent_task_receipts_by_category("long-goal", "work_auto_research_kickoff")
         == []
     )
     (member.workspace / "goal.md").write_text("x" * EPISODE_TEXT_MAX_LENGTH)
-    assert call("long", KICKOFF).result["disposition"] == "card_pending"
+    assert member.propose("long-goal", "long") is None

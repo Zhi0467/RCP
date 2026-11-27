@@ -49,7 +49,6 @@ import {
   planNodeChanges,
   planNodeDraftStale,
   planStartDecision,
-  planTurnCap,
   savePlanNodeEdit,
   tapPlanCard,
   type ExperimentStartAction,
@@ -306,7 +305,6 @@ function PlanLaunch({
   config,
   agentLabel,
   turns,
-  cap,
   locked,
   onTurns,
   onConfig,
@@ -317,7 +315,6 @@ function PlanLaunch({
   config: AgentRunConfig | null;
   agentLabel: string;
   turns: number;
-  cap?: number;
   locked: boolean;
   onTurns: (turns: number) => void;
   onConfig: (config: AgentRunConfig) => void;
@@ -339,11 +336,10 @@ function PlanLaunch({
     <>
       <div className="plan-launch">
         {picker.chip}
-        <label className="plan-turns" title={cap ? `At most ${cap}` : undefined}>
+        <label className="plan-turns">
           <input
             type="number"
             min={1}
-            max={cap}
             step={1}
             value={Number.isFinite(turns) ? turns : ""}
             disabled={locked}
@@ -605,7 +601,6 @@ function ExperimentPlanCardView({
     if (stale) dropStale();
   }, [stale]);
   const nodeChanges = planNodeChanges(edits, node);
-  const cap = planTurnCap(action, node);
   const isStaged = !taps.folded && staged();
   const workLike = launchProfile?.work_like_capable;
   const providerReady =
@@ -717,7 +712,6 @@ function ExperimentPlanCardView({
         config={inputs.config}
         agentLabel="Experiment agent"
         turns={inputs.invocationCeiling}
-        cap={cap}
         locked={locked}
         onTurns={(invocationCeiling) => setEdits({ ...edits, invocationCeiling })}
         onConfig={(config) => setEdits({ ...edits, config })}
@@ -757,11 +751,9 @@ function ExperimentPlanCardView({
             busy={busy}
             locked={locked}
             canAnswer={question.can_answer}
-            runHereDisabled={locked || isStaged || !planInputsReady(inputs, node, cap)}
+            runHereDisabled={locked || isStaged || !planInputsReady(inputs, node)}
             startNote={nodeChanges ? "Saves your edits to the node" : undefined}
-            startDisabled={
-              locked || isStaged || !providerReady || !planInputsReady(inputs, node, cap)
-            }
+            startDisabled={locked || isStaged || !providerReady || !planInputsReady(inputs, node)}
             onTap={(decision) => void tap(decision)}
           />
         )

@@ -714,6 +714,7 @@ async def _stage_work_turn(
                 layout.workspace,
                 layout.remote_stage,
             )
+            _stage_plans(execution, request.chat_id, layout.workspace, layout.remote_stage)
 
     def stage_artifacts(
         layout: WorkStageLayout, artifact_directory: Path | PurePosixPath
@@ -1342,6 +1343,42 @@ def _read_initial_patch_deliverable(
     return _DeliverableRead(text=text, failure=failure)
 
 
+def _stage_plans(
+    execution: AgentTaskExecution,
+    chat_id: str,
+    workspace: Path,
+    remote_stage: RemoteRunStage | None,
+) -> None:
+    from rcp.plan_folder import stage_plan_folder
+    from rcp.runs.work_experiment_commands import work_experiment_allowed
+
+    task = execution.store.agent_task(execution.operation_id)
+    if task is not None and work_experiment_allowed(execution):
+        stage_plan_folder(
+            execution.store,
+            execution.operation_id,
+            task.project_id,
+            chat_id,
+            workspace,
+            remote_stage,
+        )
+
+
+def _plan_failure(turn: WorkFinalizationContext) -> str | None:
+    """Record the turn's new and edited plan files; return what the agent must fix."""
+    from rcp.plan_folder import record_plan_folder
+    from rcp.runs.work_experiment_commands import work_experiment_allowed
+
+    if turn.execution is None or not work_experiment_allowed(turn.execution):
+        return None
+    try:
+        return record_plan_folder(turn.execution, turn.workspace, turn.remote_stage)
+    except (OSError, StateUnavailable, ValueError) as exc:
+        if turn.recorded and isinstance(exc, StateUnavailable):
+            raise
+        return f"plans/ could not be read: {exc}"
+
+
 def _folder_baseline(turn: WorkFinalizationContext | WorkTurn, attempt: int) -> str | None:
     if turn.execution is None:
         return None
@@ -1937,15 +1974,24 @@ async def _settle_watch_deliverable(
                 settled.turn_outcome = TurnOutcome(status="not_stated")
                 if correction_rounds < TURN_OUTCOME_CORRECTION_MAX_ROUNDS:
                     outcome_failure = f"Write a valid outcome.json for the completed turn: {exc}"
-        if failure is None and outcome_failure is None:
+        plan_failure = (
+            _plan_failure(turn) if correction_rounds <= TURN_OUTCOME_CORRECTION_MAX_ROUNDS else None
+        )
+        if failure is None and outcome_failure is None and plan_failure is None:
             return
         watch_failure = failure
-        failure = failure or _DeliverableFailure(outcome_failure or "", correctable=True)
+        failure = failure or _DeliverableFailure(
+            outcome_failure or plan_failure or "", correctable=True
+        )
         if (
             not failure.correctable
             or correction_rounds >= maximum_corrections
             or not settled.native_session_id
         ):
+            if plan_failure is not None and turn.execution is not None:
+                turn.execution.store.record_agent_task_event(
+                    turn.execution.operation_id, plan_failure, level="warning"
+                )
             if watch_failure is None:
                 return
             required_handoff = False
@@ -1965,7 +2011,11 @@ async def _settle_watch_deliverable(
 
         problem = "\n".join(
             item
-            for item in (watch_failure.message if watch_failure else None, outcome_failure)
+            for item in (
+                watch_failure.message if watch_failure else None,
+                outcome_failure,
+                plan_failure,
+            )
             if item
         )
         correction_rounds += 1

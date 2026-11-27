@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +12,7 @@ import pytest
 
 from rcp.agents import AgentEvent, AgentProcessControl
 from rcp.agents.command_mailbox import CommandTurnIdentity
-from rcp.agents.command_protocol import EpisodeCommandRequest, ExperimentKickoffArguments
+from rcp.agents.command_protocol import EpisodeCommandRequest
 from rcp.background import AgentTaskExecution
 from rcp.core.models import Patch
 from rcp.loop_status import episode_loop_metadata
@@ -19,7 +20,6 @@ from rcp.runs.approval_cards import plan_card_episode_id, settle_interrupted_app
 from rcp.runs.experiment_admission import WorkExperimentStart
 from rcp.runs.questions import work_command_handler
 from rcp.runs.shared import _sse
-from rcp.runs.work_episode_controls import intent_sha256, turn_keyed_id
 from rcp.runs.work_experiment_commands import raise_pending_experiment_cards
 from rcp.service import RunRequest, resolve_dispatch_authority
 from rcp.storage import AgentTaskRecord
@@ -65,26 +65,40 @@ def _experiment_patch(node_id: str = EXPERIMENT_ID) -> Patch:
     )
 
 
-def _kickoff(
-    key: str,
+def _propose(
+    plan,
+    execution,
+    name: str,
     *,
     goal_file: str = "goal.md",
     limit: int | None = None,
-    node_id: str = EXPERIMENT_ID,
+    node_id: str | None = EXPERIMENT_ID,
+    kind: str = "experiment",
 ):
-    return EpisodeCommandRequest(
-        mailbox_id="a" * 32,
-        request_id=uuid.uuid4().hex,
-        credential="b" * 64,
-        verb="episode",
-        idempotency_key=key,
-        arguments=ExperimentKickoffArguments(
-            action="kick_off_experiment",
-            node_id=node_id,
-            goal_file=goal_file,
-            invocation_limit=limit,
-        ),
+    """Stage the chat's plans/, write one plan file as the agent would, and record it."""
+
+    from rcp.plan_folder import record_plan_folder, stage_plan_folder
+
+    task = plan.store.agent_task(execution.operation_id)
+    stage_plan_folder(
+        plan.store,
+        execution.operation_id,
+        plan.project_id,
+        task.request["chat_id"],
+        plan.workspace,
+        None,
     )
+    body = {
+        "kind": kind,
+        "node": node_id,
+        "goal": (plan.workspace / goal_file).read_text(encoding="utf-8"),
+        "invocation_limit": limit,
+    }
+    (plan.workspace / "plans" / f"{name}.json").write_text(
+        json.dumps({key: value for key, value in body.items() if value is not None}),
+        encoding="utf-8",
+    )
+    return record_plan_folder(execution, plan.workspace, None)
 
 
 @pytest.fixture
@@ -189,8 +203,8 @@ def _cards(plan, chat_id):
 
 
 def _plan_card(plan, chat_id="shared-chat", *, key="first", **turn):
-    execution, call = _turn(plan, f"turn-{key}", chat_id=chat_id, **turn)
-    assert call(_kickoff(key)).result["disposition"] == "card_pending"
+    execution, _call = _turn(plan, f"turn-{key}", chat_id=chat_id, **turn)
+    assert _propose(plan, execution, key) is None
     _land(plan, execution)
     (card,) = [
         row
@@ -202,8 +216,8 @@ def _plan_card(plan, chat_id="shared-chat", *, key="first", **turn):
 
 def _crash_before_card(plan, key, chat_id="shared-chat"):
     """A turn that asked for a card and succeeded, then lost the process before the hook."""
-    execution, call = _turn(plan, f"turn-{key}", chat_id=chat_id)
-    assert call(_kickoff(key)).result["disposition"] == "card_pending"
+    execution, _call = _turn(plan, f"turn-{key}", chat_id=chat_id)
+    assert _propose(plan, execution, key) is None
     plan.store.complete_agent_task(
         execution.operation_id, applied_revision=None, result={"messages": []}
     )
@@ -492,15 +506,10 @@ def test_a_plan_for_a_node_with_a_live_run_is_refused(plan):
     assert _start(plan, card).json()["outcome"] == "approved"
     episode_id = started_episode(plan, card)
 
-    execution, call = _turn(plan, "turn-again", chat_id="shared-chat")
-    refused = call(_kickoff("again"))
+    execution, _call = _turn(plan, "turn-again", chat_id="shared-chat")
+    refused = _propose(plan, execution, "again")
 
-    assert refused.status == "invalid"
-    assert refused.result == {
-        "code": "experiment_run_live",
-        "episode_id": episode_id,
-        "node_id": EXPERIMENT_ID,
-    }
+    assert refused is not None and refused.startswith("plans/again.json:")
     _land(plan, execution)
     assert len(_cards(plan, "shared-chat")) == 1
     wait_for_task(plan.store, plan.store.episode(episode_id).root_operation_id or "")
@@ -510,8 +519,8 @@ def test_run_here_sends_the_plan_as_one_member_turn_and_starts_no_episode(plan, 
     from tests.helpers import fake_launch_admitted
 
     fake_launch_admitted(monkeypatch, plan.app.state.background_tasks)
-    execution, call = _turn(plan, "turn-first", chat_id="shared-chat")
-    assert call(_kickoff("first")).result["disposition"] == "card_pending"
+    execution, _call = _turn(plan, "turn-first", chat_id="shared-chat")
+    assert _propose(plan, execution, "first") is None
     _land(plan, execution)
     _turn(plan, "turn-busy", chat_id="shared-chat")
     (card,) = _cards(plan, "shared-chat")
@@ -648,27 +657,40 @@ def _experiment_loops(plan):
     ]
 
 
-def test_kickoff_records_the_request_and_starts_nothing(plan, monkeypatch):
+def test_a_plan_file_records_the_request_and_starts_nothing(plan, monkeypatch):
     from rcp.runs import questions
 
     first, call = _turn(plan, WORK_TURN, chat_id="shared-chat")
+    retired = call(
+        EpisodeCommandRequest.model_validate(
+            {
+                "mailbox_id": "a" * 32,
+                "request_id": uuid.uuid4().hex,
+                "credential": "b" * 64,
+                "verb": "episode",
+                "idempotency_key": "old",
+                "arguments": {
+                    "action": "kick_off_experiment",
+                    "node_id": EXPERIMENT_ID,
+                    "goal_file": "goal.md",
+                },
+            }
+        )
+    )
+    assert (retired.status, retired.result) == ("invalid", {"code": "plan_files_replace_kickoff"})
     monkeypatch.setattr(questions, "work_ask_authorized", lambda _execution: False)
-    refused = call(_kickoff("unasked"))
-    assert (refused.status, refused.result) == ("invalid", {"code": "experiment_card_unavailable"})
+    assert _propose(plan, first, "unasked") is not None
     monkeypatch.undo()
 
-    pending = call(_kickoff("first", limit=2))
-    assert pending.status == "ok", pending.message
-    assert pending.result["disposition"] == "card_pending"
-    assert call(_kickoff("first", limit=2)).result["disposition"] == "card_pending"
-    assert call(_kickoff("first", goal_file="other.md", limit=2)).status == "invalid"
+    assert _propose(plan, first, "unasked", limit=2) is None
+    assert _propose(plan, first, "unasked", limit=2) is None
     assert _experiment_loops(plan) == []
 
     _land(plan, first, succeeded=False)
     assert _cards(plan, "shared-chat") == []
 
-    retry, call_retry = _turn(plan, "work-retry", chat_id="shared-chat", parent=WORK_TURN)
-    assert call_retry(_kickoff("first", limit=2)).result["disposition"] == "card_pending"
+    retry, _call_retry = _turn(plan, "work-retry", chat_id="shared-chat", parent=WORK_TURN)
+    assert _propose(plan, retry, "unasked", limit=2) is None
     _land(plan, retry)
     _land(plan, retry)
     (card,) = _cards(plan, "shared-chat")
@@ -681,10 +703,57 @@ def test_kickoff_records_the_request_and_starts_nothing(plan, monkeypatch):
     assert _experiment_loops(plan) == []
 
 
+def test_an_invalid_plan_file_is_the_agents_to_fix(plan):
+    execution, _call = _turn(plan, WORK_TURN, chat_id="shared-chat")
+    problem = _propose(plan, execution, "draft", node_id=None)
+    assert problem is not None and problem.startswith("plans/draft.json:")
+    _land(plan, execution)
+    assert _cards(plan, "shared-chat") == []
+
+
+def test_a_staged_card_edited_by_the_agent_is_revised_in_place(plan):
+    card = _plan_card(plan, key="older")
+    execution, _call = _turn(plan, "turn-edit", chat_id="shared-chat")
+    from rcp.plan_folder import record_plan_folder, stage_plan_folder
+
+    stage_plan_folder(plan.store, "turn-edit", plan.project_id, "shared-chat", plan.workspace, None)
+    staged_path = plan.workspace / "plans" / f"{card['question_id']}.json"
+    staged = json.loads(staged_path.read_text(encoding="utf-8"))
+    assert staged["version"] == card["card"]["pinned_sha256"]
+    assert (staged["state"], staged["node"]) == ("waiting", EXPERIMENT_ID)
+    staged_path.write_text(json.dumps({**staged, "goal": "Edited by the agent."}), "utf-8")
+    assert record_plan_folder(execution, plan.workspace, None) is None
+    _land(plan, execution)
+
+    (revised,) = _cards(plan, "shared-chat")
+    assert revised["question_id"] == card["question_id"]
+    assert revised["card"]["action"]["goal"] == "Edited by the agent."
+    assert revised["card"]["revised_operation_id"] == "turn-edit"
+
+
+def test_an_agent_edit_never_overwrites_the_members_edit_from_the_same_turn(plan):
+    card = _plan_card(plan, key="older")
+    execution, _call = _turn(plan, "turn-edit", chat_id="shared-chat")
+    from rcp.plan_folder import record_plan_folder, stage_plan_folder
+
+    stage_plan_folder(plan.store, "turn-edit", plan.project_id, "shared-chat", plan.workspace, None)
+    staged_path = plan.workspace / "plans" / f"{card['question_id']}.json"
+    staged = json.loads(staged_path.read_text(encoding="utf-8"))
+    staged_path.write_text(json.dumps({**staged, "goal": "Edited by the agent."}), "utf-8")
+    assert record_plan_folder(execution, plan.workspace, None) is None
+    member = _tap(plan, card, "save", start="Edited by the member.")
+    assert member.status_code == 200, member.text
+    _land(plan, execution)
+
+    (kept,) = _cards(plan, "shared-chat")
+    assert kept["card"]["action"]["goal"] == "Edited by the member."
+    assert any(event.level == "warning" for event in plan.store.agent_task_events("turn-edit"))
+
+
 def test_a_card_waits_for_the_node_its_turn_writes(plan):
-    execution, call = _turn(plan, WORK_TURN, chat_id="shared-chat")
-    assert call(_kickoff("later", node_id=LATER_ID)).result["disposition"] == "card_pending"
-    assert call(_kickoff("question", node_id="rq/learning-after-shift")).status == "ok"
+    execution, _call = _turn(plan, WORK_TURN, chat_id="shared-chat")
+    assert _propose(plan, execution, "later", node_id=LATER_ID) is None
+    assert _propose(plan, execution, "question", node_id="rq/learning-after-shift") is None
     append_fixture_patch(plan.app.state.service, _experiment_patch(LATER_ID))
     _land(plan, execution)
 
@@ -722,33 +791,6 @@ def test_a_later_request_revises_the_open_card_in_place(plan):
             (plan.store.now(), other_chat["question_id"]),
         )
     assert _cards(plan, "elsewhere")[0]["card"]["state"] == "expired"
-
-
-def test_a_pre_card_receipt_with_an_episode_still_replays_existing(plan):
-    execution, call = _turn(plan, WORK_TURN, chat_id="shared-chat")
-    arguments = _kickoff("old", limit=2).arguments
-    goal = (plan.workspace / "goal.md").read_text(encoding="utf-8")
-    episode_id = turn_keyed_id((WORK_TURN,), "episode", "old")
-    plan.store.record_agent_task_receipt(
-        WORK_TURN,
-        "work_experiment_kickoff",
-        {
-            "episode_id": episode_id,
-            "intent_sha256": intent_sha256({**arguments.model_dump(mode="json"), "goal": goal}),
-        },
-        tier="diagnostic",
-    )
-    _start_directly(plan, WORK_TURN, episode_id, goal)
-
-    replayed = call(_kickoff("old", limit=2))
-    assert replayed.status == "ok", replayed.message
-    assert (replayed.result["disposition"], replayed.result["episode_id"]) == (
-        "existing",
-        episode_id,
-    )
-    assert call(_kickoff("old", goal_file="other.md", limit=2)).status == "invalid"
-    _land(plan, execution)
-    assert _cards(plan, "shared-chat") == []
 
 
 def _node_rev(plan):
@@ -790,7 +832,6 @@ def test_start_in_a_private_chat_runs_the_members_edited_plan(plan):
 
     moved = _start(plan, card, node_rev=card_node_rev(plan) + 1)
     assert (moved.status_code, moved.json()["detail"]) == (409, {"code": "plan_changed"})
-    assert _start(plan, card, invocation_ceiling=4).status_code == 422
     with plan.store.connection() as connection:
         connection.execute("UPDATE agent_threads SET user_id='someone-else'")
     assert _start(plan, card).status_code == 404
@@ -801,6 +842,10 @@ def test_start_in_a_private_chat_runs_the_members_edited_plan(plan):
     started = _start(plan, card)
     assert started.status_code == 200, started.text
     assert started.json()["outcome"] == "approved"
+    assert plan.store.approval_card(card["question_id"])["result"]["result"]["started"] == {
+        "goal": "Compare warmup schedules at lr 1e-4.",
+        "invocation_ceiling": 2,
+    }
     request_id = plan.store.approval_card(card["question_id"])["request_id"]
     episode = plan.store.episode(plan_card_episode_id(request_id, "experiment_start"))
     assert episode is not None and episode.invocation_ceiling == 2
@@ -968,26 +1013,10 @@ def test_auto_research_start_uses_tapping_member_and_replays_once(plan, monkeypa
 
 
 def _auto_plan_card(plan, *, chat_id="shared-chat", key="auto", land=True):
-    execution, call = _turn(
+    execution, _call = _turn(
         plan, f"turn-{key}", chat_id=chat_id, authorized_by=fabricated_authorizer("Raiser")
     )
-    command = EpisodeCommandRequest.model_validate(
-        {
-            "mailbox_id": "a" * 32,
-            "request_id": uuid.uuid4().hex,
-            "credential": "b" * 64,
-            "verb": "episode",
-            "idempotency_key": key,
-            "arguments": {
-                "action": "kick_off_auto_research",
-                "goal_file": "goal.md",
-                "invocation_limit": 3,
-            },
-        }
-    )
-    receipt = call(command)
-    assert receipt.status == "ok", receipt.message
-    assert receipt.result["disposition"] == "card_pending"
+    assert _propose(plan, execution, key, kind="auto_research", node_id=None, limit=3) is None
     assert plan.store.episodes(plan.project_id, limit=None) == []
     if land:
         _land(plan, execution)
@@ -1177,23 +1206,13 @@ def test_old_pending_receipts_recover_after_database_reopen(plan, kind):
 
     from rcp.storage import AppStore
 
-    execution, call = _turn(plan, "old-pending", chat_id="shared-chat")
+    execution, _call = _turn(plan, "old-pending", chat_id="shared-chat")
     if kind == "experiment":
-        command = _kickoff("old")
+        assert _propose(plan, execution, "old") is None
         category = "work_experiment_kickoff"
     else:
-        command = EpisodeCommandRequest.model_validate(
-            {
-                **_kickoff("old").model_dump(mode="json"),
-                "arguments": {
-                    "action": "kick_off_auto_research",
-                    "goal_file": "goal.md",
-                    "invocation_limit": 3,
-                },
-            }
-        )
+        assert _propose(plan, execution, "old", kind="auto_research", node_id=None, limit=3) is None
         category = "work_auto_research_kickoff"
-    assert call(command).result["disposition"] == "card_pending"
     (receipt,) = plan.store.agent_task_receipts_by_category(execution.operation_id, category)
     payload = dict(receipt.payload)
     if kind == "experiment":

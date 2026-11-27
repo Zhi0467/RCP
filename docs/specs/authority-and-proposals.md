@@ -441,14 +441,25 @@ The approval endpoint is a member control, not a voice or WebMCP tool.
 ### Episode plan cards
 
 A fresh Experiment or Auto-research from any agent chat starts only on a human's
-**Start** on its plan card. The chat's `episode --kick-off-experiment` records
-the request and
-answers `card_pending`. When the turn succeeds and its Patch lands, RCP creates
+**Start** on its plan card. The chat's
+[plan files](conversations-episodes-and-watchers.md#work-started-episodes)
+are the agent's view of its cards: a new file records a `card_pending` request.
+When the turn succeeds and its Patch lands, RCP creates
 one `experiment_start` card on the raising turn from the settled graph, so the
 agent may write the node in the same turn. A failed turn gets no card. A node
-that is missing or not an Experiment, or a kickoff a later turn already
-proposed, gets no card and a task event. Kickoff is the only
+that is missing or not an Experiment, or a request a later turn already
+proposed, gets no card and a task event. Plan files are the only
 creator: `ask` refuses this kind with `experiment_start_uses_episode`.
+
+**The member wins a race.** A changed plan file names the card hash it was
+staged with, and its revision runs only while the card still carries that hash.
+A member who saved, parked or started the card during the turn keeps their
+version; the turn records a warning event instead.
+
+**Start reports what ran.** The human's Start edits are outside the card's
+hash, so an approved Start records them in the card result as `started`. The
+chat's question snapshot shows that, and the agent reports it rather than the
+card's original action.
 
 **Revision in place.** A request for a node, or for Auto-research, that already
 has an open card in the same chat revises that card instead of raising another
@@ -497,9 +508,10 @@ edits live. A changed governing link settles the next tap `stale`.
 action's `goal`, the text the run starts with), limit,
 profile and the node revision the card showed. Under the project lock, a moved
 revision or changed governing links answer `plan_changed` and keep the card
-pending, as do a missing start (`experiment_start_required`), a limit above the
-node's (`invocation_ceiling_above_node`), and a blank or oversized goal
-(`goal_invalid`). A node that is not ready, an admission conflict, or another
+pending, as do a missing start (`experiment_start_required`) and a blank or
+oversized goal (`goal_invalid`). The card's limit is the run's: the node's
+`invocation_ceiling` only fills a new card, and a higher limit is the human's
+choice for that episode. A node that is not ready, an admission conflict, or another
 refusal settles it `failed`. The episode id derives from the
 card's request, the tapping member authorizes it, and its root names the raising
 turn, so that chat may later resume, extend or stop it. **Don't run**, named
@@ -520,11 +532,10 @@ request id settles an interrupted Run in this chat at startup. Auto-research car
 refuse it with `decision_not_available`. The web's staged-change check and node
 Sync run before the tap; the server's part of that order is the node revision.
 
-An Experiment allows one live episode per graph target, so a kickoff for a node
-whose run is live is refused with `experiment_run_live` and its `episode_id`,
-and raises no card.
+An Experiment allows one live episode per graph target, so a plan for a node
+whose run is live is a correction for the agent and raises no card.
 
-Auto-research kickoff records the same `card_pending` receipt and raises an
+An Auto-research plan file records the same `card_pending` receipt and raises an
 `auto_research` card after the turn succeeds. One open Auto-research card per
 chat is kept; a newer request revises it in place. Only the main graph
 target is pinned, so Settings edits do not stale it. Start rechecks readiness
@@ -540,13 +551,13 @@ Auto-research card pending for correction. Other start refusals settle it
 `failed`. Atomic card claims prevent concurrent taps; restart recovery checks
 the durable episode before request receipts and never starts a second episode.
 
-Auto-research Start overrides and kickoff goals share the episode instruction
+Auto-research Start overrides and plan goals share the episode instruction
 length limit. Both kinds cap the turn budget at the largest JSON-safe integer. Start validates the human's edits before execution; invalid edits
 leave the card pending. Refusals carry a code and message. An existing episode
 replays before any provider readiness probe.
 
-Startup card recovery reads at most 1,000 succeeded tasks from pending kickoff
+Startup card recovery reads at most 1,000 succeeded tasks from pending plan
 receipts per pass. A task failure is logged and recorded as
-`plan_card_raise_failed` in its task events; its kickoffs stay pending, so the
-next startup retries them, and other tasks continue. Both kickoff kinds share receipt recording, while the
+`plan_card_raise_failed` in its task events; its requests stay pending, so the
+next startup retries them, and other tasks continue. Both plan kinds share receipt recording, while the
 raiser accepts older receipt field names.

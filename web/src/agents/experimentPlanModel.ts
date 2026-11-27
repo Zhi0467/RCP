@@ -47,11 +47,6 @@ export function planGraphTarget(action: PlanAction): GraphTargetRef {
     : MAIN_GRAPH;
 }
 
-/** The highest turn limit a Start may ask for: the node's own limit. */
-export function planTurnCap(action: ExperimentStartAction, node: GraphNode | null): number {
-  return node?.invocation_ceiling ?? action.invocation_ceiling;
-}
-
 /** The inputs a fresh card shows: the agent's goal, limit and pick. */
 export function initialPlanInputs(
   action: ExperimentStartAction,
@@ -64,16 +59,10 @@ export function initialPlanInputs(
   };
 }
 
-/** Whether the inputs can start: a live node, a goal, and a whole turn limit within the cap. */
-export function planInputsReady(inputs: PlanInputs, node: GraphNode | null, cap: number): boolean {
+/** Whether the inputs can start: a live node, a goal, and a whole turn limit of at least one. */
+export function planInputsReady(inputs: PlanInputs, node: GraphNode | null): boolean {
   const limit = inputs.invocationCeiling;
-  return (
-    node !== null &&
-    Boolean(inputs.goal.trim()) &&
-    Number.isSafeInteger(limit) &&
-    limit >= 1 &&
-    limit <= cap
-  );
+  return node !== null && Boolean(inputs.goal.trim()) && Number.isSafeInteger(limit) && limit >= 1;
 }
 
 /** The member's unsaved Design and Done when, with the node revision they started from. */

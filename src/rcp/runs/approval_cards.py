@@ -362,7 +362,8 @@ def approved_receipt(response: object) -> dict[str, Any]:
 #: What each card outcome means to the asking agent, keyed by `ApprovalOutcome`.
 APPROVAL_OUTCOMES: dict[ApprovalOutcome, str] = {
     "approved": "RCP ran the action as the member; result names any episode_id or "
-    "operation_id it created.",
+    "operation_id it created. A plan card's result.started is the plan the member "
+    "started, which may differ from the card's action: report that, not the action.",
     "declined": "the member said no; do not ask again unless they change their mind. "
     "Declining a card that approves a Proposal also tries to reject that Proposal; read "
     "its status from graph state.",
@@ -420,10 +421,9 @@ def approval_card_usage(client: str) -> str:
         "for every Proposal this thread's turns raise once it is pending on main, so never "
         "ask for one; that ask is refused with "
         f"{PROPOSAL_CARD_SHOWN}. Ask a proposal card only when the member names a pending "
-        "Proposal this thread did not raise. Start Auto-research with the episode command, "
-        f"which raises its plan card; that ask is refused with {AUTO_RESEARCH_USES_EPISODE}. An Experiment "
-        "plan card comes only from the episode kickoff; asking for one is refused with "
-        f"{EXPERIMENT_START_USES_EPISODE}. "
+        "Proposal this thread did not raise. Experiment and Auto-research plan cards come "
+        "only from plans/ files; asking for one is refused with "
+        f"{EXPERIMENT_START_USES_EPISODE} or {AUTO_RESEARCH_USES_EPISODE}. "
         "The question snapshot shows each card's action and result."
     )
 
