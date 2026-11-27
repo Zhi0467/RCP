@@ -409,6 +409,7 @@ def run(args):
     patch_present = False
     patch_sha256 = None
     watcher_folder = None
+    plan_folder = None
     if fence.terminal and journal_complete and not error and not external_stop:
         try:
             patch_present, patch_sha256 = _deliverable_snapshot(
@@ -417,6 +418,7 @@ def run(args):
             watcher_folder = _watcher_folder_snapshot(
                 Path(args.watchers_path), directory / "watchers", args
             )
+            plan_folder = _watcher_folder_snapshot(Path(args.plans_path), directory / "plans", args)
         except (OSError, ValueError) as exc:
             error = str(exc)
     if error and not detached:
@@ -460,6 +462,7 @@ def run(args):
                 # Absent entirely in a journal written before these were
                 # snapshotted, which is not the same as a turn that wrote none.
                 "watcher_folder_sha256": watcher_folder,
+                "plan_folder_sha256": plan_folder,
                 "stderr_truncated": stderr_truncated,
                 "root_thread_id": fence.thread_id,
                 "root_turn_id": fence.turn_id,
@@ -504,6 +507,7 @@ def main(argv=None):
         "runtime-id",
         "patch-path",
         "watchers-path",
+        "plans-path",
     ):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--provider-version")

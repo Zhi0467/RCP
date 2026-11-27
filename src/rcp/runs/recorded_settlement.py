@@ -76,11 +76,13 @@ def write_recorded_patch(
     """
 
     _restore(workspace, remote_stage, "patch.json", recorded.patch)
-    if recorded.watcher_folder is not None:
+    for folder, files in (("watchers", recorded.watcher_folder), ("plans", recorded.plan_folder)):
+        if files is None:
+            continue
         if remote_stage is None:
-            replace_agent_folder(workspace, "watchers", recorded.watcher_folder)
+            replace_agent_folder(workspace, folder, files)
         else:
-            remote_stage.replace_agent_folder("watchers", recorded.watcher_folder)
+            remote_stage.replace_agent_folder(folder, files)
 
 
 def _restore(

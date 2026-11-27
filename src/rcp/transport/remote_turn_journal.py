@@ -87,6 +87,7 @@ def read_journal(pid_file: str, max_bytes: int) -> dict[str, object]:
             "stderr": errors,
             "patch": read("patch.json", max_bytes) if outcome.get("patch_present") else None,
             "watcher_folder": watcher_files("watchers", "watcher_folder_sha256"),
+            "plan_folder": watcher_files("plans", "plan_folder_sha256"),
         }
     finally:
         for fd in reversed(descriptors):
