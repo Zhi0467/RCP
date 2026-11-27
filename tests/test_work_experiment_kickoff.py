@@ -1263,3 +1263,31 @@ def test_a_start_with_a_picked_profile_launches_and_reports_that_profile(plan, m
     reported = started.json()["result"]["started"]
     assert tuple(reported[key] for key in ("provider", "model", "reasoning")) == launched
     wait_for_task(plan.store, root.operation_id)
+
+
+def test_an_oversized_experiment_goal_is_a_correction_not_a_card(plan):
+    from rcp.limits import AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES
+
+    (plan.workspace / "goal.md").write_text("x" * (AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES + 1))
+    execution, _call = _turn(plan, WORK_TURN, chat_id="shared-chat")
+    problem = _propose(plan, execution, "big")
+    assert problem is not None and problem.startswith("plans/big.json:")
+    _land(plan, execution)
+    assert _cards(plan, "shared-chat") == []
+
+
+def test_an_edit_that_moves_a_card_to_another_node_is_refused(plan):
+    card = _plan_card(plan, key="older")
+    execution, _call = _turn(plan, "turn-move", chat_id="shared-chat")
+    from rcp.plan_folder import record_plan_folder, stage_plan_folder
+
+    stage_plan_folder(plan.store, "turn-move", plan.project_id, "shared-chat", plan.workspace, None)
+    staged_path = plan.workspace / "plans" / f"{card['question_id']}.json"
+    staged = json.loads(staged_path.read_text(encoding="utf-8"))
+    staged_path.write_text(json.dumps({**staged, "node": LATER_ID}), "utf-8")
+    problem = record_plan_folder(execution, plan.workspace, None)
+    assert problem is not None and problem.startswith(f"plans/{card['question_id']}.json:")
+    _land(plan, execution)
+
+    (kept,) = _cards(plan, "shared-chat")
+    assert kept["card"]["action"]["node_id"] == EXPERIMENT_ID

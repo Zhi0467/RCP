@@ -15,7 +15,12 @@ from typing import TYPE_CHECKING, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from rcp.limits import TURN_JOURNAL_MAX_WATCHER_BYTES, TURN_JOURNAL_MAX_WATCHER_FILES
+from rcp.limits import (
+    AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES,
+    EPISODE_TEXT_MAX_LENGTH,
+    TURN_JOURNAL_MAX_WATCHER_BYTES,
+    TURN_JOURNAL_MAX_WATCHER_FILES,
+)
 from rcp.providers import ProviderId
 from rcp.regular_tree_reader import read_regular_tree
 from rcp.transport.watcher_workspace import replace_watcher_folder, watcher_id
@@ -75,6 +80,12 @@ class PlanFile(BaseModel):
             raise ValueError("an experiment plan names its node and no Auto-research options")
         if self.kind == "auto_research" and (self.node is not None or not self.invocation_limit):
             raise ValueError("an auto_research plan names an invocation_limit and no node")
+        if not self.goal.strip():
+            raise ValueError("the goal is blank")
+        if self.kind == "auto_research" and len(self.goal) > EPISODE_TEXT_MAX_LENGTH:
+            raise ValueError(f"the goal exceeds {EPISODE_TEXT_MAX_LENGTH} characters")
+        if len(self.goal.encode()) > AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES:
+            raise ValueError(f"the goal exceeds {AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES} bytes")
         return self
 
     @property
@@ -190,6 +201,12 @@ def record_plan_folder(
         if name in baseline:
             staged = PlanFile.model_validate_json(baseline[name])
             if plan.intent() == staged.intent():
+                continue
+            if (plan.kind, plan.node) != (staged.kind, staged.node):
+                problems.append(
+                    f"plans/{name}: a card's kind and node are fixed; write a new file for "
+                    "another plan"
+                )
                 continue
             assert staged.version is not None
             revises = (Path(name).stem, staged.version)

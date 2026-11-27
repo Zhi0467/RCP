@@ -17,7 +17,6 @@ from rcp.agents.staged_command_client import (
     episode_control_usage,
 )
 from rcp.approval_actions import AutoResearchAction, ExperimentStartAction
-from rcp.limits import EPISODE_TEXT_MAX_LENGTH
 from rcp.plan_folder import plan_folder_contract
 from rcp.runs.approval_cards import (
     APPROVAL_OUTCOMES,
@@ -284,8 +283,6 @@ def record_plan_card(
     assert task is not None
     if auto and task.graph_target.kind != "main":
         return "Auto-research branches from main; propose it from a chat on main."
-    if auto and len(plan.goal) > EPISODE_TEXT_MAX_LENGTH:
-        return f"The goal exceeds {EPISODE_TEXT_MAX_LENGTH} characters."
     intent = intent_sha256(plan.intent())
     lineage = turn_lineage(execution)
     key = f"plan:{name}:{intent[:16]}"
