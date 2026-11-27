@@ -992,8 +992,9 @@ card wins. A new file for a node, or for Auto-research, whose card is already
 staged, and an edit that changes a card's kind or node, are corrections: the agent
 edits the staged file instead. Deleting a file changes nothing. An
 invalid file, a node whose run is live, or a turn without the grants becomes a
-correction the agent fixes in the same turn, like a watcher file. The retired
-`episode --kick-off-*` commands answer `plan_files_replace_kickoff`. The Work
+correction the agent fixes in the same turn, like a watcher file. A chat's
+`episode --kick-off-experiment` answers `plan_files_replace_kickoff`; there is no
+Auto-research kickoff command. The Work
 prompt asks the agent to raise a card once the discussion settles on a study and
 to edit an open card's file when the talk changes its plan.
 

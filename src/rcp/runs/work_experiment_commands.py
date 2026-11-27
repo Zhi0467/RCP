@@ -6,7 +6,6 @@ import logging
 from typing import TYPE_CHECKING
 
 from rcp.agents.command_protocol import (
-    AutoResearchKickoffArguments,
     CommandResponse,
     EpisodeCommandRequest,
     EpisodeControlArguments,
@@ -58,7 +57,6 @@ logger = logging.getLogger(__name__)
 
 _RECEIPT = "work_experiment_kickoff"
 _RESUME_RECEIPT = "work_experiment_resume"
-EXPERIMENT_RUN_LIVE = "experiment_run_live"
 
 
 def work_experiment_allowed(execution: AgentTaskExecution | None) -> bool:
@@ -136,7 +134,7 @@ def handle_work_episode_command(
     mailbox: RunStageMailbox | None,
     request: EpisodeCommandRequest,
 ) -> CommandResponse:
-    """Route a Work turn's ``episode`` command to its kickoff or control.
+    """Route a Work turn's ``episode`` command to its control; plans are files instead.
 
     Resume of an Experiment that ended to wait for its human continues it with
     its unused turns; resume of a live episode resumes its paused turn.
@@ -144,9 +142,13 @@ def handle_work_episode_command(
 
     arguments = request.arguments
     if isinstance(arguments, ExperimentKickoffArguments):
-        return _handle_work_experiment_kickoff(execution, mailbox, request, arguments)
-    if isinstance(arguments, AutoResearchKickoffArguments):
-        return _handle_work_experiment_kickoff(execution, mailbox, request, arguments)
+        return CommandResponse(
+            request_id=request.request_id,
+            status="invalid",
+            message="Write the plan as a file in plans/ instead; RCP raises the card when "
+            "this turn ends.",
+            result={"code": "plan_files_replace_kickoff"},
+        )
     if not isinstance(arguments, EpisodeControlArguments):
         return handle_work_episode_controls(execution, mailbox, request, arguments)
     if arguments.action == "stop":
@@ -239,23 +241,6 @@ def start_scheduled_experiment_resumes(
             )
         else:
             store.record_agent_task_event(operation_id, f"Experiment episode {episode_id} resumed.")
-
-
-def _handle_work_experiment_kickoff(
-    execution: AgentTaskExecution,
-    mailbox: RunStageMailbox | None,
-    request: EpisodeCommandRequest,
-    arguments: ExperimentKickoffArguments | AutoResearchKickoffArguments,
-) -> CommandResponse:
-    """Chat turns propose plans as files in plans/, never through this command."""
-
-    return CommandResponse(
-        request_id=request.request_id,
-        status="invalid",
-        message="Write the plan as a file in plans/ instead; RCP raises the card when "
-        "this turn ends.",
-        result={"code": "plan_files_replace_kickoff"},
-    )
 
 
 def record_plan_card(
