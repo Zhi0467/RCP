@@ -42,14 +42,19 @@ owning specs and this file is deleted.
    2. Error text that names a time: Gemini `Resets in 3h27m0s`, Codex `try again at …`.
       Gemini's quota error always carries it, so no extra `/usage` launch runs during
       settlement.
-   3. Otherwise `limited_at + PROVIDER_LOGIN_LIMIT_HINT_SECONDS`, with `estimated: true`.
+   3. Otherwise `failed_at + PROVIDER_LOGIN_LIMIT_HINT_SECONDS`, with `estimated: true`.
       The row then reads "Resumes later" with no clock time.
    A reset that is not at least `LIMIT_RESET_MIN_SECONDS` (60, in `limits.py`) after
-   the failure counts as unknown and falls to source 3. The readers live in one pure module, `providers/usage_limits.py`:
-   `limit_reset(provider, snapshot, error, *, failed_at) -> LimitReset`, with one small
-   reader per provider. The stream decoder keeps the last snapshot in memory, and the turn
-   writes one `provider_rate_limit` receipt with it at settlement. The task row carries
-   `limit_reset` (`resets_at`, `estimated`, `state`: `waiting` or `stopped`) for the web.
+   the failure counts as unknown and falls to source 3. The readers live in one pure
+   module, `providers/usage_limits.py`: `limit_reset(provider, snapshot, error, *,
+   failed_at) -> LimitReset`, with one small reader per provider.
+   - **Snapshot route.** Each decoder turns its usage event into an `AgentEvent` of kind
+     `rate_limit` holding the raw window data. The task's event loop keeps the last one
+     on `AgentTaskExecution.rate_limit` (memory only). `settle_provider_login` reads it
+     from there. The raw snapshot is stored only as a diagnostic field of
+     `provider_limit_reset`, with no receipt of its own.
+   - The task row carries `limit_reset` (`resets_at`, `estimated`, `state`: `waiting`
+     or `stopped`) for the web.
 2. **Classification.** The Gemini quota wording joins the shared session-limit markers.
 3. **Wake on the existing 5-second tick.** There are no watchers, schedules or new timers.
    `after_watcher_poll` (`api/app.py`) already runs `provider_sign_ins.reconcile_recovery()`
@@ -62,28 +67,38 @@ owning specs and this file is deleted.
      - It has no later turn in the same chat, and no active turn in that chat.
      - Its `resets_at <= now`.
      - The authorizing member's switch is on.
-     - It has no `limit_resume_declined` and no `limit_auto_resume_stopped`.
+     - It has no `limit_auto_resume_stopped`.
      - Its newest `limit_auto_resume_deferred`, if any, is at least
-       `LIMIT_RESUME_RETRY_SECONDS` (60) old.
-   - **Resume.** The non-HTTP body of `resume_task_as` (`api/tasks.py`) moves into a
-     shared function. The tick calls it as the authorizing member, so the wake runs the
-     same checks as the Resume button:
+       `LIMIT_RESUME_RETRY_SECONDS` (60, in `limits.py`) old.
+   - **Resume.** `resume_task_as` (`api/tasks.py`) splits in two:
+     - `resume_task(store, catalog, operation_lock, task, member)` raises the original
+       exceptions.
+     - The HTTP route wraps it and maps exceptions to status codes, as today.
+
+     Write admission gets a form that takes no FastAPI `Request`, built from the
+     catalog, the experiment operation lock and `require_project_accepts_new_work`.
+     `project_write_admission` and the tick both use it. The tick calls `resume_task` as
+     the authorizing member, so the wake runs the same checks as the Resume button:
      - write admission for the turn;
      - re-validation of the stored request and skills;
      - the chat's worktree recovery admission;
      - that member's current role.
-   - **Outcomes:**
-     - A continuation was created: done. The continuation records
-       `limit_auto_resume`.
-     - A permanent refusal (`ValueError`, lost role, no native session): write
-       `limit_auto_resume_stopped` with the reason.
-     - Anything short-lived (admission conflict, maintenance, unreachable machine): write
-       `limit_auto_resume_deferred`, and try again after the retry wait.
-     - A crash between the check and the resume leaves no receipt. The next tick simply
-       tries again. The continuation insert refuses a second child
-       (`AgentTaskAlreadyContinued`), so a race with the member's own Resume is safe.
-   - **Loop stop.** If the turn's last `LIMIT_AUTO_RESUME_MAX` (3) resume ancestors were
-     all automatic, the turn gets `limit_auto_resume_stopped` instead.
+   - **Outcomes**, checked in this order:
+     1. A continuation is created, or `AgentTaskAlreadyContinued` is raised: done. The
+        continuation records `limit_auto_resume`.
+     2. `AgentTaskAdmissionConflict` and its subclasses, `ProjectActiveTaskConflict`,
+        `AdmissionRefused` (including `ProviderLoginsLimited`), `OSError` or
+        `StateUnavailable`: write `limit_auto_resume_deferred`, and try again after the
+        retry wait.
+     3. Any other `ValueError`, a lost role, or no native session: write
+        `limit_auto_resume_stopped` with the reason.
+
+     A crash between the check and the resume leaves no receipt. The next tick simply
+     tries again.
+   - **Loop stop.** The turn and its two nearest ancestors are walked by
+     `parent_operation_id`. If all three carry `limit_auto_resume`, the turn gets
+     `limit_auto_resume_stopped` instead. The cap is `LIMIT_AUTO_RESUME_MAX` (3, in
+     `limits.py`).
    - **Old data and restart.** Rows written before this release have no
      `provider_limit_reset`, so nothing old resumes. A restart needs nothing extra: the
      first tick runs after startup reconciliation and sees resets already past.
@@ -94,7 +109,8 @@ owning specs and this file is deleted.
    `{enabled: bool}` for the signed-in member.
 5. **Per-turn opt-out.** "Don't resume" posts to
    `/api/projects/{project_id}/tasks/{operation_id}/limit-resume/decline`, with the
-   usual `/api/agent-threads/...` twin, and writes `limit_resume_declined`. Only the
+   usual `/api/agent-threads/...` twin. It writes `limit_auto_resume_stopped` with
+   `reason: "declined"`. Only the
    turn's authorizing member may decline. To continue after that, the member uses the
    existing Resume button.
 
@@ -125,30 +141,10 @@ carries a tool allowlist (`_tools`).
   no 4x.
 - The Gemini comparison runs when that bucket resets.
 
-If Gemini also shows no 4x, this section is dropped and only the quota-error classifier
-ships. If Gemini shows 4x, the change is the one below, and a turn must first show that
-`schedule` and `send_message` are refused without `--agent`.
-
-Change, for Work and orchestrator turns only, which are nearly all agy traffic:
-
-- `_command` and `work_like_probe_command` drop `--agent` and `--rcp-agy-tools` for
-  these capabilities. The `--settings` permissions already carry the write roots, the
-  read denies and `command(*)`.
-- In `providers/agy/remote.py`, `_agy_host_policy` runs whenever `--settings` is
-  present, which adds the temp-dir, provider-homes and browser-shim denies. Its
-  `--agent` rename and `_agy_stage_agent` run only when `--agent` is present.
-- The read-only launch (artifact-comment edits) keeps `--agent` and its narrower tools.
-  It is rare. agy already refuses `session_summary`. Removing the read-only capability
-  is a separate design.
-
-**Probe before building (approved 2026-11-27).** Run real agy turns on throwaway data:
-1. A Work turn without `--agent`. List the tools it offers. `--settings` rules work by
-   action (`read_file`, `write_file`, `command`, `read_url`), so any tool outside the Work
-   allowlist must be shown to be blocked another way (for example, the browser shims).
-   If one cannot be blocked, Work keeps one shared, stable agent name instead, and the
-   probe checks whether that still bills 4x.
-2. Resume a session started with `--agent`, now without it. Check its tools.
-3. Compare the `/usage` bucket drop for the same prompt with and without `--agent`.
+This PR ships only the quota-error classifier (section 1). The `--agent` decision follows
+the Gemini result. If Gemini shows 4x, the agy launch change gets its own design. It
+first needs a turn showing that `schedule` and `send_message` are refused without
+`--agent`.
 
 ## 3. In-app provider update
 
@@ -194,13 +190,20 @@ Remote machines and on-demand updates need an operator in a terminal.
 - **Hold.** `launcher.provider_update` becomes a try-acquire keyed by
   `(provider, machine_id)`. A second acquire raises `ProviderUpdateRefused`
   ("already updating"), which the API returns as 409. While the hold is taken:
-  - Launches wait, remote ones too. The `not host` exemption at `launcher.py:1616` goes.
-    The wait is async, as today.
-  - Readiness and login probes do not wait. They return the cached readiness marked
-    `updating`, which is what the row's **Updating** tag shows.
+  - Launches wait, remote ones too. The wait moves to the start of the launch, before
+    readiness, credential resolution, argv building and `remote_process_start`. A
+    waiting turn then holds no credential and announces no remote pass, and it launches
+    with the updated binary. The wait is async, as today, and the `not host` exemption
+    goes.
+  - Readiness and login probes do not wait, and `refresh` is ignored. They return the
+    cached readiness marked `updating`. With nothing cached, they return a minimal
+    `ProviderReadiness` with `updating` set and authentication unknown. The row's
+    **Updating** tag reads this.
   - Sign-ins are refused with "Updating".
   - The updater's own `run` calls do not check the hold.
-- **Busy rule.** If turns are running on that provider and machine, the on-demand update
+- **Busy rule.** `backend_turns_using` becomes `turns_using(store, provider,
+  machine_id)` and is checked inside the hold, as the daily pass does today. If turns
+  are running on that provider and machine, the on-demand update
   is refused with the count ("2 turns are using Codex"). It does not wait. A daily pass
   and an on-demand job for the same pair meet at the lock, and the second is refused.
 - The home rule is unchanged. A binary outside the account's home fails with the reason
@@ -235,15 +238,12 @@ the name, tag and ⋯ share one line, and the path field is full width below.
   - Wake tests on the test clock:
     - A limited chat turn resumes at its reset, exactly once, across a restart.
     - It still resumes after another turn's success clears the login's mark.
-    - A `resume` that raises is deferred and retried; a fourth limit in a row stops.
+    - `ProviderLoginsLimited` from `resume` is deferred and retried. A `ValueError` stops
+      the turn. A fourth limit in a row stops.
     - It stays failed when the switch is off or "Don't resume" was pressed.
     - An episode turn is untouched.
     - An old limited turn with no `provider_limit_reset` is untouched.
   - Old-data replay of `provider_login_assignments` and `space_users`.
-- **agy:**
-  - Work argv and the work-like probe have no `--agent`.
-  - The host deny rules are still applied.
-  - The read-only launch still stages its agent.
 - **Update:**
   - Local and remote (stage double) for success, failure, outside-home refusal and the
     busy refusal.
