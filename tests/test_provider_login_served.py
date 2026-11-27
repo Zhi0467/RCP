@@ -18,7 +18,13 @@ from rcp.service import RunRequest
 from rcp.storage import ProjectRecord
 from rcp.storage.models import MACHINE_LOGIN_ID
 
-from .helpers import fabricated_authorizer, fake_launch_admitted, wait_for_task, wait_until
+from .helpers import (
+    TASK_SETTLE_TIMEOUT,
+    fabricated_authorizer,
+    fake_launch_admitted,
+    wait_for_task,
+    wait_until,
+)
 from .test_provider_sign_in import _fake_codex
 
 
@@ -125,7 +131,11 @@ def test_served_device_login_recovers_queued_work_without_polling(
             login_id = status["attempt_id"]
             account_id = status["login_id"]
             assert bool(account_id) == added
-            wait_until(lambda: services.provider_sign_ins.sign_in_status(login_id).user_code)
+            wait_until(
+                lambda: services.provider_sign_ins.sign_in_status(login_id).user_code,
+                timeout=TASK_SETTLE_TIMEOUT,
+                detail=lambda: repr(services.provider_sign_ins.sign_in_status(login_id)),
+            )
             page = client.get("/")
             assert page.status_code == 200 and '<div id="root"></div>' in page.text
         (binary_dir / "signed-in").touch()

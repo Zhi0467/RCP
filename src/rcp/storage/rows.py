@@ -113,7 +113,10 @@ class RowMappingMixin:
     @staticmethod
     def _space_user_record(row: sqlite3.Row) -> SpaceUserRecord:
         try:
-            return SpaceUserRecord.model_validate(dict(row))
+            data = dict(row)
+            if "auto_resume_after_limits" in data:
+                data["auto_resume_after_limits"] = bool(data["auto_resume_after_limits"])
+            return SpaceUserRecord.model_validate(data)
         except (RuntimeError, ValueError) as exc:
             raise RuntimeError("RCP space user record is invalid.") from exc
 

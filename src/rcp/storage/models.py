@@ -106,6 +106,7 @@ class SpaceUserRecord(BaseModel):
 
     user_id: str
     identity_kind: SpaceUserKind
+    auto_resume_after_limits: bool = True
     display_name: str | None = Field(default=None, max_length=DISPLAY_NAME_MAX_LENGTH)
     created_at: str
     updated_at: str
@@ -3726,6 +3727,7 @@ class ProviderLoginAssignmentRecord(BaseModel):
     login_id: str
     last_assigned_at: str | None = None
     limited_at: str | None = None
+    limit_resets_at: str | None = None
 
 
 class ProviderLoginSettingRecord(BaseModel):

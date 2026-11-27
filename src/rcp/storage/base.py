@@ -174,6 +174,7 @@ class AppStoreBase:
         (95, "plan_card_revisions_v1"),
         (96, "chat_dock_run_indexes_v1"),
         (97, "provider_login_signed_in_by_v1"),
+        (98, "provider_limit_resume_v1"),
     )
     _SCHEMA_NORMALIZED_TABLES: ClassVar[frozenset[str]] = frozenset(
         {
@@ -1240,6 +1241,12 @@ class AppStoreBase:
             version=97,
             name="provider_login_signed_in_by_v1",
             migration=self._migrate_provider_login_signed_in_by,
+        )
+        self._run_storage_schema_migration(
+            connection,
+            version=98,
+            name="provider_limit_resume_v1",
+            migration=self._migrate_provider_limit_resume,
         )
         if schema_capture is not None:
             schema_capture.extend(self._storage_schema(connection))
@@ -3089,6 +3096,15 @@ class AppStoreBase:
                 PRIMARY KEY (provider, host)
             )
         """)
+
+    @classmethod
+    def _migrate_provider_limit_resume(cls, connection: sqlite3.Connection) -> None:
+        from rcp.storage.provider_logins import migrate_provider_limit_resets
+
+        migrate_provider_limit_resets(connection)
+        cls._ensure_column(
+            connection, "space_users", "auto_resume_after_limits", "INTEGER NOT NULL DEFAULT 1"
+        )
 
     @classmethod
     def _migrate_provider_login_signed_in_by(cls, connection: sqlite3.Connection) -> None:

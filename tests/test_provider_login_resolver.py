@@ -53,7 +53,13 @@ def _limit(accounts, key):
 
 
 def _task(
-    store, operation_id, key, *, started=None, member="member", session: str | None = "session"
+    store,
+    operation_id,
+    key,
+    *,
+    started=None,
+    member: str | None = "member",
+    session: str | None = "session",
 ):
     with store.connection() as connection:
         connection.execute(
@@ -139,7 +145,7 @@ def test_automatic_launch_waits_for_the_earliest_allowed_lapse(accounts, monkeyp
     assert isinstance(accounts.resolve_login("claude", BACKEND_MACHINE_ID, "member")[0], LoginKey)
 
 
-def test_lapse_reorders_fresh_sessions_but_evidence_moves_continued(accounts, monkeypatch):
+def test_lapse_restores_preferred_login_for_fresh_and_continued_sessions(accounts, monkeypatch):
     own = _login(accounts, "claude", own=True)
     shared = _login(accounts, "claude", machine=True)
     accounts.store.set_provider_login_setting(
@@ -154,8 +160,8 @@ def test_lapse_reorders_fresh_sessions_but_evidence_moves_continued(accounts, mo
         previous=PreviousProviderLogin(shared, previous_start, "member"),
     )
     assert accounts.resolve_login("claude", BACKEND_MACHINE_ID, "member", **continuation) == (
-        shared,
-        None,
+        own,
+        "preferred_source_available",
     )
     accounts.store.mark_provider_login_verified(own, member_id="member", detail="ok")
     assert accounts.resolve_login("claude", BACKEND_MACHINE_ID, "member", **continuation) == (

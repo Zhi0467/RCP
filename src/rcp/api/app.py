@@ -1631,7 +1631,7 @@ def create_app(
 
         return checked
 
-    from rcp.runs.provider_login import provider_login_changed
+    from rcp.runs.provider_login import provider_login_changed, resume_limited_turns
 
     def resume_account(login: LoginKey) -> dict[str, int]:
         released = provider_login_changed(
@@ -1679,6 +1679,15 @@ def create_app(
     def after_watcher_poll() -> None:
         watcher_delivery.deliver_ready_watchers(source="watcher poll")
         provider_sign_ins.reconcile_recovery()
+        try:
+            resume_limited_turns(
+                background_tasks,
+                catalog=catalog,
+                experiment_admission=experiment_admission,
+                operation_lock=experiment_operation_lock,
+            )
+        except Exception:
+            logger.exception("Could not reconcile limited turns")
         # Expired cards answer their questions; delivery wakes each asking thread.
         for project_id in store.expire_approval_cards():
             reconcile_question_answers(project_id)

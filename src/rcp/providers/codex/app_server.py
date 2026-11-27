@@ -362,6 +362,13 @@ class _CodexAppServerTurn(ProviderTurn):
             and params["turnId"] != self._turn_id
         ):
             return ProviderRuntimeStep()
+        if method == "account/rateLimits/updated":
+            snapshot = params.get("rateLimits")
+            if isinstance(snapshot, dict):
+                return ProviderRuntimeStep(
+                    events=(ProviderStreamEvent(event="rate_limit", rate_limit=snapshot),)
+                )
+            return ProviderRuntimeStep()
         if method == "thread/tokenUsage/updated":
             usage = params.get("tokenUsage")
             turn_id = params.get("turnId")

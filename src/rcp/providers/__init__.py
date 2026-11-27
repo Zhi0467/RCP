@@ -143,6 +143,7 @@ def classify_terminal_error(text: str) -> str:
             "usage limit",
             "hit your limit",
             "quota exceeded",
+            "individual quota reached",
             "out of credits",
             "weighted tokens left",
         )

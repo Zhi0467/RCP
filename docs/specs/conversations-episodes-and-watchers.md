@@ -1211,6 +1211,46 @@ wrap-up; a later human **Add N turns** continues the same session with a new
 ceiling and may claim retained compatible completion as its invocation one, and
 **Start new episode** remains the fresh start.
 
+### Resume after provider usage limits
+
+The existing five-second watcher-poll completion pass resumes a failed member chat
+turn when its `provider_limit_reset` receipt is due. The receipt, rather than the
+login mark, survives another turn's success or re-sign-in. Old turns without this
+receipt never resume automatically. Startup reconciliation precedes the first
+poll; overdue receipts need no separate restart mechanism. Episode turns retain
+their existing recovery owner.
+
+One candidate query excludes turns with a continuation, a later turn or an active
+turn in the same chat, a stopped receipt, or a recent deferred receipt. The member's
+`space_users.auto_resume_after_limits` switch defaults on, including the personal
+space's local owner. `GET` and `PUT /api/providers/limit-resume` read and set that
+member's switch. Only the authorizing member may decline a turn through the
+project task or agent-thread task `limit-resume/decline` route. Decline records
+`limit_auto_resume_stopped` with reason `declined`; manual Resume remains available.
+
+Automatic resume uses current member identity and request-free write admission,
+with the same operation lock, project membership and new-work checks and
+single-entry exemption. Space chats require current space membership. Missing
+membership or display name stops recovery. `resume_task` revalidates the saved
+request and skills and takes chat worktree recovery admission; the HTTP wrapper
+owns status-code mapping. A continuation is created with `limit_auto_resume`
+atomically. An already-created continuation also completes the attempt.
+
+Limited logins, admission conflicts, active-task conflicts, operating-system
+errors and unavailable state defer with `limit_auto_resume_deferred`. Another
+attempt waits `LIMIT_RESUME_RETRY_SECONDS`. At `LIMIT_RESUME_DEFER_MAX` deferrals,
+recovery stops; receipts never exceed that cap. Reset, continuation, deferral and
+stopped receipts are protected from ordinary receipt-count pruning. Other errors, including sign-out,
+missing dependencies, lost membership, invalid requests and missing native
+sessions, stop with their reason. Three consecutive automatically resumed turns
+(the turn and its two nearest parents) stop another automatic continuation under
+`LIMIT_AUTO_RESUME_MAX`. A crash before continuation leaves the next poll free to
+retry; one turn's error never ends the poll.
+
+Task rows expose the reset, its estimated flag, and `waiting` or `stopped` state.
+An explicit stopped receipt supplies its reason; otherwise a disabled member
+switch supplies `switch_off`. Login rows expose their independent `limit_resets_at`.
+
 ## Watcher resources
 
 Project Work, Space thread and Experiment invocations receive their current

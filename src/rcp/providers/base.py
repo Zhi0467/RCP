@@ -152,9 +152,10 @@ class ProviderStreamEvent:
     (`tests/test_launcher.py::test_only_the_final_assistant_message_is_an_answer`).
     """
 
-    event: Literal["session", "message", "answer", "error", "raw"]
+    event: Literal["session", "message", "answer", "error", "raw", "rate_limit"]
     text: str = ""
     session_id: str | None = None
+    rate_limit: dict[str, object] | None = None
     usage: ProviderUsage | None = None
     status: AgentStatusDelta | None = None
 

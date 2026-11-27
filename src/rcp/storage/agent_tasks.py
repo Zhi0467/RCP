@@ -193,6 +193,10 @@ _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "provider_runtime_selected",
     "provider_login_lineage",
     "provider_login_limit_retry",
+    "provider_limit_reset",
+    "limit_auto_resume",
+    "limit_auto_resume_deferred",
+    "limit_auto_resume_stopped",
     "provider_auth_auto_retry",
     "provider_auth_retry_deferred",
 )
@@ -298,6 +302,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         handoff_id: str | None = None,
         handoff_wake_id: str | None = None,
         queue_id: str | None = None,
+        marker: str | None = None,
     ) -> AgentTaskRecord:
         if record.kind == "episode_report":
             raise ValueError("episode report tasks must use their episode wrap-up allocation")
@@ -343,6 +348,15 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     record,
                     continuation_cause=continuation_cause,
                 )
+                if marker is not None:
+                    self._insert_agent_task_receipt(
+                        connection,
+                        record.operation_id,
+                        marker,
+                        "{}",
+                        tier="summary",
+                        created_at=record.created_at,
+                    )
         except sqlite3.IntegrityError as exc:
             raise ValueError("Could not create the agent task.") from exc
         stored = self.agent_task(record.operation_id)
@@ -843,7 +857,11 @@ class AgentTaskStoreMixin(StoreMixinBase):
         return questions
 
     def create_artifact_edit_task(
-        self, record: AgentTaskRecord, *, continuation_cause: str = "fresh"
+        self,
+        record: AgentTaskRecord,
+        *,
+        continuation_cause: str = "fresh",
+        marker: str | None = None,
     ) -> AgentTaskRecord:
         """Admit a file edit without spending or changing its episode."""
 
@@ -862,6 +880,15 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     "Another task is already active in this conversation."
                 )
             self._insert_agent_task(connection, record, continuation_cause=continuation_cause)
+            if marker is not None:
+                self._insert_agent_task_receipt(
+                    connection,
+                    record.operation_id,
+                    marker,
+                    "{}",
+                    tier="summary",
+                    created_at=record.created_at,
+                )
             edit = record.request.get("artifact_edit")
             reply_episode_id = edit.get("reply_episode_id") if isinstance(edit, dict) else None
             if reply_episode_id is not None:

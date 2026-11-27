@@ -7,17 +7,29 @@ import logging
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.config import Manifest, load_manifest
+from rcp.core.models import AuthorizedHuman
+from rcp.limits import LIMIT_AUTO_RESUME_MAX, LIMIT_RESUME_DEFER_MAX, LIMIT_RESUME_RETRY_SECONDS
 from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.providers import profile_for
+from rcp.providers.usage_limits import limit_reset
 from rcp.server_ops.provider_cleanup import cleanup_provider_login_credential
+from rcp.storage.models import (
+    AgentTaskAdmissionConflict,
+    AgentTaskAlreadyContinued,
+    ProjectActiveTaskConflict,
+)
+from rcp.transport import StateUnavailable
 
 if TYPE_CHECKING:
     from rcp.agents.launcher import AgentLauncher
-    from rcp.background import BackgroundAgentTasks
+    from rcp.background import AgentTaskExecution, BackgroundAgentTasks
+    from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
+    from rcp.projects import ProjectCatalog
     from rcp.storage import AppStore
     from rcp.storage.models import AgentTaskRecord, ProviderLoginStateRecord, WatcherRecord
     from rcp.watchers import WatcherDelivery
@@ -385,12 +397,44 @@ def provider_login_changed(
     return {"checked": checked + reconcile_episodes()}
 
 
-def settle_provider_login(background: BackgroundAgentTasks, record: AgentTaskRecord) -> None:
+def settle_provider_login(
+    background: BackgroundAgentTasks,
+    record: AgentTaskRecord,
+    *,
+    execution: AgentTaskExecution | None = None,
+) -> None:
     """Apply evidence and release only after the owner recorded its durable park."""
     store = background.store
     record = store.agent_task(record.operation_id) or record
     provider = str(record.request.get("provider") or "")
-    if not provider or record.login_id is None:
+    if not provider:
+        return
+    limited = background._failure_classified_as(record, "session_limit")
+    if limited and record.status == "failed":
+        resets = store.agent_task_receipts_by_category(record.operation_id, "provider_limit_reset")
+        existing = resets[-1] if resets else None
+        if existing is None:
+            snapshot = execution.rate_limit if execution is not None else None
+            reset = limit_reset(
+                provider,
+                snapshot,
+                record.error or "",
+                failed_at=datetime.fromisoformat(record.finished_at or record.updated_at),
+            )
+            store.record_agent_task_receipt(
+                record.operation_id,
+                "provider_limit_reset",
+                {
+                    **reset.model_dump(mode="json"),
+                    "snapshot": snapshot,
+                },
+            )
+            resets_at = reset.resets_at.isoformat()
+        else:
+            resets_at = str(existing.payload["resets_at"])
+    else:
+        resets_at = None
+    if record.login_id is None:
         return
     key = LoginKey(provider, record.stage_machine_id or "", record.login_id)
     starts = [
@@ -398,9 +442,10 @@ def settle_provider_login(background: BackgroundAgentTasks, record: AgentTaskRec
         for receipt in store.agent_task_receipts(record.operation_id)
         if receipt.category == "provider_runtime_selected"
     ]
-    limited = background._failure_classified_as(record, "session_limit")
     if starts and (limited or record.status == "succeeded"):
-        store.set_provider_login_limit(key, provider_started_at=min(starts), limited=limited)
+        store.set_provider_login_limit(
+            key, provider_started_at=min(starts), limited=limited, resets_at=resets_at
+        )
     chosen = resolved_task_login(store, record)
     if chosen is None:
         return
@@ -531,3 +576,139 @@ def delete_removed_credential(store: AppStore, key: LoginKey, *, defer: bool = F
             ("Sign-in removed." if deleted else _CLEANUP_PENDING, *key),
         )
     return deleted
+
+
+def limit_resume_candidates(store: AppStore) -> list[AgentTaskRecord]:
+    retry_before = (
+        datetime.fromisoformat(store.now()) - timedelta(seconds=LIMIT_RESUME_RETRY_SECONDS)
+    ).isoformat()
+    with store.connection() as connection:
+        rows = connection.execute(
+            "SELECT failed.* FROM graph_runs failed "
+            "LEFT JOIN space_users member ON member.user_id=failed.authorized_user_id "
+            "WHERE failed.status='failed' AND failed.episode_id IS NULL "
+            "AND failed.history_only=0 AND failed.visible=1 "
+            "AND failed.kind IN ('project_chat', 'node_chat', 'space_chat') "
+            "AND json_extract(failed.request_json, '$.chat_id') IS NOT NULL "
+            "AND COALESCE(member.auto_resume_after_limits, 1)=1 "
+            "AND EXISTS (SELECT 1 FROM graph_run_receipts reset "
+            "WHERE reset.operation_id=failed.operation_id AND reset.category='provider_limit_reset' "
+            "AND julianday(json_extract(reset.payload_json, '$.resets_at'))<=julianday(?)) "
+            "AND NOT EXISTS (SELECT 1 FROM graph_run_receipts stopped "
+            "WHERE stopped.operation_id=failed.operation_id AND stopped.category='limit_auto_resume_stopped') "
+            "AND NOT EXISTS (SELECT 1 FROM graph_run_receipts deferred "
+            "WHERE deferred.operation_id=failed.operation_id AND deferred.category='limit_auto_resume_deferred' "
+            "AND julianday(deferred.created_at)>julianday(?)) "
+            "AND NOT EXISTS (SELECT 1 FROM graph_runs child WHERE child.parent_operation_id=failed.operation_id) "
+            "AND NOT EXISTS (SELECT 1 FROM graph_runs later WHERE later.project_id=failed.project_id "
+            "AND json_extract(later.request_json, '$.chat_id')=json_extract(failed.request_json, '$.chat_id') "
+            "AND (later.rowid>failed.rowid OR later.status IN ('queued', 'running', 'pausing'))) "
+            "ORDER BY failed.rowid",
+            (store.now(), retry_before),
+        ).fetchall()
+    return [store._agent_task_record(row) for row in rows]
+
+
+def _limit_resume_capped(store: AppStore, task: AgentTaskRecord) -> bool:
+    current = task
+    for index in range(LIMIT_AUTO_RESUME_MAX):
+        if not store.agent_task_has_receipt(current.operation_id, "limit_auto_resume"):
+            return False
+        if index + 1 == LIMIT_AUTO_RESUME_MAX:
+            return True
+        parent = store.agent_task(current.parent_operation_id or "")
+        if parent is None:
+            return False
+        current = parent
+    return False
+
+
+def _stop_limit_resume(store: AppStore, task: AgentTaskRecord, reason: str) -> None:
+    store.record_agent_task_receipt(
+        task.operation_id, "limit_auto_resume_stopped", {"reason": reason}
+    )
+
+
+def _resume_limited_turn(
+    background: BackgroundAgentTasks,
+    task: AgentTaskRecord,
+    *,
+    catalog: ProjectCatalog,
+    experiment_admission: ExperimentAdmission,
+    operation_lock: KeyedLocks,
+) -> None:
+    from rcp.agents.agent_owner import LimitResumeMemberGone, task_write_admission_as
+    from rcp.api.tasks import resume_task
+
+    store = background.store
+    try:
+        if _limit_resume_capped(store, task):
+            _stop_limit_resume(store, task, "Automatic resume limit reached.")
+            return
+        if not task.native_session_id:
+            raise ValueError("No native session is available to resume.")
+        member = store.space_user(task.authorized_by.user_id) if task.authorized_by else None
+        if member is None or not member.display_name:
+            raise LimitResumeMemberGone("The authorizing member is no longer available.")
+        authorized_by = AuthorizedHuman(
+            space_id=store.space_id, user_id=member.user_id, display_name=member.display_name
+        )
+        with task_write_admission_as(
+            task, authorized_by, store=store, operation_lock=operation_lock
+        ):
+            if not any(
+                candidate.operation_id == task.operation_id
+                for candidate in limit_resume_candidates(store)
+            ):
+                return
+            resume_task(
+                task,
+                authorized_by,
+                catalog=catalog,
+                background_tasks=background,
+                experiment_admission=experiment_admission,
+                marker="limit_auto_resume",
+            )
+    except AgentTaskAlreadyContinued:
+        return
+    except (
+        ProviderLoginsLimited,
+        AgentTaskAdmissionConflict,
+        ProjectActiveTaskConflict,
+        OSError,
+        StateUnavailable,
+    ) as exc:
+        deferred = len(
+            store.agent_task_receipts_by_category(task.operation_id, "limit_auto_resume_deferred")
+        )
+        if deferred < LIMIT_RESUME_DEFER_MAX:
+            store.record_agent_task_receipt(
+                task.operation_id, "limit_auto_resume_deferred", {"reason": str(exc)}
+            )
+            deferred += 1
+        if deferred >= LIMIT_RESUME_DEFER_MAX:
+            _stop_limit_resume(store, task, str(exc))
+    except Exception as exc:
+        _stop_limit_resume(store, task, str(exc))
+
+
+def resume_limited_turns(
+    background: BackgroundAgentTasks,
+    *,
+    catalog: ProjectCatalog,
+    experiment_admission: ExperimentAdmission,
+    operation_lock: KeyedLocks,
+) -> None:
+    for task in limit_resume_candidates(background.store):
+        try:
+            _resume_limited_turn(
+                background,
+                task,
+                catalog=catalog,
+                experiment_admission=experiment_admission,
+                operation_lock=operation_lock,
+            )
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Could not resume limited turn %s", task.operation_id
+            )
