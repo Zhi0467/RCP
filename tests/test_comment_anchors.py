@@ -107,3 +107,23 @@ def test_box_render_preserves_element_relative_region():
     rendered = render_anchor(anchor)
     assert "#figure" in rendered
     assert "x=0.1, y=0.2, width=0.3, height=0.4" in rendered
+
+
+def test_a_quote_inside_its_context_is_not_repeated() -> None:
+    from rcp.comments.render import render_anchor
+
+    rendered = render_anchor(
+        {
+            "kind": "text",
+            "text": "Turn 1: fork at 1,682.\nTurns 2 onward: fork at 323.",
+            "surrounding_text": "Two groups:\n\nTurn 1: fork at 1,682.\n\nTurns 2 onward: fork at 323.\n\nSo turn 2",
+            "comment": "ok",
+        }
+    )
+
+    assert rendered.count("fork at 323") == 1
+    assert "Two groups:" in rendered and "So turn 2" in rendered
+    unmatched = render_anchor(
+        {"kind": "text", "text": "absent", "surrounding_text": "other words", "comment": "ok"}
+    )
+    assert "other words" in unmatched
