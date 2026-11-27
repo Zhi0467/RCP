@@ -2428,15 +2428,23 @@ class ExperimentStoreMixin(StoreMixinBase):
             )
         }
         member_turns = {
-            str(row["chat_id"]): (str(row["created_at"]), json.loads(row["request_json"]))
+            str(row["chat_id"]): (
+                (str(row["created_at"]), int(row["storage_rowid"])),
+                json.loads(row["request_json"]),
+            )
             for row in _connection.execute(
                 """
-                SELECT json_extract(request_json, '$.chat_id') AS chat_id, request_json,
-                       MAX(created_at) AS created_at
-                FROM graph_runs
-                WHERE project_id = ? AND json_extract(request_json, '$.trigger') = 'human'
-                  AND json_extract(request_json, '$.chat_id') IS NOT NULL
-                GROUP BY json_extract(request_json, '$.chat_id')
+                SELECT chat_id, request_json, created_at, storage_rowid FROM (
+                    SELECT json_extract(request_json, '$.chat_id') AS chat_id, request_json,
+                           created_at, rowid AS storage_rowid,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY json_extract(request_json, '$.chat_id')
+                               ORDER BY created_at DESC, rowid DESC
+                           ) AS latest
+                    FROM graph_runs
+                    WHERE project_id = ? AND json_extract(request_json, '$.trigger') = 'human'
+                      AND json_extract(request_json, '$.chat_id') IS NOT NULL
+                ) WHERE latest = 1
                 """,
                 (project_id,),
             )
@@ -2587,7 +2595,7 @@ class ExperimentStoreMixin(StoreMixinBase):
         receipt_categories: dict[str, set[str]],
         episodes: dict[str, ExperimentEpisodeRecord],
         parent: EpisodeRecord | None,
-        member_turns: dict[str, tuple[str, dict[str, object]]] | None = None,
+        member_turns: dict[str, tuple[tuple[str, int], dict[str, object]]] | None = None,
     ) -> ExperimentLoopRuntime:
         """Purely derive one runtime from an already-loaded project ledger.
 
@@ -2692,7 +2700,7 @@ class ExperimentStoreMixin(StoreMixinBase):
         if (
             member is not None
             and episode is not None
-            and member[0] > binding_row["created_at"]
+            and member[0] > (binding_row["created_at"], binding_row["storage_rowid"])
             and member[1].get("provider") == episode.provider
             and member[1].get("session_id") == episode.native_session_id
         ):
