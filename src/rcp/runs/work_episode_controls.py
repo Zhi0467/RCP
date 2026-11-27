@@ -28,7 +28,6 @@ from rcp.agents.staged_command_client import (
     EPISODE_RESUME,
     EPISODE_STOP,
     KICKOFF_LIMIT,
-    ask_relay_usage,
     episode_control_usage,
 )
 from rcp.limits import AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES
@@ -477,8 +476,7 @@ def work_episode_control_usage(client: str) -> str:
         f"{EPISODE_MAILBOX_RULES}\n"
         f"Answer a child question with `{client} episode --answer <question-id> "
         "--answer-file <filename> [--choice <choice>] --key <key>`. "
-        f"When you ask the human a child question, add `{ask_relay_usage()}` to your `ask`; "
-        "RCP withdraws your copy once the child question is resolved.\n"
+        "\n"
         "Episode controls act only on episodes this chat started, as the human's Runs card "
         "would; tell the human to use Runs for any other. Pick the control from the "
         "episode's state:\n"

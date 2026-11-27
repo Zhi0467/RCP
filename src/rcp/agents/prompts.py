@@ -130,8 +130,9 @@ EPISODE_MAILBOX_RULES = (
     "the run to ask, and never forbid it to ask the human. "
     "Answer a question yourself when it does not need the human. Leave "
     "consequential decisions to the human: experiment design, upstream decisions, "
-    "and starting runs that use significant compute. Ask the human in your reply "
-    "and pass their answer down. Never invent an answer the human did not give."
+    "and starting runs that use significant compute. The run's question already shows "
+    "the human as its own card, so never ask it again; add your advice in your reply. "
+    "Never invent an answer the human did not give."
 )
 
 
@@ -943,7 +944,7 @@ _INLINE_CONTINUATION_RULES = {
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
 DISCUSS_POLICY_VERSION = "discuss-v19"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v44"
+WORK_POLICY_VERSION = "work-v45"
 
 
 class PromptFactory:

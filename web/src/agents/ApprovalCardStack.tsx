@@ -80,7 +80,12 @@ export type StackCard =
       showProject: boolean;
     }
   | { kind: "asked"; key: string; question: AgentQuestion; projectName: string | null }
-  | { kind: "question"; key: string; question: RelayedQuestion }
+  | {
+      kind: "question";
+      key: string;
+      question: RelayedQuestion;
+      own?: { apiBase: string; continueChat: boolean };
+    }
   | { kind: "plan"; key: string; question: AgentQuestion }
   | { kind: "run"; key: string; run: DockEpisode };
 
@@ -308,20 +313,25 @@ export function ApprovalCardStack({
       <QuestionCard
         key={card.key}
         question={card.question}
-        apiBase={`/api/projects/${encodeURIComponent(card.question.project_id)}`}
+        apiBase={
+          card.own?.apiBase ?? `/api/projects/${encodeURIComponent(card.question.project_id)}`
+        }
+        continueChat={card.own?.continueChat}
         origin={
-          <span className="question-origin">
-            <a
-              className="entity-chip project"
-              href={`#/projects/${encodeURIComponent(card.question.project_id)}`}
-            >
-              <Files size={11} aria-hidden="true" />
-              {card.question.project_name}
-            </a>
-            {card.question.source_label && (
-              <span title={card.question.source_label}>{card.question.source_label}</span>
-            )}
-          </span>
+          !card.own && (
+            <span className="question-origin">
+              <a
+                className="entity-chip project"
+                href={`#/projects/${encodeURIComponent(card.question.project_id)}`}
+              >
+                <Files size={11} aria-hidden="true" />
+                {card.question.project_name}
+              </a>
+              {card.question.source_label && (
+                <span title={card.question.source_label}>{card.question.source_label}</span>
+              )}
+            </span>
+          )
         }
         onResolved={() => {
           focusNext.current = "front";
