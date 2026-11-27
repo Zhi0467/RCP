@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import pwd
 import subprocess
 import uuid
 from dataclasses import replace
 from io import StringIO
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -57,11 +57,8 @@ def _layout(tmp_path: Path) -> ServerLayout:
 
 
 def _account(layout: ServerLayout):
-    return SimpleNamespace(
-        pw_name="rcp",
-        pw_uid=os.getuid(),
-        pw_gid=os.getgid(),
-        pw_dir=str(layout.service_home),
+    return pwd.struct_passwd(
+        ("rcp", "x", os.getuid(), os.getgid(), "", str(layout.service_home), "/bin/sh")
     )
 
 
@@ -303,7 +300,7 @@ def test_agy_native_update_and_version_probes_suppress_browsers(tmp_path, monkey
 
     layout = _layout(tmp_path)
     account = _account(layout)
-    binary = tmp_path / "fake-agy"
+    binary = layout.service_home / "fake-agy"
     binary.write_text(
         f"#!{sys.executable}\n"
         "import os, shutil, subprocess, sys\n"

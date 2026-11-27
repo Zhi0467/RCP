@@ -158,78 +158,8 @@ first needs a turn showing that `schedule` and `send_message` are refused withou
 
 ## 3. In-app provider update
 
-### Today
-
-`server_ops/provider_update.py` updates a provider CLI with Inspect → Update → Verify.
-`runs/provider_auto_update.py` (`auto_update_providers`) runs it daily on the backend
-machine, for binaries inside the account's home:
-- It defers while turns use the provider.
-- It holds new launches (`launcher.provider_update(provider)`, keyed by provider and
-  local launches only).
-- It sets `update_warning` in memory, then refreshes readiness.
-
-Remote machines and on-demand updates need an operator in a terminal.
-
-### Change
-
-- **One update body, two targets.** `UpdateTarget` replaces the `(account, runner)` pair
-  in `server_ops/provider_update.py`. It has:
-  - `home`
-  - `run(argv, timeout)`
-  - `discover(provider) -> str | None`, which replaces the local `_discover_provider`
-  - `temp_dir()`, which creates and safety-checks `~/.rcp/tmp/rcp-provider-*`
-  - `remove(path)`
-
-  `binary` becomes a target-side `str`, and the home rule compares it to `target.home`.
-  There are two targets:
-  - **Local account:** today's `_run_as_account`, `_account_temp_dir` (with its chown,
-    chmod and owner checks) and `shutil.rmtree`.
-  - **Remote machine:** runs over the machine's SSH transport as its `os_account`.
-    - `home` is the machine's `$HOME`.
-    - `discover` runs `command -v` plus the profile's `install_paths`.
-    - `temp_dir` runs `mktemp -d` and then checks owner and mode with `stat`.
-    - `remove` runs `rm -rf` on that directory only.
-
-    Profile data (`native_update`, `installer_url`, `command_prefix`) stays on the
-    backend, which builds each argv. Only plain commands cross SSH, so no `rcp.*` code
-    ships.
-- `update_provider(store, launcher, provider, machine_id, *, target, stop, guard)`
-  holds the per-provider body of `auto_update_providers`. The daily pass calls it for
-  the backend machine. The endpoint calls it on a worker thread, the way a sign-in
-  attempt runs.
-- **Hold.** `launcher.provider_update` becomes a try-acquire keyed by
-  `(provider, machine_id)`. A second acquire raises `ProviderUpdateRefused`
-  ("already updating"), which the API returns as 409. While the hold is taken:
-  - Launches wait, remote ones too. The wait moves to the start of the launch, before
-    readiness, credential resolution, argv building and `remote_process_start`. A
-    waiting turn then holds no credential and announces no remote pass, and it launches
-    with the updated binary. The wait is async, as today, and the `not host` exemption
-    goes.
-  - Readiness and login probes do not wait, and `refresh` is ignored. They return the
-    cached readiness marked `updating`. With nothing cached, they return a minimal
-    `ProviderReadiness` with `updating` set and authentication unknown. The row's
-    **Updating** tag reads this.
-  - Sign-ins are refused with "Updating".
-  - The updater's own `run` calls do not check the hold.
-- **Busy rule.** `backend_turns_using` becomes `turns_using(store, provider,
-  machine_id)` and is checked inside the hold, as the daily pass does today. If turns
-  are running on that provider and machine, the on-demand update
-  is refused with the count ("2 turns are using Codex"). It does not wait. A daily pass
-  and an on-demand job for the same pair meet at the lock, and the second is refused.
-- The home rule is unchanged. A binary outside the account's home fails with the reason
-  (for example, it needs `sudo npm -g`).
-- `POST /api/space/machines/{machine_id}/providers/{provider}/update` starts the job.
-  `GET …/update` returns its state. One live job per pair, held in memory like a sign-in
-  attempt (`runs/provider_sign_in.py`). Who may call it: in a team space, a member who
-  may edit that machine card. In a personal space, the owner.
-- Success clears `update_warning` and re-resolves the path. Failure sets it, so the row
-  shows **Update failed** with the error on hover. The warning stays in memory, as today.
-
-### Surface (mockups approved 2026-11-27)
-
-The provider row replaces **Resolve** with a ⋯ menu holding **Resolve** and **Update**.
-While an update runs, the tag reads **Updating** and the ⋯ becomes a spinner. On a phone
-the name, tag and ⋯ share one line, and the path field is full width below.
+Current behavior lives in
+[Server and machine operations](specs/server-and-machine-operations.md#in-app-provider-updates).
 
 ## Spec owners
 

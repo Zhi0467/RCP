@@ -1,28 +1,19 @@
-"""One pass that keeps the backend account's own provider CLIs current.
-
-The backend runs as the account that installed the CLIs, so each native update
-runs without root. The executable is the backend machine's configured one, else
-the account's discovered one. A provider is updated only when that executable
-lives in the account's home and no backend turn using it is running or queued;
-otherwise it waits for the next pass. While it updates, the launcher holds back
-new local launches of that provider, so no turn starts between the check and the
-update. A failed update leaves the installed version in use
-and is recorded as that provider's update warning on the backend machine card.
-"""
+"""Shared maintenance for scheduled and member-requested provider CLI updates."""
 
 from __future__ import annotations
 
 import logging
 from contextlib import AbstractContextManager, nullcontext
-from pathlib import Path
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
-from rcp.providers import PROVIDER_IDS
+from rcp.providers import PROVIDER_IDS, ProviderId, profile_for
 from rcp.server_ops.provider_update import (
+    LocalUpdateTarget,
     ProviderUpdateRefused,
-    backend_turns_using,
-    installed_provider,
+    ProviderVersionChange,
+    UpdateTarget,
     update_installed_provider,
 )
 from rcp.storage.models import MACHINE_LOGIN_ID
@@ -41,6 +32,53 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def turns_using(store: AppStore, provider: ProviderId, machine_id: str) -> int:
+    """Count active and admitted turns on the exact provider and machine."""
+    with store.connection() as connection:
+        row = connection.execute(
+            "SELECT COUNT(*) FROM graph_runs "
+            "WHERE json_extract(request_json, '$.provider')=? "
+            "AND COALESCE(NULLIF(stage_machine_id,''),?)=? "
+            "AND status IN ('queued','running','pausing')",
+            (provider, BACKEND_MACHINE_ID, machine_id),
+        ).fetchone()
+    return int(row[0])
+
+
+def update_provider(
+    store: AppStore,
+    launcher: AgentLauncher,
+    provider: ProviderId,
+    machine_id: str,
+    *,
+    target: UpdateTarget,
+    stop: threading.Event,
+    guard: Guard = nullcontext,
+) -> ProviderVersionChange:
+    """Admit one update, then run and verify it under the caller's mutation guard."""
+    if stop.is_set():
+        raise ProviderUpdateRefused("Provider updates are stopping.")
+    with launcher.provider_update(provider, machine_id):
+        count = turns_using(store, provider, machine_id)
+        if count:
+            raise ProviderUpdateRefused(f"{count} turns are using {profile_for(provider).label}.")
+        with guard():
+            try:
+                configured = launcher.provider_binary(provider, machine_id)
+                binary = configured or target.discover(provider)
+                if binary is None:
+                    raise ProviderUpdateRefused(f"{profile_for(provider).label} is not installed.")
+                change = update_installed_provider(target, provider, binary)
+            except (OSError, ProviderUpdateRefused) as exc:
+                launcher.set_update_warning(provider, machine_id, str(exc))
+                raise
+            launcher.set_update_warning(provider, machine_id, None)
+            login = LoginKey(provider, machine_id, MACHINE_LOGIN_ID)
+            launcher.invalidate_provider_readiness(provider, machine_id)
+    launcher.readiness(login, binary=configured, refresh=True)
+    return change
+
+
 def auto_update_providers(
     store: AppStore,
     launcher: AgentLauncher,
@@ -50,35 +88,26 @@ def auto_update_providers(
     stop: threading.Event,
     guard: Guard = nullcontext,
 ) -> None:
-    """Update each idle, home-installed provider CLI once; log one line each.
-
-    `guard` wraps each provider's update, and `stop` ends the pass between providers.
-    """
-
-    home = Path(account.pw_dir)
+    """Update idle backend installations once, skipping missing or external binaries."""
+    target = LocalUpdateTarget(account, runner)
     for provider in PROVIDER_IDS:
         if stop.is_set():
             return
-        configured = launcher.provider_binary(provider, BACKEND_MACHINE_ID)
-        binary = Path(configured) if configured else installed_provider(account, provider)
-        if binary is None or not binary.is_relative_to(home):
+        binary = launcher.provider_binary(provider, BACKEND_MACHINE_ID) or target.discover(provider)
+        if binary is None or not PurePosixPath(binary).is_relative_to(PurePosixPath(target.home)):
             continue
-        with guard(), launcher.provider_update(provider):
-            if backend_turns_using(store.path, provider, queued=True):
-                logger.info("Provider update deferred, %s has backend turns", provider)
-                continue
-            try:
-                change = update_installed_provider(account, provider, binary, runner)
-            except (OSError, ProviderUpdateRefused) as exc:
-                logger.warning("Provider update failed for %s: %s", provider, exc)
-                launcher.set_update_warning(provider, BACKEND_MACHINE_ID, str(exc))
-                continue
-        launcher.set_update_warning(provider, BACKEND_MACHINE_ID, None)
-        if change.after == change.before:
+        try:
+            change = update_provider(
+                store,
+                launcher,
+                provider,
+                BACKEND_MACHINE_ID,
+                target=target,
+                stop=stop,
+                guard=guard,
+            )
+        except (OSError, ProviderUpdateRefused) as exc:
+            logger.info("Provider update did not complete for %s: %s", provider, exc)
             continue
-        logger.info("Provider %s updated from %s to %s", provider, change.before, change.after)
-        launcher.readiness(
-            LoginKey(provider, BACKEND_MACHINE_ID, MACHINE_LOGIN_ID),
-            binary=configured,
-            refresh=True,
-        )
+        if change.after != change.before:
+            logger.info("Provider %s updated from %s to %s", provider, change.before, change.after)
