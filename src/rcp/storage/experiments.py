@@ -2598,8 +2598,7 @@ class ExperimentStoreMixin(StoreMixinBase):
         receipt_categories: dict[str, set[str]],
         episodes: dict[str, ExperimentEpisodeRecord],
         parent: EpisodeRecord | None,
-        member_turns: dict[tuple[str, str], tuple[tuple[str, int], dict[str, object]]]
-        | None = None,
+        member_turns: dict[tuple[str, str], tuple[tuple[str, int], dict[str, object]]],
     ) -> ExperimentLoopRuntime:
         """Purely derive one runtime from an already-loaded project ledger.
 
@@ -2701,7 +2700,7 @@ class ExperimentStoreMixin(StoreMixinBase):
         )
         pick_request = binding_request
         member = (
-            (member_turns or {}).get((agent_id, episode.native_session_id))
+            member_turns.get((agent_id, episode.native_session_id))
             if isinstance(agent_id, str) and episode is not None and episode.native_session_id
             else None
         )

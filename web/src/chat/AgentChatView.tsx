@@ -38,8 +38,8 @@ import {
   ApprovalCardStack,
   askedCardKey,
   dockStackCards,
+  ownQuestionCardKey,
   proposalCardKey,
-  questionCardKey,
   useAgentCards,
   type StackCard,
 } from "../agents/ApprovalCardStack";
@@ -626,19 +626,14 @@ export function AgentChatView({
         .filter(
           (question) => questionIsOpen(question) && !question.card && !question.withdrawn_readonly,
         )
-        .map((asked) => {
-          const question = { ...asked, project_id: "", project_name: "", source_label: null };
-          return {
-            kind: "question",
-            key: questionCardKey(question),
-            question,
-            own: {
-              apiBase: questionApiBase,
-              continueChat:
-                !readOnly && !questionEpisodeId && question.state === "parked" && !relatedActive,
-            },
-          };
-        })
+        .map((question) => ({
+          kind: "own-question",
+          key: ownQuestionCardKey(question),
+          question,
+          apiBase: questionApiBase,
+          continueChat:
+            !readOnly && !questionEpisodeId && question.state === "parked" && !relatedActive,
+        }))
     : [];
   const dockCards: StackCard[] = [
     ...cards.proposals.filter((view) => !view.stale).map(proposalStackCard),

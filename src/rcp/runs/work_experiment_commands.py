@@ -56,6 +56,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _RECEIPT = "work_experiment_kickoff"
+_RECEIPT_BOOKKEEPING = frozenset(
+    {"phase", "kickoff_id", "intent_sha256", "goal", "question_id", "expected_sha256"}
+)
 _RESUME_RECEIPT = "work_experiment_resume"
 
 
@@ -257,7 +260,7 @@ def record_plan_card(
     """
     from rcp.runs.questions import work_ask_authorized
 
-    auto = plan.auto_research
+    auto = plan.node is None
     category = _AUTO_RESEARCH_RECEIPT if auto else _RECEIPT
     if not (member_work_chat_turn(execution) and work_ask_authorized(execution)):
         return "This turn cannot raise a plan card."
@@ -320,11 +323,14 @@ def record_plan_card(
 
 
 def raise_plan_cards(execution: AgentTaskExecution, catalog: ProjectCatalog) -> None:
-    """Raise the plan cards a finished Work turn's kickoffs asked for, from the settled graph.
+    """Raise the plan cards a finished Work turn's plan files asked for, from the settled graph.
 
-    Only a succeeded turn raises them. A request whose node, or Auto-research, already
-    has an open card in this chat revises that card in place, pending or parked. A card
-    claimed for Start is not revised, so the request raises a new one.
+    Only a succeeded turn raises them. A request from an edited card file names that
+    card and the hash it was staged with: it revises the card only while the card still
+    carries that hash, and of several such requests in one turn only the last counts.
+    Otherwise the edit is reported as the human's to keep. A request with no named card
+    (a new file, or an older receipt) revises the chat's open card for its node or
+    Auto-research, pending or parked, or raises a new card.
     """
 
     store = execution.store
@@ -386,15 +392,7 @@ def raise_plan_cards(execution: AgentTaskExecution, catalog: ProjectCatalog) -> 
                     **{
                         key: value
                         for key, value in payload.items()
-                        if key
-                        not in {
-                            "phase",
-                            "kickoff_id",
-                            "intent_sha256",
-                            "goal",
-                            "question_id",
-                            "expected_sha256",
-                        }
+                        if key not in _RECEIPT_BOOKKEEPING
                     },
                 }
             )
@@ -483,22 +481,14 @@ def raise_plan_cards(execution: AgentTaskExecution, catalog: ProjectCatalog) -> 
 
 
 def _open_cards(store: AppStore, origin: QuestionOrigin, subject: str) -> list[tuple[str, str]]:
-    """This chat's open cards for the node or Auto-research, pending or parked, oldest
-    first, each with the hash it carries."""
-    pending = [
-        item.question_id
-        for item in store.list_questions(
-            project_id=origin.project_id, owner_kind="chat", owner_id=origin.owner_id
-        )
-        if item.state == "pending"
-    ]
-    cards = store.approval_cards(pending)
+    """This chat's open cards for the node or Auto-research, oldest first, with their hash."""
+
+    from rcp.plan_folder import open_plan_cards
+
     return [
-        (question_id, cards[question_id]["pinned_sha256"])
-        for question_id in pending
-        if question_id in cards
-        and cards[question_id]["state"] in {"pending", "parked"}
-        and _card_subject(cards[question_id]["action"]) == subject
+        (question_id, card["pinned_sha256"])
+        for question_id, card in open_plan_cards(store, origin.project_id, origin.owner_id)
+        if _card_subject(card["action"]) == subject
     ]
 
 

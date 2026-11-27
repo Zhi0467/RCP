@@ -15,15 +15,9 @@ from typing import TYPE_CHECKING, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from rcp.limits import (
-    AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES,
-    EPISODE_TEXT_MAX_LENGTH,
-    TURN_JOURNAL_MAX_WATCHER_BYTES,
-    TURN_JOURNAL_MAX_WATCHER_FILES,
-)
+from rcp.limits import AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES, EPISODE_TEXT_MAX_LENGTH
 from rcp.providers import ProviderId
-from rcp.regular_tree_reader import read_regular_tree
-from rcp.transport.watcher_workspace import replace_watcher_folder, watcher_id
+from rcp.transport.watcher_workspace import direct_json_stem, replace_agent_folder
 
 if TYPE_CHECKING:
     from rcp.background import AgentTaskExecution
@@ -89,8 +83,9 @@ class PlanFile(BaseModel):
         return self
 
     @property
-    def auto_research(self) -> bool:
-        return self.kind == "auto_research"
+    def subject(self) -> tuple[str, str | None]:
+        """What a card is for: its kind and node. A card's subject never changes."""
+        return self.kind, self.node
 
     def intent(self) -> dict[str, object]:
         return self.model_dump(mode="json", exclude=_RCP_OWNED, exclude_none=True)
@@ -117,8 +112,12 @@ def _plan(card: dict[str, Any]) -> PlanFile:
     )
 
 
-def plan_files(store: AppStore, project_id: str, chat_id: str) -> dict[str, str]:
-    """Every open or parked plan card of this chat, as the files to stage."""
+def open_plan_cards(
+    store: AppStore, project_id: str, chat_id: str
+) -> list[tuple[str, dict[str, Any]]]:
+    """This chat's pending or parked plan cards, oldest first."""
+
+    from rcp.runs.approval_cards import PLAN_CARD_KINDS
 
     pending = [
         item.question_id
@@ -126,11 +125,21 @@ def plan_files(store: AppStore, project_id: str, chat_id: str) -> dict[str, str]
         if item.state == "pending"
     ]
     cards = store.approval_cards(pending)
+    return [
+        (question_id, cards[question_id])
+        for question_id in pending
+        if question_id in cards
+        and cards[question_id]["state"] in {"pending", "parked"}
+        and cards[question_id]["action"]["kind"] in PLAN_CARD_KINDS
+    ]
+
+
+def plan_files(store: AppStore, project_id: str, chat_id: str) -> dict[str, str]:
+    """Every open or parked plan card of this chat, as the files to stage."""
+
     return {
         f"{question_id}.json": _plan(card).model_dump_json(exclude_none=True, indent=2)
-        for question_id, card in cards.items()
-        if card["state"] in {"pending", "parked"}
-        and card["action"]["kind"] in {"experiment_start", "auto_research"}
+        for question_id, card in open_plan_cards(store, project_id, chat_id)
     }
 
 
@@ -164,30 +173,15 @@ def stage_plan_folder(
         return
     files = json.loads(saved)
     if remote_stage is None:
-        replace_watcher_folder(workspace, files, PLANS)
+        replace_agent_folder(workspace, PLANS, files)
     else:
-        remote_stage.replace_watcher_folder(files, PLANS)
+        remote_stage.replace_agent_folder(PLANS, files)
 
 
 def read_plan_folder(workspace: Path, remote_stage: RemoteRunStage | None) -> dict[str, str]:
-    files, size = TURN_JOURNAL_MAX_WATCHER_FILES, TURN_JOURNAL_MAX_WATCHER_BYTES
-    tree = (
-        read_regular_tree(
-            workspace,
-            PLANS,
-            max_entries=files,
-            max_files=files,
-            max_file_bytes=size,
-            max_total_bytes=size,
-        )
-        if remote_stage is None
-        else remote_stage.read_workspace_directory(
-            PLANS, max_entries=files, max_files=files, max_file_bytes=size, max_total_bytes=size
-        )
-    )
-    if tree.directories:
-        raise ValueError("plan files must be directly inside plans/")
-    return {name: data.decode("utf-8") for name, data in tree.files.items()}
+    from rcp.watcher_folder import read_agent_folder
+
+    return read_agent_folder(workspace, remote_stage, PLANS)
 
 
 def record_plan_folder(
@@ -209,37 +203,35 @@ def record_plan_folder(
         if baseline.get(name) == text:
             continue
         try:
-            watcher_id(name)
+            direct_json_stem(name)
             plan = PlanFile.model_validate_json(text)
         except ValueError as exc:
             problems.append(f"plans/{name}: {exc}")
             continue
-        revises = None
-        if name not in baseline:
-            held = next(
-                (
-                    other
-                    for other, staged in staged_plans.items()
-                    if (staged.kind, staged.node) == (plan.kind, plan.node)
-                ),
-                None,
-            )
-            if held is not None:
-                problems.append(f"plans/{name}: plans/{held} already holds this plan; edit it")
-                continue
-        if name in baseline:
-            staged = staged_plans[name]
-            if plan.intent() == staged.intent():
-                continue
-            if (plan.kind, plan.node) != (staged.kind, staged.node):
-                problems.append(
-                    f"plans/{name}: a card's kind and node are fixed; write a new file for "
-                    "another plan"
-                )
-                continue
+        staged = staged_plans.get(name)
+        if staged is None:
+            problem = _new_plan_problem(plan, staged_plans)
+            revises = None
+        elif plan.intent() == staged.intent():
+            continue
+        else:
+            problem = _revision_problem(plan, staged)
             assert staged.version is not None
             revises = (Path(name).stem, staged.version)
-        problem = record_plan_card(execution, name, plan, revises=revises)
+        problem = problem or record_plan_card(execution, name, plan, revises=revises)
         if problem:
             problems.append(f"plans/{name}: {problem}")
     return "\n".join(problems) or None
+
+
+def _new_plan_problem(plan: PlanFile, staged_plans: dict[str, PlanFile]) -> str | None:
+    held = next(
+        (name for name, staged in staged_plans.items() if staged.subject == plan.subject), None
+    )
+    return None if held is None else f"plans/{held} already holds this plan; edit it"
+
+
+def _revision_problem(plan: PlanFile, staged: PlanFile) -> str | None:
+    if plan.subject != staged.subject:
+        return "a card's kind and node are fixed; write a new file for another plan"
+    return None

@@ -47,6 +47,7 @@ from rcp.runs.approval_cards import (
     plan_card_actor,
     plan_card_episode_id,
     run_here_receipt,
+    with_started,
 )
 from rcp.runs.experiment_admission import experiment_node, run_here_message
 from rcp.service import ProjectService
@@ -428,8 +429,6 @@ def _resolve(
             card["request_id"],
         )
         if result["outcome"] == "approved" and body.start is not None:
-            from rcp.runs.approval_cards import with_started
-
             result["result"] = with_started(store, result["result"])
         return result
 

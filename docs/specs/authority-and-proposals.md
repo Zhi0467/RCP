@@ -337,8 +337,8 @@ judgment names an optional `branch_id`: without it the Proposal is on main, with
 it on that graph branch (`proposal_graph`). A stored action from before
 `branch_id` existed reads as main. The model also keeps Auto-research
 authorization, which no thread kind may newly ask: a new ask is refused with
-`auto_research_uses_episode_verb` because the member's Work chat raises its plan card
-with the `episode` verb. Stored Auto-research cards from the old ask path still
+`auto_research_uses_plan_file` because the member's Work chat raises its plan card
+from a `plans/` file. Stored Auto-research cards from the old ask path still
 render and settle `stale` on a tap because their old pins differ from the plan
 card pins. Plain question answers never authorize these actions. A
 `merge` command from a thread holding this grant is refused with
@@ -449,7 +449,7 @@ one `experiment_start` card on the raising turn from the settled graph, so the
 agent may write the node in the same turn. A failed turn gets no card. A node
 that is missing or not an Experiment, or a request a later turn already
 proposed, gets no card and a task event. Plan files are the only
-creator: `ask` refuses this kind with `experiment_start_uses_episode`.
+creator: `ask` refuses this kind with `experiment_start_uses_plan_file`.
 
 **The member wins a race.** A changed plan file names the card hash it was
 staged with, and its revision runs only while the card still carries that hash.

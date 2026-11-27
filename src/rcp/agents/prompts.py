@@ -934,7 +934,7 @@ _INLINE_CONTINUATION_RULES = {
     ),
     "watch_correction": (
         "If requested, rewrite `outcome.json` using the Work contract schema. If requested, rewrite\n"
-        "the watcher files using the current contract, keeping literal\n"
+        "the watcher files or the named `plans/` files using the current contract, keeping literal\n"
         "identifiers. If the diagnostic names running work without observers, recover its\n"
         "watcher from the launch receipt or real state. Do not change `patch.json` or repeat an\n"
         "external effect. Preserve the reply and artifacts; your final response only confirms the rewrite."
@@ -1503,8 +1503,9 @@ Graph Patch (optional):
                 "Preserve the completed operational result."
             ),
             "watch_correction": (
-                "Correct only the watcher request file. Preserve the completed operational result "
-                "and use the watcher diagnostic only to locate the invalidity."
+                "Correct only the handoff files the diagnostic names: watcher files, `outcome.json`, "
+                "or `plans/` files. Preserve the completed operational result and use the "
+                "diagnostic only to locate the invalidity."
             ),
         }[mode]
         if mode == "work_patch_correction":
@@ -1549,7 +1550,8 @@ Work watcher-correction instruction:
   context needed to correct the retained watcher request.
 - Preserve the completed operational result. Do not repeat the human task, rerun an experiment,
   resubmit work, or cause another external side effect merely to repair the watcher request.
-- Correct the watcher definitions under `{watch_path}`.
+- Correct the watcher definitions under `{watch_path}`, and any `plans/` file the diagnostic
+  names, under the plan-file rules of your original contract.
   Graph items retain one of the two condition shapes from the original contract. Preserve literal
   identifiers. Do not create or change `patch.json`.
 {WATCHER_FOLDER_CONTRACT}

@@ -443,7 +443,7 @@ def handle_work_episode_controls(
     return _attempt(request, "episode_message_refused", message)
 
 
-def work_auto_research_command_usage(client: str, orchestrator_profiles: str) -> str:
+def work_auto_research_command_usage(orchestrator_profiles: str) -> str:
     """The Auto-research plan card usage of a Work turn granted ``episode``."""
 
     from rcp.runs.approval_cards import APPROVAL_OUTCOMES
@@ -475,8 +475,7 @@ def work_episode_control_usage(client: str) -> str:
         "Episode controls (Experiments and Auto-research alike):\n"
         f"{EPISODE_MAILBOX_RULES}\n"
         f"Answer a child question with `{client} episode --answer <question-id> "
-        "--answer-file <filename> [--choice <choice>] --key <key>`. "
-        "\n"
+        "--answer-file <filename> [--choice <choice>] --key <key>`.\n"
         "Episode controls act only on episodes this chat started, as the human's Runs card "
         "would; tell the human to use Runs for any other. Pick the control from the "
         "episode's state:\n"

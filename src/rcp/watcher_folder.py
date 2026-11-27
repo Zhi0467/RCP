@@ -23,8 +23,8 @@ from rcp.regular_tree_reader import read_regular_tree
 from rcp.storage import AppStore, GraphCondition, WatcherCheckRecord, WatcherRecord
 from rcp.storage.watchers import _watcher_records
 from rcp.transport.run_stage import RemoteRunStage
-from rcp.transport.watcher_workspace import replace_watcher_folder
-from rcp.transport.watcher_workspace import watcher_id as _watcher_id
+from rcp.transport.watcher_workspace import direct_json_stem as _watcher_id
+from rcp.transport.watcher_workspace import replace_agent_folder
 from rcp.watchers import (
     WatcherBinding,
     WatcherCheckRunner,
@@ -128,33 +128,39 @@ def stage_watcher_folder(
     else:
         files = json.loads(saved)
     if remote_stage is None:
-        replace_watcher_folder(workspace, files)
+        replace_agent_folder(workspace, "watchers", files)
     else:
-        remote_stage.replace_watcher_folder(files)
+        remote_stage.replace_agent_folder("watchers", files)
     return files
 
 
-def read_watcher_folder(workspace: Path, remote_stage: RemoteRunStage | None) -> dict[str, str]:
-    if remote_stage is None:
-        tree = read_regular_tree(
+def read_agent_folder(
+    workspace: Path, remote_stage: RemoteRunStage | None, folder: str
+) -> dict[str, str]:
+    """An agent-edited folder's direct files, within the turn journal's watcher bounds."""
+
+    files, size = TURN_JOURNAL_MAX_WATCHER_FILES, TURN_JOURNAL_MAX_WATCHER_BYTES
+    tree = (
+        read_regular_tree(
             workspace,
-            "watchers",
-            max_entries=TURN_JOURNAL_MAX_WATCHER_FILES,
-            max_files=TURN_JOURNAL_MAX_WATCHER_FILES,
-            max_file_bytes=TURN_JOURNAL_MAX_WATCHER_BYTES,
-            max_total_bytes=TURN_JOURNAL_MAX_WATCHER_BYTES,
+            folder,
+            max_entries=files,
+            max_files=files,
+            max_file_bytes=size,
+            max_total_bytes=size,
         )
-    else:
-        tree = remote_stage.read_workspace_directory(
-            "watchers",
-            max_entries=TURN_JOURNAL_MAX_WATCHER_FILES,
-            max_files=TURN_JOURNAL_MAX_WATCHER_FILES,
-            max_file_bytes=TURN_JOURNAL_MAX_WATCHER_BYTES,
-            max_total_bytes=TURN_JOURNAL_MAX_WATCHER_BYTES,
+        if remote_stage is None
+        else remote_stage.read_workspace_directory(
+            folder, max_entries=files, max_files=files, max_file_bytes=size, max_total_bytes=size
         )
+    )
     if tree.directories:
-        raise ValueError("watcher files must be directly inside watchers/")
+        raise ValueError(f"files must be directly inside {folder}/")
     return {name: data.decode("utf-8") for name, data in tree.files.items()}
+
+
+def read_watcher_folder(workspace: Path, remote_stage: RemoteRunStage | None) -> dict[str, str]:
+    return read_agent_folder(workspace, remote_stage, "watchers")
 
 
 def _external_identity(check: WatcherCheckRecord) -> tuple[str, str, str, str, str | None]:

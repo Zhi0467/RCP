@@ -36,9 +36,9 @@ from tests.helpers import signed_in_client
 
 
 async def _events(launcher: AcceptanceAgentLauncher, prompt: str, cwd: Path, **kwargs):
-    from rcp.transport.watcher_workspace import replace_watcher_folder
+    from rcp.transport.watcher_workspace import replace_agent_folder
 
-    replace_watcher_folder(cwd, {})
+    replace_agent_folder(cwd, "watchers", {})
     kwargs.setdefault("machine_id", BACKEND_MACHINE_ID)
     kwargs.setdefault("host", "")
     return [

@@ -10,7 +10,7 @@ from contextlib import suppress
 from pathlib import Path
 
 
-def watcher_id(name: str) -> str:
+def direct_json_stem(name: str) -> str:
     path = Path(name)
     if (
         path.name != name
@@ -23,18 +23,16 @@ def watcher_id(name: str) -> str:
     return path.stem
 
 
-def replace_watcher_folder(
-    workspace: Path, files: dict[str, str], folder: str = "watchers"
-) -> None:
+def replace_agent_folder(workspace: Path, folder: str, files: dict[str, str]) -> None:
     if folder not in {"watchers", "plans"}:
         raise ValueError("unknown agent folder")
     if workspace.is_symlink() or not workspace.is_dir():
-        raise ValueError("watcher workspace is unavailable")
+        raise ValueError("the run workspace is unavailable")
     with tempfile.TemporaryDirectory(dir=workspace, prefix=f".rcp-{folder}-") as temp:
         staging = Path(temp) / "new"
         staging.mkdir(mode=0o700)
         for name, text in files.items():
-            watcher_id(name)
+            direct_json_stem(name)
             with (staging / name).open("x", encoding="utf-8") as out:
                 out.write(text)
         current = workspace / folder
@@ -50,4 +48,4 @@ def replace_watcher_folder(
 
 
 if __name__ == "__main__":
-    replace_watcher_folder(Path(sys.argv[1]), json.load(sys.stdin), *sys.argv[2:3])
+    replace_agent_folder(Path(sys.argv[1]), sys.argv[2], json.load(sys.stdin))
