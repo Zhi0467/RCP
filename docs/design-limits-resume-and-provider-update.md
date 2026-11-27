@@ -134,27 +134,13 @@ owning specs and this file is deleted.
     existing Resume and Retry. A stopped turn shows its reason on hover.
 - **Sign-in card:** a limited card reads `Limit until 4:10 PM` instead of `Usage limit`.
 
-## 2. Gemini 4x quota drain
+## 2. Gemini quota error
 
-Google bills custom-agent requests (`--agent`) at 4x (antigravity-cli #1890, confirmed
-2026-11-27). RCP passes `--agent rcp-<hash>` on every agy turn
-(`providers/agy/profile.py` `_command` and `work_like_probe_command`). The agent file
-carries a tool allowlist (`_tools`).
-
-**Status: on hold until the billing is confirmed.** The probe so far:
-- Without `--agent`, agy offers 60 tools: browser control, `schedule`, `send_message`,
-  `manage_inbox`, `generate_image`, MCP and more. `--settings` cannot remove a tool. It
-  only gates the actions `command`, `read_file`, `write_file`, `mcp`, `read_url` and
-  `execute_url`.
-- On agy's Claude models, the same short turn cost about the same with and without
-  `--agent` (0.78% vs 0.93% of the 5-hour bucket, matching its token count). There was
-  no 4x.
-- The Gemini comparison runs when that bucket resets.
-
-This PR ships only the quota-error classifier (section 1). The `--agent` decision follows
-the Gemini result. If Gemini shows 4x, the agy launch change gets its own design. It
-first needs a turn showing that `schedule` and `send_message` are refused without
-`--agent`.
+agy's quota error (`Individual quota reached … Resets in …`) joins the shared
+session-limit markers (section 1, step 2). agy launches are otherwise unchanged. Like
+every provider, they declare the exact tool set RCP grants, through the provider's own
+mechanism: `--tools` for Claude, feature flags for Codex, `--agent` for agy. A vendor's
+billing for that mechanism is not a reason to drop it.
 
 ## 3. In-app provider update
 
