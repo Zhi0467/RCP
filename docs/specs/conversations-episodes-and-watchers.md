@@ -1270,6 +1270,11 @@ Task rows expose the reset, its estimated flag, and `waiting` or `stopped` state
 An explicit stopped receipt supplies its reason; otherwise a disabled member
 switch supplies `switch_off`. Login rows expose their independent `limit_resets_at`.
 
+The member's switch sits in the chat ⋯ menu below Browser use and reads the same in
+every chat. A limited turn shows one line with its action at the end: waiting shows
+when it resumes and Don't resume; stopped shows when the limit ends with Resume and
+Retry, and its reason on hover. A limited sign-in card shows when its limit ends.
+
 ## Watcher resources
 
 Project Work, Space thread and Experiment invocations receive their current

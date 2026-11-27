@@ -131,7 +131,10 @@ Product login behavior belongs to
 
 ### In-app provider updates
 
-The machine provider menu starts a native CLI update on that machine. In a team
+Each provider row's ⋯ menu holds Resolve and Update. Update starts a native CLI
+update on that machine; while it runs, the row's tag reads Updating and the menu
+becomes a spinner, and a failure shows as the row's Update failed tag. On a phone,
+the name, tag and menu share one line above the path. In a team
 space, the caller must be a member allowed to edit the machine card; in a personal
 space, the owner may update it. The update routes return the in-memory job defined
 by [ProviderUpdateJob](../../src/rcp/runs/provider_update.py): one live job per
