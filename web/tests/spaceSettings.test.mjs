@@ -207,7 +207,7 @@ test("one machine card renders every section folded, with remove-from-project on
   const pathInputs = html.match(/<input[^>]*data-machine-setting="provider_path"[^>]*>/g);
   assert.equal(pathInputs?.length, 2);
   assert.match(pathInputs[0], /value="\/opt\/codex"/);
-  assert.equal(html.match(/data-machine-action="resolve-provider"/g)?.length, 2);
+  assert.equal(html.match(/aria-label="[^"]+ actions" aria-haspopup="menu"/g)?.length, 2);
   // Slurm adds the scheduler route; each reach entry is one row.
   assert.match(
     html,

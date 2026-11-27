@@ -216,6 +216,18 @@ export function controlThreadTask(
   });
 }
 
+/** Keeps a usage-limited turn from resuming by itself when the limit ends. */
+export function declineLimitResume(
+  thread: ThreadTaskOwner,
+  operationId: string,
+  request: Request = api,
+): Promise<{ ok: boolean }> {
+  return request(
+    `${threadTasksPath(thread)}/${encodeURIComponent(operationId)}/limit-resume/decline`,
+    { method: "POST" },
+  );
+}
+
 /** A Space thread never asks plainly and its cards come with the dock's card list, so it has no question route. */
 export async function loadThreadQuestions(
   thread: AgentThread,

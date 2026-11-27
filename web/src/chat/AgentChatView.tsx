@@ -18,6 +18,8 @@ import { ChatBranchPicker, ChatOriginLink } from "./ChatBranchPicker";
 import { ChatComposer, ComposerField } from "./ChatComposer";
 import { AgentPane, useAgentPaneLayout, useChatArtifacts } from "./AgentPane";
 import { ChatHeaderMenu, type ChatHeaderAction } from "./ChatHeaderMenu";
+import { LimitTaskRow } from "../agents/LimitTaskRow";
+import { LimitResumeToggle } from "./LimitResumeToggle";
 import { AgentHeader, AgentPickRow } from "./AgentHeader";
 import type { ChatAgentSetup, ChatOrigin } from "../core/types";
 import { MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget";
@@ -728,6 +730,15 @@ export function AgentChatView({
     const task = await endpoints.loadTask(taskId);
     void feed?.refresh();
     return task;
+  };
+  const declineLimitResume = async (task: AgentTask) => {
+    setSubmitError(null);
+    try {
+      await endpoints.declineLimitResume(task.operation_id);
+      await onRefreshTask(task.operation_id);
+    } catch (error) {
+      setSubmitError(errorMessage(error));
+    }
   };
   const attachDisabled = composer.full || composer.preparing || submitting || awaitingSteerReceipt;
   const attachmentsUnready = composer.unready;
@@ -1685,6 +1696,14 @@ export function AgentChatView({
           />
         )
       )}
+      <LimitResumeToggle
+        onChanged={async () => {
+          for (const task of relatedTasks.filter((item) => item.limit_reset))
+            await onRefreshTask(task.operation_id).catch((error: unknown) =>
+              setSubmitError(errorMessage(error)),
+            );
+        }}
+      />
       {configSource && (
         <AgentPickRow
           source={configSource}
@@ -1707,9 +1726,12 @@ export function AgentChatView({
         (task) =>
           isActiveTask(task) && !(pendingTurn?.error && pendingTurn.clientId === task.operation_id),
       ) ?? null;
-  const pausedTask = latest && !latest.active && latest.can_resume ? latest : null;
+  const pausedTask =
+    latest && !latest.active && latest.can_resume && !latest.limit_reset ? latest : null;
   const failedTask =
-    latest && !latest.active && latest.can_retry && !latest.can_resume ? latest : null;
+    latest && !latest.active && (latest.limit_reset || (latest.can_retry && !latest.can_resume))
+      ? latest
+      : null;
   const stoppedTask =
     failedTask &&
     !transcript.some((line) => line.role === "error" && line.taskId === failedTask.operation_id)
@@ -2100,6 +2122,7 @@ export function AgentChatView({
           repairErrors={repairErrors}
           onResumeTask={onResumeTask}
           onRetryTask={retryTask}
+          onDeclineLimitResume={declineLimitResume}
           onInspectTask={onInspectTask}
           onOpenInbox={onOpenInbox}
           onRepairGraphUpdate={repairGraphUpdate}
@@ -2125,21 +2148,32 @@ export function AgentChatView({
             />
           </div>
         )}
-        {(pausedTask || stoppedTask) && (
-          <div className="chat-task-inline paused" role="status">
-            <span>{pausedTask ? pausedTaskText(pausedTask) : stoppedTask!.status_message}</span>
-            {!readOnly && !(pausedTask && stoppedByMember(pausedTask)) && (
-              <button
-                type="button"
-                className="button compact primary"
-                onClick={() =>
-                  pausedTask ? onResumeTask?.(pausedTask) : onRetryTask?.(stoppedTask!)
-                }
-              >
-                <Play size={12} /> Continue
-              </button>
-            )}
-          </div>
+        {stoppedTask?.limit_reset ? (
+          <LimitTaskRow
+            task={stoppedTask}
+            limit={stoppedTask.limit_reset}
+            disabled={readOnly}
+            onResume={() => onResumeTask?.(stoppedTask)}
+            onRetry={() => retryTask(stoppedTask)}
+            onDecline={() => declineLimitResume(stoppedTask)}
+          />
+        ) : (
+          (pausedTask || stoppedTask) && (
+            <div className="chat-task-inline paused" role="status">
+              <span>{pausedTask ? pausedTaskText(pausedTask) : stoppedTask!.status_message}</span>
+              {!readOnly && !(pausedTask && stoppedByMember(pausedTask)) && (
+                <button
+                  type="button"
+                  className="button compact primary"
+                  onClick={() =>
+                    pausedTask ? onResumeTask?.(pausedTask) : onRetryTask?.(stoppedTask!)
+                  }
+                >
+                  <Play size={12} /> Continue
+                </button>
+              )}
+            </div>
+          )
         )}
         {questionState.error && (
           <div className="agent-chat-view-line error" role="alert">

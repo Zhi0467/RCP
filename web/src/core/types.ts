@@ -2604,6 +2604,8 @@ export interface AgentTask {
   can_pause: boolean;
   can_resume: boolean;
   can_retry: boolean;
+  /** Set when this turn failed on a provider usage limit; absent from older servers. */
+  limit_reset?: LimitReset | null;
   /** The backend's decision that this task's unavailable graph update may be applied again. */
   can_apply_again?: boolean;
   steer_visible: boolean;
@@ -2628,6 +2630,16 @@ export interface AgentTask {
   events?: AgentTaskEvent[];
   debug_receipts?: AgentTaskReceipt[];
   contracts?: AgentTaskContract[];
+}
+
+/** When a usage-limited turn's limit ends, and whether RCP will resume it then. */
+export interface LimitReset {
+  resets_at: string;
+  /** No source named a time; the reset is RCP's guess. */
+  estimated: boolean;
+  state: "waiting" | "stopped";
+  /** Why a stopped turn will not resume by itself. */
+  reason: string | null;
 }
 
 export interface EpisodeTask extends AgentTask {
@@ -3202,6 +3214,8 @@ export interface ProviderReadiness {
   reason?: string | null;
   /** Why the backend's last automatic update of this CLI failed; the old version stays in use. */
   update_warning?: string | null;
+  /** An in-app update of this CLI is running; absent from older servers. */
+  updating?: boolean;
   /** Whether Work-like launches can run here. Null means it was not checked. */
   work_like_available?: boolean | null;
   work_like_reason?: string | null;
@@ -3783,6 +3797,20 @@ export interface ProviderLoginAccount extends ProviderLoginState {
   machines: string[];
   token: ProviderCredentialSummary | null;
   sign_in: ProviderSignInStatus | null;
+  /** When the active usage limit ends; absent from older servers. */
+  limit_resets_at?: string | null;
+}
+
+/** One in-app update of a provider CLI on one machine. */
+export interface ProviderUpdateJob {
+  provider: string;
+  machine_id: string;
+  state: "running" | "succeeded" | "failed";
+  detail: string | null;
+  before: string | null;
+  after: string | null;
+  started_at: string;
+  finished_at: string | null;
 }
 
 /** Coarse count of episode, queued-task, and watcher inputs checked after sign-in. */

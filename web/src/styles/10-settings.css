@@ -2258,7 +2258,7 @@ button.agent-provider-label {
 .provider-path-row input.failed,
 .machine-card > header .icon-button.failed,
 .machine-compute .icon-button.failed,
-.provider-path-row .button.failed {
+.provider-path-menu .icon-button.failed {
   border-color: var(--red);
   color: var(--red);
 }
@@ -2765,7 +2765,7 @@ button.agent-provider-label {
     grid-row: 2;
     justify-self: start;
   }
-  .provider-path-row .button {
+  .provider-path-menu {
     grid-column: 3;
     grid-row: 1 / span 2;
   }
@@ -2917,21 +2917,24 @@ button.agent-provider-label {
     grid-template-columns: 1fr;
   }
   .provider-path-row {
-    align-items: stretch;
-    grid-template-columns: 1fr auto;
+    grid-template-columns: minmax(0, 1fr) auto auto;
   }
-  .provider-path-row > strong,
-  .provider-path-row input {
-    grid-column: 1 / -1;
+  .provider-path-row > strong {
+    grid-column: 1;
+    grid-row: 1;
   }
   .provider-path-state {
-    grid-column: 1;
-    grid-row: auto;
-    justify-self: start;
-  }
-  .provider-path-row .button {
     grid-column: 2;
-    grid-row: auto;
+    grid-row: 1;
+    justify-self: end;
+  }
+  .provider-path-menu {
+    grid-column: 3;
+    grid-row: 1;
+  }
+  .provider-path-row input {
+    grid-column: 1 / -1;
+    grid-row: 2;
   }
   .compute-probe {
     align-items: start;
