@@ -429,6 +429,15 @@ DEPENDENCIES: tuple[Dependency, ...] = (
         apt="openssh-client",
     ),
     Dependency(
+        "readlink",
+        "Resolve a remote provider executable's real path before an update.",
+        optional_on=frozenset({"remote"}),
+        feature="Remote provider updates.",
+        fallback="The update is refused before it runs and reports the probe error.",
+        platforms=LINUX,
+        apt="coreutils",
+    ),
+    Dependency(
         "stat",
         "Verify remote provider installer directory ownership and permissions.",
         optional_on=frozenset({"remote"}),

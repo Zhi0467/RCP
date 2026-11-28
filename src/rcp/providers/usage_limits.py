@@ -27,12 +27,11 @@ class LimitEvidence(BaseModel):
 
 
 def _exhausted_windows(windows: list[tuple[bool, datetime | None]]) -> LimitEvidence:
+    """The latest reset of the exhausted windows, unknown if any of them names none."""
+    resets = [reset for exhausted, reset in windows if exhausted]
     return LimitEvidence(
-        exhausted=any(exhausted for exhausted, _ in windows),
-        resets_at=max(
-            (reset for exhausted, reset in windows if exhausted and reset is not None),
-            default=None,
-        ),
+        exhausted=bool(resets),
+        resets_at=None if None in resets else max(resets, default=None),
     )
 
 

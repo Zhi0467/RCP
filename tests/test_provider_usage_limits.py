@@ -39,6 +39,15 @@ def test_codex_exhausted_windows_use_latest_reset() -> None:
     assert not reset.estimated
 
 
+def test_an_exhausted_window_without_a_reset_leaves_the_reset_estimated() -> None:
+    snapshot: dict[str, object] = {
+        "primary": {"usedPercent": 100, "resetsAt": FAILED_AT.timestamp() + 7200},
+        "secondary": {"usedPercent": 100},
+    }
+    reset = reset_from_evidence(profile_for("codex").limit_evidence(snapshot), failed_at=FAILED_AT)
+    assert reset.estimated
+
+
 def test_claude_captured_rate_event_is_preserved() -> None:
     value = json.loads((FIXTURES / "claude.json").read_text())
     event = ClaudeProfile().decode_event(value, json.dumps(value))
