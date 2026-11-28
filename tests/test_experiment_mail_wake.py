@@ -223,3 +223,21 @@ def test_a_mention_refused_by_cooldown_is_retried_later(tmp_path, monkeypatch):
     }
     assert retries == ["bulletin:project:chat:episode-chat"]
     assert len(launches) == 1
+
+
+def test_mail_refused_by_cooldown_is_retried_later(tmp_path, monkeypatch):
+    store, episode_id = _idle_episode(tmp_path, ceiling=4)
+    launches: list[str] = []
+    tasks = _tasks(monkeypatch, store, launches)
+    retries: list[str] = []
+    monkeypatch.setattr(tasks, "schedule_deferred_pass", lambda key, *_: retries.append(key))
+    _mail(store, episode_id)
+    assert wake_experiment_for_mail(tasks, episode_id, cause="mail") == "now"
+    for task_id in launches:
+        store.complete_agent_task(task_id, applied_revision=None, result={})
+
+    _mail(store, episode_id, "One more thing.")
+
+    assert wake_experiment_for_mail(tasks, episode_id, cause="mail") == "next_turn"
+    assert retries == [f"experiment-mail:{episode_id}"]
+    assert len(launches) == 1

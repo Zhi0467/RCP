@@ -32,7 +32,7 @@ from rcp.core.models import AuthorizedHuman, ExperimentDecisionPin, GraphState, 
 from rcp.core.operations import UpdateNodesOperation as CoreUpdateNodesOperation
 from rcp.core.project_types import project_type_of
 from rcp.core.transition_models import GraphTargetRef
-from rcp.limits import EPISODE_RECEIPT_MAX_BYTES
+from rcp.limits import CHAT_WAKE_MIN_SECONDS, EPISODE_RECEIPT_MAX_BYTES
 from rcp.loop_status import LoopStatusProjection, chat_loop_status, loop_status_projection
 from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
 from rcp.runs.provider_login import AdmissionRefused
@@ -414,8 +414,8 @@ def wake_experiment_for_mail(
     claims the pending mail. A busy, paused, Stop-fenced, spent, cooling or
     unbound episode is left alone and reads the mail at its next invocation.
     Mail a mailbox- or mention-woken turn wrote never wakes, so two agents
-    cannot keep waking each other. A cooling mention wake raises its cooldown
-    code so the caller can retry it later.
+    cannot keep waking each other. Cooling mail retries itself after the cooldown;
+    a cooling mention raises its cooldown code for the caller's retry.
     """
 
     store = tasks.store
@@ -458,10 +458,19 @@ def wake_experiment_for_mail(
         items = store.bulletin_wake_candidates(episode.project_id, f"chat:{runtime.chat_id}")
     if not items:
         return "next_turn"
-    if cause == "mention" and (
-        cooling := store.experiment_wake_cooling(episode.project_id, runtime.chat_id, mention=True)
-    ):
+    cooling = store.experiment_wake_cooling(
+        episode.project_id, runtime.chat_id, mention=cause == "mention"
+    )
+    if cooling and cause == "mention":
         raise ValueError(cooling)
+    if cooling:
+        episode_id = episode.episode_id
+        tasks.schedule_deferred_pass(
+            f"experiment-mail:{episode_id}",
+            CHAT_WAKE_MIN_SECONDS,
+            lambda: wake_experiment_for_mail(tasks, episode_id, cause="mail"),
+        )
+        return "next_turn"
     preflight = preflight_episode_wake(runtime, experiment, store=store)
     if preflight.readiness != "ready":
         return "next_turn"
