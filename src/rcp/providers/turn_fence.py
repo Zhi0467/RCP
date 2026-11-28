@@ -15,6 +15,8 @@ the one decoder that has always owned it.
 
 from __future__ import annotations
 
+COMPACT_COMMAND = "/compact"
+
 
 class TurnFence:
     """Whether this turn's traffic has reached its own end."""
@@ -34,6 +36,7 @@ class TurnFence:
         # Which steer the server was asked to apply, and to which turn. Identity,
         # not judgement: a reader still decides what a delivered steer was worth.
         self.steer_requests: dict[object, object] = {}
+        self.compact_first = False
         self.terminal = False
 
     @property

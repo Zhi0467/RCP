@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 from rcp.providers.agy.remote import AgyStreamTurnFence, agy_agent_name
 from rcp.providers.base import (
     AgentCapability,
+    AgentCompaction,
     AgentStatusDelta,
     ModelChoice,
     ProviderLimitProbe,
@@ -33,8 +34,10 @@ from rcp.providers.base import (
     _require_project_write_scope,
     _require_provider_version,
     _usage_int,
+    compaction_failed_text,
 )
 from rcp.providers.browser_grant import BrowserGrant
+from rcp.providers.turn_fence import COMPACT_COMMAND
 from rcp.providers.usage_limits import LimitEvidence, _exhausted_windows, _iso_timestamp
 
 if TYPE_CHECKING:
@@ -188,17 +191,19 @@ class _AgyStreamTurn(ProviderTurn):
         self.results = 0
         self.ready = False
         self.completed = False
+        self.compacting = request.compact_first
         self._held_text: tuple[object, str] | None = None
 
     def initial_input(self) -> bytes:
-        return self._input(self.prompt)
+        return self._input(COMPACT_COMMAND if self.compacting else self.prompt)
 
     @staticmethod
     def _input(text: str) -> bytes:
         return (json.dumps({"event": "user", "message": {"content": text}}) + "\n").encode()
 
     def steering_state(self) -> ProviderSteeringState:
-        return ProviderSteeringState(self.ready and not self.completed, turn_id=self.ids[0])
+        can_steer = self.ready and not self.completed and not self.compacting
+        return ProviderSteeringState(can_steer, turn_id=self.ids[0])
 
     def render_steer(self, expected_turn_id: str, message_id: str, text: str) -> bytes:
         if not self.steering_state().can_steer or expected_turn_id != self.ids[0]:
@@ -211,6 +216,8 @@ class _AgyStreamTurn(ProviderTurn):
     def adopt_recorded_inputs(
         self, message_ids: list[str], steer_requests: dict[str, object]
     ) -> None:
+        if self.compacting:
+            message_ids = message_ids[1:]
         if message_ids:
             self.ids = list(message_ids)
 
@@ -233,6 +240,8 @@ class _AgyStreamTurn(ProviderTurn):
                 )
             if value.get("event") == "init":
                 self.ready = True
+            if value.get("event") == "result" and self.compacting:
+                return self._compacted(event)
             if value.get("event") == "result":
                 self.results += 1
                 self.completed = event.event == "error" or self.results >= len(self.ids)
@@ -243,6 +252,25 @@ class _AgyStreamTurn(ProviderTurn):
             complete=self.completed,
             explicit_terminal=self.completed,
             stop_process=event.event == "error",
+        )
+
+    def _compacted(self, event: ProviderStreamEvent) -> ProviderRuntimeStep:
+        """The compaction input's result: write the held prompt, or fail without it."""
+
+        self.compacting = False
+        if event.event == "error":
+            self.completed = True
+            self.last_error = compaction_failed_text(event.text)
+            return ProviderRuntimeStep(
+                events=(replace(event, text=self.last_error),),
+                complete=True,
+                explicit_terminal=True,
+                stop_process=True,
+            )
+        compacted = AgentStatusDelta(compaction=AgentCompaction(trigger="manual"))
+        return ProviderRuntimeStep(
+            outgoing=(self._input(self.prompt),),
+            events=(ProviderStreamEvent(event="raw", status=compacted),),
         )
 
     def _hold_text(self, value: dict[str, object]) -> str | None:
@@ -275,6 +303,7 @@ class _AgyStreamTurn(ProviderTurn):
 class _AgyStreamRuntime(ProviderRuntime):
     id = _RUNTIME
     steering_behavior = "queue"
+    supports_compact_first = True
 
     def turn(self, request: ProviderTurnRequest) -> ProviderTurn:
         return _AgyStreamTurn(AgyProfile(), request)
@@ -539,7 +568,7 @@ class AgyProfile(ProviderProfile):
         if (
             value.get("event") != "step_update"
             or not isinstance(step, dict)
-            or step.get("step_type") != "agent_response"
+            or step.get("step_type") not in {"agent_response", "checkpoint"}
             or step.get("state") != "DONE"
         ):
             return None
@@ -551,7 +580,7 @@ class AgyProfile(ProviderProfile):
         outgoing = _usage_int(usage.get("output_tokens"))
         return ProviderUsage(
             provider_profile=self.usage_profile,
-            provider_event_type="agent_response",
+            provider_event_type=str(step.get("step_type")),
             dedupe_key=f"{step.get('conversation_id')}:{step.get('step_index')}",
             processed_input_tokens=incoming + cached,
             generated_tokens=outgoing,

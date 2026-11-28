@@ -38,6 +38,7 @@ from rcp.providers.base import (
     _require_project_write_scope,
     _usage_dedupe_key,
     _usage_int,
+    compaction_failed_text,
 )
 from rcp.providers.browser_grant import BrowserGrant
 from rcp.providers.claude.remote import (
@@ -46,6 +47,7 @@ from rcp.providers.claude.remote import (
     attributed_ids,
     is_claude_task_notice,
 )
+from rcp.providers.turn_fence import COMPACT_COMMAND
 from rcp.providers.usage_limits import LimitEvidence, _exhausted_windows, _timestamp
 
 if TYPE_CHECKING:
@@ -117,6 +119,9 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
         self._outstanding: set[str] = set()
         self._model: str | None = None
         self._held_text: tuple[object, str] | None = None
+        self._compact_id = str(uuid.uuid4()) if request.compact_first else None
+        if self._compact_id is not None:
+            self._generated.add(self._compact_id)
 
     @staticmethod
     def _user_input(message_id: str, text: str) -> bytes:
@@ -135,6 +140,8 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
         ).encode("utf-8")
 
     def initial_input(self) -> bytes:
+        if self._compact_id is not None:
+            return self._user_input(self._compact_id, COMPACT_COMMAND)
         return self._user_input(self._turn_id, self._prompt)
 
     def adopt_recorded_inputs(
@@ -145,8 +152,11 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
         # The first is the prompt; the rest are steers this turn accepted. A
         # result naming any of them belongs to this turn, and a fresh id would
         # have let the first result end a turn that was still answering.
-        self._turn_id = message_ids[0]
-        self._generated = set(message_ids)
+        if self._compact_id is not None:
+            self._compact_id, *message_ids = message_ids
+        if message_ids:
+            self._turn_id = message_ids[0]
+        self._generated = {*message_ids, *([self._compact_id] if self._compact_id else [])}
 
     def steering_state(self) -> ProviderSteeringState:
         if self._completed:
@@ -215,6 +225,8 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
                             ),
                         )
                     )
+                if self._compact_id is not None and self._compact_id in finished:
+                    return self._compacted(event, line)
                 if event.event == "answer":
                     self._held_text = None
                 # A failing result ends the invocation even with a follow-up
@@ -238,6 +250,25 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
                     steer_receipts=receipts,
                 )
         return super().receive_line(line)
+
+    def _compacted(self, event: ProviderStreamEvent, line: str) -> ProviderRuntimeStep:
+        """The compaction input's result: write the held prompt, or fail without it."""
+
+        self._compact_id = None
+        if event.event == "error":
+            self._completed = True
+            return ProviderRuntimeStep(
+                events=(replace(event, text=compaction_failed_text(event.text)),),
+                complete=True,
+                explicit_terminal=True,
+                stop_process=True,
+            )
+        return ProviderRuntimeStep(
+            outgoing=(self._user_input(self._turn_id, self._prompt),),
+            events=(
+                ProviderStreamEvent(event="raw", text=line, usage=event.usage, status=event.status),
+            ),
+        )
 
     def _hold_text(
         self, value: dict[str, object], step: ProviderRuntimeStep
@@ -283,6 +314,7 @@ class _ClaudeStreamTurn(_JsonlProviderTurn):
 class _ClaudeStreamRuntime(ProviderRuntime):
     id = "claude.stream-json.v1"
     steering_behavior = "queue"
+    supports_compact_first = True
 
     def turn(self, request: ProviderTurnRequest) -> ProviderTurn:
         return _ClaudeStreamTurn(ClaudeProfile(), request)

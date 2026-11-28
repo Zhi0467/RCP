@@ -84,7 +84,7 @@ class AppServerTurnFence(TurnFence):
 
     @property
     def prompt_started(self) -> bool:
-        return "turn/start" in self.requests.values()
+        return bool({"turn/start", "thread/compact/start"} & set(self.requests.values()))
 
     def _input(self, value: dict) -> None:
         method = value.get("method")
@@ -96,6 +96,8 @@ class AppServerTurnFence(TurnFence):
             # ends the turn on that, and a fence that had not written the request
             # down would leave a persistent server running with no turn to end.
             self.requests[identifier] = method
+            if method == "thread/compact/start":
+                self.compact_first = True
             params = value.get("params")
             if method == "thread/resume" and isinstance(params, dict):
                 requested = params.get("threadId")
@@ -156,4 +158,5 @@ class AppServerTurnFence(TurnFence):
             and isinstance(turn, dict)
             and (self.turn_id is None or turn.get("id") == self.turn_id)
         ):
-            self.terminal = True
+            compacting = self.compact_first and "turn/start" not in self.requests.values()
+            self.terminal = not compacting or turn.get("status") != "completed"

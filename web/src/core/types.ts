@@ -2144,6 +2144,8 @@ export interface AgentTaskContract {
 }
 
 export interface AgentTaskRequest {
+  /** Compact the resumed native session before this turn's message. */
+  compact_first?: boolean;
   code_worktree?: boolean;
   graph_isolation?: boolean;
   isolation_owner_episode_id?: string | null;
@@ -2599,6 +2601,8 @@ export interface AgentTask {
   authorized_by?: AuthorizedHuman | null;
   /** Set when the member's own agent thread ran this; absent from older servers. */
   via_agent?: ViaAgent | null;
+  /** Whether the runtime holding this turn's session can compact it before a message. */
+  can_compact_first?: boolean;
   elapsed_seconds: number;
   progress: number;
   can_pause: boolean;
@@ -4191,6 +4195,7 @@ export interface AgentThreadTurnRequest {
   worktree?: boolean;
   run_truth_scope?: string[];
   worktree_integration?: WorktreeIntegrationOption["id"];
+  compact_first?: boolean;
   message: string;
   provider?: ProviderId;
   model?: string;

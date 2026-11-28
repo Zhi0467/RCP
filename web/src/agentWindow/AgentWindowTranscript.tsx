@@ -726,9 +726,10 @@ export function InlineTaskProgress({
         .filter((command) => command.seconds === null)
         .at(-1)
     : undefined;
-  const label =
-    running?.text ??
-    (task ? task.status_message || `${taskKindLabel(task.kind)} is running` : "Starting turn");
+  const label = task?.agent_status?.compacting
+    ? "Compacting context"
+    : (running?.text ??
+      (task ? task.status_message || `${taskKindLabel(task.kind)} is running` : "Starting turn"));
   return (
     <>
       {task && <TurnProgress task={task} live />}

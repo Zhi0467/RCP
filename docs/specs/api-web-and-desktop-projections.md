@@ -1648,6 +1648,18 @@ counts. A compaction also leaves a divider with its before and
 after tokens in the turn where it happened. A runtime that reports no context
 shows no ring.
 
+Send asks once before a member's new message when the chat's resumed session has
+had no turn for `COMPACT_OFFER_IDLE_MS` (an hour, by which time provider prompt
+caches have expired), its latest context is at least `COMPACT_OFFER_MIN_TOKENS`
+(200K), and its runtime can [compact first](providers-and-containment.md#compact-first).
+The pop-up offers Send as is and Compact and send, shows the idle time and
+context, and links to the machine settings where each provider's auto-compact
+limit is set. Esc sends nothing and keeps the draft. Either choice starts a turn,
+which resets the idle clock, so the next message is not asked. Watcher wakes,
+schedules, queued sends, steers, Retry, and Resume never ask. While compacting,
+the live row reads Compacting context. A compact-first turn that fails before
+compacting refills an empty composer with its message.
+
 Agents lists every conversation in the project: chats on main and on every graph
 branch, Experiment episode conversations, Auto-research orchestrators and their
 children, and conversations whose first turn has no transcript yet.

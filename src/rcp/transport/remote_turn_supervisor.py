@@ -467,6 +467,7 @@ def run(args):
                 "root_thread_id": fence.thread_id,
                 "root_turn_id": fence.turn_id,
                 "input_message_ids": list(fence.message_ids),
+                "compact_first": fence.compact_first,
                 "steer_requests": {str(key): value for key, value in fence.steer_requests.items()},
             },
             sort_keys=True,

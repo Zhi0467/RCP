@@ -70,7 +70,12 @@ from rcp.providers import (
     ProviderUsage,
     profile_for,
 )
-from rcp.providers.base import AgentStatusDelta, ProviderRuntimeStep, ProviderStreamEvent
+from rcp.providers.base import (
+    AgentStatusDelta,
+    ProviderRuntimeStep,
+    ProviderStreamEvent,
+    compaction_failed_text,
+)
 from rcp.providers.browser_grant import BrowserGrant
 from rcp.storage.models import (
     MACHINE_LOGIN_ID,
@@ -1329,6 +1334,7 @@ class AgentLauncher:
         browser_grant: BrowserGrant | None = None,
         hidden_read_scope: HiddenReadScope | None = None,
         shell_timeout_seconds: int | None | EllipsisType = ...,
+        compact_first: bool = False,
     ) -> AsyncGenerator[AgentEvent, None]:
         """Run the preferred provider runtime, falling back only before prompt delivery.
 
@@ -1361,6 +1367,15 @@ class AgentLauncher:
         if shell_timeout_seconds is ...:
             shell_timeout_seconds = self.shell_timeout_seconds(provider, machine_id)
         runtimes = profile_for(provider).runtime_candidates(runtime_id)
+        compact_first = compact_first and session_id is not None
+        if compact_first:
+            runtimes = runtimes[:1]
+            if not runtimes[0].supports_compact_first:
+                yield AgentEvent(
+                    event="error",
+                    text=compaction_failed_text(f"{runtimes[0].id} cannot compact on demand"),
+                )
+                return
         autocompact = self._autocompact(provider, machine_id)
         # Display only (invariant 4b): the panel's compaction mark, when the
         # machine pins a token count rather than the provider's own default.
@@ -1417,6 +1432,7 @@ class AgentLauncher:
                         browser_grant=browser_grant,
                         hidden_read_scope=hidden_read_scope,
                         shell_timeout_seconds=shell_timeout_seconds,
+                        compact_first=compact_first,
                     )
                 ) as stream:
                     async for event in stream:
@@ -1475,6 +1491,7 @@ class AgentLauncher:
         browser_grant: BrowserGrant | None = None,
         hidden_read_scope: HiddenReadScope | None = None,
         shell_timeout_seconds: int | None = None,
+        compact_first: bool = False,
     ) -> AsyncGenerator[AgentEvent, None]:
         await self._wait_for_provider_update(provider, machine_id)
         if control is not None and control.pause_requested.is_set():
@@ -1590,6 +1607,7 @@ class AgentLauncher:
                     hidden_read_scope=hidden_read_scope,
                     autocompact=autocompact,
                     shell_timeout_seconds=shell_timeout_seconds,
+                    compact_first=compact_first,
                 )
             )
         except (OSError, RuntimeError, ValueError) as exc:
