@@ -403,6 +403,7 @@ export async function mockApi(page, writes) {
         },
       });
     if (path === "/api/skills") return json(officialSkills);
+    if (path === "/api/providers/limit-resume") return json({ enabled: true });
     if (path === "/api/space/machines")
       return json({
         machines: [{ machine_id: "local", host: "", provider_readiness: { claude: readiness } }],
