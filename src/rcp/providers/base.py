@@ -51,6 +51,7 @@ class ProviderRuntimeChoice(BaseModel):
 
     id: str = Field(min_length=1)
     label: str = Field(min_length=1)
+    compact_first: bool = False
 
 
 class ProviderSkill(BaseModel):
@@ -121,6 +122,13 @@ class AgentCompaction(BaseModel):
     trigger: Literal["auto", "manual", ""] = ""
     before_tokens: int | None = Field(default=None, ge=0)
     after_tokens: int | None = Field(default=None, ge=0)
+
+
+def compaction_failed_text(detail: str) -> str:
+    """The turn error when compact-first stopped before the prompt was written."""
+
+    detail = detail.strip().rstrip(".") or "the provider did not compact the session"
+    return f"Compaction failed: {detail}. Your message was not sent."
 
 
 class AgentSubagent(BaseModel):
@@ -196,6 +204,7 @@ class ProviderTurnRequest:
     # None preserves the provider default; staging has already resolved the card.
     shell_timeout_seconds: int | None = None
     fork_session_id: str | None = None
+    compact_first: bool = False
 
     def __post_init__(self) -> None:
         if self.capability == "session_summary" and (
@@ -277,6 +286,7 @@ class ProviderRuntime:
     """Provider-owned command and wire protocol hidden behind one RCP boundary."""
 
     id: str
+    supports_compact_first: bool = False
     #: `inject` puts the message into the turn already running and the provider
     #: confirms it. `queue` names RCP's continuation contract, not a placement
     #: promise: the process may run past its first result while accepted

@@ -2784,14 +2784,6 @@
                     "endColumn": 27,
                     "lineCount": 1
                 }
-            },
-            {
-                "code": "reportPossiblyUnboundVariable",
-                "range": {
-                    "startColumn": 28,
-                    "endColumn": 37,
-                    "lineCount": 1
-                }
             }
         ],
         "./src/rcp/providers/codex/remote.py": [

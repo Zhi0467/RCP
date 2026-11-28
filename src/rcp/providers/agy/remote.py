@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING or "TurnFence" not in globals():
-    from rcp.providers.turn_fence import TurnFence
+    from rcp.providers.turn_fence import COMPACT_COMMAND, TurnFence
 
 
 if TYPE_CHECKING or "HomeLayout" not in globals():
@@ -42,6 +42,9 @@ class AgyStreamTurnFence(TurnFence):
 
     def _input(self, value: dict) -> None:
         if value.get("event") == "user":
+            message = value.get("message")
+            if not self.message_ids and isinstance(message, dict):
+                self.compact_first = message.get("content") == COMPACT_COMMAND
             self.message_ids[str(len(self.message_ids))] = None
 
     def _output(self, value: dict) -> None:
@@ -52,11 +55,9 @@ class AgyStreamTurnFence(TurnFence):
         if not isinstance(result, dict):
             self.terminal = True
             return
-        self.terminal = (
-            result.get("status") != "SUCCESS"
-            or bool(result.get("denied_actions"))
-            or self.results >= len(self.message_ids)
-        )
+        succeeded = result.get("status") == "SUCCESS" and not result.get("denied_actions")
+        compacted = self.compact_first and self.results == 1
+        self.terminal = not succeeded or (not compacted and self.results >= len(self.message_ids))
 
 
 def agy_browser_environment(directory: Path) -> dict[str, str]:
