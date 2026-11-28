@@ -158,8 +158,9 @@ route when the card omits it), discovers its home and executable there,
 and creates and verifies a private directory under `~/.rcp/tmp`. Removal is limited
 to that created directory. Provider profiles stay on the backend: only plain
 command argv crosses SSH for maintenance. Remote agy maintenance disables browser
-opening directly, without its ordinary RCP launch wrapper. Executables outside the
-target account's home are refused.
+opening directly, without its ordinary RCP launch wrapper. An executable is refused
+unless both its path and its resolved symlink target lie inside the target account's
+resolved home.
 
 A try-acquire hold is keyed by provider and machine. A second update is refused;
 inside the hold, queued, running and pausing turns on that pair are counted and

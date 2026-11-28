@@ -53,6 +53,8 @@ class UpdateTarget(Protocol):
 
     def discover(self, provider: ProviderId) -> str | None: ...
 
+    def resolve(self, path: str) -> str: ...
+
     def temp_dir(self) -> str: ...
 
     def remove(self, path: str) -> None: ...
@@ -74,6 +76,9 @@ class LocalUpdateTarget:
     def discover(self, provider: ProviderId) -> str | None:
         binary = _discover_provider(self.account, provider)
         return str(binary) if binary is not None else None
+
+    def resolve(self, path: str) -> str:
+        return os.path.realpath(path)
 
     def temp_dir(self) -> str:
         path = tempfile.mkdtemp(prefix="rcp-provider-", dir=_account_temp_dir(self.account))
@@ -170,6 +175,9 @@ class RemoteUpdateTarget:
                 return candidate
         return None
 
+    def resolve(self, path: str) -> str:
+        return self._checked(("readlink", "-f", "--", path))
+
     def temp_dir(self) -> str:
         uid = self._checked(("id", "-u"))
         system = self._checked(("uname", "-s"))
@@ -220,7 +228,11 @@ def _require_temp_path(home: str, path: str) -> None:
 
 def _require_home(target: UpdateTarget, binary: str) -> None:
     path = PurePosixPath(binary)
-    if ".." in path.parts or not path.is_relative_to(target.home):
+    if (
+        ".." in path.parts
+        or not path.is_relative_to(target.home)
+        or not PurePosixPath(target.resolve(binary)).is_relative_to(target.resolve(target.home))
+    ):
         raise ProviderUpdateRefused(
             "The provider executable is outside the account home; update it with its system package manager."
         )
