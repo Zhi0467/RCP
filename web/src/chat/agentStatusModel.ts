@@ -180,9 +180,15 @@ export function agentStatusView(tasks: StatusTask[]): AgentStatusView | null {
 }
 
 /** Fraction of the window in use, clamped to [0, 1]; null when either side is unknown. */
+/** The window the provider reported, else the machine's auto-compact threshold. */
+export function contextScale(view: AgentStatusView): number | null {
+  return view.contextWindow || view.autocompactTokens || null;
+}
+
 export function contextFraction(view: AgentStatusView): number | null {
-  if (view.contextTokens == null || !view.contextWindow) return null;
-  return Math.min(1, Math.max(0, view.contextTokens / view.contextWindow));
+  const scale = contextScale(view);
+  if (view.contextTokens == null || !scale) return null;
+  return Math.min(1, Math.max(0, view.contextTokens / scale));
 }
 
 /** 119k, 1.2M, 850. */

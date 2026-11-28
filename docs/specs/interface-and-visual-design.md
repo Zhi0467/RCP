@@ -436,8 +436,11 @@ fields, Name, SSH host and Account, prefilled, with Save and Cancel; the folds
 stay below. The backend card's host is fixed. An unknown host key shows the
 fingerprint and Trust as Add machine does, then Save retries. Any other failure
 keeps the form open with its message.
-Each card is a raised box with rounded wells for Compute, provider executables
-and limits, writable paths, and hidden folders.
+Each card is a raised box. Its Agent CLIs list sits open at the top: each row
+holds the executable path, its state with the installed version, and a menu
+with Resolve and Update. After an update the state reads Up to date or Updated,
+with the previous version on hover. Rounded wells below hold Compute, Agent CLI
+limits, writable paths, and hidden folders.
 Folder pickers have breadcrumbs, filtering and paging within one level, protected
 entries, and Use this folder.
 

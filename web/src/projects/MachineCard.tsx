@@ -177,6 +177,13 @@ export function MachineCard({
               {[...new Set(record.projects.map((project) => project.project_name))].join(", ")}
             </p>
           )}
+          <ProviderExecutables
+            record={record}
+            writesDisabled={writesDisabled}
+            save={save}
+            run={writes.run}
+            onRecordChange={onRecordChange}
+          />
           <MachineBrowserRow
             key={`${record.machine_id}:${record.host}:${record.os_account}`}
             machineId={record.machine_id}
@@ -193,17 +200,10 @@ export function MachineCard({
             run={writes.run}
             onRecordChange={onRecordChange}
           />
-          <ProviderExecutables
-            record={record}
-            writesDisabled={writesDisabled}
-            save={save}
-            run={writes.run}
-            onRecordChange={onRecordChange}
-          />
           {signIns}
           <Fold
             className="machine-writable-paths"
-            title="Provider limits"
+            title="Agent CLI limits"
             data-machine-fold="provider-limits"
           >
             {record.autocompact_providers.map((option) => (
@@ -476,11 +476,12 @@ function ProviderExecutables(props: MachineFoldProps) {
       return fresh;
     });
   return (
-    <Fold
-      className="machine-writable-paths"
-      title="Provider executables"
+    <section
+      className="machine-agent-clis"
+      aria-label="Agent CLIs"
       data-machine-fold="provider-executables"
     >
+      <strong>Agent CLIs</strong>
       <div className="provider-path-list">
         {record.providers.map(({ provider, label }) => (
           <ProviderPathRow
@@ -505,7 +506,7 @@ function ProviderExecutables(props: MachineFoldProps) {
           />
         ))}
       </div>
-    </Fold>
+    </section>
   );
 }
 

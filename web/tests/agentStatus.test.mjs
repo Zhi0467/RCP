@@ -10,6 +10,7 @@ import {
   chatCompactions,
   compactionAnchors,
   contextFraction,
+  contextScale,
   formatTokens,
   nextTaskAction,
 } from "../src/chat/agentStatusModel.ts";
@@ -194,6 +195,14 @@ test("a runtime without context reports no fraction", () => {
   assert.equal(contextFraction(view), null);
   const windowless = agentStatusView([task("b", { agent_status: status({ context_tokens: 10 }) })]);
   assert.equal(contextFraction(windowless), null);
+});
+
+test("a windowless runtime measures context against its auto-compact threshold", () => {
+  const view = agentStatusView([
+    task("a", { agent_status: status({ context_tokens: 60_000, autocompact_tokens: 120_000 }) }),
+  ]);
+  assert.equal(contextScale(view), 120_000);
+  assert.equal(contextFraction(view), 0.5);
 });
 
 test("token counts scale to k and M", () => {

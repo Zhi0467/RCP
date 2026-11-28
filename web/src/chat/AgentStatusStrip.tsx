@@ -4,6 +4,7 @@ import type { AgentCompaction } from "../core/types";
 import {
   agentStatusView,
   contextFraction,
+  contextScale,
   formatTokens,
   type AgentStatusView,
   type StatusTask,
@@ -82,7 +83,7 @@ export function AgentStatusStrip({ tasks }: { tasks: StatusTask[] }) {
           <ContextRing fraction={fraction ?? 0} />
           <span className="agent-status-context-full">
             {formatTokens(view.contextTokens!)}
-            {view.contextWindow ? ` / ${formatTokens(view.contextWindow)}` : ""}
+            {contextScale(view) ? ` / ${formatTokens(contextScale(view)!)}` : ""}
           </span>
           <span className="agent-status-context-short">
             {percent == null ? formatTokens(view.contextTokens!) : `${percent}%`}
@@ -148,7 +149,7 @@ function AgentStatusPanel({
           <h3>Context</h3>
           <div className="agent-status-big">
             {formatTokens(view.contextTokens)}
-            {view.contextWindow ? <small> / {formatTokens(view.contextWindow)}</small> : null}
+            {contextScale(view) ? <small> / {formatTokens(contextScale(view)!)}</small> : null}
           </div>
           {fraction != null && (
             <div className="agent-status-bar">

@@ -32,8 +32,12 @@ class _Backend:
         monkeypatch.setattr(
             self.launcher,
             "_readiness_uncached",
-            lambda login, **_: ProviderReadiness(
-                provider=login.provider, installed=True, authenticated=True, version=self.version
+            lambda login, binary=None, **_: ProviderReadiness(
+                provider=login.provider,
+                installed=True,
+                authenticated=True,
+                version=self.version,
+                binary_path=binary or str(self.binary),
             ),
         )
 
@@ -73,7 +77,28 @@ def test_an_idle_backend_updates_its_cli_and_reads_the_new_version(tmp_path, mon
 
     assert backend.upgrades == 1
     assert readiness.version == "1.18.34"
+    assert readiness.updated_from == "1.18.33"
     assert readiness.update_warning is None
+    other = backend.launcher.readiness(_LOGIN, binary="/opt/other/opencode")
+    assert other.updated_from is None
+
+
+def test_the_card_reads_updating_until_the_new_readiness_is_cached(tmp_path, monkeypatch) -> None:
+    backend = _Backend(tmp_path, monkeypatch)
+    probe = backend.launcher._readiness_uncached
+    seen: list[ProviderReadiness | None] = []
+
+    def watched(login, **kwargs):
+        if backend.upgrades:
+            seen.append(backend.launcher.cached_readiness(login))
+        return probe(login, **kwargs)
+
+    monkeypatch.setattr(backend.launcher, "_readiness_uncached", watched)
+
+    backend.run_pass()
+
+    assert seen and all(read is not None and read.updating for read in seen)
+    assert backend.launcher.cached_readiness(_LOGIN).version == "1.18.34"
 
 
 @pytest.mark.parametrize("status", ["queued", "running", "pausing"])

@@ -134,6 +134,7 @@ class ProviderReadiness(BaseModel):
     version: str | None = None
     reason: str | None = None
     update_warning: str | None = None
+    updated_from: str | None = None
     updating: bool = False
     #: None means the profile has no work-like probe or it could not be checked.
     work_like_available: bool | None = None
@@ -761,7 +762,8 @@ class AgentLauncher:
         self._readiness_probes: dict[tuple[str, str, str | None, str, bool], _ReadinessProbe] = {}
         self._readiness_generations: dict[tuple[str, str, str | None, str], int] = {}
         self._update_warnings: dict[tuple[str, str], str] = {}
-        self._updating_providers: set[tuple[str, str]] = set()
+        self._updated_from: dict[tuple[str, str], tuple[str, str]] = {}
+        self._updating_providers: dict[tuple[str, str], int] = {}
         self._provider_sign_ins: Counter[tuple[str, str]] = Counter()
         self._active_readiness_probes: Counter[tuple[str, str]] = Counter()
         #: Shared so every process that can rotate this login is staggered,
@@ -828,12 +830,12 @@ class AgentLauncher:
                 raise ProviderUpdateRefused("A provider sign-in is in progress.")
             if self._active_readiness_probes.get(key, 0):
                 raise ProviderUpdateRefused("A provider readiness probe is in progress.")
-            self._updating_providers.add(key)
+            self._updating_providers[key] = threading.get_ident()
         try:
             yield
         finally:
             with self._readiness_lock:
-                self._updating_providers.remove(key)
+                del self._updating_providers[key]
 
     @contextmanager
     def provider_sign_in(self, provider: str, machine_id: str) -> Iterator[None]:
@@ -885,13 +887,25 @@ class AgentLauncher:
         """Record or clear why the last automatic CLI update on the machine failed."""
 
         with self._readiness_lock:
+            self._updated_from.pop((provider, machine_id), None)
             if warning is None:
                 self._update_warnings.pop((provider, machine_id), None)
             else:
                 self._update_warnings[(provider, machine_id)] = warning
 
+    def record_update(self, provider: str, machine_id: str, binary: str, before: str) -> None:
+        """Record a successful update of this executable and the version it started from."""
+
+        with self._readiness_lock:
+            self._update_warnings.pop((provider, machine_id), None)
+            self._updated_from[(provider, machine_id)] = (binary, before)
+
     def _with_login_state(self, readiness: ProviderReadiness, login: LoginKey) -> ProviderReadiness:
         readiness.update_warning = self._update_warnings.get((login.provider, login.machine_id))
+        updated = self._updated_from.get((login.provider, login.machine_id))
+        readiness.updated_from = (
+            updated[1] if updated is not None and updated[0] == readiness.binary_path else None
+        )
         reason = self._login_refusal(login)
         if reason is not None:
             return readiness.model_copy(update={"authenticated": False, "reason": reason})
@@ -911,7 +925,8 @@ class AgentLauncher:
         key = self._readiness_key(login, binary)
         provider_key = (login.provider, login.machine_id)
         with self._readiness_lock:
-            if provider_key in self._updating_providers:
+            updater = self._updating_providers.get(provider_key)
+            if updater is not None and not (refresh and updater == threading.get_ident()):
                 return self._updating_readiness(login, key)
             if not refresh and (cached := self._readiness_cache.get(key)) is not None:
                 return self._with_login_state(cached.model_copy(deep=True), login)

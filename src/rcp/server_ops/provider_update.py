@@ -307,9 +307,12 @@ def prepare_provider_update_command(
             pending[2].model_copy(
                 update={
                     "state": "succeeded",
-                    "message": _success_message(provider, before_path, after_path),
+                    "message": _success_message(
+                        provider, before_path, after_path, unchanged=before_version == after_version
+                    ),
                     "fields": (
                         NonsecretField(name="executable_after", value=str(after_path)),
+                        NonsecretField(name="version_before", value=before_version or "unknown"),
                         NonsecretField(name="version_after", value=after_version),
                         NonsecretField(
                             name="command_path_changed",
@@ -534,9 +537,14 @@ def _success_message(
     provider: ProviderId,
     before_path: str | None,
     after_path: str,
+    *,
+    unchanged: bool,
 ) -> str:
+    label = profile_for(provider).label
     result = (
-        f"{profile_for(provider).label} is updated as rcp. An update does not change its "
+        f"{label} was already up to date."
+        if unchanged
+        else f"{label} is updated as rcp. An update does not change its "
         "login; Settings, Sign-ins, shows whether the login is alive."
     )
     if before_path is not None and before_path != after_path:

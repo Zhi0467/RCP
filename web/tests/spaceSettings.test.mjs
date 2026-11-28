@@ -220,10 +220,11 @@ test("one machine card renders every section folded, with remove-from-project on
   const agentMachine = render({ record: { ...gpu, agents_run_here: true } });
   assert.match(agentMachine, /data-compute-route="helper"/);
   assert.match(agentMachine, /data-machine-setting="jobs_root"/);
-  // Browser, dependencies, compute, provider executables, provider limits,
+  // Agent CLIs stay open; browser, dependencies, compute, agent CLI limits,
   // writable paths and hidden folders all start folded.
+  assert.doesNotMatch(html, /<details[^>]*data-machine-fold="provider-executables"/);
   const folds = html.match(/<details[^>]*class="fold[ "][^>]*>/g);
-  assert.equal(folds?.length, 7);
+  assert.equal(folds?.length, 6);
   assert.ok(folds.every((tag) => !/\sopen/.test(tag)));
   assert.doesNotMatch(html, /data-machine-action="remove-from-project"/);
   assert.match(
