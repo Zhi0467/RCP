@@ -238,6 +238,25 @@ turn or becomes its next turn. Exec, including a pre-prompt fallback, cannot
 receive input. The backend publishes each runtime's action label and refusal
 reason.
 
+### Compact first
+
+A chat turn whose request sets `compact_first` compacts its resumed native
+session before the message. Codex app-server sends `thread/compact/start`, which
+runs as its own provider turn, and starts the message's turn when that turn
+completes. Claude stream-json and Antigravity write `/compact` as the first
+stream-json input and write the message when its result arrives; Claude's
+result names the input and says `local_command: "compact"`. Antigravity reports
+no compaction event, so its runtime reports a manual compaction itself, and its
+compaction `checkpoint` step counts as usage. The compaction input starts the
+turn, so the launch never falls back to another runtime. A runtime that cannot
+compact (Codex exec, OpenCode) fails the turn instead. A failed compaction ends
+the turn with `Compaction failed: … Your message was not sent.` and the message
+is never written. Only a turn's first attempt compacts; Retry and Resume never
+compact again. Each remote turn fence records `compact_first` in its outcome so
+replay reads the first result as the compaction step, not as the answer. A task
+response's `can_compact_first` says whether the runtime that holds its session
+can do this.
+
 ## Cooperative project write containment
 
 Project write scope protects cooperative users from accidental writes. It is

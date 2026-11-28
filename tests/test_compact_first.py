@@ -12,8 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from rcp.agents.launcher import ProviderReadiness
-from rcp.providers import ProviderTurnRequest, profile_for
+from rcp.providers import ProviderTurnRequest, profile_for, runtime_compacts_first
 from rcp.providers.turn_fence import COMPACT_COMMAND, turn_fence
 from rcp.service import RunRequest
 
@@ -218,22 +217,17 @@ def test_codex_compaction_failure_never_starts_the_prompt(tmp_path: Path, failur
     assert step.events[0].text.startswith("Compaction failed:")
 
 
-def test_readiness_offers_compact_first_only_where_the_runtime_can() -> None:
-    offered = {
-        (provider, choice.id): choice.compact_first
-        for provider in ("codex", "claude", "agy", "opencode")
-        for choice in ProviderReadiness(
-            provider=provider, installed=True, authenticated=True
-        ).runtimes
-    }
-
-    assert offered == {
-        ("codex", "exec"): False,
-        ("codex", "app-server"): True,
-        ("claude", "stream-json"): True,
-        ("agy", "stream-json"): True,
-        ("opencode", "run-json"): False,
-    }
+@pytest.mark.parametrize(
+    ("provider", "runtime_id", "offered"),
+    [
+        ("codex", "codex.exec-json.v1", False),
+        ("codex", CODEX, True),
+        ("claude", "claude.stream-json.v1", True),
+        ("opencode", "opencode.run-json.v1", False),
+    ],
+)
+def test_only_a_runtime_that_can_compact_offers_it(provider, runtime_id, offered) -> None:
+    assert runtime_compacts_first(provider, runtime_id) is offered
 
 
 def test_an_unchosen_compact_first_leaves_the_stored_request_unchanged() -> None:

@@ -111,6 +111,7 @@ import {
   chatIdForTask,
   latestPersistedChatConfig,
   originRunConfig,
+  providerSwitchStartsFreshSession,
   retryRefillsComposer,
   startConversationTurn,
   type ConversationTurnSubmission,
@@ -125,6 +126,8 @@ import { useInlineArtifactComments } from "./inlineArtifactComments";
 import type { DockThreads } from "../comments/react/useComments";
 import { createScopedCommentsClient, type CommentScope } from "../comments/api.ts";
 import { createComposerDraft, useComposerDraft, type ComposerDraft } from "./composerDraft";
+import { compactOffer, compactionUnsent, type CompactOffer } from "./compactOffer";
+import { CompactOfferDialog } from "./CompactOfferDialog";
 import {
   chooseRecordingFormat,
   liveDictationSpan,
@@ -541,6 +544,7 @@ export function AgentChatView({
   const [dictationStartedAt, setDictationStartedAt] = useState<number | null>(null);
   const [dictationPiecesBusy, setDictationPiecesBusy] = useState(0);
   const [discardPrompt, setDiscardPrompt] = useState<"dictate" | "send" | null>(null);
+  const [compactAsk, setCompactAsk] = useState<CompactOffer | null>(null);
   const [dictationDeadline, setDictationDeadline] = useState<number | null>(null);
   const [dictationClock, setDictationClock] = useState(() => Date.now());
   const [sendAfterDictation, setSendAfterDictation] = useState<{
@@ -923,6 +927,21 @@ export function AgentChatView({
     textareaRef.current?.focus();
   };
 
+  const compactingTurns = useRef(new Set<string>());
+  const refillUnsent = useEffectEvent((task: AgentTask) => {
+    if (draft.get().trim() || typeof task.request.message !== "string") return;
+    updateMessage(task.request.message);
+    textareaRef.current?.focus();
+  });
+  useEffect(() => {
+    for (const task of relatedTasks) {
+      if (!task.request.compact_first) continue;
+      if (!task.finished) compactingTurns.current.add(task.operation_id);
+      else if (compactingTurns.current.delete(task.operation_id) && compactionUnsent(task))
+        refillUnsent(task);
+    }
+  }, [relatedTasks]);
+
   const takeComposerRetry = useEffectEvent((task: AgentTask) => {
     onComposerRetryTaken?.();
     retryTask(task);
@@ -1297,6 +1316,7 @@ export function AgentChatView({
   const send = async (
     threads: { ids: readonly string[]; key: string } | null = null,
     queueing = false,
+    compactFirst?: boolean,
   ): Promise<boolean> => {
     const refuse = (reason: string) => {
       if (threads || queueing) setSubmitError(reason);
@@ -1311,12 +1331,14 @@ export function AgentChatView({
       return false;
     }
     if (steeringTask && !queueing) return steer(steeringTask, threads);
-    return sendNewTurn(threads, queueing);
+    return sendNewTurn(threads, queueing, compactFirst);
   };
 
+  /** `compactFirst` is the human's answer to the compaction offer; undefined asks when due. */
   const sendNewTurn = async (
     threads: { ids: readonly string[]; key: string } | null = null,
     queueing = false,
+    compactFirst?: boolean,
   ): Promise<boolean> => {
     const refuse = (reason: string) => {
       if (threads || queueing) setSubmitError(reason);
@@ -1341,6 +1363,21 @@ export function AgentChatView({
     // Enter reaches here without the button, so a new turn checks readiness itself.
     if (!providerReady) return refuse("The agent is not ready to start a turn.");
     if (!confirmDiscardKeptSpeech("send")) return refuse("Sending was cancelled.");
+    if (!queueing && compactFirst === undefined) {
+      const offer = compactOffer({
+        tasks: relatedTasks,
+        statusTasks,
+        messages: displayedMessages,
+        sessionId: providerSwitchStartsFreshSession(relatedTasks, sessionId, config.provider)
+          ? null
+          : sessionId,
+        now: Date.now(),
+      });
+      if (offer) {
+        setCompactAsk(offer);
+        return false;
+      }
+    }
     const queued = queueing
       ? JSON.stringify([
           text,
@@ -1377,6 +1414,7 @@ export function AgentChatView({
         worktree: worktree.chosen && !queueing,
         worktreeRepository,
         ...(threads ? { commentThreadIds: threads.ids } : {}),
+        ...(compactFirst ? { compactFirst } : {}),
       },
       submittedOverride: configOverride,
       ...(queued ? { queue: true as const, queued } : {}),
@@ -2438,6 +2476,16 @@ export function AgentChatView({
               </span>
             ) : null
           }
+        />
+      )}
+      {compactAsk && (
+        <CompactOfferDialog
+          offer={compactAsk}
+          onCancel={() => setCompactAsk(null)}
+          onChoose={(choice) => {
+            setCompactAsk(null);
+            void sendMessage(false, (threads, queueing) => send(threads, queueing, choice));
+          }}
         />
       )}
       {replyComments.layers}

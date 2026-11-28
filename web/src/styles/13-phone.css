@@ -557,3 +557,10 @@
     min-height: 44px;
   }
 }
+
+@media (max-width: 560px) {
+  .compact-offer-limits {
+    flex-basis: 100%;
+    justify-content: flex-start;
+  }
+}

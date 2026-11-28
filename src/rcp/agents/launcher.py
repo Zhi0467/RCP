@@ -160,16 +160,7 @@ class ProviderReadiness(BaseModel):
     def fill_provider_runtimes(self) -> ProviderReadiness:
         profile = profile_for(self.provider)
         if not self.runtimes:
-            self.runtimes = [
-                choice.model_copy(
-                    update={
-                        "compact_first": profile.runtime(
-                            profile.configured_runtime_id(choice.id)
-                        ).supports_compact_first
-                    }
-                )
-                for choice in profile.runtime_choices
-            ]
+            self.runtimes = list(profile.runtime_choices)
         if not self.default_runtime:
             self.default_runtime = profile.default_runtime
         return self

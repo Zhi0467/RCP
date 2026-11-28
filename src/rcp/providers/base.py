@@ -51,7 +51,6 @@ class ProviderRuntimeChoice(BaseModel):
 
     id: str = Field(min_length=1)
     label: str = Field(min_length=1)
-    compact_first: bool = False
 
 
 class ProviderSkill(BaseModel):

@@ -71,6 +71,7 @@ from rcp.core.models import AuthorizedHuman
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import ARTIFACT_CONTEXT_MAX_SELECTIONS, STEERING_MESSAGE_MAX_CHARS
 from rcp.projects import ProjectCatalog
+from rcp.providers import runtime_compacts_first
 from rcp.runs.agent_threads import task_owner
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.chat import (
@@ -262,6 +263,12 @@ def _agent_task_response(
     followup_question_ids: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     response = record.model_dump(mode="json")
+    provider = record.request.get("provider")
+    response["can_compact_first"] = bool(
+        isinstance(provider, str)
+        and record.runtime_id
+        and runtime_compacts_first(provider, record.runtime_id)
+    )
     response["limit_reset"] = task_limit_reset(store, record)
     response["via_agent"] = store.via_agent(record.operation_id)
     if session_resolutions is None:
