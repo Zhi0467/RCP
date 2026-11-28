@@ -55,13 +55,16 @@ def _render(provider, request):
         index = command.index("--settings") + 1
         result["settings"] = json.loads(command[index])
         command[index] = "<settings>"
-        agent_name = command[command.index("--agent") + 1]
-        result["agent"] = (
-            (request.cwd / ".agents" / "agents" / f"{agent_name}.md")
-            .read_text()
-            .replace(agent_name, "<agent>")
-        )
-        command[command.index("--agent") + 1] = "<agent>"
+        if request.capability in {"work_auto", "orchestrate"}:
+            assert "--agent" not in command
+        else:
+            agent_name = command[command.index("--agent") + 1]
+            result["agent"] = (
+                (request.cwd / ".agents" / "agents" / f"{agent_name}.md")
+                .read_text()
+                .replace(agent_name, "<agent>")
+            )
+            command[command.index("--agent") + 1] = "<agent>"
     elif provider == "opencode":
         settings = json.loads(environment.pop("OPENCODE_CONFIG_CONTENT"))
         agent_name = command[command.index("--agent") + 1]

@@ -2330,7 +2330,8 @@
   font-size: var(--type-xs);
   gap: 3px;
 }
-.chat-browser-control {
+.chat-browser-control,
+.chat-limit-resume-control {
   align-items: center;
   display: flex;
   gap: 6px;

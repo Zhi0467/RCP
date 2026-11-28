@@ -11,6 +11,7 @@ from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.projects import ProjectCatalog
 from rcp.runs import provider_login
 from rcp.storage import AgentTaskRecord, AppStore
+from tests.helpers import fake_launch_admitted
 from tests.lifecycles.agent_task import seeded_store
 
 
@@ -90,6 +91,22 @@ def limited(tmp_path, monkeypatch):
         )
 
     return store, clock, task, calls, tick, background
+
+
+@pytest.mark.parametrize(
+    ("kind", "eligible"),
+    [("project_chat", True), ("node_chat", True), ("space_chat", True), ("refresh", False)],
+)
+def test_limit_resume_candidates_only_include_chat_turns(limited, kind, eligible):
+    store, clock, task, *_ = limited
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET kind=? WHERE operation_id=?", (kind, task.operation_id)
+        )
+    clock[0] += timedelta(seconds=60)
+    assert [row.operation_id for row in provider_login.limit_resume_candidates(store)] == (
+        [task.operation_id] if eligible else []
+    )
 
 
 def test_wake_at_reset_once_after_restart_and_login_clear(limited, monkeypatch):
@@ -246,7 +263,7 @@ def test_restart_preserves_only_proven_unstarted_auto_resume(limited, monkeypatc
             )
         return store.agent_task(operation_id)
 
-    monkeypatch.setattr(background, "launch_admitted", launch)
+    fake_launch_admitted(monkeypatch, background, launch)
     monkeypatch.setattr(background, "_schedule_remote_reconciliation", lambda **_: None)
     background.recover_at_startup()
     clock[0] += timedelta(seconds=60)

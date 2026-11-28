@@ -223,6 +223,7 @@ def test_api_services_are_typed_wired_and_membership_gate_is_module_level(
         "release_check",
         "provider_credentials",
         "provider_sign_ins",
+        "provider_updates",
         "episode_reconciliation",
         "terminals",
         "notification_sender",
@@ -241,6 +242,7 @@ def test_api_services_are_typed_wired_and_membership_gate_is_module_level(
     assert services.experiment_operation_lock is not None
     assert services.launcher is not None
     assert services.setup is not None
+    assert services.provider_updates is not None
     assert services.health_composition.instance_metadata is app.state.instance_metadata
     assert services.health_composition.agent_mode == app.state.agent_mode
     assert (

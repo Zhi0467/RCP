@@ -121,6 +121,7 @@
   .agent-status-chip,
   .overflow-menu-list > button,
   .chat-header-menu-list > .chat-browser-control,
+  .chat-header-menu-list > .chat-limit-resume-control,
   .chat-header-menu-list .branch-picker-trigger {
     height: auto;
     min-height: 44px;

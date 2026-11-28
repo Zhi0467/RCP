@@ -37,7 +37,7 @@ export function LimitResumeToggle({ onChanged }: { onChanged: () => Promise<void
     }
   }
   return (
-    <div className="chat-browser-control" title={error ?? undefined}>
+    <div className="chat-limit-resume-control" title={error ?? undefined}>
       <div className="browser-consent">
         <label className="browser-consent-switch">
           <input

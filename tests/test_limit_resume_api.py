@@ -90,7 +90,7 @@ def test_resume_marker_is_present_before_worker_starts(
 ) -> None:
     from rcp.agents import AgentEvent
     from rcp.background import BackgroundAgentTasks
-    from tests.helpers import wait_for_task
+    from tests.helpers import fake_launch_admitted, wait_for_task
     from tests.test_background_policy_matrix import _chat_request, _record, _store
 
     store = _store(tmp_path)
@@ -114,13 +114,13 @@ def test_resume_marker_is_present_before_worker_starts(
     tasks = BackgroundAgentTasks(store, stream)
     launch = tasks.launch_admitted
     if restart:
-        monkeypatch.setattr(tasks, "launch_admitted", store.agent_task)
+        fake_launch_admitted(monkeypatch, tasks)
     resumed = tasks.resume(
         previous.operation_id, authorized_by=previous.authorized_by, marker="limit_auto_resume"
     )
     if restart:
         assert store.agent_task_dispatch_was_proven_not_started(resumed.operation_id)
-        monkeypatch.setattr(tasks, "launch_admitted", launch)
+        fake_launch_admitted(monkeypatch, tasks, launch)
         tasks.recover_at_startup()
         assert store.agent_task(resumed.operation_id).status == "queued"
         tasks.launch_admitted(resumed.operation_id)

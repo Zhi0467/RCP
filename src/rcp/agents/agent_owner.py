@@ -63,6 +63,10 @@ def chat_turn_kind(chat_scope: object) -> AgentTaskKind:
     return "node_chat" if chat_scope == "node" else "project_chat"
 
 
+def is_chat_turn(task: AgentTaskRecord) -> bool:
+    return task.kind in {"project_chat", "node_chat", "space_chat"}
+
+
 def resolve_agent(
     store: AppStore, agent_id: str, user_id: str, project_id: str | None = None
 ) -> AgentOwner:

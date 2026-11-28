@@ -317,6 +317,7 @@ MEMBER_REMOVAL = Entry(
         SpaceStoreMixin.enroll_team_member,
         SpaceStoreMixin.preprovision_team_member,
         SpaceStoreMixin.rename_space_user,
+        SpaceStoreMixin.set_auto_resume_after_limits,
         AppStoreBase._insert_local_owner,
         _remove_member_agent_data,
     ),

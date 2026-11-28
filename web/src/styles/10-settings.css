@@ -945,7 +945,8 @@ button.agent-provider-label {
 .chat-header-menu-list {
   width: min(300px, calc(100vw - 24px));
 }
-.chat-header-menu-list > .chat-browser-control {
+.chat-header-menu-list > .chat-browser-control,
+.chat-header-menu-list > .chat-limit-resume-control {
   padding: 6px 10px;
 }
 .chat-header-menu-list .browser-consent {

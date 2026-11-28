@@ -51,6 +51,9 @@ test("narrow Chats and DAG keep the working surface primary behind accessible di
       await page.route("**/api/projects/*/chats/*/questions", (route) =>
         route.fulfill({ json: [] }),
       );
+      await page.route("**/api/providers/limit-resume", (route) =>
+        route.fulfill({ json: { enabled: true } }),
+      );
       await page.route("**/api/agent-threads/*/artifact-list", (route) =>
         route.fulfill({
           json: ["report", "plot"].map((artifact_id) => ({

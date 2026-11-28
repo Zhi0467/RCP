@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
+from rcp.agents.agent_owner import is_chat_turn
 from rcp.agents.provider_accounts import ProviderAccounts
 from rcp.config import Manifest, load_manifest
 from rcp.core.models import AuthorizedHuman
@@ -603,7 +604,6 @@ def limit_resume_candidates(store: AppStore) -> list[AgentTaskRecord]:
             "LEFT JOIN space_users member ON member.user_id=failed.authorized_user_id "
             "WHERE failed.status='failed' AND failed.episode_id IS NULL "
             "AND failed.history_only=0 AND failed.visible=1 "
-            "AND failed.kind IN ('project_chat', 'node_chat', 'space_chat') "
             "AND json_extract(failed.request_json, '$.chat_id') IS NOT NULL "
             "AND COALESCE(member.auto_resume_after_limits, 1)=1 "
             "AND EXISTS (SELECT 1 FROM graph_run_receipts reset "
@@ -621,7 +621,7 @@ def limit_resume_candidates(store: AppStore) -> list[AgentTaskRecord]:
             "ORDER BY failed.rowid",
             (store.now(), retry_before),
         ).fetchall()
-    return [store._agent_task_record(row) for row in rows]
+    return [task for row in rows if is_chat_turn(task := store._agent_task_record(row))]
 
 
 def _limit_resume_capped(store: AppStore, task: AgentTaskRecord) -> bool:
