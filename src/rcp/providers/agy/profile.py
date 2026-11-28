@@ -551,14 +551,14 @@ class AgyProfile(ProviderProfile):
         step = value.get("step_update")
         if not isinstance(step, dict):
             return ProviderStreamEvent(event="raw", text=raw)
-        if kind == "step_update" and step.get("step_type") == "agent_response":
+        if kind == "step_update" and step.get("step_type") in {"agent_response", "checkpoint"}:
             usage = self.decode_usage(value, raw)
             return ProviderStreamEvent(
                 event="raw",
                 text=raw,
                 usage=usage,
                 status=AgentStatusDelta(context_tokens=usage.processed_input_tokens)
-                if usage
+                if usage and step.get("step_type") == "agent_response"
                 else None,
             )
         return ProviderStreamEvent(event="raw", text=raw)

@@ -55,6 +55,20 @@ def test_recorded_decoder_and_usage():
             assert AGY.decode_usage(record, json.dumps(record)) is None
 
 
+def test_compaction_checkpoint_counts_as_usage_without_resetting_context():
+    record = {
+        "event": "step_update",
+        "step_update": {
+            "step_type": "checkpoint",
+            "state": "DONE",
+            "usage": {"input_tokens": 90000, "output_tokens": 2000, "total_tokens": 92000},
+        },
+    }
+    event = AGY.decode_event(record, json.dumps(record))
+    assert event.usage is not None and event.usage.processed_input_tokens == 90000
+    assert event.status is None
+
+
 @pytest.mark.parametrize("fixture", ["denied_resume.jsonl", "bad_model.jsonl"])
 def test_recorded_failures(fixture):
     records = [json.loads(line) for line in (FIXTURES / fixture).read_text().splitlines()]
