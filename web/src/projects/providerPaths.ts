@@ -17,14 +17,17 @@ export function providerPathPresentation(
   if (readiness?.path_state === "missing") {
     return { label: value ? "Recorded path missing" : "Executable missing", kind: "error" };
   }
-  if (readiness?.path_state === "resolved") {
-    if (readiness.update_warning)
-      return { label: "Update failed", kind: "warning", note: readiness.update_warning };
-    const version = readiness.version ? ` · ${readiness.version}` : "";
-    if (readiness.updated_from == null) return { label: `Ready${version}`, kind: "ready" };
-    return readiness.updated_from === readiness.version
-      ? { label: `Up to date${version}`, kind: "ready" }
-      : { label: `Updated${version}`, kind: "ready", note: `From ${readiness.updated_from}` };
-  }
-  return { label: "Not recorded", kind: "warning" };
+  if (readiness?.path_state === "resolved" && readiness.update_warning)
+    return { label: "Update failed", kind: "warning", note: readiness.update_warning };
+  const version = readiness?.version ? ` · ${readiness.version}` : "";
+  const updated =
+    readiness?.updated_from == null
+      ? null
+      : readiness.updated_from === readiness.version
+        ? "Up to date"
+        : "Updated";
+  const note = updated === "Updated" ? `From ${readiness!.updated_from}` : undefined;
+  if (readiness?.path_state === "resolved")
+    return { label: `${updated ?? "Ready"}${version}`, kind: "ready", note };
+  return { label: `${updated ?? "Not recorded"}${version}`, kind: "warning", note };
 }

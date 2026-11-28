@@ -32,8 +32,12 @@ class _Backend:
         monkeypatch.setattr(
             self.launcher,
             "_readiness_uncached",
-            lambda login, **_: ProviderReadiness(
-                provider=login.provider, installed=True, authenticated=True, version=self.version
+            lambda login, binary=None, **_: ProviderReadiness(
+                provider=login.provider,
+                installed=True,
+                authenticated=True,
+                version=self.version,
+                binary_path=binary or str(self.binary),
             ),
         )
 
@@ -75,6 +79,8 @@ def test_an_idle_backend_updates_its_cli_and_reads_the_new_version(tmp_path, mon
     assert readiness.version == "1.18.34"
     assert readiness.updated_from == "1.18.33"
     assert readiness.update_warning is None
+    other = backend.launcher.readiness(_LOGIN, binary="/opt/other/opencode")
+    assert other.updated_from is None
 
 
 def test_the_card_reads_updating_until_the_new_readiness_is_cached(tmp_path, monkeypatch) -> None:

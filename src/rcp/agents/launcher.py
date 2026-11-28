@@ -762,7 +762,7 @@ class AgentLauncher:
         self._readiness_probes: dict[tuple[str, str, str | None, str, bool], _ReadinessProbe] = {}
         self._readiness_generations: dict[tuple[str, str, str | None, str], int] = {}
         self._update_warnings: dict[tuple[str, str], str] = {}
-        self._updated_from: dict[tuple[str, str], str] = {}
+        self._updated_from: dict[tuple[str, str], tuple[str, str]] = {}
         self._updating_providers: dict[tuple[str, str], int] = {}
         self._provider_sign_ins: Counter[tuple[str, str]] = Counter()
         self._active_readiness_probes: Counter[tuple[str, str]] = Counter()
@@ -893,16 +893,19 @@ class AgentLauncher:
             else:
                 self._update_warnings[(provider, machine_id)] = warning
 
-    def record_update(self, provider: str, machine_id: str, before: str) -> None:
-        """Record a successful CLI update and the version it started from."""
+    def record_update(self, provider: str, machine_id: str, binary: str, before: str) -> None:
+        """Record a successful update of this executable and the version it started from."""
 
         with self._readiness_lock:
             self._update_warnings.pop((provider, machine_id), None)
-            self._updated_from[(provider, machine_id)] = before
+            self._updated_from[(provider, machine_id)] = (binary, before)
 
     def _with_login_state(self, readiness: ProviderReadiness, login: LoginKey) -> ProviderReadiness:
         readiness.update_warning = self._update_warnings.get((login.provider, login.machine_id))
-        readiness.updated_from = self._updated_from.get((login.provider, login.machine_id))
+        updated = self._updated_from.get((login.provider, login.machine_id))
+        readiness.updated_from = (
+            updated[1] if updated is not None and updated[0] == readiness.binary_path else None
+        )
         reason = self._login_refusal(login)
         if reason is not None:
             return readiness.model_copy(update={"authenticated": False, "reason": reason})
