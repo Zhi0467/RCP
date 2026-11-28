@@ -530,6 +530,14 @@ export function resolveSpaceMachineProvider(
   );
 }
 
+const providerUpdatePath = (machineId: string, provider: ProviderId) =>
+  `/api/space/machines/${encodeURIComponent(machineId)}/providers/${encodeURIComponent(provider)}/update`;
+
+/** Starts the in-app update of the provider's CLI on the machine. */
+export function startProviderUpdate(machineId: string, provider: ProviderId): Promise<void> {
+  return api(providerUpdatePath(machineId, provider), { method: "POST" });
+}
+
 /** Re-runs the card's scheduler, helper, and reach probes now. */
 export function checkSpaceMachineCompute(machineId: string): Promise<MachineSettingsRecord> {
   return api<MachineSettingsRecord>(
@@ -986,6 +994,18 @@ export function removeProviderLogin(
   bound_running: number;
 }> {
   return postProviderLogin(provider, "remove", { machine_id: machineId, login_id: loginId });
+}
+
+/** The signed-in member's own choice, the same in every chat. */
+export function loadLimitResume(): Promise<{ enabled: boolean }> {
+  return api("/api/providers/limit-resume");
+}
+
+export function saveLimitResume(enabled: boolean): Promise<{ enabled: boolean }> {
+  return api("/api/providers/limit-resume", {
+    method: "PUT",
+    body: JSON.stringify({ enabled }),
+  });
 }
 
 export function loadProviderLoginSettings(): Promise<ProviderLoginSettings> {

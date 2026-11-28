@@ -228,7 +228,8 @@ class ProviderLoginStoreMixin(StoreMixinBase):
             )
             self._write_provider_login_state(connection, record)
             connection.execute(
-                f"UPDATE provider_login_assignments SET limited_at=NULL WHERE {_KEY_WHERE}", key
+                f"UPDATE provider_login_assignments SET limited_at=NULL, limit_resets_at=NULL WHERE {_KEY_WHERE}",
+                key,
             )
         return record
 
@@ -412,19 +413,30 @@ class ProviderLoginStoreMixin(StoreMixinBase):
             )
         )
 
+    def provider_login_limit_estimated(self, key: LoginKey, resets_at: str | None) -> bool:
+        with self.connection() as connection:
+            receipt = connection.execute(
+                "SELECT json_extract(receipt.payload_json, '$.estimated') "
+                "FROM graph_run_receipts receipt JOIN graph_runs task "
+                "ON task.operation_id=receipt.operation_id "
+                "WHERE receipt.category='provider_terminal_error' "
+                "AND json_extract(receipt.payload_json, '$.classification')='session_limit' "
+                "AND json_extract(receipt.payload_json, '$.resets_at')=? "
+                "AND json_extract(task.request_json, '$.provider')=? "
+                "AND COALESCE(task.stage_machine_id, '')=? AND task.login_id=? "
+                "ORDER BY receipt.receipt_id DESC LIMIT 1",
+                (resets_at, *key),
+            ).fetchone()
+        return receipt is None or receipt[0] != 0
+
     def provider_login_limited(
         self,
         key: LoginKey,
         *,
-        continued: bool = False,
         now: str | None = None,
         connection: sqlite3.Connection | None = None,
     ) -> bool:
-        mark = self.provider_login_assignment(key, connection=connection).limited_at
-        return mark is not None and (
-            continued
-            or self.provider_login_limit_lapses_in(key, connection=connection, now=now) > 0
-        )
+        return self.provider_login_limit_lapses_in(key, connection=connection, now=now) > 0
 
     def provider_login_limit_lapses_in(
         self,
@@ -434,14 +446,24 @@ class ProviderLoginStoreMixin(StoreMixinBase):
         connection: sqlite3.Connection | None = None,
     ) -> float:
         """Seconds until this login's limit mark lapses; 0 when it has none or it lapsed."""
-        mark = self.provider_login_assignment(key, connection=connection).limited_at
-        if mark is None:
+        assignment = self.provider_login_assignment(key, connection=connection)
+        if assignment.limited_at is None:
             return 0.0
-        elapsed = datetime.fromisoformat(now or self.now()) - datetime.fromisoformat(mark)
+        current = datetime.fromisoformat(now or self.now())
+        if assignment.limit_resets_at is not None:
+            return max(
+                0.0, (datetime.fromisoformat(assignment.limit_resets_at) - current).total_seconds()
+            )
+        elapsed = current - datetime.fromisoformat(assignment.limited_at)
         return max(0.0, PROVIDER_LOGIN_LIMIT_HINT_SECONDS - elapsed.total_seconds())
 
     def set_provider_login_limit(
-        self, key: LoginKey, *, provider_started_at: str, limited: bool
+        self,
+        key: LoginKey,
+        *,
+        provider_started_at: str,
+        limited: bool,
+        resets_at: str | None = None,
     ) -> bool:
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -451,9 +473,9 @@ class ProviderLoginStoreMixin(StoreMixinBase):
             ) <= datetime.fromisoformat(current.limited_at):
                 return False
             connection.execute(
-                """INSERT INTO provider_login_assignments(provider,machine_id,login_id,limited_at) VALUES(?,?,?,?)
-                ON CONFLICT(provider,machine_id,login_id) DO UPDATE SET limited_at=excluded.limited_at""",
-                (*key, self.now() if limited else None),
+                """INSERT INTO provider_login_assignments(provider,machine_id,login_id,limited_at,limit_resets_at) VALUES(?,?,?,?,?)
+                ON CONFLICT(provider,machine_id,login_id) DO UPDATE SET limited_at=excluded.limited_at,limit_resets_at=excluded.limit_resets_at""",
+                (*key, self.now() if limited else None, resets_at if limited else None),
             )
         return True
 

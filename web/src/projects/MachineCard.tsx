@@ -1,4 +1,5 @@
 import {
+  Download,
   FolderPlus,
   KeyRound,
   LoaderCircle,
@@ -11,12 +12,14 @@ import {
   WifiOff,
   X,
 } from "lucide-react";
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ApiError,
   checkSpaceMachineCompute,
   createSpaceMachine,
+  loadSpaceMachines,
   resolveSpaceMachineProvider,
+  startProviderUpdate,
   trustMachineHostKey,
   updateSpaceMachine,
 } from "../core/api";
@@ -43,6 +46,7 @@ import { PathPicker } from "./PathPicker";
 import { Fold } from "../core/Fold";
 import { computeProbePresentation } from "../experiments/compute";
 import { providerPathPresentation } from "./providerPaths";
+import { OverflowMenu } from "../ui/OverflowMenu";
 
 interface Props {
   title: string;
@@ -448,6 +452,8 @@ function ComputeFold(props: MachineFoldProps) {
   );
 }
 
+const PROVIDER_UPDATE_POLL_MS = 2000;
+
 function ProviderExecutables(props: MachineFoldProps) {
   const { record, writesDisabled, run, onRecordChange } = props;
   const { failure, attempt, update } = useFoldUpdate(props);
@@ -461,6 +467,14 @@ function ProviderExecutables(props: MachineFoldProps) {
     );
     setResolving(null);
   };
+  const refresh = () =>
+    run(async () => {
+      const fresh = (await loadSpaceMachines()).find(
+        (machine) => machine.machine_id === record.machine_id,
+      );
+      if (fresh) onRecordChange(fresh);
+      return fresh;
+    });
   return (
     <Fold
       className="machine-writable-paths"
@@ -479,11 +493,53 @@ function ProviderExecutables(props: MachineFoldProps) {
             failure={failure}
             onSave={(path) => update(`path:${provider}`, { provider_paths: { [provider]: path } })}
             onResolve={() => void resolve(provider)}
+            onUpdate={async () => {
+              let started = false;
+              await attempt(`update:${provider}`, async () => {
+                await startProviderUpdate(record.machine_id, provider);
+                started = true;
+              });
+              return started;
+            }}
+            onRefresh={refresh}
           />
         ))}
       </div>
     </Fold>
   );
+}
+
+/** Polls a running CLI update until the refreshed card confirms it ended. */
+function useProviderUpdateWatch(watching: boolean, onPoll: () => Promise<boolean>) {
+  const pollCard = useRef(onPoll);
+  pollCard.current = onPoll;
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!watching) return;
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const running = await pollCard.current();
+        if (cancelled) return;
+        if (!running) {
+          setError(null);
+          return;
+        }
+        setError(null);
+      } catch (failure) {
+        if (cancelled) return;
+        setError(errorMessage(failure));
+      }
+      if (!cancelled) timer = window.setTimeout(() => void poll(), PROVIDER_UPDATE_POLL_MS);
+    };
+    timer = window.setTimeout(() => void poll(), PROVIDER_UPDATE_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [watching]);
+  return error;
 }
 
 function ProviderPathRow({
@@ -495,6 +551,8 @@ function ProviderPathRow({
   failure,
   onSave,
   onResolve,
+  onUpdate,
+  onRefresh,
 }: {
   record: SpaceMachine;
   provider: ProviderId;
@@ -504,16 +562,39 @@ function ProviderPathRow({
   failure: FoldFailure | null;
   onSave: (path: string) => Promise<void>;
   onResolve: () => void;
+  /** Resolves true once the backend accepted the update. */
+  onUpdate: () => Promise<boolean>;
+  onRefresh: () => Promise<SpaceMachine | undefined>;
 }) {
   const recorded = record.provider_paths[provider] ?? "";
   const path = useSavedText(recorded, onSave);
-  const state = providerPathPresentation(
-    record.provider_readiness[provider],
-    path.draft.trim(),
-    recorded,
-  );
+  const readiness = record.provider_readiness[provider];
+  const [started, setStarted] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const watching = started || readiness?.updating === true;
+  const updating = starting || watching;
+  const pollError = useProviderUpdateWatch(watching, async () => {
+    const fresh = await onRefresh();
+    const running = !fresh || fresh.provider_readiness[provider]?.updating === true;
+    if (!running) setStarted(false);
+    return running;
+  });
+  const updateFailure = failure?.key === `update:${provider}` ? failure.message : null;
+  const resolveFailure = failure?.key === `resolve:${provider}` ? failure.message : null;
+  const presented = providerPathPresentation(readiness, path.draft.trim(), recorded, {
+    updating,
+    failure: updateFailure,
+  });
+  const state = {
+    ...presented,
+    note: updating ? (pollError ?? undefined) : (updateFailure ?? resolveFailure ?? presented.note),
+  };
   return (
-    <div className="provider-path-row" data-provider={provider}>
+    <div
+      className="provider-path-row"
+      data-provider={provider}
+      data-updating={updating || undefined}
+    >
       <strong>{label}</strong>
       <input
         type="text"
@@ -526,23 +607,33 @@ function ProviderPathRow({
       <span className={`provider-path-state ${state.kind}`} title={state.note}>
         {state.label}
       </span>
-      <button
-        type="button"
-        data-machine-action="resolve-provider"
-        {...failedProps(failure, `resolve:${provider}`)}
-        className={`button secondary compact${
-          failure?.key === `resolve:${provider}` ? " failed" : ""
-        }`}
-        disabled={writesDisabled || resolving !== null}
-        onClick={onResolve}
-      >
-        {resolving === provider ? (
+      {updating || resolving === provider ? (
+        <span className="icon-button compact provider-path-menu" role="status" aria-label="Working">
           <LoaderCircle className="spin" size={14} />
-        ) : (
-          <ScanSearch size={14} />
-        )}
-        Resolve
-      </button>
+        </span>
+      ) : (
+        <OverflowMenu
+          portal
+          label={`${label} actions`}
+          className="provider-path-menu"
+          triggerClassName={`icon-button compact${resolveFailure || updateFailure ? " failed" : ""}`}
+          disabled={writesDisabled || resolving !== null}
+          items={[
+            { label: "Resolve", icon: ScanSearch, onSelect: onResolve },
+            {
+              label: "Update",
+              icon: Download,
+              onSelect: () => {
+                setStarting(true);
+                void onUpdate().then((accepted) => {
+                  setStarted(accepted);
+                  setStarting(false);
+                });
+              },
+            },
+          ]}
+        />
+      )}
     </div>
   );
 }

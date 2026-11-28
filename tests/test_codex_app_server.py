@@ -994,3 +994,40 @@ def test_skill_probe_disables_the_same_features_as_a_launch(tmp_path: Path):
     assert {"plugins", "memories"} <= set(disabled(launch))
     assert disabled(probe) == disabled(exec_launch)
     assert disabled(launch) == disabled(probe)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("runtime_id", "attempted"), [("app-server", ["app-server"]), ("exec", [])]
+)
+async def test_compact_first_never_falls_back_to_an_uncompacted_runtime(
+    tmp_path: Path, runtime_id: str, attempted: list[str]
+) -> None:
+    executable, attempts = _fake_fallback_codex(tmp_path, fail_after_prompt=False)
+    launcher = AgentLauncher()
+    launcher.readiness = lambda login, binary=None: _ready(executable)
+
+    events = [
+        event
+        async for event in launcher.stream(
+            "codex",
+            "This prompt must not run without its compaction",
+            cwd=tmp_path,
+            session_id="existing-app-thread",
+            write_dirs=[tmp_path / "changes"],
+            machine_id=BACKEND_MACHINE_ID,
+            host="",
+            capability="discuss",
+            runtime_id=runtime_id,
+            compact_first=True,
+        )
+    ]
+
+    assert all(event.event != "answer" for event in events)
+    assert any(event.event == "error" for event in events)
+    if not attempted:
+        (error,) = [event for event in events if event.event == "error"]
+        assert error.text.startswith("Compaction failed:")
+    assert (attempts.read_text(encoding="utf-8").splitlines() if attempts.exists() else []) == (
+        attempted
+    )

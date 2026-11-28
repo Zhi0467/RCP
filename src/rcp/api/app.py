@@ -90,6 +90,7 @@ from rcp.api.project_provisioning import router as project_provisioning_router
 from rcp.api.project_state import router as project_state_router
 from rcp.api.proposal_refresh import router as proposal_refresh_router
 from rcp.api.provider_login import router as provider_login_router
+from rcp.api.provider_update import router as provider_update_router
 from rcp.api.questions import router as questions_router
 from rcp.api.result_views import router as result_views_router
 from rcp.api.server_status import router as server_status_router
@@ -200,6 +201,7 @@ from rcp.runs.paper_turns import end_settled_paper_turns
 from rcp.runs.provider_auto_update import auto_update_providers
 from rcp.runs.provider_session_sweep import sweep_provider_sessions
 from rcp.runs.provider_sign_in import ProviderSignInRunner
+from rcp.runs.provider_update import ProviderUpdateRunner
 from rcp.runs.recorded_turn import RecordedProviderTurn
 from rcp.runs.remote_finalization import recorded_finalizer, resume_recorded_command_mailbox
 from rcp.runs.shared import (
@@ -1256,6 +1258,7 @@ def create_app(
             catalog, lambda: background_tasks, experiment_operation_lock, experiment_admission
         ),
         paper_live=paper_live,
+        launcher=launcher,
     )
 
     @contextmanager
@@ -1631,7 +1634,7 @@ def create_app(
 
         return checked
 
-    from rcp.runs.provider_login import provider_login_changed
+    from rcp.runs.provider_login import provider_login_changed, resume_limited_turns
 
     def resume_account(login: LoginKey) -> dict[str, int]:
         released = provider_login_changed(
@@ -1679,6 +1682,15 @@ def create_app(
     def after_watcher_poll() -> None:
         watcher_delivery.deliver_ready_watchers(source="watcher poll")
         provider_sign_ins.reconcile_recovery()
+        try:
+            resume_limited_turns(
+                background_tasks,
+                catalog=catalog,
+                experiment_admission=experiment_admission,
+                operation_lock=experiment_operation_lock,
+            )
+        except Exception:
+            logger.exception("Could not reconcile limited turns")
         # Expired cards answer their questions; delivery wakes each asking thread.
         for project_id in store.expire_approval_cards():
             reconcile_question_answers(project_id)
@@ -1810,6 +1822,11 @@ def create_app(
         release_check=release_check,
         provider_credentials=provider_credentials,
         provider_sign_ins=provider_sign_ins,
+        provider_updates=ProviderUpdateRunner(
+            store,
+            launcher,
+            guard=partial(background_admission_gate.mutation, "provider CLI update"),
+        ),
         episode_reconciliation=reconcile_episodes,
         terminals=terminals,
         notification_sender=notification_sender,
@@ -2522,6 +2539,7 @@ def create_app(
                 await terminals.close()
             except Exception:
                 logger.exception("Terminal shutdown cleanup failed; startup will retry it.")
+            await asyncio.to_thread(services.provider_updates.stop)
             await asyncio.to_thread(release_check.stop)
             watcher_poller.stop()
             await asyncio.to_thread(consolidation_poller.stop)
@@ -2903,6 +2921,7 @@ def create_app(
     app.state.agent_membership_dependency = require_agent_project_membership
 
     app.include_router(provider_login_router)
+    app.include_router(provider_update_router)
     app.include_router(service_connections_router)
     app.include_router(voice_router)
     app.include_router(voice_thread_router)

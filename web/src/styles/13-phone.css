@@ -121,6 +121,7 @@
   .agent-status-chip,
   .overflow-menu-list > button,
   .chat-header-menu-list > .chat-browser-control,
+  .chat-header-menu-list > .chat-limit-resume-control,
   .chat-header-menu-list .branch-picker-trigger {
     height: auto;
     min-height: 44px;
@@ -554,5 +555,12 @@
   }
   .paper-reference-entry {
     min-height: 44px;
+  }
+}
+
+@media (max-width: 560px) {
+  .compact-offer-limits {
+    flex-basis: 100%;
+    justify-content: flex-start;
   }
 }

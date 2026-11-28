@@ -193,6 +193,10 @@ _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "provider_runtime_selected",
     "provider_login_lineage",
     "provider_login_limit_retry",
+    "provider_terminal_error",
+    "limit_auto_resume",
+    "limit_auto_resume_deferred",
+    "limit_auto_resume_stopped",
     "provider_auth_auto_retry",
     "provider_auth_retry_deferred",
 )
@@ -298,6 +302,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         handoff_id: str | None = None,
         handoff_wake_id: str | None = None,
         queue_id: str | None = None,
+        limit_auto_resume: bool = False,
     ) -> AgentTaskRecord:
         if record.kind == "episode_report":
             raise ValueError("episode report tasks must use their episode wrap-up allocation")
@@ -343,6 +348,15 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     record,
                     continuation_cause=continuation_cause,
                 )
+                if limit_auto_resume:
+                    self._insert_agent_task_receipt(
+                        connection,
+                        record.operation_id,
+                        "limit_auto_resume",
+                        "{}",
+                        tier="summary",
+                        created_at=record.created_at,
+                    )
         except sqlite3.IntegrityError as exc:
             raise ValueError("Could not create the agent task.") from exc
         stored = self.agent_task(record.operation_id)
@@ -403,7 +417,12 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     if origin.capability == "discuss"
                     else task.request.get("patch_kind", "work") != "work"
                 )
-                or classify_terminal_error(task.error or "") == "stale_session"
+                or self.failure_classification(
+                    task.operation_id,
+                    task.error or "",
+                    connection=connection,
+                )
+                == "stale_session"
             ):
                 raise ValueError("question_origin_binding_unavailable")
             self._require_chat_wake_binding(connection, task)
@@ -478,7 +497,10 @@ class AgentTaskStoreMixin(StoreMixinBase):
             or not task.native_session_id
             or not task.stage_root
             or task.dispatch_authority is None
-            or classify_terminal_error(task.error or "") == "stale_session"
+            or self.failure_classification(
+                task.operation_id, task.error or "", connection=connection
+            )
+            == "stale_session"
         ):
             raise ValueError("question_origin_binding_unavailable")
         if self._has_resumable_paused_chat_task(connection, task.project_id, task.kind, chat_id):
@@ -490,8 +512,6 @@ class AgentTaskStoreMixin(StoreMixinBase):
         unavailable = connection.execute(
             """SELECT 1 FROM graph_run_receipts WHERE operation_id=? AND (
             category IN ('experiment_recovery_abandoned', 'auto_research_recovery_abandoned')
-            OR (category='provider_terminal_error'
-                AND json_extract(payload_json,'$.classification')='stale_session')
             OR (category='continuation_context_unavailable'
                 AND json_extract(payload_json,'$.retry_required')=1)) LIMIT 1""",
             (task.operation_id,),
@@ -843,7 +863,11 @@ class AgentTaskStoreMixin(StoreMixinBase):
         return questions
 
     def create_artifact_edit_task(
-        self, record: AgentTaskRecord, *, continuation_cause: str = "fresh"
+        self,
+        record: AgentTaskRecord,
+        *,
+        continuation_cause: str = "fresh",
+        limit_auto_resume: bool = False,
     ) -> AgentTaskRecord:
         """Admit a file edit without spending or changing its episode."""
 
@@ -862,6 +886,15 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     "Another task is already active in this conversation."
                 )
             self._insert_agent_task(connection, record, continuation_cause=continuation_cause)
+            if limit_auto_resume:
+                self._insert_agent_task_receipt(
+                    connection,
+                    record.operation_id,
+                    "limit_auto_resume",
+                    "{}",
+                    tier="summary",
+                    created_at=record.created_at,
+                )
             edit = record.request.get("artifact_edit")
             reply_episode_id = edit.get("reply_episode_id") if isinstance(edit, dict) else None
             if reply_episode_id is not None:
@@ -2179,8 +2212,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
         request = json.loads(row["request_json"])
         return {key: request.get(key) for key in ("run_on", *_WAKE_FOLLOWS_CHAT)}
 
-    @staticmethod
-    def _dropped_chat_session_reason(row: sqlite3.Row) -> str | None:
+    def _dropped_chat_session_reason(
+        self, connection: sqlite3.Connection, row: sqlite3.Row
+    ) -> str | None:
         """Why the provider can no longer continue this row's session, when it cannot.
 
         The classification Retry uses to refuse resuming a dropped session, except
@@ -2188,8 +2222,10 @@ class AgentTaskStoreMixin(StoreMixinBase):
         itself can still continue.
         """
 
-        classification = classify_terminal_error(row["error"] or "")
-        if row["session_dropped"] == "session_stale" or classification == "stale_session":
+        classification = self.failure_classification(
+            row["operation_id"], row["error"] or "", connection=connection
+        )
+        if classification == "stale_session":
             return "session_stale"
         return row["session_dropped"]
 
@@ -2216,7 +2252,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
             or not all(json.loads(row["request_json"]).get(key) for key in ("provider", "run_on"))
         ):
             raise ValueError("The source chat turn has no settled, usable native session.")
-        if self._dropped_chat_session_reason(row) is not None:
+        if self._dropped_chat_session_reason(connection, row) is not None:
             raise ChatForkRefused("chat_session_expired")
         return row
 
@@ -2226,9 +2262,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
         """Read the latest binding, never looking back past an unusable session."""
         with self.connection() as connection:
             row = self._current_chat_session_row(connection, project_id, kind, chat_id)
-        if row is None:
-            return None
-        dropped = self._dropped_chat_session_reason(row)
+            if row is None:
+                return None
+            dropped = self._dropped_chat_session_reason(connection, row)
         data = dict(row)
         data.pop("session_dropped")
         current = self._agent_task_record(data)
@@ -2281,7 +2317,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         # A session the provider already dropped cannot continue here either.
         if binding["recovery_abandoned"]:
             return "session_recovery_abandoned", None
-        if (dropped := self._dropped_chat_session_reason(binding)) is not None:
+        if (dropped := self._dropped_chat_session_reason(connection, binding)) is not None:
             return dropped, None
         previous = json.loads(binding["request_json"])
         reason = native_session_profile_reason(previous, record.request)
@@ -2584,7 +2620,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
                         reason = "session_history_only"
                     elif current["recovery_abandoned"]:
                         reason = "session_recovery_abandoned"
-                    elif (dropped := self._dropped_chat_session_reason(current)) is not None:
+                    elif (
+                        dropped := self._dropped_chat_session_reason(connection, current)
+                    ) is not None:
                         reason = dropped
                     elif not current["stage_root"]:
                         reason = "session_stage_unavailable"
@@ -4635,6 +4673,25 @@ class AgentTaskStoreMixin(StoreMixinBase):
             """,
             (operation_id, operation_id, AGENT_TASK_EVENT_RETENTION_COUNT),
         )
+
+    def failure_classification(
+        self,
+        operation_id: str,
+        error: str = "",
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> str:
+        if connection is None:
+            with self.connection() as active:
+                return self.failure_classification(operation_id, error, connection=active)
+        receipt = connection.execute(
+            "SELECT payload_json FROM graph_run_receipts WHERE operation_id=? "
+            "AND category='provider_terminal_error' ORDER BY receipt_id DESC LIMIT 1",
+            (operation_id,),
+        ).fetchone()
+        if receipt is not None:
+            return str(json.loads(receipt[0]).get("classification", "provider_error"))
+        return classify_terminal_error(error)
 
     def agent_task_receipts(
         self, operation_id: str, *, limit: int = AGENT_TASK_RECEIPT_LIST_LIMIT
@@ -7170,9 +7227,6 @@ _SESSION_DROP_COLUMNS = """
                 SELECT 1 FROM provider_session_sweeps AS sweep
                 WHERE sweep.native_session_id = run.native_session_id
             ) THEN 'session_swept'
-            WHEN SUM(receipt.category = 'provider_terminal_error'
-                     AND json_extract(receipt.payload_json, '$.classification')
-                         = 'stale_session') THEN 'session_stale'
             WHEN SUM(receipt.category = 'continuation_context_unavailable'
                      AND json_extract(receipt.payload_json, '$.retry_required') = 1)
                 THEN 'session_context_unavailable'

@@ -169,14 +169,9 @@ def test_work_tools_and_exact_write_roots(tmp_path, capability):
     assert {rule for rule in allows if rule.startswith("write_file(")} == {
         f"write_file({root})" for root in expected if root != str(tmp_path)
     }
+    assert "--agent" not in turn.command and "--rcp-agy-tools" not in turn.command
     subprocess.run(_wrapped(turn.command), cwd=tmp_path, check=True, capture_output=True)
-    agent = next((tmp_path / ".agents" / "agents").glob("rcp-*.md"))
-    tools = json.loads(agent.read_text().split("tools: ")[1].splitlines()[0])
-    assert {"run_command", "command_status", "send_command_input", "invoke_subagent"} <= set(tools)
-    known = json.loads((FIXTURES / "success_two_turns.jsonl").read_text().splitlines()[0])["init"][
-        "tools"
-    ]
-    assert set(tools) <= set(known)
+    assert not (tmp_path / ".agents" / "agents").exists()
 
 
 def test_discuss_client_gate_grants_no_shell(tmp_path):
@@ -358,9 +353,9 @@ def test_profile_commands_leave_wrapping_to_authentication(tmp_path):
         AGY.runtime(AGY.legacy_runtime_id).turn(replace(request(tmp_path), binary=binary)).command,
     ]
     assert all(command[0] == binary and command.count(binary) == 1 for command in commands)
-    for command in commands[-2:]:
-        tools = json.loads(command[command.index("--rcp-agy-tools") + 1])
-        assert "view_file" in tools
+    tools = json.loads(commands[-1][commands[-1].index("--rcp-agy-tools") + 1])
+    assert "view_file" in tools
+    assert "--rcp-agy-tools" not in commands[-2] and "--agent" not in commands[-2]
 
 
 @pytest.mark.parametrize("capability", ["work_auto", "orchestrate"])
@@ -415,8 +410,8 @@ def test_staged_tools_are_names_the_custom_agent_registry_accepts():
     from rcp.providers.agy.profile import _tools
 
     accepted = set(json.loads((FIXTURES / "agent_registry_tools.json").read_text()))
-    for capability in ("work_auto", "orchestrate", "discuss"):
-        assert set(_tools(capability)) <= accepted
+    assert set(_tools("discuss") or ()) <= accepted
+    assert _tools("work_auto") is None and _tools("orchestrate") is None
 
 
 def _injected_two_turns() -> list[str]:

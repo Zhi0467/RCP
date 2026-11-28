@@ -12,6 +12,7 @@ import stat
 import subprocess
 import threading
 import time
+from collections import Counter
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
 from concurrent.futures import Future
 from contextlib import aclosing, contextmanager, suppress
@@ -69,7 +70,12 @@ from rcp.providers import (
     ProviderUsage,
     profile_for,
 )
-from rcp.providers.base import AgentStatusDelta, ProviderRuntimeStep, ProviderStreamEvent
+from rcp.providers.base import (
+    AgentStatusDelta,
+    ProviderRuntimeStep,
+    ProviderStreamEvent,
+    compaction_failed_text,
+)
 from rcp.providers.browser_grant import BrowserGrant
 from rcp.storage.models import (
     MACHINE_LOGIN_ID,
@@ -128,6 +134,7 @@ class ProviderReadiness(BaseModel):
     version: str | None = None
     reason: str | None = None
     update_warning: str | None = None
+    updating: bool = False
     #: None means the profile has no work-like probe or it could not be checked.
     work_like_available: bool | None = None
     work_like_reason: str | None = None
@@ -201,6 +208,7 @@ class AgentEvent(BaseModel):
     # the reply.
     event: Literal[
         "session",
+        "rate_limit",
         "message",
         "answer",
         "artifact",
@@ -228,6 +236,7 @@ class AgentEvent(BaseModel):
     text: str = ""
     session_id: str | None = None
     artifact: AgentArtifactDescriptor | None = None
+    rate_limit: dict[str, object] | None = None
     usage: ProviderUsage | None = None
     status: AgentStatusDelta | None = None
     #: Typed cause on an `error` the launcher can name itself. Set only for a
@@ -752,7 +761,9 @@ class AgentLauncher:
         self._readiness_probes: dict[tuple[str, str, str | None, str, bool], _ReadinessProbe] = {}
         self._readiness_generations: dict[tuple[str, str, str | None, str], int] = {}
         self._update_warnings: dict[tuple[str, str], str] = {}
-        self._updating_providers: set[str] = set()
+        self._updating_providers: set[tuple[str, str]] = set()
+        self._provider_sign_ins: Counter[tuple[str, str]] = Counter()
+        self._active_readiness_probes: Counter[tuple[str, str]] = Counter()
         #: Shared so every process that can rotate this login is staggered,
         #: not only task turns.
         self.credential_gate = ProviderCredentialGate()
@@ -803,16 +814,72 @@ class AgentLauncher:
         return profile_for(login.provider).credential_failure(evidence)
 
     @contextmanager
-    def provider_update(self, provider: str) -> Iterator[None]:
-        """Hold back new local launches of `provider` while its CLI is updated."""
+    def provider_update(
+        self, provider: str, machine_id: str = BACKEND_MACHINE_ID
+    ) -> Iterator[None]:
+        """Try to hold new launches while this machine's provider CLI is updated."""
+        from rcp.server_ops.provider_update import ProviderUpdateRefused
 
+        key = (provider, machine_id)
         with self._readiness_lock:
-            self._updating_providers.add(provider)
+            if key in self._updating_providers:
+                raise ProviderUpdateRefused("Already updating.")
+            if self._provider_sign_ins.get(key, 0):
+                raise ProviderUpdateRefused("A provider sign-in is in progress.")
+            if self._active_readiness_probes.get(key, 0):
+                raise ProviderUpdateRefused("A provider readiness probe is in progress.")
+            self._updating_providers.add(key)
         try:
             yield
         finally:
             with self._readiness_lock:
-                self._updating_providers.discard(provider)
+                self._updating_providers.remove(key)
+
+    @contextmanager
+    def provider_sign_in(self, provider: str, machine_id: str) -> Iterator[None]:
+        """Keep credential changes and CLI updates mutually exclusive."""
+        from rcp.server_ops.provider_update import ProviderUpdateRefused
+
+        key = (provider, machine_id)
+        with self._readiness_lock:
+            if key in self._updating_providers:
+                raise ProviderUpdateRefused("Updating.")
+            self._provider_sign_ins[key] += 1
+        try:
+            yield
+        finally:
+            with self._readiness_lock:
+                self._provider_sign_ins[key] -= 1
+
+    def provider_updating(self, provider: str, machine_id: str) -> bool:
+        with self._readiness_lock:
+            return (provider, machine_id) in self._updating_providers
+
+    async def _wait_for_provider_update(self, provider: str, machine_id: str) -> None:
+        while self.provider_updating(provider, machine_id):
+            await asyncio.sleep(PROVIDER_UPDATE_LAUNCH_POLL_SECONDS)
+
+    def _updating_readiness(
+        self, login: LoginKey, key: tuple[str, str, str | None, str]
+    ) -> ProviderReadiness:
+        cached = self._readiness_cache.get(key)
+        readiness = (
+            cached.model_copy(deep=True)
+            if cached is not None
+            else ProviderReadiness(
+                provider=login.provider,
+                label=profile_for(login.provider).label,
+                installed=False,
+                authenticated=False,
+                reason="Authentication has not been checked while updating.",
+            )
+        )
+        return readiness.model_copy(
+            update={
+                "updating": True,
+                "update_warning": self._update_warnings.get((login.provider, login.machine_id)),
+            }
+        )
 
     def set_update_warning(self, provider: str, machine_id: str, warning: str | None) -> None:
         """Record or clear why the last automatic CLI update on the machine failed."""
@@ -842,7 +909,10 @@ class AgentLauncher:
         """
 
         key = self._readiness_key(login, binary)
+        provider_key = (login.provider, login.machine_id)
         with self._readiness_lock:
+            if provider_key in self._updating_providers:
+                return self._updating_readiness(login, key)
             if not refresh and (cached := self._readiness_cache.get(key)) is not None:
                 return self._with_login_state(cached.model_copy(deep=True), login)
             forced_key = (*key, True)
@@ -859,6 +929,7 @@ class AgentLauncher:
                     self._readiness_cache.pop(key, None)
                     self._readiness_generations[key] = self._readiness_generations.get(key, 0) + 1
                 self._readiness_probes[probe_key] = probe
+                self._active_readiness_probes[provider_key] += 1
             generation = self._readiness_generations.get(key, 0)
 
         if not owner:
@@ -874,10 +945,14 @@ class AgentLauncher:
             with self._readiness_lock:
                 if self._readiness_generations.get(key, 0) == generation:
                     self._readiness_cache.pop(key, None)
-                self._readiness_probes.pop(probe_key, None)
+                if self._readiness_probes.get(probe_key) is probe:
+                    self._readiness_probes.pop(probe_key, None)
                 probe.error = exc
                 probe.completed.set()
             raise
+        finally:
+            with self._readiness_lock:
+                self._active_readiness_probes[provider_key] -= 1
 
         with self._readiness_lock:
             # A host that did not answer is a fact about one moment, not about
@@ -889,7 +964,8 @@ class AgentLauncher:
             ):
                 self._readiness_cache[key] = result.model_copy(deep=True)
             probe.result = result.model_copy(deep=True)
-            self._readiness_probes.pop(probe_key, None)
+            if self._readiness_probes.get(probe_key) is probe:
+                self._readiness_probes.pop(probe_key, None)
             probe.completed.set()
         return self._with_login_state(result, login)
 
@@ -907,6 +983,8 @@ class AgentLauncher:
     ) -> ProviderReadiness:
         """Probe the login admission would select, without assigning a turn."""
         login = LoginKey(provider, machine_id, MACHINE_LOGIN_ID)
+        if self.provider_updating(provider, machine_id):
+            return self.readiness(lineage_login or login, binary=binary)
         if self.accounts is not None:
             resolved, _ = self.accounts.resolve_launch_login(
                 provider,
@@ -934,10 +1012,24 @@ class AgentLauncher:
 
         key = self._readiness_key(login, binary)
         with self._readiness_lock:
+            if (login.provider, login.machine_id) in self._updating_providers:
+                return self._updating_readiness(login, key)
             cached = self._readiness_cache.get(key)
         return (
             None if cached is None else self._with_login_state(cached.model_copy(deep=True), login)
         )
+
+    def invalidate_provider_readiness(self, provider: str, machine_id: str) -> None:
+        """Forget every login and executable affected by this machine's CLI update."""
+        with self._readiness_lock:
+            keys = set(self._readiness_cache) | set(self._readiness_generations)
+            keys.update(probe[:4] for probe in self._readiness_probes)
+            for key in keys:
+                if key[0] == provider and key[1].partition("\0")[0] == machine_id:
+                    self._readiness_cache.pop(key, None)
+                    self._readiness_generations[key] = self._readiness_generations.get(key, 0) + 1
+                    self._readiness_probes.pop((*key, False), None)
+                    self._readiness_probes.pop((*key, True), None)
 
     def invalidate_readiness(self, login: LoginKey, *, binary: str | None = None) -> None:
         """Forget one exact capability without disturbing other projects."""
@@ -1242,6 +1334,7 @@ class AgentLauncher:
         browser_grant: BrowserGrant | None = None,
         hidden_read_scope: HiddenReadScope | None = None,
         shell_timeout_seconds: int | None | EllipsisType = ...,
+        compact_first: bool = False,
     ) -> AsyncGenerator[AgentEvent, None]:
         """Run the preferred provider runtime, falling back only before prompt delivery.
 
@@ -1253,6 +1346,7 @@ class AgentLauncher:
         held.
         """
 
+        await self._wait_for_provider_update(provider, machine_id)
         if fork_session_id and (
             session_id or not fork_source_cwd or (host and not supervise_remote)
         ):
@@ -1273,6 +1367,15 @@ class AgentLauncher:
         if shell_timeout_seconds is ...:
             shell_timeout_seconds = self.shell_timeout_seconds(provider, machine_id)
         runtimes = profile_for(provider).runtime_candidates(runtime_id)
+        compact_first = compact_first and session_id is not None
+        if compact_first:
+            runtimes = runtimes[:1]
+            if not runtimes[0].supports_compact_first:
+                yield AgentEvent(
+                    event="error",
+                    text=compaction_failed_text(f"{runtimes[0].id} cannot compact on demand"),
+                )
+                return
         autocompact = self._autocompact(provider, machine_id)
         # Display only (invariant 4b): the panel's compaction mark, when the
         # machine pins a token count rather than the provider's own default.
@@ -1329,6 +1432,7 @@ class AgentLauncher:
                         browser_grant=browser_grant,
                         hidden_read_scope=hidden_read_scope,
                         shell_timeout_seconds=shell_timeout_seconds,
+                        compact_first=compact_first,
                     )
                 ) as stream:
                     async for event in stream:
@@ -1387,7 +1491,9 @@ class AgentLauncher:
         browser_grant: BrowserGrant | None = None,
         hidden_read_scope: HiddenReadScope | None = None,
         shell_timeout_seconds: int | None = None,
+        compact_first: bool = False,
     ) -> AsyncGenerator[AgentEvent, None]:
+        await self._wait_for_provider_update(provider, machine_id)
         if control is not None and control.pause_requested.is_set():
             yield AgentEvent(event="paused", text="Paused before the provider started.")
             return
@@ -1501,6 +1607,7 @@ class AgentLauncher:
                     hidden_read_scope=hidden_read_scope,
                     autocompact=autocompact,
                     shell_timeout_seconds=shell_timeout_seconds,
+                    compact_first=compact_first,
                 )
             )
         except (OSError, RuntimeError, ValueError) as exc:
@@ -1617,8 +1724,6 @@ class AgentLauncher:
                 credential_hold.release()
                 raise
         try:
-            while not host and provider in self._updating_providers:
-                await asyncio.sleep(PROVIDER_UPDATE_LAUNCH_POLL_SECONDS)
             process = await asyncio.create_subprocess_exec(
                 *command,
                 cwd=local_cwd,
@@ -1864,6 +1969,7 @@ class AgentLauncher:
                         text=decoded.text,
                         session_id=decoded.session_id,
                         usage=decoded.usage,
+                        rate_limit=decoded.rate_limit,
                         status=decoded.status,
                     )
                     event_counts[event.event] = event_counts.get(event.event, 0) + 1
@@ -2236,6 +2342,7 @@ class AgentLauncher:
         command: list[str],
         *,
         login_shell: bool = True,
+        stdin: str = "",
         timeout: float = 10,
         environment: ProviderProcessEnvironment | None = None,
     ) -> subprocess.CompletedProcess[str]:
@@ -2255,7 +2362,7 @@ class AgentLauncher:
                 arguments,
                 capture_output=True,
                 text=True,
-                input="",
+                input=stdin,
                 # A timeout kills the probe; never inside the credential hold.
                 timeout=max(timeout, PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS),
                 check=False,

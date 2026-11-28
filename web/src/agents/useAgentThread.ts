@@ -155,6 +155,7 @@ function threadTurnRequest(submission: ConversationTurnSubmission): AgentThreadT
   return {
     message: submission.message.trim(),
     ...submission.attachments,
+    ...(submission.compactFirst ? { compact_first: true } : {}),
     ...(submission.commentThreadIds?.length
       ? { comment_thread_ids: [...submission.commentThreadIds] }
       : {}),

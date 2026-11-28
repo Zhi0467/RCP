@@ -1043,6 +1043,7 @@ class RunRequest(BaseModel):
     )
 
     browser_requested: bool = False
+    compact_first: bool = Field(default=False, exclude_if=lambda value: not value)
     timezone: str | None = Field(default=None, exclude_if=lambda value: value is None)
     source: ChatMessageSource | None = Field(default=None, exclude_if=lambda value: value is None)
     handoff_report: HandoffReport | None = Field(

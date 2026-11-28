@@ -39,6 +39,7 @@ import { ReplyLinkButton } from "../core/ReplyLinkButton";
 import { CHAT_USER_MESSAGE_COLLAPSE_THRESHOLD, THREAD_TIME_GAP_MINUTES } from "../core/uiConstants";
 import { MarkdownAnswer } from "../core/chatMarkdown";
 import { TaskActionButton } from "../agents/taskActions";
+import { LimitTaskRow } from "../agents/LimitTaskRow";
 import { BrowserTurnNotice } from "../core/BrowserControls";
 import { ArtifactCommentQuotes, artifactCommentLead } from "../chat/ArtifactCommentQuotes";
 import { SentAttachments } from "../chat/SentAttachments";
@@ -100,6 +101,7 @@ interface Props {
   repairErrors?: Map<string, string>;
   onResumeTask?: (task: AgentTask) => void;
   onRetryTask?: (task: AgentTask) => void;
+  onDeclineLimitResume?: (task: AgentTask) => Promise<void>;
   onInspectTask?: (taskId: string) => void;
   onOpenInbox?: () => void;
   onRepairGraphUpdate?: (taskId: string, action?: GraphUpdateRecovery) => Promise<void>;
@@ -149,6 +151,7 @@ export function AgentWindowTranscript({
   repairErrors = NO_ERRORS,
   onResumeTask,
   onRetryTask,
+  onDeclineLimitResume,
   onInspectTask,
   onOpenInbox,
   onRepairGraphUpdate,
@@ -261,6 +264,13 @@ export function AgentWindowTranscript({
           isNewestOfTurnClass(task, relatedTasks)
             ? task
             : null;
+        const limitLineTask =
+          line.role === "error" &&
+          task?.limit_reset &&
+          !continuedTaskIds.has(task.operation_id) &&
+          isNewestOfTurnClass(task, relatedTasks)
+            ? task
+            : null;
         const pendingLine = line.role === "human" && pendingTurn?.clientId === line.taskId;
         const failedTurn = pendingLine && pendingTurn?.error ? pendingTurn : null;
         const collapsible =
@@ -286,7 +296,7 @@ export function AgentWindowTranscript({
               </div>
             )}
             <div
-              className={`agent-chat-view-line ${lineClassName?.(line) ?? line.role}${failedTurn ? " unsent" : ""}`}
+              className={`agent-chat-view-line ${limitLineTask ? "limit" : (lineClassName?.(line) ?? line.role)}${failedTurn ? " unsent" : ""}`}
               data-source={line.source ?? undefined}
               data-task-id={line.taskId}
               data-time-shown={timeShownIds.has(line.lineId) ? "" : undefined}
@@ -410,10 +420,19 @@ export function AgentWindowTranscript({
                     ) : null}
                   </>
                 ))
+              ) : limitLineTask?.limit_reset ? (
+                <LimitTaskRow
+                  task={limitLineTask}
+                  limit={limitLineTask.limit_reset}
+                  disabled={readOnly}
+                  onResume={() => onResumeTask?.(limitLineTask)}
+                  onRetry={() => onRetryTask?.(limitLineTask)}
+                  onDecline={() => onDeclineLimitResume?.(limitLineTask) ?? Promise.resolve()}
+                />
               ) : pausedLineTask ? null : (
                 <span className="agent-chat-view-text">{line.text}</span>
               )}
-              {retryLineTask && onRetryTask && (
+              {retryLineTask && !limitLineTask && onRetryTask && (
                 <button
                   type="button"
                   className="icon-button chat-error-retry"
@@ -707,9 +726,10 @@ export function InlineTaskProgress({
         .filter((command) => command.seconds === null)
         .at(-1)
     : undefined;
-  const label =
-    running?.text ??
-    (task ? task.status_message || `${taskKindLabel(task.kind)} is running` : "Starting turn");
+  const label = task?.agent_status?.compacting
+    ? "Compacting context"
+    : (running?.text ??
+      (task ? task.status_message || `${taskKindLabel(task.kind)} is running` : "Starting turn"));
   return (
     <>
       {task && <TurnProgress task={task} live />}

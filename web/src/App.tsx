@@ -329,6 +329,7 @@ import type {
 import { decodeProjectTransitionResponse, DISPLAY_NAME_MAX_LENGTH } from "./core/types";
 import { ProjectLanding } from "./projects/ProjectLanding";
 import { SpaceSettings, type SpaceSettingsSectionId } from "./projects/SpaceSettings";
+import { OpenMachineSettingsContext } from "./chat/CompactOfferDialog";
 import { FeedbackButton } from "./feedback/FeedbackButton";
 import { LandingIdentityMenu } from "./projects/LandingIdentityMenu";
 import { ProjectOverview } from "./projects/ProjectOverview";
@@ -1027,6 +1028,7 @@ function MemberApp({
       openSpaceSettings("machines", { provider: state.provider, machine_id: state.machine_id }),
     [openSpaceSettings],
   );
+  const openMachineSettings = useCallback(() => openSpaceSettings("machines"), [openSpaceSettings]);
   // Space settings is a page over the current route; any navigation leaves it.
   useEffect(() => setSpaceSettings(null), [projectId, setupOpen]);
   useEffect(() => closeArtifactViewer(), [projectId]);
@@ -5180,6 +5182,7 @@ function MemberApp({
   return createElement(
     GraphMarkProviders,
     {
+      openMachineSettings,
       flags: {
         nodeIds: flaggedNodeIds,
         onOpenInbox: () => {
@@ -6181,20 +6184,25 @@ function MemberApp({
   );
 }
 
-/** Graph marks every surface reads: open Evidence flags and stale assessments. */
+/** What every surface reads from the root: open Evidence flags, stale assessments,
+ *  and the way to Machines settings. */
 function GraphMarkProviders({
   flags,
   staleEdges,
+  openMachineSettings,
   children,
 }: {
   flags: ComponentProps<typeof EvidenceFlagProvider>;
   staleEdges: ComponentProps<typeof StaleEdgeProvider>;
+  openMachineSettings: () => void;
   children?: ReactNode;
 }) {
   return (
-    <EvidenceFlagProvider {...flags}>
-      <StaleEdgeProvider {...staleEdges}>{children}</StaleEdgeProvider>
-    </EvidenceFlagProvider>
+    <OpenMachineSettingsContext.Provider value={openMachineSettings}>
+      <EvidenceFlagProvider {...flags}>
+        <StaleEdgeProvider {...staleEdges}>{children}</StaleEdgeProvider>
+      </EvidenceFlagProvider>
+    </OpenMachineSettingsContext.Provider>
   );
 }
 

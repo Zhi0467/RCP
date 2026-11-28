@@ -120,8 +120,8 @@ state remains in that account's home, outside protected backups. The random
 installation identity is distinct from space and member identities.
 
 Provider updates run the native updater as the service account. They refuse,
-before changing anything, while a backend agent turn running that provider is
-running or pausing. An unreadable database does not block them. They never
+before changing anything, while a backend agent turn using that provider is
+queued, running or pausing. An unreadable database does not block them. They never
 collect credentials. They verify the updated executable and version. Login
 readiness is checked separately in Settings Sign-ins and provider readiness.
 Discovery saves stable command paths rather than resolved versioned symlinks.
@@ -129,19 +129,56 @@ Product login behavior belongs to
 [Providers and containment](providers-and-containment.md#login-state-and-failure). Operator actions belong to
 [server.md](../server.md#11-provider-authentication).
 
-A team backend runs the same native update itself once a day
-(`PROVIDER_AUTO_UPDATE_INTERVAL_SECONDS`), as the service account and without
-root, from
-[provider_auto_update.py](../../src/rcp/runs/provider_auto_update.py). It
-covers only the backend machine, and updates the executable its card names,
-else the discovered one, only when it lies inside the account's home. A
-provider with a backend turn running, pausing or queued waits for the next
-pass. While a provider updates, new local launches of it wait, so no turn
-starts between that check and the update. A failed update changes nothing else: the installed version keeps
-running and the reason is the provider's `update_warning` in machine-card
-readiness until an update succeeds. The warning is process memory, so a restart
-clears it until the next pass. A changed version re-probes that provider's
-readiness.
+### In-app provider updates
+
+Each provider row's ⋯ menu holds Resolve and Update. Update starts a native CLI
+update on that machine; while it runs, the row's tag reads Updating and the menu
+becomes a spinner, and a failure shows as the row's Update failed tag. On a phone,
+the name, tag and menu share one line above the path. In a team
+space, the caller must be a member allowed to edit the machine card; in a personal
+space, the owner may update it. The update POST acknowledges acceptance with 202.
+The row polls the machine card until
+`readiness.updating` is false, then displays the card's readiness and update warning.
+
+The daily backend pass and on-demand updates share
+[update_provider](../../src/rcp/runs/provider_auto_update.py). The daily pass runs
+once per `PROVIDER_AUTO_UPDATE_INTERVAL_SECONDS`, without root, and skips missing
+installations and executables outside the account home. On-demand updates report
+those failures. Both use the machine card's configured executable, or discover one
+when no path is configured. Native updates may change a stable command path's target;
+verification probes that same selected path, so another installation cannot supply
+the reported version.
+
+[UpdateTarget](../../src/rcp/server_ops/provider_update.py) owns command execution,
+discovery and installer staging. The local target uses the account environment and
+checks staging directory ownership and permissions. The remote target uses the
+machine's SSH transport as its OS account (discovering that account through the saved
+route when the card omits it), discovers its home and executable there,
+and creates and verifies a private directory under `~/.rcp/tmp`. Removal is limited
+to that created directory. Provider profiles stay on the backend: only plain
+command argv crosses SSH for maintenance. Remote agy maintenance disables browser
+opening directly, without its ordinary RCP launch wrapper. An executable is refused
+unless both its path and its resolved symlink target lie inside the target account's
+resolved home.
+
+A try-acquire hold is keyed by provider and machine. A second update is refused;
+inside the hold, queued, running and pausing turns on that pair are counted and
+refuse the update with their count. A captured stage determines the machine; before
+staging, the saved execution target resolves through the ordinary launch rules.
+The API returns 409 for either refusal. New
+local and remote launches wait before readiness, credential resolution, argv
+construction or a remote-start event. The updater's own commands bypass that wait.
+Readiness and login probes return cached readiness marked `updating`, ignoring
+refresh; without a cache they return minimal readiness with unknown authentication.
+Sign-ins are refused during the hold, and an update is refused while sign-in or
+credential verification or readiness probes on that pair are active, including
+probes whose cache generation was invalidated. Admission is atomic in both
+directions.
+
+Success clears the in-memory `update_warning`, invalidates readiness for all logins
+on that provider and machine, and refreshes readiness without reusing pre-update probes. Failure sets
+the warning with the reason. The warning lasts until a successful update or process
+restart. The update does not collect credentials or change login assignments.
 
 **Why:** a native updater needs only the account that installed the CLI, so
 keeping it current should not wait for an operator or for an RCP update.

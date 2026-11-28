@@ -72,6 +72,7 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("POST",), "/api/project-invitations/{invitation_id}/{response}"),
     (("GET",), "/api/providers"),
     (("GET",), "/api/providers/logins"),
+    (("POST",), "/api/space/machines/{machine_id}/providers/{provider}/update"),
     (("GET",), "/api/providers/logins/settings"),
     (("PUT",), "/api/providers/{provider}/logins/setting"),
     (("POST",), "/api/providers/{provider}/logins/add"),
@@ -116,6 +117,10 @@ _FROZEN_ROUTE_INVENTORY: tuple[RouteEntry, ...] = (
     (("DELETE",), "/api/agent-threads/{thread_id}/queue/{queue_id}"),
     (("POST",), "/api/agent-threads/{thread_id}/tasks/{operation_id}/pause"),
     (("POST",), "/api/agent-threads/{thread_id}/tasks/{operation_id}/resume"),
+    (("POST",), "/api/agent-threads/{thread_id}/tasks/{operation_id}/limit-resume/decline"),
+    (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/limit-resume/decline"),
+    (("GET",), "/api/providers/limit-resume"),
+    (("PUT",), "/api/providers/limit-resume"),
     (("POST",), "/api/agent-threads/{thread_id}/tasks/{operation_id}/retry"),
     (("POST",), "/api/agent-threads/{thread_id}/tasks/{operation_id}/steer"),
     (("GET",), "/api/agent-threads/{thread_id}/artifact-list"),
@@ -427,6 +432,7 @@ _LEGACY_AGENT_ROUTES: frozenset[RouteEntry] = frozenset(
         (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/steer"),
         (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/pause"),
         (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/resume"),
+        (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/limit-resume/decline"),
         (("POST",), "/api/projects/{project_id}/tasks/{operation_id}/retry"),
         (("GET",), "/api/projects/{project_id}/watchers"),
         (("POST",), "/api/projects/{project_id}/watchers/{watcher_id}/cancel"),
@@ -454,7 +460,7 @@ def test_no_new_agent_action_lives_under_two_prefixes(route_app: FastAPI) -> Non
     inventory = frozenset(_route_entry(route) for route in _walk_routes(route_app.routes))
     assert not _duplicated_agent_actions(inventory)
     assert inventory >= _LEGACY_AGENT_ROUTES, "delete the retired aliases"
-    assert len(_LEGACY_AGENT_ROUTES) <= 25
+    assert len(_LEGACY_AGENT_ROUTES) <= 26
 
 
 @pytest.mark.parametrize("action", ["turns", "queue", "archive", "fork", "stop-and-send"])
@@ -468,12 +474,12 @@ def test_agent_route_guard_rejects_new_copies(action: str) -> None:
     assert _duplicated_agent_actions(inventory) == frozenset({("POST", f"/{action}")})
 
 
-@pytest.mark.parametrize("action", ["pause", "resume", "retry", "steer"])
+@pytest.mark.parametrize("action", ["pause", "resume", "retry", "steer", "limit-resume/decline"])
 def test_legacy_turn_control_is_the_canonical_handler(route_app: FastAPI, action: str) -> None:
     handlers = {
         route.path: route.endpoint
         for route in _walk_routes(route_app.routes)
-        if isinstance(route, APIRoute) and "POST" in route.methods
+        if isinstance(route, APIRoute) and route.methods is not None and "POST" in route.methods
     }
     canonical = f"/api/agent-threads/{{thread_id}}/tasks/{{operation_id}}/{action}"
     legacy = f"/api/projects/{{project_id}}/tasks/{{operation_id}}/{action}"
@@ -509,8 +515,8 @@ def test_frozen_route_inventory(route_app: FastAPI) -> None:
     entries = tuple(_route_entry(route) for route in routes)
 
     assert len(entries) == len(_FROZEN_ROUTE_INVENTORY)
-    assert len(_FROZEN_ROUTE_INVENTORY) == 356
+    assert len(_FROZEN_ROUTE_INVENTORY) == 361
     assert frozenset(entries) == frozenset(_FROZEN_ROUTE_INVENTORY)
 
-    assert sum(isinstance(route, APIRoute) for route in routes) == 352
+    assert sum(isinstance(route, APIRoute) for route in routes) == 357
     assert len(routes) - sum(isinstance(route, APIRoute) for route in routes) == 4

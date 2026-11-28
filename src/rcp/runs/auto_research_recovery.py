@@ -220,14 +220,7 @@ def _recoverable_failure(
         for receipt in receipts
     ):
         return "continuation_unavailable", "clean" if request.role == "orchestrator" else "exact"
-    terminal = next(
-        (
-            receipt.payload.get("classification")
-            for receipt in reversed(receipts)
-            if receipt.category == "provider_terminal_error"
-        ),
-        None,
-    )
+    terminal = store.failure_classification(operation_id, task.error or "" if task else "")
     if terminal == "session_limit":
         # A reached limit keeps its session; the recovery resumes it exactly.
         return "session_limit", "exact"

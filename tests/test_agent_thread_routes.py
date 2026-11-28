@@ -549,7 +549,12 @@ def test_space_retry_and_resume_honour_the_request_key(manifest, tmp_path, monke
     app = create_named_app(str(manifest.path), data_dir=tmp_path / "data")
     tasks = app.state.background_tasks
     fake_launch_admitted(monkeypatch, tasks)
-    monkeypatch.setattr(tasks, "resume", tasks.retry)
+
+    def resume(operation_id, *, skills=None, authorized_by=None, limit_auto_resume=False):
+        assert not limit_auto_resume
+        return tasks.retry(operation_id, skills=skills, authorized_by=authorized_by)
+
+    monkeypatch.setattr(tasks, "resume", resume)
     with signed_in_client(app) as client:
         thread = client.get("/api/agent-threads").json()["threads"][0]
         base = "/api/agent-threads/" + thread["thread_id"]

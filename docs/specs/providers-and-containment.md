@@ -238,6 +238,25 @@ turn or becomes its next turn. Exec, including a pre-prompt fallback, cannot
 receive input. The backend publishes each runtime's action label and refusal
 reason.
 
+### Compact first
+
+A chat turn whose request sets `compact_first` compacts its resumed native
+session before the message. Codex app-server sends `thread/compact/start`, which
+runs as its own provider turn, and starts the message's turn when that turn
+completes. Claude stream-json and Antigravity write `/compact` as the first
+stream-json input and write the message when its result arrives; Claude's
+result names the input and says `local_command: "compact"`. Antigravity reports
+no compaction event, so its runtime reports a manual compaction itself, and its
+compaction `checkpoint` step counts as usage. The compaction input starts the
+turn, so the launch never falls back to another runtime. A runtime that cannot
+compact (Codex exec, OpenCode) fails the turn instead. A failed compaction ends
+the turn with `Compaction failed: … Your message was not sent.` and the message
+is never written. Only a turn's first attempt compacts; Retry and Resume never
+compact again. Each remote turn fence records `compact_first` in its outcome so
+replay reads the first result as the compaction step, not as the answer. A task
+response's `can_compact_first` says whether the runtime that holds its session
+can do this.
+
 ## Cooperative project write containment
 
 Project write scope protects cooperative users from accidental writes. It is
@@ -635,10 +654,13 @@ never reach an RCP launch. Every capability but session summaries runs with
 `--mode accept-edits`; RCP never passes `-p`, `--sandbox`, `--mode auto`,
 `--mode plan`, `--effort` or the skip-permissions flag.
 
-The tool set is a staged agent, `<cwd>/.agents/agents/rcp-<digest>.md`, named by
-a digest of its tools and policy and selected with `--agent`. Work, orchestrate
-and the paper coach get file, web, shell and subagent tools with `command(*)`.
-Discuss and the artifact edit get file and web tools and no shell tools. agy ends a headless turn when it meets an action no rule
+Work, orchestrate and the paper coach run agy's own tool set with `command(*)`
+and no `--agent`, because agy bills a custom-agent request at a higher rate.
+That set includes agy's scheduler and background tools; the shared watcher
+prompt tells every agent that a watcher is its only way to be woken later.
+Discuss and the artifact edit get file and web tools and no shell tools, as a
+staged agent, `<cwd>/.agents/agents/rcp-<digest>.md`, named by a digest of its
+tools and policy and selected with `--agent`. agy ends a headless turn when it meets an action no rule
 allows; RCP shows that as an error naming the refused action. An explicit deny
 instead fails the tool and the turn goes on.
 
@@ -661,7 +683,7 @@ shell; the `.agents` deny keeps an agent from planting a stage hook.
 Every agy process RCP starts runs through one host wrapper, shipped from
 `providers/agy/remote.py`: it puts failing `open`, `xdg-open` and
 `sensible-browser` shims first on `PATH` and in `BROWSER`, then execs agy. For
-turns and the startup probe it also writes the staged agent and adds the host's
+turns and the startup probe it also writes any staged agent and adds the host's
 temp, `provider-homes` and shim-folder denies. A signed-out agy never opens
 a browser on any desktop.
 
@@ -1458,9 +1480,8 @@ a fresh choice. RCP never starts a fresh session on a login change;
 only the human Switch provider does that.
 
 **Why:** Least-recently-used spreads load over shared accounts, and staying put
-keeps the provider's prompt cache. The limit mark only orders choices because RCP
-cannot know when a vendor limit lifts; its lapse,
-`PROVIDER_LOGIN_LIMIT_HINT_SECONDS` (5 hours), is a guess.
+keeps the provider's prompt cache. The limit mark orders choices until its
+[recorded reset](#login-state-and-failure).
 
 | Provider | Machine sign-in | Added login, local | Added login, remote |
 | --- | --- | --- | --- |
@@ -1571,11 +1592,33 @@ a typed `provider_auth` flag; classification never infers that refusal from erro
 an unavailable
 captured generation cannot authorize a new fence.
 
-Settlement marks a login limited from the existing `session_limit` classification.
-A later successful turn or Verify clears the mark; an overlapping older turn
-cannot clear newer evidence. The mark lapses after
-`PROVIDER_LOGIN_LIMIT_HINT_SECONDS`; a continued session still counts a lapsed
-mark on any login other than its previous one. When every allowed login carries
+Settlement marks a login limited from the turn's recorded `provider_terminal_error`
+decision. A later successful turn or Verify clears the mark; an overlapping older
+turn cannot clear newer evidence. The same decision supplies the failed turn's
+reset and the login assignment's `limit_resets_at`; login rows expose that
+decision's `estimated` value as `limit_reset_estimated`.
+Both fresh and continued admission stop treating the login as limited at that reset.
+Clearing the login never clears the turn's receipt.
+
+The last in-turn usage snapshot takes precedence. Without a snapshot, settlement
+probes the turn's login on its execution machine through the same environment and
+transport as login verification: Gemini `/usage` or Codex
+`account/rateLimits/read`; Claude has no probe. Any exhausted Gemini bucket in any
+group, Codex window with `usedPercent >= 100`, or rejected or fully used Claude
+window establishes a limit. Structured evidence overrides error phrases in both
+directions, and the latest reset among exhausted windows governs. With no evidence,
+error phrases classify the failure and Gemini's `Resets in` duration or Codex's
+explicit-zone `try again at` timestamp supplies the reset. Missing resets or resets
+less than `LIMIT_RESET_MIN_SECONDS` after failure use failure time plus
+`PROVIDER_LOGIN_LIMIT_HINT_SECONDS`, marked `estimated`. Waiting and stopped limit
+rows and limited sign-in cards show a clock time only when the reset is not
+estimated. The decision records `source` as `event`, `probe`, or `text`, and
+retains a failed probe's detail when text fallback was needed. All recovery readers
+use the recorded decision, with phrase fallback only for historical turns without
+one. Recorded-result recovery records the same decision when the failure handler
+did not run.
+
+When every allowed login carries
 a live mark, an automatic launch (a watcher wake, a scheduled agent wake, or an
 episode report) is refused at admission like a signed-out one, so its pending
 input waits and the next poll after the earliest mark lapses launches it. A

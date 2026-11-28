@@ -261,7 +261,7 @@ def _end_orchestrator(app, root, stage: Path, *, seed="resumed"):
                 "UPDATE graph_runs SET request_json = ? WHERE operation_id = ?",
                 (json.dumps({**root.request, "provider": "claude"}), root.operation_id),
             )
-        elif seed == "stale":
+        elif seed in {"stale", "stale_superseded"}:
             store._insert_agent_task_receipt(
                 connection,
                 root.operation_id,
@@ -270,10 +270,23 @@ def _end_orchestrator(app, root, stage: Path, *, seed="resumed"):
                 tier="summary",
                 created_at=store.now(),
             )
+            if seed == "stale_superseded":
+                store._insert_agent_task_receipt(
+                    connection,
+                    root.operation_id,
+                    "provider_terminal_error",
+                    store._bounded_receipt_payload(
+                        {"classification": "provider_error", "source": "event"}
+                    ),
+                    tier="diagnostic",
+                    created_at=store.now(),
+                )
     store.mark_episode_stop_skipped(root.episode_id)
 
 
-@pytest.mark.parametrize("seed", ["resumed", "history_only", "other_provider", "stale"])
+@pytest.mark.parametrize(
+    "seed", ["resumed", "history_only", "other_provider", "stale", "stale_superseded"]
+)
 def test_orchestrator_chat_takes_human_turns_only_after_the_chain_ends(
     manifest, tmp_path, monkeypatch, seed
 ):
@@ -315,7 +328,7 @@ def test_orchestrator_chat_takes_human_turns_only_after_the_chain_ends(
         for receipt in store.agent_task_receipts(task.operation_id)
         if receipt.category == "chat_session_resolution"
     ]
-    if seed == "resumed":
+    if seed in {"resumed", "stale_superseded"}:
         assert task.native_session_id == "orchestrator-session"
         assert task.stage_root == str(tmp_path / "stage")
         assert resolution["outcome"] == "continued"

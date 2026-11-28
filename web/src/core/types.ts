@@ -2144,6 +2144,8 @@ export interface AgentTaskContract {
 }
 
 export interface AgentTaskRequest {
+  /** Compact the resumed native session before this turn's message. */
+  compact_first?: boolean;
   code_worktree?: boolean;
   graph_isolation?: boolean;
   isolation_owner_episode_id?: string | null;
@@ -2599,11 +2601,15 @@ export interface AgentTask {
   authorized_by?: AuthorizedHuman | null;
   /** Set when the member's own agent thread ran this; absent from older servers. */
   via_agent?: ViaAgent | null;
+  /** Whether the runtime holding this turn's session can compact it before a message. */
+  can_compact_first?: boolean;
   elapsed_seconds: number;
   progress: number;
   can_pause: boolean;
   can_resume: boolean;
   can_retry: boolean;
+  /** Set when this turn failed on a provider usage limit; absent from older servers. */
+  limit_reset?: LimitReset | null;
   /** The backend's decision that this task's unavailable graph update may be applied again. */
   can_apply_again?: boolean;
   steer_visible: boolean;
@@ -2628,6 +2634,16 @@ export interface AgentTask {
   events?: AgentTaskEvent[];
   debug_receipts?: AgentTaskReceipt[];
   contracts?: AgentTaskContract[];
+}
+
+/** When a usage-limited turn's limit ends, and whether RCP will resume it then. */
+export interface LimitReset {
+  resets_at: string;
+  /** No source named a time; the reset is RCP's guess. */
+  estimated: boolean;
+  state: "waiting" | "stopped";
+  /** Why a stopped turn will not resume by itself. */
+  reason: string | null;
 }
 
 export interface EpisodeTask extends AgentTask {
@@ -3202,6 +3218,8 @@ export interface ProviderReadiness {
   reason?: string | null;
   /** Why the backend's last automatic update of this CLI failed; the old version stays in use. */
   update_warning?: string | null;
+  /** An in-app update of this CLI is running; absent from older servers. */
+  updating?: boolean;
   /** Whether Work-like launches can run here. Null means it was not checked. */
   work_like_available?: boolean | null;
   work_like_reason?: string | null;
@@ -3783,6 +3801,9 @@ export interface ProviderLoginAccount extends ProviderLoginState {
   machines: string[];
   token: ProviderCredentialSummary | null;
   sign_in: ProviderSignInStatus | null;
+  /** When the active usage limit ends; absent from older servers. */
+  limit_resets_at?: string | null;
+  limit_reset_estimated?: boolean;
 }
 
 /** Coarse count of episode, queued-task, and watcher inputs checked after sign-in. */
@@ -4174,6 +4195,7 @@ export interface AgentThreadTurnRequest {
   worktree?: boolean;
   run_truth_scope?: string[];
   worktree_integration?: WorktreeIntegrationOption["id"];
+  compact_first?: boolean;
   message: string;
   provider?: ProviderId;
   model?: string;

@@ -274,3 +274,8 @@ parking and in-place revision columns (migration 95). Exact source
 them in (migration 97). Exact source
 `e23cf4cd79107f0f68dd881b501b983ab0eb5abb` upgrades a copy of
 `pre-plan-revisions-v53-76fe929` through the existing fixture builder.
+
+`pre-limits-resume-v55-2d5c7ee` freezes migration 97 before automatic limit-resume
+preferences and provider limit resets (migration 98). Exact source
+`2d5c7ee0a38e7a1358c9e2cd113e98bfc310e009` upgrades a copy of
+`pre-signed-in-by-v54-e23cf4c` through the existing fixture builder.

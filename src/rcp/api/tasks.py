@@ -14,7 +14,12 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import UUID4, BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
-from rcp.agents.agent_owner import resolve_agent_task, task_retry_overrides, task_write_admission
+from rcp.agents.agent_owner import (
+    limit_resume_eligible,
+    resolve_agent_task,
+    task_retry_overrides,
+    task_write_admission,
+)
 from rcp.api.chats import _artifact_comments
 from rcp.api.dependencies import (
     get_artifact_mutation_locks,
@@ -22,6 +27,7 @@ from rcp.api.dependencies import (
     get_background_tasks,
     get_catalog,
     get_experiment_admission,
+    get_experiment_operation_lock,
     get_graph_service,
     get_identity_access,
     get_store,
@@ -65,6 +71,7 @@ from rcp.core.models import AuthorizedHuman
 from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
 from rcp.limits import ARTIFACT_CONTEXT_MAX_SELECTIONS, STEERING_MESSAGE_MAX_CHARS
 from rcp.projects import ProjectCatalog
+from rcp.providers import runtime_compacts_first
 from rcp.runs.agent_threads import task_owner
 from rcp.runs.auto_research import AutoResearchRunRequest
 from rcp.runs.chat import (
@@ -217,6 +224,33 @@ def _agent_artifact_response_json(response: AgentArtifactResponse) -> dict[str, 
     return response.model_dump(mode="json")
 
 
+def task_limit_reset(store: AppStore, record: AgentTaskRecord) -> dict[str, object] | None:
+    if record.status != "failed":
+        return None
+    resets = store.agent_task_receipts_by_category(record.operation_id, "provider_terminal_error")
+    reset = resets[-1] if resets else None
+    if (
+        reset is None
+        or reset.payload.get("classification") != "session_limit"
+        or not reset.payload.get("resets_at")
+    ):
+        return None
+    stops = store.agent_task_receipts_by_category(record.operation_id, "limit_auto_resume_stopped")
+    stopped = stops[-1] if stops else None
+    member = store.space_user(record.authorized_by.user_id) if record.authorized_by else None
+    reason = stopped.payload.get("reason") if stopped else None
+    if stopped is None and not limit_resume_eligible(record):
+        reason = "not_resumable"
+    elif stopped is None and member is not None and not member.auto_resume_after_limits:
+        reason = "switch_off"
+    return {
+        "resets_at": reset.payload.get("resets_at"),
+        "estimated": reset.payload.get("estimated"),
+        "state": "stopped" if stopped is not None or reason is not None else "waiting",
+        "reason": reason,
+    }
+
+
 def _agent_task_response(
     store: AppStore,
     record: AgentTaskRecord,
@@ -229,6 +263,13 @@ def _agent_task_response(
     followup_question_ids: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     response = record.model_dump(mode="json")
+    provider = record.request.get("provider")
+    response["can_compact_first"] = bool(
+        isinstance(provider, str)
+        and record.runtime_id
+        and runtime_compacts_first(provider, record.runtime_id)
+    )
+    response["limit_reset"] = task_limit_reset(store, record)
     response["via_agent"] = store.via_agent(record.operation_id)
     if session_resolutions is None:
         session_resolutions = store.agent_task_session_resolutions([record.operation_id])
@@ -1267,20 +1308,39 @@ def resume_task_as(
     The caller holds the owner's write admission.
     """
 
-    store = background_tasks.store
-    owner = task_owner(store, previous, catalog=catalog)
     try:
-        skills = _admit_stored_request(owner, previous.kind, previous.request, experiment_admission)
-        with _chat_recovery_admission(owner, store, previous):
-            return background_tasks.resume(
-                previous.operation_id,
-                skills=skills,
-                authorized_by=authorized_by,
-            )
+        return resume_task(
+            previous,
+            authorized_by,
+            catalog=catalog,
+            background_tasks=background_tasks,
+            experiment_admission=experiment_admission,
+        )
     except (OSError, StateUnavailable) as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def resume_task(
+    previous: AgentTaskRecord,
+    authorized_by: AuthorizedHuman,
+    *,
+    catalog: ProjectCatalog,
+    background_tasks: BackgroundAgentTasks,
+    experiment_admission: ExperimentAdmission,
+    limit_auto_resume: bool = False,
+) -> AgentTaskRecord:
+    store = background_tasks.store
+    owner = task_owner(store, previous, catalog=catalog)
+    skills = _admit_stored_request(owner, previous.kind, previous.request, experiment_admission)
+    with _chat_recovery_admission(owner, store, previous):
+        return background_tasks.resume(
+            previous.operation_id,
+            skills=skills,
+            authorized_by=authorized_by,
+            limit_auto_resume=limit_auto_resume,
+        )
 
 
 def retry_task_as(
@@ -1792,3 +1852,40 @@ __all__ = [
     "start_agent_task",
     "view_agent_artifact",
 ]
+
+
+@router.post(
+    "/api/projects/{project_id}/tasks/{operation_id}/limit-resume/decline", status_code=202
+)
+@agent_router.post(
+    "/api/agent-threads/{thread_id}/tasks/{operation_id}/limit-resume/decline", status_code=202
+)
+def decline_limit_resume(
+    operation_id: str,
+    request: Request,
+    *,
+    project_id: str | None = None,
+    thread_id: str | None = None,
+    store: StoreDependency,
+    identity_access: IdentityDependency,
+) -> dict[str, bool]:
+    member = identity_access.acting_user(request)
+    task = resolve_agent_task(
+        store, operation_id, member.user_id, project_id=project_id, thread_id=thread_id
+    )
+    if task.authorized_by is None or task.authorized_by.user_id != member.user_id:
+        raise HTTPException(status_code=403, detail="Only the authorizing member may decline.")
+    with get_experiment_operation_lock(request)(task.project_id):
+        if store.agent_task_has_continuation(operation_id):
+            raise HTTPException(status_code=409, detail="This turn already has a continuation.")
+        if task_limit_reset(store, task) is None:
+            raise HTTPException(
+                status_code=409, detail="This turn is not waiting for a usage limit."
+            )
+        if limit_resume_eligible(task) and not store.agent_task_has_receipt(
+            operation_id, "limit_auto_resume_stopped"
+        ):
+            store.record_agent_task_receipt(
+                operation_id, "limit_auto_resume_stopped", {"reason": "declined"}
+            )
+    return {"ok": True}

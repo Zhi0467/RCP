@@ -261,7 +261,7 @@
   "src/rcp/server_ops/project_provision.py": {"comment": 6},
   "src/rcp/server_ops/provider_cleanup.py": {"comment": 4},
   "src/rcp/server_ops/provider_readiness.py": {"comment": 3},
-  "src/rcp/server_ops/provider_update.py": {"comment": 3},
+  "src/rcp/server_ops/provider_update.py": {"comment": 1},
   "src/rcp/server_ops/remote_git_credentials.py": {"comment": 2},
   "src/rcp/server_ops/restore.py": {"comment": 97},
   "src/rcp/server_ops/service_errors.py": {"comment": 3},

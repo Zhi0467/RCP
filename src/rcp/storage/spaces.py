@@ -105,6 +105,16 @@ class SpaceStoreMixin(StoreMixinBase):
             ).fetchone()
         return self._space_user_record(row) if row is not None else None
 
+    def set_auto_resume_after_limits(self, user_id: str, enabled: bool) -> bool:
+        with self.connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._require_active_space_user_from_connection(connection, user_id)
+            connection.execute(
+                "UPDATE space_users SET auto_resume_after_limits = ?, updated_at = ? WHERE user_id = ?",
+                (int(enabled), self.now(), user_id),
+            )
+        return enabled
+
     def active_team_member_authority(self) -> tuple[TeamMemberAuthorityRecord, ...]:
         """Return every active member and permanent token id in one read boundary."""
 

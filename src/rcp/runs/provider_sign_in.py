@@ -247,7 +247,9 @@ class ProviderSignInRunner:
                 self._recovered[key] = state.generation
 
     def verify(self, login: LoginKey, *, member_id: str) -> ProviderLoginStateRecord:
-        self.require_login(login, member_id=member_id)
+        current = self.require_login(login, member_id=member_id)
+        if self.launcher.provider_updating(login.provider, login.machine_id):
+            return current
         binary, binaries = self.provider_binary(login.provider, login.machine_id)
         with self._member_hold(login):
             try:
@@ -351,9 +353,23 @@ class ProviderSignInRunner:
         if current.state == "signed_in" and current.source == "verify":
             raise ProviderLoginRefused(SIGNED_IN_REPLACE_DETAIL)
 
+    def _require_not_updating(self, login: LoginKey) -> None:
+        if self.launcher.provider_updating(login.provider, login.machine_id):
+            raise ProviderLoginRefused("Updating.")
+
+    @contextlib.contextmanager
+    def _provider_sign_in(self, login: LoginKey) -> Iterator[None]:
+        from rcp.server_ops.provider_update import ProviderUpdateRefused
+
+        try:
+            with self.launcher.provider_sign_in(login.provider, login.machine_id):
+                yield
+        except ProviderUpdateRefused as exc:
+            raise ProviderLoginRefused(str(exc)) from exc
+
     @contextlib.contextmanager
     def _member_hold(self, login: LoginKey) -> Iterator[None]:
-        with contextlib.ExitStack() as stack:
+        with self._provider_sign_in(login), contextlib.ExitStack() as stack:
             try:
                 stack.enter_context(
                     self.launcher.credential_gate.hold_blocking(
@@ -365,6 +381,7 @@ class ProviderSignInRunner:
             yield
 
     def start_sign_in(self, login: LoginKey, *, member_id: str) -> ProviderSignInStatus:
+        self._require_not_updating(login)
         self._require_replaceable(login, member_id=member_id)
         if not {"device_code", "paste_code"}.intersection(
             profile_for(login.provider).authentication.methods
@@ -621,7 +638,10 @@ class ProviderSignInRunner:
         login = LoginKey(status.provider, status.machine_id, status.login_id)
         auth = profile_for(login.provider).authentication
         try:
-            with self.launcher.credential_gate.hold_blocking(login):
+            with (
+                self._provider_sign_in(login),
+                self.launcher.credential_gate.hold_blocking(login),
+            ):
                 # A member who cancels while this thread waits for the gate must
                 # stop the attempt, not start one: nothing has been fenced or
                 # launched yet, so the account keeps the state it already had.
@@ -698,6 +718,7 @@ class ProviderSignInRunner:
         self, login: LoginKey, token: str, *, member_id: str
     ) -> ProviderLoginStateRecord:
         self.require_login(login, member_id=member_id)
+        self._require_not_updating(login)
         auth = profile_for(login.provider).authentication
         if "token_entry" not in auth.methods:
             raise ProviderLoginRefused(

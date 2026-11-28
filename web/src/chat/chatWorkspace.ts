@@ -178,6 +178,8 @@ export interface ConversationTurnSubmission {
   worktreeIntegration?: WorktreeIntegrationOption["id"];
   /** Saved comment threads the server renders after the message. */
   commentThreadIds?: readonly string[];
+  /** The human chose to compact the resumed session before this message. */
+  compactFirst?: boolean;
 }
 
 export function conversationTurnRequest(submission: ConversationTurnSubmission): AgentTaskRequest {
@@ -195,6 +197,7 @@ export function conversationTurnRequest(submission: ConversationTurnSubmission):
     session_id: submission.sessionId,
     mode: "work",
     ...(submission.supersedes ? { supersedes: submission.supersedes } : {}),
+    ...(submission.compactFirst ? { compact_first: true } : {}),
     ...(submission.worktree
       ? {
           worktree: true,

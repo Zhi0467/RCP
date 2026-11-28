@@ -1123,6 +1123,12 @@ async def _stream_agent_events(
             supervisor_path=supervisor_path,
             operation_id=execution.operation_id if execution is not None else None,
             git_access=execution.git_access if execution is not None else None,
+            compact_first=(
+                isinstance(request, RunRequest)
+                and request.compact_first
+                and task is not None
+                and task.parent_operation_id is None
+            ),
         )
     ) as stream:
         async for event in stream:

@@ -183,6 +183,7 @@ class AcceptanceAgentLauncher(AgentLauncher):
         browser_grant: BrowserGrant | None = None,
         hidden_read_scope: HiddenReadScope | None = None,
         shell_timeout_seconds: int | None | EllipsisType = ...,
+        compact_first: bool = False,
     ) -> AsyncGenerator[AgentEvent, None]:
         if invocation_gate is not None:
             async with invocation_gate.serve_current_session():
@@ -217,10 +218,12 @@ class AcceptanceAgentLauncher(AgentLauncher):
                     browser_grant=browser_grant,
                     hidden_read_scope=hidden_read_scope,
                     shell_timeout_seconds=shell_timeout_seconds,
+                    compact_first=compact_first,
                 ):
                     yield event
             return
         del (
+            compact_first,
             model,
             reasoning,
             read_dirs,

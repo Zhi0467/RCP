@@ -1,0 +1,28 @@
+{
+  "notification": {
+    "method": "account/rateLimits/updated",
+    "params": {
+      "rateLimits": {
+        "primary": {
+          "usedPercent": 100,
+          "windowDurationMins": 300,
+          "resetsAt": 1795824600
+        },
+        "secondary": null,
+        "credits": null,
+        "planType": "pro"
+      }
+    }
+  },
+  "error": {
+    "method": "error",
+    "params": {
+      "threadId": "accounting-thread",
+      "willRetry": false,
+      "error": {
+        "message": "You've hit your usage limit. Try again at 2026-11-27T01:00:00Z.",
+        "codexErrorInfo": "usageLimitExceeded"
+      }
+    }
+  }
+}

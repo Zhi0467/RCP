@@ -9,6 +9,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, aclosing, suppress
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast, get_args
 
@@ -35,7 +36,7 @@ from rcp.limits import (
 )
 from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey, host_of
 from rcp.machine_sleep import seconds_until_automatic_launch
-from rcp.providers import classify_terminal_error, profile_for, require_runtime_id
+from rcp.providers import profile_for, require_runtime_id
 from rcp.providers.base import AgentStatusDelta
 from rcp.providers.live_status import AgentStatus, fold_agent_status
 from rcp.runs.auto_research import (
@@ -77,6 +78,7 @@ from rcp.runs.paper_turns import (
     is_paper_turn,
     paper_turn_waits,
 )
+from rcp.runs.provider_limits import record_provider_limit_decision
 from rcp.runs.provider_login import (
     AdmissionRefused,
     MachineDependenciesMissing,
@@ -123,6 +125,7 @@ from rcp.transport.state_transfer import warning_context
 from rcp.turn_outcomes import TurnOutcome
 
 if TYPE_CHECKING:
+    from rcp.agents.launcher import AgentLauncher
     from rcp.paper import PaperLive
 
 logger = logging.getLogger(__name__)
@@ -269,6 +272,7 @@ class AgentTaskExecution:
     operation_id: str
     store: AppStore
     control: AgentProcessControl
+    rate_limit: dict[str, object] | None = None
     runtime_id: str = ""
     git_access: ProviderGitAccess | None = None
     login_generation: int = 0
@@ -450,8 +454,10 @@ class BackgroundAgentTasks:
         experiment_resumer: WorkExperimentResumer | None = None,
         episode_controls: WorkEpisodeControls | None = None,
         paper_live: PaperLive | None = None,
+        launcher: AgentLauncher | None = None,
     ) -> None:
         self.store = store
+        self.launcher = launcher
         self.paper_live = paper_live
         self.experiment_card_raiser = experiment_card_raiser
         self.episode_controls = episode_controls
@@ -655,8 +661,12 @@ class BackgroundAgentTasks:
             for task in self.store.every_pending_chat_wake()
             if self.store.agent_task_dispatch_was_proven_not_started(task.operation_id)
         ]
+        from rcp.runs.provider_login import unstarted_limit_resumes
+
+        limit_resumes = unstarted_limit_resumes(self.store)
         self.store.interrupt_active_agent_tasks(
             preserve_operation_ids={
+                *[task.operation_id for task in limit_resumes],
                 *chat_wakes,
                 *consolidation_dispatches,
                 *[item.operation_id for item in preserved_dispatches],
@@ -842,6 +852,7 @@ class BackgroundAgentTasks:
         *,
         skills: SkillSelection | None = None,
         authorized_by: AuthorizedHuman | None = None,
+        limit_auto_resume: bool = False,
     ) -> AgentTaskRecord:
         self._require_startup_effects_open("provider task resume")
         previous = self._require_operation(operation_id)
@@ -875,6 +886,7 @@ class BackgroundAgentTasks:
                 authorized_by=authorized_by or previous.authorized_by,
                 parent=previous,
                 continuation="resume",
+                limit_auto_resume=limit_auto_resume,
             )
         if isinstance(original, AutoResearchRunRequest):
             preflight_auto_research_task_resume(self, previous)
@@ -887,7 +899,7 @@ class BackgroundAgentTasks:
             if self.store.agent_task_continuation_cause(previous.operation_id) == "graph_repair"
             else "resume"
         )
-        return self._create_and_spawn(
+        resumed = self._create_and_spawn(
             previous.project_id,
             previous.kind,
             request,
@@ -898,7 +910,10 @@ class BackgroundAgentTasks:
             stage_machine_id=previous.stage_machine_id,
             stage_root=previous.stage_root,
             authorized_by=authorized_by,
+            limit_auto_resume=limit_auto_resume,
         )
+        assert resumed is not None
+        return resumed
 
     def retry(
         self,
@@ -1619,6 +1634,7 @@ class BackgroundAgentTasks:
         ensure_graph_target: Callable[[EpisodeRecord], None] | None = None,
         continues_episode_id: str | None = None,
         continuation_request_id: str | None = None,
+        limit_auto_resume: bool = False,
     ) -> AgentTaskRecord | None:
         """Insert one admitted task row and start it.
 
@@ -1688,9 +1704,10 @@ class BackgroundAgentTasks:
                 machine_id=(stage_machine_id or BACKEND_MACHINE_ID) if stage_root else None,
                 isolation_episode_id=parent.episode_id if parent else None,
                 graph_target=parent.graph_target if parent else graph_target,
+                automatic=limit_auto_resume,
             )
         except ProviderSignedOut as exc:
-            if parent is None:
+            if parent is None or limit_auto_resume:
                 raise
             # The human already authorized this exact continuation. Keep its
             # durable admission queued so sign-in can launch it without Retry.
@@ -1871,6 +1888,7 @@ class BackgroundAgentTasks:
                     handoff_id=handoff_id,
                     handoff_wake_id=handoff_wake_id,
                     queue_id=queue_id,
+                    limit_auto_resume=limit_auto_resume,
                 )
         if claim_graph_repair_parent:
             assert parent is not None
@@ -1947,6 +1965,8 @@ class BackgroundAgentTasks:
         try:
             launch = self.validate_admitted_launch(operation_id)
         except AdmissionRefused:
+            if self.store.agent_task_has_receipt(operation_id, "limit_auto_resume"):
+                raise
             return self._require_operation(operation_id)
         if isinstance(launch, AgentTaskRecord):
             return launch
@@ -2007,6 +2027,7 @@ class BackgroundAgentTasks:
             machine_id=(record.stage_machine_id or BACKEND_MACHINE_ID)
             if record.stage_root
             else None,
+            automatic=self.store.agent_task_has_receipt(operation_id, "limit_auto_resume"),
         )
 
         intent = self.store.agent_task_admission_intent(operation_id)
@@ -2419,18 +2440,14 @@ class BackgroundAgentTasks:
                     operation_id=operation_id,
                     diagnostic=str(exc),
                 )
-            elif (
-                isinstance(request, EpisodeReportRunRequest)
-                or (isinstance(request, AutoResearchRunRequest) and request.role == "orchestrator")
-            ) and isinstance(exc, TaskFailed):
-                self.store.record_agent_task_receipt(
-                    operation_id,
-                    "provider_terminal_error",
-                    {
-                        "provider": request.provider,
-                        "classification": classify_terminal_error(str(exc)),
-                    },
-                    tier="diagnostic",
+            if request.provider:
+                record_provider_limit_decision(
+                    self.store,
+                    self.launcher,
+                    self.store.agent_task(operation_id) or record,
+                    snapshot=execution.rate_limit,
+                    error=str(exc),
+                    failed_at=datetime.fromisoformat(self.store.now()),
                 )
             self.store.record_agent_task_receipt(
                 operation_id,
@@ -3258,6 +3275,11 @@ class BackgroundAgentTasks:
     ) -> None:
         from rcp.runs.provider_login import settle_provider_login
 
+        current = self.store.agent_task(record.operation_id) or record
+        if current.status == "failed" and request.provider:
+            record_provider_limit_decision(
+                self.store, self.launcher, current, snapshot=execution.rate_limit
+            )
         if isinstance(request, EpisodeReportRunRequest):
             settle_provider_login(self, record)
             return
@@ -3397,6 +3419,9 @@ class BackgroundAgentTasks:
                     record_provider_usage(
                         self.store, execution.operation_id, event.usage, recorded=recorded
                     )
+                if event.event == "rate_limit":
+                    execution.rate_limit = event.rate_limit
+                    continue
                 if event.event == "remote_result_pending":
                     awaiting_remote_result = (
                         event.text
@@ -3629,13 +3654,9 @@ class BackgroundAgentTasks:
         )
 
     def _failure_classified_as(self, record: AgentTaskRecord, classification: str) -> bool:
-        classified_receipt = any(
-            receipt.category == "provider_terminal_error"
-            and receipt.payload.get("classification") == classification
-            for receipt in self.store.agent_task_receipts(record.operation_id)
-        )
-        return classified_receipt or (
-            bool(record.error) and classify_terminal_error(record.error or "") == classification
+        return (
+            self.store.failure_classification(record.operation_id, record.error or "")
+            == classification
         )
 
     def _continuation_context_is_unavailable(self, record: AgentTaskRecord) -> bool:

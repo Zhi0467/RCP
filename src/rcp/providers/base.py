@@ -6,7 +6,9 @@ import hashlib
 import json
 import re
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -18,6 +20,7 @@ from rcp.limits import (
     SHELL_TIMEOUT_MIN_MINUTES,
 )
 from rcp.providers.browser_grant import BrowserGrant
+from rcp.providers.usage_limits import LimitEvidence
 
 if TYPE_CHECKING:
     from rcp.agents.invocation_broker import ProviderInvocationGate
@@ -59,6 +62,13 @@ class ProviderSkill(BaseModel):
     scope: str | None = None
     path: str | None = None
     enabled: bool = True
+
+
+@dataclass(frozen=True)
+class ProviderLimitProbe:
+    command: list[str]
+    stdin: str
+    parser: Callable[[str], dict[str, object]]
 
 
 class ProviderSkillProbe(BaseModel):
@@ -113,6 +123,13 @@ class AgentCompaction(BaseModel):
     after_tokens: int | None = Field(default=None, ge=0)
 
 
+def compaction_failed_text(detail: str) -> str:
+    """The turn error when compact-first stopped before the prompt was written."""
+
+    detail = detail.strip().rstrip(".") or "the provider did not compact the session"
+    return f"Compaction failed: {detail}. Your message was not sent."
+
+
 class AgentSubagent(BaseModel):
     """A provider-native subagent as its parent stream reports it."""
 
@@ -152,9 +169,10 @@ class ProviderStreamEvent:
     (`tests/test_launcher.py::test_only_the_final_assistant_message_is_an_answer`).
     """
 
-    event: Literal["session", "message", "answer", "error", "raw"]
+    event: Literal["session", "message", "answer", "error", "raw", "rate_limit"]
     text: str = ""
     session_id: str | None = None
+    rate_limit: dict[str, object] | None = None
     usage: ProviderUsage | None = None
     status: AgentStatusDelta | None = None
 
@@ -185,6 +203,7 @@ class ProviderTurnRequest:
     # None preserves the provider default; staging has already resolved the card.
     shell_timeout_seconds: int | None = None
     fork_session_id: str | None = None
+    compact_first: bool = False
 
     def __post_init__(self) -> None:
         if self.capability == "session_summary" and (
@@ -266,6 +285,7 @@ class ProviderRuntime:
     """Provider-owned command and wire protocol hidden behind one RCP boundary."""
 
     id: str
+    supports_compact_first: bool = False
     #: `inject` puts the message into the turn already running and the provider
     #: confirms it. `queue` names RCP's continuation contract, not a placement
     #: promise: the process may run past its first result while accepted
@@ -495,6 +515,16 @@ class ProviderProfile:
                     actual=actual,
                     minimum=minimum,
                 )
+
+    def limit_evidence(self, snapshot: dict[str, object]) -> LimitEvidence:
+        return LimitEvidence(exhausted=False)
+
+    def limit_text_reset(self, error: str, failed_at: datetime) -> datetime | None:
+        return None
+
+    @property
+    def limit_probe(self) -> Callable[[str], ProviderLimitProbe] | None:
+        return None
 
     def login_probe_command(self, binary: str) -> list[str] | None:
         """One real authenticated request; status output is not proof of sign-in."""

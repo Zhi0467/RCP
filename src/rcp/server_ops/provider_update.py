@@ -6,17 +6,19 @@ import contextlib
 import os
 import pwd
 import re
+import shlex
 import shutil
 import sqlite3
 import stat
 import subprocess
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
-from typing import BinaryIO
+from pathlib import Path, PurePosixPath
+from typing import BinaryIO, Protocol
 
+from rcp.limits import PROVIDER_UPDATE_PROBE_TIMEOUT_SECONDS, PROVIDER_UPDATE_TIMEOUT_SECONDS
 from rcp.machine_cards import BACKEND_MACHINE_ID
 from rcp.providers import ProviderId, profile_for
 from rcp.server_ops.cli import CallerIdentity, PreparedServerCommand, ServerEventEmitter
@@ -30,18 +32,193 @@ from rcp.server_ops.models import (
     ServerStep,
     redact_server_text,
 )
+from rcp.transport.ssh import ssh_arguments
 
 ProviderProcessRunner = Callable[
     [pwd.struct_passwd, tuple[str, ...], float], subprocess.CompletedProcess[str]
 ]
 
-_UPDATE_TIMEOUT_SECONDS = 15 * 60
-_PROBE_TIMEOUT_SECONDS = 30
 _SAFE_VERSION = re.compile(r"[ -~]{1,120}")
 
 
 class ProviderUpdateRefused(RuntimeError):
     """The provider update cannot safely run on this installed server."""
+
+
+class UpdateTarget(Protocol):
+    @property
+    def home(self) -> str: ...
+
+    def run(self, argv: tuple[str, ...], timeout: float) -> subprocess.CompletedProcess[str]: ...
+
+    def discover(self, provider: ProviderId) -> str | None: ...
+
+    def resolve(self, path: str) -> str: ...
+
+    def temp_dir(self) -> contextlib.AbstractContextManager[str]: ...
+
+    def command_prefix(self, provider: ProviderId) -> tuple[str, ...]: ...
+
+
+@dataclass
+class LocalUpdateTarget:
+    account: pwd.struct_passwd
+    runner: ProviderProcessRunner
+
+    @property
+    def home(self) -> str:
+        return self.account.pw_dir
+
+    def run(self, argv: tuple[str, ...], timeout: float) -> subprocess.CompletedProcess[str]:
+        return self.runner(self.account, argv, timeout)
+
+    def discover(self, provider: ProviderId) -> str | None:
+        binary = _discover_provider(self.account, provider)
+        return str(binary) if binary is not None else None
+
+    def resolve(self, path: str) -> str:
+        return os.path.realpath(path)
+
+    def command_prefix(self, provider: ProviderId) -> tuple[str, ...]:
+        return profile_for(provider).authentication.unmanaged_environment("").command_prefix
+
+    @contextlib.contextmanager
+    def temp_dir(self) -> Iterator[str]:
+        path = tempfile.mkdtemp(prefix="rcp-provider-", dir=_account_temp_dir(self.account))
+        try:
+            os.chown(path, self.account.pw_uid, self.account.pw_gid)
+            os.chmod(path, 0o700)
+            yield path
+        finally:
+            shutil.rmtree(path)
+
+
+TransportRunner = Callable[[tuple[str, ...], float], subprocess.CompletedProcess[str]]
+
+
+class RemoteUpdateTarget:
+    def __init__(
+        self, host: str, os_account: str, *, runner: TransportRunner | None = None
+    ) -> None:
+        if os_account and not re.fullmatch(r"[A-Za-z0-9_.-]+", os_account):
+            raise ProviderUpdateRefused("The remote machine needs a valid OS account.")
+        self.host = f"{os_account}@{host.rsplit('@', 1)[-1]}" if os_account else host
+        self._account_resolved = bool(os_account)
+        self._runner = runner
+        self._home: str | None = None
+
+    def run(self, argv: tuple[str, ...], timeout: float) -> subprocess.CompletedProcess[str]:
+        if not self._account_resolved:
+            result = self._transport(("id", "-un"), PROVIDER_UPDATE_PROBE_TIMEOUT_SECONDS)
+            account = result.stdout.strip()
+            if result.returncode or not re.fullmatch(r"[A-Za-z0-9_.-]+", account):
+                raise ProviderUpdateRefused("The remote machine could not resolve its OS account.")
+            self.host = f"{account}@{self.host.rsplit('@', 1)[-1]}"
+            self._account_resolved = True
+        return self._transport(argv, timeout)
+
+    def _transport(self, argv: tuple[str, ...], timeout: float) -> subprocess.CompletedProcess[str]:
+        command = tuple(ssh_arguments(self.host, shlex.join(argv)))
+        if self._runner is not None:
+            return self._runner(command, timeout)
+        return _run_process(command, timeout=timeout)
+
+    def _checked(self, argv: tuple[str, ...]) -> str:
+        result = self.run(argv, PROVIDER_UPDATE_PROBE_TIMEOUT_SECONDS)
+        if result.returncode:
+            raise ProviderUpdateRefused(_bounded_diagnostic(result))
+        return result.stdout.strip()
+
+    @property
+    def home(self) -> str:
+        if self._home is None:
+            home = self._checked(("printenv", "HOME"))
+            if (
+                not home.startswith("/")
+                or home == "/"
+                or "\n" in home
+                or ".." in PurePosixPath(home).parts
+            ):
+                raise ProviderUpdateRefused("The remote account returned an unsafe home directory.")
+            self._home = home
+        return self._home
+
+    def discover(self, provider: ProviderId) -> str | None:
+        result = self.run(
+            ("sh", "-lc", f"command -v {shlex.quote(provider)}"),
+            PROVIDER_UPDATE_PROBE_TIMEOUT_SECONDS,
+        )
+        if result.returncode == 0 and result.stdout.strip().startswith("/"):
+            return result.stdout.strip()
+        for relative in profile_for(provider).install_paths:
+            candidate = str(PurePosixPath(self.home) / relative)
+            if (
+                self.run(
+                    ("test", "-x", candidate), PROVIDER_UPDATE_PROBE_TIMEOUT_SECONDS
+                ).returncode
+                == 0
+            ):
+                return candidate
+        return None
+
+    def resolve(self, path: str) -> str:
+        return self._checked(("readlink", "-f", "--", path))
+
+    def command_prefix(self, provider: ProviderId) -> tuple[str, ...]:
+        if provider == "agy":
+            return ("env", "BROWSER=/bin/false")
+        return profile_for(provider).authentication.unmanaged_environment("").command_prefix
+
+    @contextlib.contextmanager
+    def temp_dir(self) -> Iterator[str]:
+        uid = self._checked(("id", "-u"))
+        system = self._checked(("uname", "-s"))
+        parent = PurePosixPath(self.home)
+        for name in (".rcp", "tmp"):
+            parent /= name
+            self._checked(("mkdir", "-p", "-m", "700", str(parent)))
+            self._check_directory(str(parent), uid, system)
+        path = self._checked(("mktemp", "-d", str(parent / "rcp-provider-XXXXXXXX")))
+        _require_temp_path(self.home, path)
+        try:
+            self._check_directory(path, uid, system, private=True)
+            yield path
+        finally:
+            self._checked(("rm", "-rf", "--", path))
+
+    def _check_directory(self, path: str, uid: str, system: str, *, private: bool = False) -> None:
+        stat_args = (
+            ("stat", "-f", "%u:%Lp:%HT") if system == "Darwin" else ("stat", "-c", "%u:%a:%F")
+        )
+        fields = self._checked((*stat_args, path)).split(":")
+        if len(fields) != 3 or fields[0] != uid or fields[2].lower() != "directory":
+            raise ProviderUpdateRefused(f"RCP's temporary directory is unsafe: {path}")
+        try:
+            mode = int(fields[1], 8)
+        except ValueError as exc:
+            raise ProviderUpdateRefused(f"RCP's temporary directory is unsafe: {path}") from exc
+        if mode & 0o022 or (private and mode != 0o700):
+            raise ProviderUpdateRefused(f"RCP's temporary directory is unsafe: {path}")
+
+
+def _require_temp_path(home: str, path: str) -> None:
+    candidate = PurePosixPath(path)
+    if candidate.parent != PurePosixPath(home) / ".rcp/tmp" or not candidate.name.startswith(
+        "rcp-provider-"
+    ):
+        raise ProviderUpdateRefused("The temporary directory is outside the update boundary.")
+
+
+def _require_home(target: UpdateTarget, binary: str) -> None:
+    path = PurePosixPath(binary)
+    if (
+        ".." in path.parts
+        or not path.is_relative_to(target.home)
+        or not PurePosixPath(target.resolve(binary)).is_relative_to(target.resolve(target.home))
+    ):
+        raise ProviderUpdateRefused(
+            "The provider executable is outside the account home; update it with its system package manager."
+        )
 
 
 def prepare_provider_update_command(
@@ -62,15 +239,18 @@ def prepare_provider_update_command(
 
     def execute(emitter: ServerEventEmitter, _input_stream: BinaryIO) -> None:
         account: pwd.struct_passwd
-        before_path: Path | None
+        before_path: str | None
         before_version: str | None
         emitter.emit_step(_running(pending[0], "Inspecting the installed provider as rcp."))
         try:
             account = _installed_service_account(layout)
+            update_target = LocalUpdateTarget(account, process_runner)
             _refuse_while_turns_run(layout.data_dir / "rcp.sqlite3", provider)
-            before_path = _discover_provider(account, provider)
+            before_path = update_target.discover(provider)
+            if before_path is not None:
+                _require_home(update_target, before_path)
             before_version = (
-                _provider_version(account, provider, before_path, process_runner)
+                _provider_version(update_target, provider, before_path)
                 if before_path is not None
                 else None
             )
@@ -99,7 +279,7 @@ def prepare_provider_update_command(
 
         emitter.emit_step(_running(pending[1], f"Running {provider}'s native update as rcp."))
         try:
-            _update_provider(account, provider, before_path, process_runner)
+            _update_provider(update_target, provider, before_path)
         except (OSError, ProviderUpdateRefused) as exc:
             emitter.emit_step(_failed(pending[1], str(exc)))
             return
@@ -114,12 +294,12 @@ def prepare_provider_update_command(
 
         emitter.emit_step(_running(pending[2], "Checking the updated executable and version."))
         try:
-            after_path = _discover_provider(account, provider)
+            after_path = update_target.discover(provider)
             if after_path is None:
                 raise ProviderUpdateRefused(
                     "The updater completed but no provider executable is discoverable as rcp."
                 )
-            after_version = _provider_version(account, provider, after_path, process_runner)
+            after_version = _provider_version(update_target, provider, after_path)
         except (OSError, ProviderUpdateRefused) as exc:
             emitter.emit_step(_failed(pending[2], str(exc)))
             return
@@ -155,27 +335,16 @@ class ProviderVersionChange:
     after: str
 
 
-def installed_provider(account: pwd.struct_passwd, provider: ProviderId) -> Path | None:
-    """The account's executable for `provider`, None when it has none."""
-    return _discover_provider(account, provider)
-
-
 def update_installed_provider(
-    account: pwd.struct_passwd,
+    target: UpdateTarget,
     provider: ProviderId,
-    binary: Path,
-    runner: ProviderProcessRunner,
+    binary: str,
 ) -> ProviderVersionChange:
-    """Run the native update of `binary` and prove the result on that same executable.
-
-    Raises `ProviderUpdateRefused` or `OSError` when the update or either
-    version probe fails.
-    """
-    before = _provider_version(account, provider, binary, runner)
-    _update_provider(account, provider, binary, runner)
-    return ProviderVersionChange(
-        before=before, after=_provider_version(account, provider, binary, runner)
-    )
+    """Update and verify the same home-owned executable used for launches."""
+    _require_home(target, binary)
+    before = _provider_version(target, provider, binary)
+    _update_provider(target, provider, binary)
+    return ProviderVersionChange(before=before, after=_provider_version(target, provider, binary))
 
 
 def run_provider_process_as_self(
@@ -234,37 +403,30 @@ def _installed_service_account(layout: ServerLayout) -> pwd.struct_passwd:
         raise ProviderUpdateRefused("The installed rcp service account is missing.") from exc
 
 
-def backend_turns_using(database: Path, provider: ProviderId, *, queued: bool = False) -> int:
-    """Count backend turns running this provider, and with `queued` those waiting to start.
+def _refuse_while_turns_run(database: Path, provider: ProviderId) -> None:
+    """Refuse queued or running backend turns, as the daily pass counts them.
 
-    An unreadable database counts none.
+    An unreadable database does not block.
     """
-    statuses = ("queued", "running", "pausing") if queued else ("running", "pausing")
     try:
         connection = sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)
     except sqlite3.Error:
-        return 0
+        return
     try:
         (count,) = connection.execute(
             "SELECT COUNT(*) FROM graph_runs "
             "WHERE json_extract(request_json, '$.provider')=? "
             "AND COALESCE(NULLIF(stage_machine_id,''),?)=? "
-            f"AND status IN ({','.join('?' * len(statuses))})",
-            (provider, BACKEND_MACHINE_ID, BACKEND_MACHINE_ID, *statuses),
+            "AND status IN ('queued','running','pausing')",
+            (provider, BACKEND_MACHINE_ID, BACKEND_MACHINE_ID),
         ).fetchone()
     except sqlite3.Error:
-        return 0
+        return
     finally:
         connection.close()
-    return count
-
-
-def _refuse_while_turns_run(database: Path, provider: ProviderId) -> None:
-    """Refuse while a backend turn runs this provider; an unreadable database does not block."""
-    running = backend_turns_using(database, provider)
-    if running:
+    if count:
         raise ProviderUpdateRefused(
-            f"{running} agent turn(s) are running {profile_for(provider).label} on the backend. "
+            f"{count} agent turn(s) are using {profile_for(provider).label} on the backend. "
             "Wait for them to finish or stop them, then rerun this update."
         )
 
@@ -289,14 +451,9 @@ def _discover_provider(account: pwd.struct_passwd, provider: ProviderId) -> Path
     return None
 
 
-def _provider_version(
-    account: pwd.struct_passwd,
-    provider: ProviderId,
-    binary: Path,
-    runner: ProviderProcessRunner,
-) -> str:
-    prefix = profile_for(provider).authentication.unmanaged_environment("").command_prefix
-    result = runner(account, (*prefix, str(binary), "--version"), _PROBE_TIMEOUT_SECONDS)
+def _provider_version(target: UpdateTarget, provider: ProviderId, binary: str) -> str:
+    prefix = target.command_prefix(provider)
+    result = target.run((*prefix, binary, "--version"), PROVIDER_UPDATE_PROBE_TIMEOUT_SECONDS)
     if result.returncode != 0:
         raise ProviderUpdateRefused(
             f"The provider version probe failed: {_bounded_diagnostic(result)}"
@@ -308,19 +465,16 @@ def _provider_version(
     return version
 
 
-def _update_provider(
-    account: pwd.struct_passwd,
-    provider: ProviderId,
-    before_path: Path | None,
-    runner: ProviderProcessRunner,
-) -> None:
+def _update_provider(target: UpdateTarget, provider: ProviderId, before_path: str | None) -> None:
     profile = profile_for(provider)
     update = profile.native_update
+    if before_path is not None:
+        _require_home(target, before_path)
     if update.self_update_args is not None:
         assert before_path is not None
-        prefix = profile.authentication.unmanaged_environment("").command_prefix
-        result = runner(
-            account, (*prefix, str(before_path), *update.self_update_args), _UPDATE_TIMEOUT_SECONDS
+        prefix = target.command_prefix(provider)
+        result = target.run(
+            (*prefix, before_path, *update.self_update_args), PROVIDER_UPDATE_TIMEOUT_SECONDS
         )
         if result.returncode != 0:
             raise ProviderUpdateRefused(
@@ -328,36 +482,25 @@ def _update_provider(
             )
         return
     assert update.installer_url is not None
-    # Agents may write /tmp, so the installer is staged in the account's own
-    # `~/.rcp/tmp`, which their write scopes keep read-only.
-    temporary = Path(
-        tempfile.mkdtemp(prefix=f"rcp-provider-{provider}-", dir=_account_temp_dir(account))
-    )
-    try:
-        os.chown(temporary, account.pw_uid, account.pw_gid)
-        os.chmod(temporary, 0o700)
-        installer = temporary / "install.sh"
-        downloaded = runner(
-            account,
-            ("/usr/bin/curl", "-fsSL", update.installer_url, "-o", str(installer)),
-            _UPDATE_TIMEOUT_SECONDS,
+    with target.temp_dir() as temporary:
+        installer = str(PurePosixPath(temporary) / "install.sh")
+        downloaded = target.run(
+            ("/usr/bin/curl", "-fsSL", update.installer_url, "-o", installer),
+            PROVIDER_UPDATE_TIMEOUT_SECONDS,
         )
         if downloaded.returncode != 0:
             raise ProviderUpdateRefused(
                 f"{profile.label}'s official installer download failed: "
                 f"{_bounded_diagnostic(downloaded)}"
             )
-        installed = runner(
-            account,
-            ("/usr/bin/env", *update.installer_env, "/bin/sh", str(installer)),
-            _UPDATE_TIMEOUT_SECONDS,
+        installed = target.run(
+            ("/usr/bin/env", *update.installer_env, "/bin/sh", installer),
+            PROVIDER_UPDATE_TIMEOUT_SECONDS,
         )
         if installed.returncode != 0:
             raise ProviderUpdateRefused(
                 f"{profile.label}'s official installer failed: {_bounded_diagnostic(installed)}"
             )
-    finally:
-        shutil.rmtree(temporary, ignore_errors=True)
 
 
 def _account_temp_dir(account: pwd.struct_passwd) -> Path:
@@ -389,8 +532,8 @@ def _bounded_diagnostic(result: subprocess.CompletedProcess[str]) -> str:
 
 def _success_message(
     provider: ProviderId,
-    before_path: Path | None,
-    after_path: Path,
+    before_path: str | None,
+    after_path: str,
 ) -> str:
     result = (
         f"{profile_for(provider).label} is updated as rcp. An update does not change its "
@@ -413,8 +556,9 @@ def _failed(step: ServerStep, message: str) -> ServerStep:
 
 
 __all__ = [
-    "backend_turns_using",
-    "installed_provider",
+    "UpdateTarget",
+    "LocalUpdateTarget",
+    "RemoteUpdateTarget",
     "prepare_provider_update_command",
     "ProviderUpdateRefused",
     "ProviderVersionChange",

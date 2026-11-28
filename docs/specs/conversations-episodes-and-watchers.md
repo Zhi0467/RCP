@@ -1225,6 +1225,63 @@ wrap-up; a later human **Add N turns** continues the same session with a new
 ceiling and may claim retained compatible completion as its invocation one, and
 **Start new episode** remains the fresh start.
 
+### Resume after provider usage limits
+
+Recovery and login marking share the failed turn's recorded decision and reset;
+[provider limit evidence](providers-and-containment.md#login-state-and-failure)
+owns the evidence, reset and display rules.
+
+The existing five-second watcher-poll completion pass resumes a failed member chat
+turn when its `provider_terminal_error` decision is `session_limit` and its reset
+is due. The decision, rather than the login mark, survives another turn's success
+or re-sign-in. Old turns without this decision never resume automatically. Startup
+reconciliation precedes the first poll. A committed automatic continuation with
+durable proof that dispatch never started stays queued through startup and the
+poll launches that same admitted
+operation. Ambiguous dispatch attempts follow ordinary interruption handling.
+Episode turns retain their existing recovery owner.
+
+One candidate query excludes turns with a continuation, a later turn or an active
+turn in the same chat, a stopped receipt, or a recent deferred receipt. The member's
+`space_users.auto_resume_after_limits` switch defaults on, including the personal
+space's local owner. `GET` and `PUT /api/providers/limit-resume` read and set that
+member's switch. Only the authorizing member may decline a turn through the
+project task or agent-thread task `limit-resume/decline` route. Decline records
+`limit_auto_resume_stopped` with reason `declined`; manual Resume remains available.
+Under the operation lock, an existing continuation makes Decline return 409
+without recording a stop.
+Task rows and candidates share one eligibility predicate: a limited turn that can
+never resume automatically, such as an artifact edit, shows `stopped` with reason
+`not_resumable`, and Decline on it records nothing.
+
+Automatic resume uses current member identity and request-free write admission,
+with the same operation lock, project membership and new-work checks and
+single-entry exemption. Space chats require current space membership. Missing
+membership or display name stops recovery. `resume_task` revalidates the saved
+request and skills and takes chat worktree recovery admission; the HTTP wrapper
+owns status-code mapping. A continuation is created with `limit_auto_resume`
+atomically. An already-created continuation completes allocation; a proven-unstarted
+queued continuation still needs dispatch through ordinary admitted-launch validation.
+
+Limited logins, admission conflicts, active-task conflicts, operating-system
+errors and unavailable state defer with `limit_auto_resume_deferred`. Another
+attempt waits `LIMIT_RESUME_RETRY_SECONDS`. At `LIMIT_RESUME_DEFER_MAX` deferrals,
+recovery stops; receipts never exceed that cap. Decision, continuation, deferral and
+stopped receipts are protected from ordinary receipt-count pruning. Other errors, including sign-out,
+missing dependencies, lost membership, invalid requests and missing native
+sessions, stop with their reason. Three consecutive automatically resumed turns
+(the turn and its two nearest parents) stop another automatic continuation under
+`LIMIT_AUTO_RESUME_MAX`. A crash before continuation leaves the next poll free to
+retry; one turn's error never ends the poll.
+
+Task rows expose the reset, its estimated flag, and `waiting` or `stopped` state.
+An explicit stopped receipt supplies its reason; otherwise a disabled member
+switch supplies `switch_off`.
+
+The member's switch sits in the chat ⋯ menu below Browser use and reads the same in
+every chat. A limited turn shows one line with its action at the end: waiting offers
+Don't resume; stopped offers Resume and Retry, and its reason on hover.
+
 ## Watcher resources
 
 Project Work, Space thread and Experiment invocations receive their current

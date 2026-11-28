@@ -1244,6 +1244,7 @@ class SpaceTurnBody(BaseModel):
     )
     invoked_workflow_ids: list[str] = Field(default_factory=list)
     invoked_skill_ids: list[str] = Field(default_factory=list)
+    compact_first: bool = False
 
     @model_validator(mode="after")
     def validate_attachment_pair(self) -> Self:
@@ -1369,6 +1370,7 @@ def space_turn(
                         "mode": "work",
                         "message": message,
                         "timezone": payload.timezone,
+                        "compact_first": payload.compact_first,
                         "artifact_context": artifact_context,
                         "browser_requested": store.chat_browser_requested(
                             store.space_id, thread_id

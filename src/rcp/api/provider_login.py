@@ -68,6 +68,30 @@ CredentialsDependency = Annotated[ProviderCredentialStore, Depends(get_provider_
 SignInsDependency = Annotated[ProviderSignInRunner, Depends(get_provider_sign_ins)]
 
 
+class LimitResumeSetting(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    enabled: bool
+
+
+@router.get("/api/providers/limit-resume")
+def get_limit_resume_setting(request: Request, store: StoreDependency) -> LimitResumeSetting:
+    member = get_identity_access(request).acting_user(request)
+    current = store.space_user(member.user_id)
+    if current is None:
+        raise HTTPException(403, "Unknown member.")
+    return LimitResumeSetting(enabled=current.auto_resume_after_limits)
+
+
+@router.put("/api/providers/limit-resume")
+def put_limit_resume_setting(
+    body: LimitResumeSetting, request: Request, store: StoreDependency
+) -> LimitResumeSetting:
+    member = get_identity_access(request).acting_user(request)
+    store.set_auto_resume_after_limits(member.user_id, body.enabled)
+    return body
+
+
 class ProviderAccountRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     machine_id: str = Field(min_length=1)
@@ -113,6 +137,8 @@ class ProviderLoginAccount(BaseModel):
     added_at: str | None
     signed_in_by_display_name: str | None
     limited_at: str | None
+    limit_resets_at: str | None
+    limit_reset_estimated: bool
     draining_since: str | None
     bound_running: int
     machines: list[str]

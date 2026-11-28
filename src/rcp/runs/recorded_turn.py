@@ -89,6 +89,12 @@ class RecordedProviderTurn:
         return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
 
     @property
+    def compact_first(self) -> bool:
+        """Whether the pass compacted its session before its prompt."""
+
+        return self.outcome.get("compact_first") is True
+
+    @property
     def steer_requests(self) -> dict[str, object]:
         value = self.outcome.get("steer_requests")
         return {str(key): item for key, item in value.items()} if isinstance(value, dict) else {}
@@ -231,7 +237,9 @@ def decode_recorded_turn(
     so there is no second opinion to keep in agreement with this one.
     """
 
-    request = dataclasses.replace(request, provider_version=recorded.provider_version)
+    request = dataclasses.replace(
+        request, provider_version=recorded.provider_version, compact_first=recorded.compact_first
+    )
     turn = profile_for(recorded.provider).runtime(recorded.runtime_id).turn(request)
     turn.initial_input()
     # Before a single output line: a turn that does not know which inputs it sent
@@ -256,6 +264,7 @@ def decode_recorded_turn(
                 text=item.text,
                 session_id=item.session_id,
                 usage=item.usage,
+                rate_limit=item.rate_limit,
                 status=item.status,
             )
             for item in step.events

@@ -435,3 +435,53 @@ def test_auto_research_retry_probes_authorizer_or_lineage_login(tmp_path, monkey
     assert seen == [selected[0].login_id]
     assert retried.authorized_by == episode.authorized_by
     assert store.episode_budget_meter(episode.episode_id).invocations_used == before
+
+
+def test_remote_usage_probe_forwards_stdin_and_login_environment(tmp_path, monkeypatch):
+    import json
+
+    from rcp.agents import launcher as launcher_module
+    from rcp.agents.provider_environment import ProviderProcessEnvironment
+    from rcp.providers.codex.profile import CodexProfile
+
+    ssh = tmp_path / "fake-ssh"
+    ssh.write_text(
+        f"#!{sys.executable}\n"
+        "import os, shlex, sys\n"
+        "assert sys.argv[1] == 'compute.example'\n"
+        "shell, option, payload = shlex.split(sys.argv[2])\n"
+        "assert (shell, option) == ('bash', '-lic')\n"
+        "os.execv('/bin/sh', ['sh', '-c', payload])\n"
+    )
+    ssh.chmod(0o755)
+    binary = tmp_path / "fake-codex"
+    binary.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "assert sys.argv[1:] == ['app-server', '--stdio']\n"
+        "assert os.environ['RCP_PROBE_LOGIN'] == 'remote-login'\n"
+        "assert os.environ['RCP_PROBE_WRAPPER'] == 'active'\n"
+        "messages = [json.loads(line) for line in sys.stdin]\n"
+        "assert [message['method'] for message in messages] == "
+        "['initialize', 'initialized', 'account/rateLimits/read']\n"
+        "print(json.dumps({'id': 2, 'result': {'rateLimits': "
+        "{'primary': {'usedPercent': 100, 'resetsAt': 1795833600}}}}))\n"
+    )
+    binary.chmod(0o755)
+    monkeypatch.setattr(
+        launcher_module, "ssh_arguments", lambda host, command: [str(ssh), host, command]
+    )
+    probe = CodexProfile().limit_probe(str(binary))
+    result = AgentLauncher._probe(
+        "compute.example",
+        probe.command,
+        stdin=probe.stdin,
+        environment=ProviderProcessEnvironment(
+            remote_prefix="export RCP_PROBE_LOGIN=remote-login",
+            command_prefix=("env", "RCP_PROBE_WRAPPER=active"),
+            local_env={"RCP_PROBE_LOGIN": "wrong-local-login"},
+        ),
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["id"] == 2
+    assert probe.parser(result.stdout)["primary"]["usedPercent"] == 100

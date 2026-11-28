@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, cast
 
 from rcp.core.models import AuthorizedHuman
 from rcp.machine_cards import BACKEND_MACHINE_ID, host_of
-from rcp.providers import classify_terminal_error
 from rcp.runs.provider_login import ProviderSignedOut
 from rcp.runs.provider_process import require_remote_provider_quiescence
 from rcp.runs.task_policy import AgentTaskContinuation, AgentTaskRequest, skill_update
@@ -392,7 +391,7 @@ def record_bound_experiment_session_limit(
         or request.patch_kind != "experiment_loop"
         or not request.control_episode_id
         or not request.control_node_id
-        or classify_terminal_error(error) != "session_limit"
+        or tasks.store.failure_classification(record.operation_id, error) != "session_limit"
     ):
         return
     episode = tasks.store.experiment_episode(request.control_episode_id)

@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import uuid
+from collections.abc import Callable
 from dataclasses import replace
+from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
 from rcp.providers.agy.remote import AgyStreamTurnFence, agy_agent_name
 from rcp.providers.base import (
     AgentCapability,
+    AgentCompaction,
     AgentStatusDelta,
     ModelChoice,
+    ProviderLimitProbe,
     ProviderNativeUpdate,
     ProviderProfile,
     ProviderRuntime,
@@ -29,8 +34,11 @@ from rcp.providers.base import (
     _require_project_write_scope,
     _require_provider_version,
     _usage_int,
+    compaction_failed_text,
 )
 from rcp.providers.browser_grant import BrowserGrant
+from rcp.providers.turn_fence import COMPACT_COMMAND
+from rcp.providers.usage_limits import LimitEvidence, _exhausted_windows, _iso_timestamp
 
 if TYPE_CHECKING:
     from rcp.agents.invocation_broker import ProviderInvocationGate
@@ -50,16 +58,27 @@ _FILE_TOOLS = (
     "notebook_edit",
 )
 _WEB_TOOLS = ("search_web", "read_url_content")
-_SHELL_TOOLS = ("run_command", "command_status", "send_command_input")
-_SUBAGENT_TOOLS = ("define_subagent", "invoke_subagent", "manage_subagents", "wait")
 _WORK = {"work_auto", "orchestrate"}
 
 
-def _tools(capability: AgentCapability) -> tuple[str, ...]:
-    result = _FILE_TOOLS + _WEB_TOOLS
+def _tools(capability: AgentCapability) -> tuple[str, ...] | None:
+    """A narrower launch's tools, pinned through an agy agent; Work keeps agy's own set.
+
+    agy bills a request made through `--agent` as a custom-agent request, so Work and
+    orchestrator turns, which are nearly all agy traffic, launch without one.
+    """
     if capability in _WORK:
-        return result + _SHELL_TOOLS + _SUBAGENT_TOOLS
-    return result
+        return None
+    return _FILE_TOOLS + _WEB_TOOLS
+
+
+def _policy_head(
+    binary: str, policy: dict[str, object], tools: tuple[str, ...] | None
+) -> tuple[list[str], list[str]]:
+    """The wrapper options before the provider flags, and the `--agent` pair if any."""
+    head = [binary] + (["--rcp-agy-tools", json.dumps(tools)] if tools is not None else [])
+    agent = ["--agent", agy_agent_name(policy, tools)] if tools is not None else []
+    return head, agent
 
 
 def _protected_write_denies(scope: ProviderWriteScope | None) -> list[str]:
@@ -172,17 +191,19 @@ class _AgyStreamTurn(ProviderTurn):
         self.results = 0
         self.ready = False
         self.completed = False
+        self.compacting = request.compact_first
         self._held_text: tuple[object, str] | None = None
 
     def initial_input(self) -> bytes:
-        return self._input(self.prompt)
+        return self._input(COMPACT_COMMAND if self.compacting else self.prompt)
 
     @staticmethod
     def _input(text: str) -> bytes:
         return (json.dumps({"event": "user", "message": {"content": text}}) + "\n").encode()
 
     def steering_state(self) -> ProviderSteeringState:
-        return ProviderSteeringState(self.ready and not self.completed, turn_id=self.ids[0])
+        can_steer = self.ready and not self.completed and not self.compacting
+        return ProviderSteeringState(can_steer, turn_id=self.ids[0])
 
     def render_steer(self, expected_turn_id: str, message_id: str, text: str) -> bytes:
         if not self.steering_state().can_steer or expected_turn_id != self.ids[0]:
@@ -195,6 +216,8 @@ class _AgyStreamTurn(ProviderTurn):
     def adopt_recorded_inputs(
         self, message_ids: list[str], steer_requests: dict[str, object]
     ) -> None:
+        if self.compacting:
+            message_ids = message_ids[1:]
         if message_ids:
             self.ids = list(message_ids)
 
@@ -217,6 +240,8 @@ class _AgyStreamTurn(ProviderTurn):
                 )
             if value.get("event") == "init":
                 self.ready = True
+            if value.get("event") == "result" and self.compacting:
+                return self._compacted(event)
             if value.get("event") == "result":
                 self.results += 1
                 self.completed = event.event == "error" or self.results >= len(self.ids)
@@ -227,6 +252,25 @@ class _AgyStreamTurn(ProviderTurn):
             complete=self.completed,
             explicit_terminal=self.completed,
             stop_process=event.event == "error",
+        )
+
+    def _compacted(self, event: ProviderStreamEvent) -> ProviderRuntimeStep:
+        """The compaction input's result: write the held prompt, or fail without it."""
+
+        self.compacting = False
+        if event.event == "error":
+            self.completed = True
+            self.last_error = compaction_failed_text(event.text)
+            return ProviderRuntimeStep(
+                events=(replace(event, text=self.last_error),),
+                complete=True,
+                explicit_terminal=True,
+                stop_process=True,
+            )
+        compacted = AgentStatusDelta(compaction=AgentCompaction(trigger="manual"))
+        return ProviderRuntimeStep(
+            outgoing=(self._input(self.prompt),),
+            events=(ProviderStreamEvent(event="raw", status=compacted),),
         )
 
     def _hold_text(self, value: dict[str, object]) -> str | None:
@@ -259,6 +303,7 @@ class _AgyStreamTurn(ProviderTurn):
 class _AgyStreamRuntime(ProviderRuntime):
     id = _RUNTIME
     steering_behavior = "queue"
+    supports_compact_first = True
 
     def turn(self, request: ProviderTurnRequest) -> ProviderTurn:
         return _AgyStreamTurn(AgyProfile(), request)
@@ -289,6 +334,28 @@ class AgyProfile(ProviderProfile):
     )
     login_home_credentials = (".gemini/antigravity-cli/antigravity-oauth-token",)
 
+    def limit_text_reset(self, error: str, failed_at: datetime) -> datetime | None:
+        match = re.search(r"resets in\s+(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?", error, re.I)
+        if match and any(match.groups()):
+            hours, minutes, seconds = (int(value or 0) for value in match.groups())
+            return failed_at + timedelta(hours=hours, minutes=minutes, seconds=seconds)
+        return None
+
+    def limit_evidence(self, snapshot: dict[str, object]) -> LimitEvidence:
+        groups = snapshot.get("groups")
+        if not isinstance(groups, list):
+            raise ValueError("Antigravity usage has no groups list")
+        windows: list[tuple[bool, datetime | None]] = []
+        for group in groups:
+            if not isinstance(group, dict) or not isinstance(group.get("buckets"), list):
+                raise ValueError("Antigravity usage group has no buckets list")
+            for bucket in group["buckets"]:
+                remaining = bucket.get("remaining_fraction") if isinstance(bucket, dict) else None
+                if isinstance(remaining, bool) or not isinstance(remaining, (int, float)):
+                    raise ValueError("Antigravity usage bucket has no remaining_fraction")
+                windows.append((remaining <= 0, _iso_timestamp(bucket.get("reset_time"))))
+        return _exhausted_windows(windows)
+
     @property
     def authentication(self) -> AgyAuthentication:
         from rcp.providers.agy.auth import AgyAuthentication
@@ -313,6 +380,22 @@ class AgyProfile(ProviderProfile):
 
     def login_command(self, binary: str) -> list[str]:
         return [binary, "acp", "--login"]
+
+    def parse_limit_usage(self, stdout: str) -> dict[str, object]:
+        payload = json.loads(stdout)
+        command = payload.get("command") if isinstance(payload, dict) else None
+        data = command.get("data") if isinstance(command, dict) else None
+        if not isinstance(data, dict):
+            raise ValueError("Antigravity usage has no command.data")
+        self.limit_evidence(data)
+        return data
+
+    @property
+    def limit_probe(self) -> Callable[[str], ProviderLimitProbe]:
+        return self._limit_probe
+
+    def _limit_probe(self, binary: str) -> ProviderLimitProbe:
+        return ProviderLimitProbe(self.login_probe_command(binary), "", self.parse_limit_usage)
 
     def login_probe_command(self, binary: str) -> list[str]:
         return [binary, "-p", "/usage", "--output-format", "json"]
@@ -353,18 +436,13 @@ class AgyProfile(ProviderProfile):
 
     def work_like_probe_command(self, binary: str) -> list[str]:
         policy = _policy("work_auto", Path.cwd(), [], None, None)
-        tools = _tools("work_auto")
         return [
             binary,
-            "--rcp-agy-tools",
-            json.dumps(tools),
             "--rcp-agy-probe",
             "--input-format",
             "stream-json",
             "--output-format",
             "stream-json",
-            "--agent",
-            agy_agent_name(policy, tools),
             "--settings",
             json.dumps(policy),
             "--mode",
@@ -442,17 +520,14 @@ class AgyProfile(ProviderProfile):
             request.hidden_read_scope,
             request.invocation_gate,
         )
-        tools = _tools(request.capability)
+        head, agent = _policy_head(request.binary, policy, _tools(request.capability))
         command = [
-            request.binary,
-            "--rcp-agy-tools",
-            json.dumps(tools),
+            *head,
             "--input-format",
             "stream-json",
             "--output-format",
             "stream-json",
-            "--agent",
-            agy_agent_name(policy, tools),
+            *agent,
             "--settings",
             json.dumps(policy, separators=(",", ":")),
             "--mode",
@@ -493,7 +568,7 @@ class AgyProfile(ProviderProfile):
         if (
             value.get("event") != "step_update"
             or not isinstance(step, dict)
-            or step.get("step_type") != "agent_response"
+            or step.get("step_type") not in {"agent_response", "checkpoint"}
             or step.get("state") != "DONE"
         ):
             return None
@@ -505,7 +580,7 @@ class AgyProfile(ProviderProfile):
         outgoing = _usage_int(usage.get("output_tokens"))
         return ProviderUsage(
             provider_profile=self.usage_profile,
-            provider_event_type="agent_response",
+            provider_event_type=str(step.get("step_type")),
             dedupe_key=f"{step.get('conversation_id')}:{step.get('step_index')}",
             processed_input_tokens=incoming + cached,
             generated_tokens=outgoing,

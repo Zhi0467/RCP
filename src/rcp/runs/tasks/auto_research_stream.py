@@ -72,7 +72,6 @@ from rcp.core.transition_models import GraphHeadRef
 from rcp.limits import PATCH_CORRECTION_MAX_ROUNDS
 from rcp.loop_status import other_branch_auto_research, other_branch_loops
 from rcp.machine_cards import BACKEND_MACHINE_ID, card
-from rcp.providers import classify_terminal_error
 from rcp.providers.browser_grant import BrowserGrant, browser_prompt_line
 from rcp.runs.agent_names import resolve_agent_name_state
 from rcp.runs.auto_research import (
@@ -1021,24 +1020,16 @@ def _is_authorized_clean_actor_retry(
     ):
         return True
     receipts = execution.store.agent_task_receipts(parent.operation_id)
-    session_limit = any(
-        receipt.category == "provider_terminal_error"
-        and receipt.payload.get("classification") == "session_limit"
-        for receipt in receipts
-    ) or (bool(parent.error) and classify_terminal_error(parent.error or "") == "session_limit")
+    terminal = execution.store.failure_classification(parent.operation_id, parent.error or "")
+    session_limit = terminal == "session_limit"
     continuation_unavailable = any(
         receipt.category == "continuation_context_unavailable"
         and receipt.payload.get("retry_required") is True
         for receipt in receipts
     )
-    native_resume_unavailable = any(
-        receipt.category == "codex_resume_refused"
-        or (
-            receipt.category == "provider_terminal_error"
-            and receipt.payload.get("classification") == "stale_session"
-        )
-        for receipt in receipts
-    ) or (bool(parent.error) and classify_terminal_error(parent.error or "") == "stale_session")
+    native_resume_unavailable = terminal == "stale_session" or any(
+        receipt.category == "codex_resume_refused" for receipt in receipts
+    )
     if not session_limit and not continuation_unavailable and not native_resume_unavailable:
         return False
 

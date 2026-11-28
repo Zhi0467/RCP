@@ -171,7 +171,7 @@ def test_limit_marks_require_a_later_provider_start(tmp_path, monkeypatch):
         )
     assert store.provider_login_assignment(key).limited_at == store.now()
     assert not store.provider_login_limited(key, now="2026-01-01T09:00:00+00:00")
-    assert store.provider_login_limited(key, now="2026-01-01T09:00:00+00:00", continued=True)
+    assert not store.provider_login_limited(key, now="2026-01-01T09:00:00+00:00")
     assert store.set_provider_login_limit(
         key, provider_started_at="2026-01-01T04:00:00+00:00", limited=False
     )
@@ -280,7 +280,8 @@ def test_assignment_clock_does_not_invalidate_settings(tmp_path):
             "SELECT generation FROM resource_versions WHERE scope='' AND resource='settings' AND entity=''"
         ).fetchone()[0]
     assert before == after
-    assert store.agent_task("task").login_id == MACHINE_LOGIN_ID
+    task = store.agent_task("task")
+    assert task is not None and task.login_id == MACHINE_LOGIN_ID
 
 
 @pytest.mark.parametrize(
@@ -297,7 +298,7 @@ def test_setting_lookup_prefers_host_then_fallback_then_space_default(tmp_path, 
     store.set_provider_login_setting("member", "claude", "worker", "shared_then_own")
     assert store.provider_login_setting("member", "claude", "worker").setting == "shared_then_own"
     with pytest.raises(ValueError):
-        store.set_provider_login_setting("member", "claude", "*", "own")
+        store.set_provider_login_setting("member", "claude", "*", "own_then_shared")
 
 
 def test_removed_own_login_can_be_replaced_without_losing_history(tmp_path):

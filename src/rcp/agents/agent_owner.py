@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from fastapi import HTTPException, Request
 
 from rcp.agents.agent_profile import OFFER, AgentProfile, Placement, resolve_agent_profile
+from rcp.core.models import AuthorizedHuman
+from rcp.keyed_locks import KeyedLocks
 from rcp.storage import AgentTaskRecord, AppStore
 from rcp.storage.agents import AgentRecord
 from rcp.storage.models import AgentTaskKind
@@ -59,6 +61,25 @@ class AgentOwner:
 def chat_turn_kind(chat_scope: object) -> AgentTaskKind:
     """The task kind of a project agent's turn in this chat scope."""
     return "node_chat" if chat_scope == "node" else "project_chat"
+
+
+def is_chat_turn(task: AgentTaskRecord) -> bool:
+    return task.kind in {"project_chat", "node_chat", "space_chat"}
+
+
+def limit_resume_eligible(task: AgentTaskRecord) -> bool:
+    """Whether a usage-limited turn can ever be resumed automatically.
+
+    The resume candidates and the task row's limit state share this decision,
+    so a row never promises a resume the backend will not perform.
+    """
+    return (
+        is_chat_turn(task)
+        and task.episode_id is None
+        and not task.history_only
+        and task.visible
+        and task.request.get("chat_id") is not None
+    )
 
 
 def resolve_agent(
@@ -154,3 +175,45 @@ def comment_write_admission(scope_id: str, request: Request) -> Iterator[None]:
         with project_write_admission(scope_id, request):
             require_comment_writable(scope_id, request)
             yield
+
+
+class LimitResumeMemberGone(ValueError):
+    pass
+
+
+@contextmanager
+def task_write_admission_as(
+    task: AgentTaskRecord,
+    authorized_by: AuthorizedHuman,
+    *,
+    store: AppStore,
+    operation_lock: KeyedLocks,
+) -> Iterator[None]:
+    with operation_lock(task.project_id):
+        member = store.space_user(authorized_by.user_id)
+        expected_kind = "local_owner" if store.space_kind == "personal" else "team_member"
+        if (
+            member is None
+            or member.identity_kind != expected_kind
+            or not member.display_name
+            or member.removal_started_at is not None
+            or member.removed_at is not None
+            or authorized_by.space_id != store.space_id
+        ):
+            raise LimitResumeMemberGone("The authorizing member no longer has access.")
+        agent = store.agent(str(task.request.get("chat_id") or ""))
+        if (
+            agent is not None
+            and agent.visibility == "private"
+            and agent.owner_user_id != member.user_id
+        ):
+            raise LimitResumeMemberGone("The authorizing member no longer owns this conversation.")
+        thread = store.agent_thread(str(task.request.get("chat_id") or ""))
+        if thread is not None and thread.closed_at is not None:
+            raise ValueError("The conversation is closed.")
+        if task.project_id != store.space_id:
+            if not store.is_project_member(task.project_id, member.user_id):
+                raise LimitResumeMemberGone("The authorizing member is no longer a project member.")
+            if agent is None or agent.entry != "single_entry":
+                store.require_project_accepts_new_work(task.project_id)
+        yield

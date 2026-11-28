@@ -391,7 +391,6 @@ class ProviderAccounts:
         def limited(row: ProviderLoginStateRecord) -> bool:
             return self.store.provider_login_limited(
                 key_for(row),
-                continued=previous_login is not None and key_for(row) != previous_login,
                 connection=connection,
             )
 

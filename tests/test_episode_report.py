@@ -72,6 +72,11 @@ class _ReportLauncher:
         if outcome == "refused":
             yield AgentEvent(event="error", text="invalid_encrypted_content")
             return
+        if outcome == "limited":
+            yield AgentEvent(event="session", session_id="native-session")
+            yield AgentEvent(event="rate_limit", rate_limit=LIMITED_SNAPSHOT)
+            yield AgentEvent(event="error", text="provider temporarily failed")
+            return
         if outcome == "error":
             yield AgentEvent(event="session", session_id="native-session")
             yield AgentEvent(event="error", text="provider temporarily failed")
@@ -736,6 +741,21 @@ async def test_intermediate_provider_error_is_suppressed_and_retried(
     attempts = store.episode_report_attempts(EPISODE)
     assert [attempt.status for attempt in attempts] == ["failed", "succeeded"]
     assert attempts[0].error == expected_error
+
+
+LIMITED_SNAPSHOT: dict[str, object] = {"status": "rejected", "resetsAt": 1_900_000_000}
+
+
+@pytest.mark.asyncio
+async def test_report_attempt_forwards_its_usage_limit_snapshot(manifest, tmp_path) -> None:
+    service, _store, request, execution, _stage = _setup_report(manifest, tmp_path)
+    launcher = _ReportLauncher(["limited", "valid"])
+
+    events = await _events(stream_episode_report_run(service, launcher, request, execution))
+
+    assert [event.rate_limit for event in events if event.event == "rate_limit"] == [
+        LIMITED_SNAPSHOT
+    ]
 
 
 @pytest.mark.asyncio

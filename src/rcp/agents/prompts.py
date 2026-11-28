@@ -623,7 +623,9 @@ For a graph condition use `graph` instead of `checks`, e.g.
 {"purpose":"Wait for review","graph":{"node_id":"hyp/foo","proposal_resolved":true}}.
 Edit a file to change the watcher. Delete it to cancel the watcher. Cancelling
 never ends jobs. When you cancel, resubmit, or replace a job, update its watcher
-file in the same turn."""
+file in the same turn. A watcher is the only way to be woken later: never use your
+own scheduling, cron, reminder, or background-agent tools, since nothing they start
+outlives this turn."""
 
 
 def watcher_section(folder: str) -> str:
@@ -945,7 +947,7 @@ _INLINE_CONTINUATION_RULES = {
 # Bumped by hand when the stable policy prose of `discuss_task_contract` changes.
 DISCUSS_POLICY_VERSION = "discuss-v19"
 # Bumped by hand when the stable policy prose of `work_task_contract` changes.
-WORK_POLICY_VERSION = "work-v45"
+WORK_POLICY_VERSION = "work-v46"
 
 
 class PromptFactory:

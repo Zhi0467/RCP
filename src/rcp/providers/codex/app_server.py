@@ -8,6 +8,7 @@ from rcp.providers.base import (
     AgentCompaction,
     AgentStatusDelta,
     AgentSubagent,
+    ProviderLimitProbe,
     ProviderRuntime,
     ProviderRuntimeStep,
     ProviderSteeringState,
@@ -18,6 +19,7 @@ from rcp.providers.base import (
     ProviderUsage,
     _require_project_write_scope,
     _require_provider_version,
+    compaction_failed_text,
 )
 from rcp.providers.codex.profile import (
     _CODEX_SUMMARY_TOOLS,
@@ -37,6 +39,7 @@ _INITIALIZE_ID = 1
 _CONFIG_READ_ID = 2
 _THREAD_ID = 3
 _TURN_ID = 4
+_COMPACT_ID = 5
 _HOOK_EVENTS = (
     "PreToolUse",
     "PermissionRequest",
@@ -57,6 +60,7 @@ class CodexAppServerRuntime(ProviderRuntime):
 
     id = CODEX_APP_SERVER_RUNTIME_ID
     steering_behavior = "inject"
+    supports_compact_first = True
 
     def turn(self, request: ProviderTurnRequest) -> ProviderTurn:
         return _CodexAppServerTurn(request)
@@ -195,15 +199,19 @@ class _CodexAppServerTurn(ProviderTurn):
                     "unknown", "The provider did not acknowledge the addressed turn."
                 )
             return ProviderRuntimeStep(steer_receipts=((message_id, receipt),))
-        if request_id not in {_INITIALIZE_ID, _CONFIG_READ_ID, _THREAD_ID, _TURN_ID}:
+        if request_id not in {_INITIALIZE_ID, _CONFIG_READ_ID, _THREAD_ID, _TURN_ID, _COMPACT_ID}:
             return self._protocol_error(
                 f"Codex app-server returned an unknown response id {request_id!r}."
             )
         error = value.get("error")
+        if error is not None and request_id == _COMPACT_ID:
+            return self._protocol_error(compaction_failed_text(_error_text(error)))
         if error is not None:
             return self._protocol_error(
                 f"Codex app-server request {request_id} failed: {_error_text(error)}"
             )
+        if request_id == _COMPACT_ID:
+            return ProviderRuntimeStep()
         result = value.get("result")
         if not isinstance(result, dict):
             return self._protocol_error(
@@ -273,20 +281,19 @@ class _CodexAppServerTurn(ProviderTurn):
             if enforcement_problem is not None:
                 return self._protocol_error(enforcement_problem)
             self._thread_id = thread_id
+            session = ProviderStreamEvent(event="session", session_id=thread_id)
+            if self._request.compact_first:
+                self._phase = "compacting"
+                compact = {
+                    "id": _COMPACT_ID,
+                    "method": "thread/compact/start",
+                    "params": {"threadId": thread_id},
+                }
+                return ProviderRuntimeStep(
+                    outgoing=(_rpc_bytes(compact),), events=(session,), delivers_prompt=True
+                )
             self._phase = "turn"
-            return ProviderRuntimeStep(
-                outgoing=(
-                    _rpc_bytes(
-                        {
-                            "id": _TURN_ID,
-                            "method": "turn/start",
-                            "params": self._turn_params(thread_id),
-                        }
-                    ),
-                ),
-                events=(ProviderStreamEvent(event="session", session_id=thread_id),),
-                delivers_prompt=True,
-            )
+            return replace(self._start_turn(), events=(session,), delivers_prompt=True)
         if self._phase != "turn":
             return self._protocol_error("Codex app-server turn arrived out of order.")
         turn = result.get("turn")
@@ -295,6 +302,15 @@ class _CodexAppServerTurn(ProviderTurn):
         self._turn_id = str(turn["id"])
         self._phase = "running"
         return ProviderRuntimeStep()
+
+    def _start_turn(self) -> ProviderRuntimeStep:
+        assert self._thread_id is not None
+        request = {
+            "id": _TURN_ID,
+            "method": "turn/start",
+            "params": self._turn_params(self._thread_id),
+        }
+        return ProviderRuntimeStep(outgoing=(_rpc_bytes(request),))
 
     def _thread_params(self, config: dict[str, object]) -> dict[str, object]:
         if self._request.capability == "session_summary":
@@ -362,6 +378,13 @@ class _CodexAppServerTurn(ProviderTurn):
             and params["turnId"] != self._turn_id
         ):
             return ProviderRuntimeStep()
+        if method == "account/rateLimits/updated":
+            snapshot = params.get("rateLimits")
+            if isinstance(snapshot, dict):
+                return ProviderRuntimeStep(
+                    events=(ProviderStreamEvent(event="rate_limit", rate_limit=snapshot),)
+                )
+            return ProviderRuntimeStep()
         if method == "thread/tokenUsage/updated":
             usage = params.get("tokenUsage")
             turn_id = params.get("turnId")
@@ -376,7 +399,7 @@ class _CodexAppServerTurn(ProviderTurn):
                 or not isinstance(turn_id, str)
             ):
                 return ProviderRuntimeStep()
-            if self._turn_id is None and self._phase in {"thread", "turn"}:
+            if self._turn_id is None and self._phase in {"thread", "compacting", "turn"}:
                 self._usage_baseline = dict(usage["total"])
             elif self._phase == "running" and turn_id == self._turn_id:
                 last = usage.get("last")
@@ -417,10 +440,11 @@ class _CodexAppServerTurn(ProviderTurn):
             # notification repeats this item and is deliberately ignored.
             if item_type == "contextCompaction":
                 started = method == "item/started"
+                trigger = "manual" if self._phase == "compacting" else "auto"
                 return _status_step(
                     AgentStatusDelta(compacting=True)
                     if started
-                    else AgentStatusDelta(compaction=AgentCompaction(trigger="auto"))
+                    else AgentStatusDelta(compaction=AgentCompaction(trigger=trigger))
                 )
             if item_type == "collabAgentToolCall":
                 return _status_step(*_collab_subagents(item))
@@ -441,9 +465,10 @@ class _CodexAppServerTurn(ProviderTurn):
                 )
             return ProviderRuntimeStep()
         if method == "error" and params.get("willRetry") is not True:
-            return self._protocol_error(
-                _error_text(params.get("error")) or "Codex app-server turn failed."
-            )
+            detail = _error_text(params.get("error")) or "Codex app-server turn failed."
+            if self._phase == "compacting":
+                detail = compaction_failed_text(detail)
+            return self._protocol_error(detail)
         if method != "turn/completed":
             return ProviderRuntimeStep()
         turn = params.get("turn")
@@ -455,7 +480,12 @@ class _CodexAppServerTurn(ProviderTurn):
         status = turn.get("status")
         if status != "completed":
             detail = _error_text(turn.get("error")) or f"Codex turn ended with status {status!r}."
+            if self._phase == "compacting":
+                detail = compaction_failed_text(detail)
             return self._protocol_error(detail)
+        if self._phase == "compacting":
+            self._phase = "turn"
+            return self._start_turn()
         events = (
             (ProviderStreamEvent(event="raw", usage=self._usage),)
             if self._usage is not None
@@ -703,3 +733,32 @@ def _usage_int(value: object) -> int:
 
 def _rpc_bytes(value: dict[str, object]) -> bytes:
     return (json.dumps(value, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def limit_probe(binary: str) -> ProviderLimitProbe:
+    messages: tuple[dict[str, object], ...] = (
+        {
+            "id": 1,
+            "method": "initialize",
+            "params": {"clientInfo": {"name": "rcp", "version": "1"}},
+        },
+        {"method": "initialized", "params": {}},
+        {"id": 2, "method": "account/rateLimits/read", "params": {}},
+    )
+    return ProviderLimitProbe(
+        command=[binary, "app-server", "--stdio"],
+        stdin=b"".join(_rpc_bytes(message) for message in messages).decode(),
+        parser=_parse_limit_probe,
+    )
+
+
+def _parse_limit_probe(stdout: str) -> dict[str, object]:
+    for line in stdout.splitlines():
+        value = json.loads(line)
+        if not isinstance(value, dict) or value.get("id") != 2:
+            continue
+        result = value.get("result")
+        if isinstance(result, dict) and isinstance(result.get("rateLimits"), dict):
+            return result["rateLimits"]
+        raise ValueError(f"Codex account/rateLimits/read failed: {value}")
+    raise ValueError("Codex account/rateLimits/read returned no response")

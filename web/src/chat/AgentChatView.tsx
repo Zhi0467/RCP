@@ -18,6 +18,8 @@ import { ChatBranchPicker, ChatOriginLink } from "./ChatBranchPicker";
 import { ChatComposer, ComposerField } from "./ChatComposer";
 import { AgentPane, useAgentPaneLayout, useChatArtifacts } from "./AgentPane";
 import { ChatHeaderMenu, type ChatHeaderAction } from "./ChatHeaderMenu";
+import { LimitTaskRow } from "../agents/LimitTaskRow";
+import { LimitResumeToggle } from "./LimitResumeToggle";
 import { AgentHeader, AgentPickRow } from "./AgentHeader";
 import type { ChatAgentSetup, ChatOrigin } from "../core/types";
 import { MAIN_GRAPH, sameGraphTarget } from "../core/graphTarget";
@@ -109,6 +111,7 @@ import {
   chatIdForTask,
   latestPersistedChatConfig,
   originRunConfig,
+  providerSwitchStartsFreshSession,
   retryRefillsComposer,
   startConversationTurn,
   type ConversationTurnSubmission,
@@ -123,6 +126,8 @@ import { useInlineArtifactComments } from "./inlineArtifactComments";
 import type { DockThreads } from "../comments/react/useComments";
 import { createScopedCommentsClient, type CommentScope } from "../comments/api.ts";
 import { createComposerDraft, useComposerDraft, type ComposerDraft } from "./composerDraft";
+import { compactOffer, compactionUnsent, type CompactOffer } from "./compactOffer";
+import { CompactOfferDialog } from "./CompactOfferDialog";
 import {
   chooseRecordingFormat,
   liveDictationSpan,
@@ -539,6 +544,7 @@ export function AgentChatView({
   const [dictationStartedAt, setDictationStartedAt] = useState<number | null>(null);
   const [dictationPiecesBusy, setDictationPiecesBusy] = useState(0);
   const [discardPrompt, setDiscardPrompt] = useState<"dictate" | "send" | null>(null);
+  const [compactAsk, setCompactAsk] = useState<CompactOffer | null>(null);
   const [dictationDeadline, setDictationDeadline] = useState<number | null>(null);
   const [dictationClock, setDictationClock] = useState(() => Date.now());
   const [sendAfterDictation, setSendAfterDictation] = useState<{
@@ -729,6 +735,15 @@ export function AgentChatView({
     void feed?.refresh();
     return task;
   };
+  const declineLimitResume = async (task: AgentTask) => {
+    setSubmitError(null);
+    try {
+      await endpoints.declineLimitResume(task.operation_id);
+      await onRefreshTask(task.operation_id);
+    } catch (error) {
+      setSubmitError(errorMessage(error));
+    }
+  };
   const attachDisabled = composer.full || composer.preparing || submitting || awaitingSteerReceipt;
   const attachmentsUnready = composer.unready;
   const dictating = dictationState !== "idle" && dictationState !== "error";
@@ -911,6 +926,21 @@ export function AgentChatView({
     setSupersedes({ chatId, operationId: task.operation_id });
     textareaRef.current?.focus();
   };
+
+  const compactingTurns = useRef(new Set<string>());
+  const refillUnsent = useEffectEvent((task: AgentTask) => {
+    if (draft.get().trim() || typeof task.request.message !== "string") return;
+    updateMessage(task.request.message);
+    textareaRef.current?.focus();
+  });
+  useEffect(() => {
+    for (const task of relatedTasks) {
+      if (!task.request.compact_first) continue;
+      if (!task.finished) compactingTurns.current.add(task.operation_id);
+      else if (compactingTurns.current.delete(task.operation_id) && compactionUnsent(task))
+        refillUnsent(task);
+    }
+  }, [relatedTasks]);
 
   const takeComposerRetry = useEffectEvent((task: AgentTask) => {
     onComposerRetryTaken?.();
@@ -1286,6 +1316,7 @@ export function AgentChatView({
   const send = async (
     threads: { ids: readonly string[]; key: string } | null = null,
     queueing = false,
+    compactFirst?: boolean,
   ): Promise<boolean> => {
     const refuse = (reason: string) => {
       if (threads || queueing) setSubmitError(reason);
@@ -1300,12 +1331,14 @@ export function AgentChatView({
       return false;
     }
     if (steeringTask && !queueing) return steer(steeringTask, threads);
-    return sendNewTurn(threads, queueing);
+    return sendNewTurn(threads, queueing, compactFirst);
   };
 
+  /** `compactFirst` is the human's answer to the compaction offer; undefined asks when due. */
   const sendNewTurn = async (
     threads: { ids: readonly string[]; key: string } | null = null,
     queueing = false,
+    compactFirst?: boolean,
   ): Promise<boolean> => {
     const refuse = (reason: string) => {
       if (threads || queueing) setSubmitError(reason);
@@ -1330,6 +1363,21 @@ export function AgentChatView({
     // Enter reaches here without the button, so a new turn checks readiness itself.
     if (!providerReady) return refuse("The agent is not ready to start a turn.");
     if (!confirmDiscardKeptSpeech("send")) return refuse("Sending was cancelled.");
+    if (!queueing && compactFirst === undefined) {
+      const offer = compactOffer({
+        tasks: relatedTasks,
+        statusTasks,
+        messages: displayedMessages,
+        sessionId: providerSwitchStartsFreshSession(relatedTasks, sessionId, config.provider)
+          ? null
+          : sessionId,
+        now: Date.now(),
+      });
+      if (offer) {
+        setCompactAsk(offer);
+        return false;
+      }
+    }
     const queued = queueing
       ? JSON.stringify([
           text,
@@ -1366,6 +1414,7 @@ export function AgentChatView({
         worktree: worktree.chosen && !queueing,
         worktreeRepository,
         ...(threads ? { commentThreadIds: threads.ids } : {}),
+        ...(compactFirst ? { compactFirst } : {}),
       },
       submittedOverride: configOverride,
       ...(queued ? { queue: true as const, queued } : {}),
@@ -1685,6 +1734,14 @@ export function AgentChatView({
           />
         )
       )}
+      <LimitResumeToggle
+        onChanged={async () => {
+          for (const task of relatedTasks.filter((item) => item.limit_reset))
+            await onRefreshTask(task.operation_id).catch((error: unknown) =>
+              setSubmitError(errorMessage(error)),
+            );
+        }}
+      />
       {configSource && (
         <AgentPickRow
           source={configSource}
@@ -1707,9 +1764,12 @@ export function AgentChatView({
         (task) =>
           isActiveTask(task) && !(pendingTurn?.error && pendingTurn.clientId === task.operation_id),
       ) ?? null;
-  const pausedTask = latest && !latest.active && latest.can_resume ? latest : null;
+  const pausedTask =
+    latest && !latest.active && latest.can_resume && !latest.limit_reset ? latest : null;
   const failedTask =
-    latest && !latest.active && latest.can_retry && !latest.can_resume ? latest : null;
+    latest && !latest.active && (latest.limit_reset || (latest.can_retry && !latest.can_resume))
+      ? latest
+      : null;
   const stoppedTask =
     failedTask &&
     !transcript.some((line) => line.role === "error" && line.taskId === failedTask.operation_id)
@@ -2100,6 +2160,7 @@ export function AgentChatView({
           repairErrors={repairErrors}
           onResumeTask={onResumeTask}
           onRetryTask={retryTask}
+          onDeclineLimitResume={declineLimitResume}
           onInspectTask={onInspectTask}
           onOpenInbox={onOpenInbox}
           onRepairGraphUpdate={repairGraphUpdate}
@@ -2125,21 +2186,32 @@ export function AgentChatView({
             />
           </div>
         )}
-        {(pausedTask || stoppedTask) && (
-          <div className="chat-task-inline paused" role="status">
-            <span>{pausedTask ? pausedTaskText(pausedTask) : stoppedTask!.status_message}</span>
-            {!readOnly && !(pausedTask && stoppedByMember(pausedTask)) && (
-              <button
-                type="button"
-                className="button compact primary"
-                onClick={() =>
-                  pausedTask ? onResumeTask?.(pausedTask) : onRetryTask?.(stoppedTask!)
-                }
-              >
-                <Play size={12} /> Continue
-              </button>
-            )}
-          </div>
+        {stoppedTask?.limit_reset ? (
+          <LimitTaskRow
+            task={stoppedTask}
+            limit={stoppedTask.limit_reset}
+            disabled={readOnly}
+            onResume={() => onResumeTask?.(stoppedTask)}
+            onRetry={() => retryTask(stoppedTask)}
+            onDecline={() => declineLimitResume(stoppedTask)}
+          />
+        ) : (
+          (pausedTask || stoppedTask) && (
+            <div className="chat-task-inline paused" role="status">
+              <span>{pausedTask ? pausedTaskText(pausedTask) : stoppedTask!.status_message}</span>
+              {!readOnly && !(pausedTask && stoppedByMember(pausedTask)) && (
+                <button
+                  type="button"
+                  className="button compact primary"
+                  onClick={() =>
+                    pausedTask ? onResumeTask?.(pausedTask) : onRetryTask?.(stoppedTask!)
+                  }
+                >
+                  <Play size={12} /> Continue
+                </button>
+              )}
+            </div>
+          )
         )}
         {questionState.error && (
           <div className="agent-chat-view-line error" role="alert">
@@ -2404,6 +2476,16 @@ export function AgentChatView({
               </span>
             ) : null
           }
+        />
+      )}
+      {compactAsk && (
+        <CompactOfferDialog
+          offer={compactAsk}
+          onCancel={() => setCompactAsk(null)}
+          onChoose={(choice) => {
+            setCompactAsk(null);
+            void sendMessage(false, (threads, queueing) => send(threads, queueing, choice));
+          }}
         />
       )}
       {replyComments.layers}

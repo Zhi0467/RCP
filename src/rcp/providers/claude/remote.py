@@ -13,12 +13,12 @@ import re
 import shutil
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 if "SessionFormat" not in globals():
     from rcp.providers.session_format import SessionFormat, extract_text
-if "TurnFence" not in globals():
-    from rcp.providers.turn_fence import TurnFence
+if TYPE_CHECKING or "TurnFence" not in globals():
+    from rcp.providers.turn_fence import COMPACT_COMMAND, TurnFence
 
 
 def attributed_ids(value: dict) -> set[str]:
@@ -127,6 +127,9 @@ class ClaudeStreamTurnFence(TurnFence):
 
     def _input(self, value: dict) -> None:
         if value.get("type") == "user" and isinstance(value.get("uuid"), str):
+            message = value.get("message")
+            if not self.message_ids and isinstance(message, dict):
+                self.compact_first = message.get("content") == COMPACT_COMMAND
             self.message_ids.setdefault(value["uuid"], None)
 
     def _output(self, value: dict) -> None:
@@ -153,5 +156,7 @@ class ClaudeStreamTurnFence(TurnFence):
             value.get("is_error") is True or "error" in str(value.get("subtype") or "").casefold()
         )
         if finished and self.outstanding and not failed:
+            return
+        if value.get("local_command") == "compact" and not failed:
             return
         self.terminal = True

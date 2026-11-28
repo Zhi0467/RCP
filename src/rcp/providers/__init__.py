@@ -143,6 +143,7 @@ def classify_terminal_error(text: str) -> str:
             "usage limit",
             "hit your limit",
             "quota exceeded",
+            "individual quota reached",
             "out of credits",
             "weighted tokens left",
         )
@@ -196,6 +197,20 @@ def runtime_label(provider: str, runtime_id: str) -> str:
     """Display name for one durable runtime id, so no surface maps ids itself."""
 
     return profile_for(provider).runtime_label(runtime_id)
+
+
+def runtime_compacts_first(provider: str, runtime_id: str) -> bool:
+    """Whether a session this runtime holds can be compacted before a prompt.
+
+    A row naming a provider or runtime this build no longer has cannot compact.
+    """
+
+    if provider not in PROVIDERS:
+        return False
+    try:
+        return profile_for(provider).runtime(runtime_id).supports_compact_first
+    except ValueError:
+        return False
 
 
 def require_runtime_id(provider: str, runtime_id: str) -> str:
