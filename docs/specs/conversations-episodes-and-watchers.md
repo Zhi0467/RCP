@@ -1255,6 +1255,9 @@ project task or agent-thread task `limit-resume/decline` route. Decline records
 `limit_auto_resume_stopped` with reason `declined`; manual Resume remains available.
 Under the operation lock, an existing continuation makes Decline return 409
 without recording a stop.
+Task rows and candidates share one eligibility predicate: a limited turn that can
+never resume automatically, such as an artifact edit, shows `stopped` with reason
+`not_resumable`, and Decline on it records nothing.
 
 Automatic resume uses current member identity and request-free write admission,
 with the same operation lock, project membership and new-work checks and

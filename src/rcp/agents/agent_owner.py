@@ -67,6 +67,21 @@ def is_chat_turn(task: AgentTaskRecord) -> bool:
     return task.kind in {"project_chat", "node_chat", "space_chat"}
 
 
+def limit_resume_eligible(task: AgentTaskRecord) -> bool:
+    """Whether a usage-limited turn can ever be resumed automatically.
+
+    The resume candidates and the task row's limit state share this decision,
+    so a row never promises a resume the backend will not perform.
+    """
+    return (
+        is_chat_turn(task)
+        and task.episode_id is None
+        and not task.history_only
+        and task.visible
+        and task.request.get("chat_id") is not None
+    )
+
+
 def resolve_agent(
     store: AppStore, agent_id: str, user_id: str, project_id: str | None = None
 ) -> AgentOwner:

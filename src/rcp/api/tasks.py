@@ -14,7 +14,12 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import UUID4, BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
-from rcp.agents.agent_owner import resolve_agent_task, task_retry_overrides, task_write_admission
+from rcp.agents.agent_owner import (
+    limit_resume_eligible,
+    resolve_agent_task,
+    task_retry_overrides,
+    task_write_admission,
+)
 from rcp.api.chats import _artifact_comments
 from rcp.api.dependencies import (
     get_artifact_mutation_locks,
@@ -229,12 +234,14 @@ def task_limit_reset(store: AppStore, record: AgentTaskRecord) -> dict[str, obje
     stopped = stops[-1] if stops else None
     member = store.space_user(record.authorized_by.user_id) if record.authorized_by else None
     reason = stopped.payload.get("reason") if stopped else None
-    if stopped is None and member is not None and not member.auto_resume_after_limits:
+    if stopped is None and not limit_resume_eligible(record):
+        reason = "not_resumable"
+    elif stopped is None and member is not None and not member.auto_resume_after_limits:
         reason = "switch_off"
     return {
         "resets_at": reset.payload.get("resets_at"),
         "estimated": reset.payload.get("estimated"),
-        "state": "stopped" if stopped is not None or reason == "switch_off" else "waiting",
+        "state": "stopped" if stopped is not None or reason is not None else "waiting",
         "reason": reason,
     }
 
@@ -1864,7 +1871,9 @@ def decline_limit_resume(
             raise HTTPException(
                 status_code=409, detail="This turn is not waiting for a usage limit."
             )
-        if not store.agent_task_has_receipt(operation_id, "limit_auto_resume_stopped"):
+        if limit_resume_eligible(task) and not store.agent_task_has_receipt(
+            operation_id, "limit_auto_resume_stopped"
+        ):
             store.record_agent_task_receipt(
                 operation_id, "limit_auto_resume_stopped", {"reason": "declined"}
             )
