@@ -698,8 +698,9 @@ the profile does not support that capability. agy's auto-compact is the
 30000 runs (agy 1.5.18). agy has no shell-timeout lever; `NotificationTimeoutSeconds`
 only wakes the agent and never ends a command, so the machine card shows no
 timeout field for it. Usage is read from each
-completed `agent_response` step, never from `result.usage`, which is cumulative
-over the whole conversation.
+completed `agent_response` or compaction `checkpoint` step, never from
+`result.usage`, which is cumulative over the whole conversation. Only an
+`agent_response` step sets the context reading.
 
 ### Version failure
 
