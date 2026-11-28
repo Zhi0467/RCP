@@ -14,6 +14,7 @@ from rcp.providers.base import (
     AgentCapability,
     AgentStatusDelta,
     ModelChoice,
+    ProviderLimitProbe,
     ProviderNativeUpdate,
     ProviderProfile,
     ProviderRuntime,
@@ -326,6 +327,11 @@ class AgyProfile(ProviderProfile):
 
     def login_command(self, binary: str) -> list[str]:
         return [binary, "acp", "--login"]
+
+    def limit_probe(self, binary: str) -> ProviderLimitProbe:
+        from rcp.providers.usage_limits import parse_agy_usage
+
+        return ProviderLimitProbe(self.login_probe_command(binary), "", parse_agy_usage)
 
     def login_probe_command(self, binary: str) -> list[str]:
         return [binary, "-p", "/usage", "--output-format", "json"]

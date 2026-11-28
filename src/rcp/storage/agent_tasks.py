@@ -57,7 +57,7 @@ from rcp.limits import (
     WRITING_SESSIONS_PER_PROJECT,
 )
 from rcp.machine_cards import BACKEND_MACHINE_ID
-from rcp.providers import ProviderUsage, classify_terminal_error, require_runtime_id
+from rcp.providers import ProviderUsage, require_runtime_id
 from rcp.providers.live_status import AgentStatus
 from rcp.storage.agents import AgentSessionRecord, bind_session, ensure_turn_agent
 from rcp.storage.branch_names import _chain_root
@@ -194,6 +194,7 @@ _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "provider_login_lineage",
     "provider_login_limit_retry",
     "provider_limit_reset",
+    "provider_terminal_error",
     "limit_auto_resume",
     "limit_auto_resume_deferred",
     "limit_auto_resume_stopped",
@@ -365,6 +366,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
 
     def admit_chat_question_followup(self, question_id: str) -> AgentTaskRecord | None:
         """Claim and insert atomically; unresolved remote liveness still defers."""
+        from rcp.runs.provider_limits import failure_classification
         from rcp.service import RunRequest
         from rcp.storage.question_models import question_followup_operation_id
         from rcp.storage.questions import _question_record
@@ -417,7 +419,13 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     if origin.capability == "discuss"
                     else task.request.get("patch_kind", "work") != "work"
                 )
-                or classify_terminal_error(task.error or "") == "stale_session"
+                or failure_classification(
+                    cast("AppStore", self),
+                    task.operation_id,
+                    task.error or "",
+                    connection=connection,
+                )
+                == "stale_session"
             ):
                 raise ValueError("question_origin_binding_unavailable")
             self._require_chat_wake_binding(connection, task)
@@ -481,6 +489,8 @@ class AgentTaskStoreMixin(StoreMixinBase):
     def _require_chat_wake_binding(
         self, connection: sqlite3.Connection, task: AgentTaskRecord
     ) -> None:
+        from rcp.runs.provider_limits import failure_classification
+
         chat_id = task.request.get("chat_id")
         if (
             task.status not in {"succeeded", "failed"}
@@ -492,7 +502,10 @@ class AgentTaskStoreMixin(StoreMixinBase):
             or not task.native_session_id
             or not task.stage_root
             or task.dispatch_authority is None
-            or classify_terminal_error(task.error or "") == "stale_session"
+            or failure_classification(
+                cast("AppStore", self), task.operation_id, task.error or "", connection=connection
+            )
+            == "stale_session"
         ):
             raise ValueError("question_origin_binding_unavailable")
         if self._has_resumable_paused_chat_task(connection, task.project_id, task.kind, chat_id):
@@ -504,8 +517,6 @@ class AgentTaskStoreMixin(StoreMixinBase):
         unavailable = connection.execute(
             """SELECT 1 FROM graph_run_receipts WHERE operation_id=? AND (
             category IN ('experiment_recovery_abandoned', 'auto_research_recovery_abandoned')
-            OR (category='provider_terminal_error'
-                AND json_extract(payload_json,'$.classification')='stale_session')
             OR (category='continuation_context_unavailable'
                 AND json_extract(payload_json,'$.retry_required')=1)) LIMIT 1""",
             (task.operation_id,),
@@ -2206,8 +2217,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
         request = json.loads(row["request_json"])
         return {key: request.get(key) for key in ("run_on", *_WAKE_FOLLOWS_CHAT)}
 
-    @staticmethod
-    def _dropped_chat_session_reason(row: sqlite3.Row) -> str | None:
+    def _dropped_chat_session_reason(
+        self, connection: sqlite3.Connection, row: sqlite3.Row
+    ) -> str | None:
         """Why the provider can no longer continue this row's session, when it cannot.
 
         The classification Retry uses to refuse resuming a dropped session, except
@@ -2215,8 +2227,12 @@ class AgentTaskStoreMixin(StoreMixinBase):
         itself can still continue.
         """
 
-        classification = classify_terminal_error(row["error"] or "")
-        if row["session_dropped"] == "session_stale" or classification == "stale_session":
+        from rcp.runs.provider_limits import failure_classification
+
+        classification = failure_classification(
+            cast("AppStore", self), row["operation_id"], row["error"] or "", connection=connection
+        )
+        if classification == "stale_session":
             return "session_stale"
         return row["session_dropped"]
 
@@ -2243,7 +2259,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
             or not all(json.loads(row["request_json"]).get(key) for key in ("provider", "run_on"))
         ):
             raise ValueError("The source chat turn has no settled, usable native session.")
-        if self._dropped_chat_session_reason(row) is not None:
+        if self._dropped_chat_session_reason(connection, row) is not None:
             raise ChatForkRefused("chat_session_expired")
         return row
 
@@ -2253,9 +2269,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
         """Read the latest binding, never looking back past an unusable session."""
         with self.connection() as connection:
             row = self._current_chat_session_row(connection, project_id, kind, chat_id)
-        if row is None:
-            return None
-        dropped = self._dropped_chat_session_reason(row)
+            if row is None:
+                return None
+            dropped = self._dropped_chat_session_reason(connection, row)
         data = dict(row)
         data.pop("session_dropped")
         current = self._agent_task_record(data)
@@ -2308,7 +2324,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         # A session the provider already dropped cannot continue here either.
         if binding["recovery_abandoned"]:
             return "session_recovery_abandoned", None
-        if (dropped := self._dropped_chat_session_reason(binding)) is not None:
+        if (dropped := self._dropped_chat_session_reason(connection, binding)) is not None:
             return dropped, None
         previous = json.loads(binding["request_json"])
         reason = native_session_profile_reason(previous, record.request)
@@ -2611,7 +2627,9 @@ class AgentTaskStoreMixin(StoreMixinBase):
                         reason = "session_history_only"
                     elif current["recovery_abandoned"]:
                         reason = "session_recovery_abandoned"
-                    elif (dropped := self._dropped_chat_session_reason(current)) is not None:
+                    elif (
+                        dropped := self._dropped_chat_session_reason(connection, current)
+                    ) is not None:
                         reason = dropped
                     elif not current["stage_root"]:
                         reason = "session_stage_unavailable"
@@ -7197,9 +7215,6 @@ _SESSION_DROP_COLUMNS = """
                 SELECT 1 FROM provider_session_sweeps AS sweep
                 WHERE sweep.native_session_id = run.native_session_id
             ) THEN 'session_swept'
-            WHEN SUM(receipt.category = 'provider_terminal_error'
-                     AND json_extract(receipt.payload_json, '$.classification')
-                         = 'stale_session') THEN 'session_stale'
             WHEN SUM(receipt.category = 'continuation_context_unavailable'
                      AND json_extract(receipt.payload_json, '$.retry_required') = 1)
                 THEN 'session_context_unavailable'

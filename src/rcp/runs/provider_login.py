@@ -16,7 +16,7 @@ from rcp.core.models import AuthorizedHuman
 from rcp.limits import LIMIT_AUTO_RESUME_MAX, LIMIT_RESUME_DEFER_MAX, LIMIT_RESUME_RETRY_SECONDS
 from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.providers import profile_for
-from rcp.providers.usage_limits import limit_reset
+from rcp.runs.provider_limits import record_provider_limit_decision
 from rcp.server_ops.provider_cleanup import cleanup_provider_login_credential
 from rcp.storage.models import (
     AgentTaskAdmissionConflict,
@@ -409,31 +409,31 @@ def settle_provider_login(
     provider = str(record.request.get("provider") or "")
     if not provider:
         return
-    limited = background._failure_classified_as(record, "session_limit")
-    if limited and record.status == "failed":
+    decision = (
+        record_provider_limit_decision(
+            store,
+            background.launcher,
+            record,
+            snapshot=execution.rate_limit if execution is not None else None,
+        )
+        if record.status == "failed"
+        else {}
+    )
+    limited = decision.get("classification") == "session_limit"
+    resets_at = None
+    if limited:
         resets = store.agent_task_receipts_by_category(record.operation_id, "provider_limit_reset")
-        existing = resets[-1] if resets else None
-        if existing is None:
-            snapshot = execution.rate_limit if execution is not None else None
-            reset = limit_reset(
-                provider,
-                snapshot,
-                record.error or "",
-                failed_at=datetime.fromisoformat(record.finished_at or record.updated_at),
-            )
+        if not resets:
             store.record_agent_task_receipt(
                 record.operation_id,
                 "provider_limit_reset",
                 {
-                    **reset.model_dump(mode="json"),
-                    "snapshot": snapshot,
+                    key: value
+                    for key, value in decision.items()
+                    if key not in {"provider", "classification"}
                 },
             )
-            resets_at = reset.resets_at.isoformat()
-        else:
-            resets_at = str(existing.payload["resets_at"])
-    else:
-        resets_at = None
+        resets_at = str(resets[-1].payload["resets_at"] if resets else decision["resets_at"])
     if record.login_id is None:
         return
     key = LoginKey(provider, record.stage_machine_id or "", record.login_id)

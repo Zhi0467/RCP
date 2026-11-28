@@ -1227,6 +1227,16 @@ ceiling and may claim retained compatible completion as its invocation one, and
 
 ### Resume after provider usage limits
 
+Every failed provider turn records one limit decision in `provider_terminal_error`.
+The in-turn usage snapshot takes precedence; otherwise the turn's login is probed
+on its own machine when its provider supports that check. Structured evidence
+confirms a limit only when a window is exhausted and overrides error phrases in
+both directions. Only absent or failed evidence falls back to error phrases and a
+text reset or five-hour estimate. Recovery and login marking share this recorded
+decision and reset; old turns without a decision use the shared phrase fallback.
+See [provider limit evidence](providers-and-containment.md#login-state-and-failure)
+for probe and reset rules.
+
 The existing five-second watcher-poll completion pass resumes a failed member chat
 turn when its `provider_limit_reset` receipt is due. The receipt, rather than the
 login mark, survives another turn's success or re-sign-in. Old turns without this

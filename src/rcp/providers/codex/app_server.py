@@ -8,6 +8,7 @@ from rcp.providers.base import (
     AgentCompaction,
     AgentStatusDelta,
     AgentSubagent,
+    ProviderLimitProbe,
     ProviderRuntime,
     ProviderRuntimeStep,
     ProviderSteeringState,
@@ -710,3 +711,32 @@ def _usage_int(value: object) -> int:
 
 def _rpc_bytes(value: dict[str, object]) -> bytes:
     return (json.dumps(value, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def limit_probe(binary: str) -> ProviderLimitProbe:
+    messages: tuple[dict[str, object], ...] = (
+        {
+            "id": 1,
+            "method": "initialize",
+            "params": {"clientInfo": {"name": "rcp", "version": "1"}},
+        },
+        {"method": "initialized", "params": {}},
+        {"id": 2, "method": "account/rateLimits/read", "params": {}},
+    )
+    return ProviderLimitProbe(
+        command=[binary, "app-server", "--stdio"],
+        stdin=b"".join(_rpc_bytes(message) for message in messages).decode(),
+        parser=_parse_limit_probe,
+    )
+
+
+def _parse_limit_probe(stdout: str) -> dict[str, object]:
+    for line in stdout.splitlines():
+        value = json.loads(line)
+        if not isinstance(value, dict) or value.get("id") != 2:
+            continue
+        result = value.get("result")
+        if isinstance(result, dict) and isinstance(result.get("rateLimits"), dict):
+            return result["rateLimits"]
+        raise ValueError(f"Codex account/rateLimits/read failed: {value}")
+    raise ValueError("Codex account/rateLimits/read returned no response")

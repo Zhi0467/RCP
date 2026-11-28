@@ -548,6 +548,7 @@ def _insert_watcher(
 def test_thread_projection_reports_failure_and_its_own_live_watchers(tmp_path: Path) -> None:
     """A failed latest turn is its own state until a retry starts; only a live watcher that the
     thread itself owns counts as watching it."""
+    from rcp.limits import AGENT_TASK_RECEIPT_RETENTION_COUNTS
     from rcp.runs.agent_threads import thread_projections
     from tests.test_storage import _task_record
 
@@ -588,6 +589,8 @@ def test_thread_projection_reports_failure_and_its_own_live_watchers(tmp_path: P
         ("auth-plain", "provider_auth", "boom"),
         ("limit", None, "You've hit your limit"),
         ("other", None, "boom"),
+        ("available", None, "You've hit your limit"),
+        ("exhausted", None, "boom"),
     ]:
         now = store.now()
         store.create_agent_task(
@@ -605,10 +608,28 @@ def test_thread_projection_reports_failure_and_its_own_live_watchers(tmp_path: P
                 "WHERE operation_id=?",
                 (now, error, failure_kind, operation_id),
             )
+        if operation_id in {"available", "exhausted"}:
+            store.record_agent_task_receipt(
+                operation_id,
+                "provider_terminal_error",
+                {
+                    "classification": "session_limit"
+                    if operation_id == "exhausted"
+                    else "provider_error",
+                    "source": "event",
+                },
+                tier="diagnostic",
+            )
+            for index in range(AGENT_TASK_RECEIPT_RETENTION_COUNTS["diagnostic"] + 1):
+                store.record_agent_task_receipt(
+                    operation_id, f"diagnostic-{index}", {}, tier="diagnostic"
+                )
         row = projected()
         assert (row["live_state"], row["latest_operation_id"]) == ("failed", operation_id)
         labels[operation_id] = row["live_label"]
     assert labels["auth"] == labels["auth-plain"]
+    assert labels["available"] == labels["other"]
+    assert labels["exhausted"] == labels["limit"]
     assert len({labels["auth"], labels["limit"], labels["other"], watched["live_label"]}) == 4
 
     store.create_agent_task(
@@ -622,3 +643,26 @@ def test_thread_projection_reports_failure_and_its_own_live_watchers(tmp_path: P
         )
     )
     assert projected()["live_state"] == "queued"
+
+
+def test_recorded_provider_decision_survives_age_pruning(tmp_path: Path) -> None:
+    from datetime import datetime, timedelta
+
+    from rcp.limits import RUN_TRACE_RETENTION_DAYS
+    from rcp.runs.provider_limits import failure_classification, record_provider_limit_decision
+    from tests.test_storage import _task_record
+
+    store = AppStore(tmp_path / "rcp.sqlite3")
+    now = datetime.fromisoformat(store.now())
+    record = _task_record(now.isoformat(), operation_id="available", request={"provider": "claude"})
+    store.create_agent_task(record)
+    error = "You've hit your limit"
+    store.fail_agent_task(record.operation_id, error)
+    record = store.agent_task(record.operation_id)
+    assert record is not None
+    record_provider_limit_decision(store, None, record, snapshot={"status": "allowed"})
+
+    store.prune_operational_storage(now=now + timedelta(days=RUN_TRACE_RETENTION_DAYS + 1))
+
+    assert store.agent_task_receipts_by_category(record.operation_id, "provider_terminal_error")
+    assert failure_classification(store, record.operation_id, error) == "provider_error"

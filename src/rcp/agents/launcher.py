@@ -2333,6 +2333,7 @@ class AgentLauncher:
         command: list[str],
         *,
         login_shell: bool = True,
+        stdin: str = "",
         timeout: float = 10,
         environment: ProviderProcessEnvironment | None = None,
     ) -> subprocess.CompletedProcess[str]:
@@ -2352,7 +2353,7 @@ class AgentLauncher:
                 arguments,
                 capture_output=True,
                 text=True,
-                input="",
+                input=stdin,
                 # A timeout kills the probe; never inside the credential hold.
                 timeout=max(timeout, PROVIDER_CREDENTIAL_STARTUP_MIN_HOLD_SECONDS),
                 check=False,

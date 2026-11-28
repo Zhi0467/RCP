@@ -116,3 +116,76 @@ def test_codex_offset_text_is_normalized_to_utc() -> None:
     )
     assert reset.resets_at.tzinfo == UTC
     assert reset.resets_at == FAILED_AT + timedelta(hours=1)
+
+
+def test_agy_usage_probe_reads_all_groups() -> None:
+    from rcp.providers.agy.profile import AgyProfile
+    from rcp.providers.usage_limits import limit_evidence
+
+    probe = AgyProfile().limit_probe("agy")
+    assert probe.command == ["agy", "-p", "/usage", "--output-format", "json"]
+    snapshot = probe.parser((FIXTURES / "agy.json").read_text())
+    evidence = limit_evidence("agy", snapshot)
+    assert evidence.exhausted
+    assert evidence.resets_at == datetime(2026, 11, 28, 1, 15, 57, tzinfo=UTC)
+    for group in snapshot["groups"]:
+        for bucket in group["buckets"]:
+            bucket["remaining_fraction"] = 0.5
+    assert not limit_evidence("agy", snapshot).exhausted
+    snapshot["groups"][-1]["buckets"][-1]["remaining_fraction"] = 0
+    assert limit_evidence("agy", snapshot).resets_at == datetime(
+        2026, 11, 28, 3, 20, 50, tzinfo=UTC
+    )
+
+
+def test_codex_usage_probe_reads_account_response() -> None:
+    from rcp.providers.codex.profile import CodexProfile
+    from rcp.providers.usage_limits import limit_evidence
+
+    probe = CodexProfile().limit_probe("codex")
+    messages = [json.loads(line) for line in probe.stdin.splitlines()]
+    assert [message["method"] for message in messages] == [
+        "initialize",
+        "initialized",
+        "account/rateLimits/read",
+    ]
+    snapshot = probe.parser(
+        json.dumps(
+            {
+                "id": 2,
+                "result": {
+                    "rateLimits": {
+                        "primary": {"usedPercent": 100, "resetsAt": FAILED_AT.timestamp() + 120}
+                    }
+                },
+            }
+        )
+    )
+    evidence = limit_evidence("codex", snapshot)
+    assert evidence.exhausted
+    assert evidence.resets_at == FAILED_AT + timedelta(seconds=120)
+    with pytest.raises(ValueError, match="rateLimits"):
+        probe.parser('{"id":2,"error":{"message":"unavailable"}}')
+
+
+@pytest.mark.parametrize(
+    "provider,snapshot",
+    [
+        ("codex", {"primary": {"usedPercent": 100}}),
+        ("claude", {"status": "rejected"}),
+        ("agy", {"groups": [{"buckets": [{"remaining_fraction": 0}]}]}),
+    ],
+)
+def test_exhaustion_does_not_require_reset(provider, snapshot) -> None:
+    from rcp.providers.usage_limits import limit_evidence, reset_from_evidence
+
+    evidence = limit_evidence(provider, snapshot)
+    assert evidence.exhausted
+    assert evidence.resets_at is None
+    reset = reset_from_evidence(evidence, failed_at=FAILED_AT)
+    assert reset.estimated
+    assert reset.resets_at == FAILED_AT + timedelta(hours=5)
+
+
+def test_claude_has_no_usage_probe() -> None:
+    assert ClaudeProfile().limit_probe("claude") is None

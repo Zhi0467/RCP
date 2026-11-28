@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -59,6 +60,13 @@ class ProviderSkill(BaseModel):
     scope: str | None = None
     path: str | None = None
     enabled: bool = True
+
+
+@dataclass(frozen=True)
+class ProviderLimitProbe:
+    command: list[str]
+    stdin: str
+    parser: Callable[[str], dict[str, object]]
 
 
 class ProviderSkillProbe(BaseModel):
@@ -496,6 +504,9 @@ class ProviderProfile:
                     actual=actual,
                     minimum=minimum,
                 )
+
+    def limit_probe(self, binary: str) -> ProviderLimitProbe | None:
+        return None
 
     def login_probe_command(self, binary: str) -> list[str] | None:
         """One real authenticated request; status output is not proof of sign-in."""

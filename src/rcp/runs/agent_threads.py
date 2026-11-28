@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from rcp.agents.agent_profile import OFFER, PRIVATE_PROJECT, SINGLE_ENTRY, resolve_agent_profile
 from rcp.machine_cards import BACKEND_MACHINE_ID
-from rcp.providers import classify_terminal_error
+from rcp.runs.provider_limits import failure_classification
 from rcp.runs.provider_usage import record_provider_usage
 from rcp.storage import AppStore
 from rcp.storage.agent_tasks import SESSION_TASK_KINDS
@@ -186,7 +186,7 @@ def thread_projections(
                 "last_finished_at": finished,
                 "last_activity_at": task["updated_at"],
                 "live_state": state,
-                "live_label": _live_label(state, task, watchers),
+                "live_label": _live_label(store, state, task, watchers),
                 "watching": watchers,
                 # A running turn's member message reaches the transcript only when it settles.
                 "latest_operation_id": task["operation_id"],
@@ -200,12 +200,15 @@ def thread_projections(
     return rows
 
 
-def _live_label(state: str, task: sqlite3.Row, watchers: int) -> str | None:
+def _live_label(store: AppStore, state: str, task: sqlite3.Row, watchers: int) -> str | None:
     """The thread's short state text in the Space Running list."""
     if state == "failed":
         if task["failure_kind"] == "provider_auth":
             return "Sign-in needed"
-        if classify_terminal_error(task["error"] or "") == "session_limit":
+        if (
+            failure_classification(store, task["operation_id"], task["error"] or "")
+            == "session_limit"
+        ):
             return "Session limit"
         return "Failed"
     if state == "idle":
@@ -558,7 +561,7 @@ async def _summarize_thread_session(
     from rcp.background import TaskPaused
     from rcp.limits import AGENT_THREAD_COMPACT_MAX_BYTES
     from rcp.machine_cards import LoginKey, host_of
-    from rcp.providers import classify_terminal_error, profile_for
+    from rcp.providers import profile_for
     from rcp.rcp_home import rcp_temp_dir
     from rcp.runs.provider_process import require_remote_provider_quiescence
     from rcp.transport.run_stage import run_stage_partition
@@ -668,7 +671,10 @@ async def _summarize_thread_session(
                 if event.event in {"error", "runtime_fallback"}:
                     if profile_for(request.provider).credential_failure(event.text):
                         raise _SessionSummaryUnavailable("sign_in")
-                    if classify_terminal_error(event.text) == "stale_session":
+                    if (
+                        failure_classification(execution.store, execution.operation_id, event.text)
+                        == "stale_session"
+                    ):
                         raise _SessionSummaryUnavailable("session_missing")
                     raise _SessionSummaryUnavailable("provider_error")
                 if event.event == "session":

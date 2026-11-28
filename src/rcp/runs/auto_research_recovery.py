@@ -7,6 +7,7 @@ from rcp.runs.auto_research import (
     AutoResearchRunRequest,
     auto_research_failure_signal,
 )
+from rcp.runs.provider_limits import failure_classification
 from rcp.runs.provider_login import AdmissionRefused
 from rcp.storage import AgentTaskRecord, EpisodeRecord
 
@@ -220,14 +221,7 @@ def _recoverable_failure(
         for receipt in receipts
     ):
         return "continuation_unavailable", "clean" if request.role == "orchestrator" else "exact"
-    terminal = next(
-        (
-            receipt.payload.get("classification")
-            for receipt in reversed(receipts)
-            if receipt.category == "provider_terminal_error"
-        ),
-        None,
-    )
+    terminal = failure_classification(store, operation_id, task.error or "" if task else "")
     if terminal == "session_limit":
         # A reached limit keeps its session; the recovery resumes it exactly.
         return "session_limit", "exact"

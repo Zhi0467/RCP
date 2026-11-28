@@ -1258,6 +1258,7 @@ def create_app(
             catalog, lambda: background_tasks, experiment_operation_lock, experiment_admission
         ),
         paper_live=paper_live,
+        launcher=launcher,
     )
 
     @contextmanager

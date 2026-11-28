@@ -12,6 +12,7 @@ from rcp.providers.base import (
     AgentCapability,
     AgentStatusDelta,
     ModelChoice,
+    ProviderLimitProbe,
     ProviderNativeUpdate,
     ProviderProfile,
     ProviderRuntime,
@@ -183,6 +184,11 @@ class CodexProfile(ProviderProfile):
                 "your session has ended. please log in again",
             )
         )
+
+    def limit_probe(self, binary: str) -> ProviderLimitProbe:
+        from rcp.providers.codex.app_server import limit_probe
+
+        return limit_probe(binary)
 
     def login_probe_command(self, binary: str) -> list[str]:
         # Flags probed with codex-cli 0.154.0 on 2026-09-14.

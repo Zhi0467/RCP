@@ -1461,9 +1461,9 @@ a fresh choice. RCP never starts a fresh session on a login change;
 only the human Switch provider does that.
 
 **Why:** Least-recently-used spreads load over shared accounts, and staying put
-keeps the provider's prompt cache. The limit mark only orders choices because RCP
-cannot know when a vendor limit lifts; its lapse,
-`PROVIDER_LOGIN_LIMIT_HINT_SECONDS` (5 hours), is a guess.
+keeps the provider's prompt cache. The limit mark orders choices until its
+[recorded reset](#login-state-and-failure); only a reset without usable evidence
+uses the five-hour estimate.
 
 | Provider | Machine sign-in | Added login, local | Added login, remote |
 | --- | --- | --- | --- |
@@ -1574,26 +1574,29 @@ a typed `provider_auth` flag; classification never infers that refusal from erro
 an unavailable
 captured generation cannot authorize a new fence.
 
-Settlement marks a login limited from the existing `session_limit` classification.
-A later successful turn or Verify clears the mark; an overlapping older turn
-cannot clear newer evidence. Settlement records a `provider_limit_reset` receipt on
-the failed turn and copies its reset into the login assignment's `limit_resets_at`.
+Settlement marks a login limited from the turn's recorded `provider_terminal_error`
+decision. A later successful turn or Verify clears the mark; an overlapping older
+turn cannot clear newer evidence. The same decision supplies the failed turn's
+`provider_limit_reset` receipt and the login assignment's `limit_resets_at`.
 Both fresh and continued admission stop treating the login as limited at that reset.
 Clearing the login never clears the turn's receipt.
 
-The pure readers in `providers/usage_limits.py` prefer the last usage snapshot:
-Codex `account/rateLimits/updated` exhausted windows, then Claude
-`rate_limit_event` exhausted unified windows. Each decoder emits `rate_limit`,
-and both live delivery and recorded-result recovery forward it to the execution,
-which keeps only the last raw snapshot in memory. Settlement retains
-that snapshot only inside the reset receipt as diagnostic data. When multiple
-windows are exhausted, the latest reset governs. With no usable snapshot, Gemini's
-`Resets in` duration or Codex's explicit-zone `try again at` timestamp supplies the
-reset. Gemini's `individual quota reached` is a session-limit classification.
-No usage probe runs at settlement. Missing or malformed evidence, ambiguous local
-times, and resets less than `LIMIT_RESET_MIN_SECONDS` after failure use failure time
-plus `PROVIDER_LOGIN_LIMIT_HINT_SECONDS`, marked `estimated`. An estimated reset
-has no clock time in its human presentation.
+The last in-turn usage snapshot takes precedence. Without a snapshot, settlement
+probes the turn's login on its execution machine through the same environment and
+transport as login verification: Gemini `/usage` or Codex
+`account/rateLimits/read`; Claude has no probe. Any exhausted Gemini bucket in any
+group, Codex window with `usedPercent >= 100`, or rejected or fully used Claude
+window establishes a limit. Structured evidence overrides error phrases in both
+directions, and the latest reset among exhausted windows governs. With no evidence,
+error phrases classify the failure and Gemini's `Resets in` duration or Codex's
+explicit-zone `try again at` timestamp supplies the reset. Missing resets or resets
+less than `LIMIT_RESET_MIN_SECONDS` after failure use failure time plus
+`PROVIDER_LOGIN_LIMIT_HINT_SECONDS`, marked `estimated`; estimated resets show no
+clock time. The reset receipt records `source` as `event`, `probe`, or `text`, and
+retains a failed probe's detail when text fallback was needed. All recovery readers
+use the recorded decision, with phrase fallback only for historical turns without
+one. Recorded-result recovery records the same decision when the failure handler
+did not run.
 
 When every allowed login carries
 a live mark, an automatic launch (a watcher wake, a scheduled agent wake, or an

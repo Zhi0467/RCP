@@ -14,7 +14,12 @@ from .test_provider_login_resolver import _login
 from .test_provider_login_resolver import accounts as accounts
 
 
-def test_snapshot_reset_is_copied_to_login_and_only_stored_in_reset_receipt(accounts):
+@pytest.fixture(autouse=True)
+def no_installed_provider_probe(monkeypatch):
+    monkeypatch.setattr("rcp.agents.launcher._discover_local_provider", lambda _: None)
+
+
+def test_snapshot_reset_is_copied_to_login_and_both_receipts(accounts):
     store = accounts.store
     key = _login(accounts, "codex")
     record = _turn(accounts, key)
@@ -36,8 +41,11 @@ def test_snapshot_reset_is_copied_to_login_and_only_stored_in_reset_receipt(acco
     settle_provider_login(background, record, execution=execution)
     after = store.agent_task_receipts(record.operation_id)
     added = [receipt for receipt in after if receipt not in before]
-    assert len(added) == 1
-    assert added[0].category == "provider_limit_reset"
+    assert len(added) == 2
+    decision = next(receipt for receipt in added if receipt.category == "provider_terminal_error")
+    added = [receipt for receipt in added if receipt.category == "provider_limit_reset"]
+    assert decision.payload["resets_at"] == added[0].payload["resets_at"]
+    assert decision.payload["source"] == added[0].payload["source"] == "event"
     assert added[0].payload["snapshot"] == snapshot
     assert added[0].payload["estimated"] is False
     assert datetime.fromisoformat(str(added[0].payload["resets_at"])) == resets_at
@@ -217,3 +225,254 @@ def test_recorded_limit_snapshot_reaches_failure_settlement(accounts, tmp_path, 
     assert reset.payload["snapshot"] == snapshot
     assert reset.payload["estimated"] is False
     assert datetime.fromisoformat(reset.payload["resets_at"]) == resets_at
+
+
+@pytest.mark.parametrize("provider,exhausted", [("agy", True), ("agy", False), ("codex", True)])
+def test_structured_probe_decides_limit(accounts, tmp_path, monkeypatch, provider, exhausted):
+    import json
+    from pathlib import Path
+
+    from rcp.agents import launcher as launcher_module
+    from rcp.agents.launcher import AgentLauncher
+
+    store = accounts.store
+    key = _login(accounts, provider)
+    record = _turn(accounts, key)
+    reset_at = datetime.fromisoformat(store.now()) + timedelta(hours=2)
+    if provider == "agy":
+        payload = json.loads(
+            (Path(__file__).parent / "fixtures/provider_usage_limits/agy.json").read_text()
+        )
+        if not exhausted:
+            for group in payload["command"]["data"]["groups"]:
+                for bucket in group["buckets"]:
+                    bucket["remaining_fraction"] = 0.5
+        else:
+            reset_at = max(
+                datetime.fromisoformat(bucket["reset_time"])
+                for group in payload["command"]["data"]["groups"]
+                for bucket in group["buckets"]
+                if bucket["remaining_fraction"] <= 0
+            )
+        output = json.dumps(payload)
+        check = "assert sys.argv[1:] == ['-p', '/usage', '--output-format', 'json']"
+    else:
+        output = (
+            json.dumps({"id": 1, "result": {}})
+            + "\n"
+            + json.dumps(
+                {
+                    "id": 2,
+                    "result": {
+                        "rateLimits": {
+                            "primary": {"usedPercent": 100, "resetsAt": int(reset_at.timestamp())}
+                        }
+                    },
+                }
+            )
+        )
+        check = (
+            "assert sys.argv[1:] == ['app-server', '--stdio']\n"
+            "messages = [json.loads(line) for line in sys.stdin]\n"
+            "assert [m['method'] for m in messages] == "
+            "['initialize', 'initialized', 'account/rateLimits/read']"
+        )
+    binary = tmp_path / "fake-provider"
+    binary.write_text(
+        "#!/usr/bin/env python3\nimport sys, json\n" + check + "\nprint(" + repr(output) + ")\n"
+    )
+    binary.chmod(0o755)
+    monkeypatch.setattr(launcher_module, "_discover_local_provider", lambda _: str(binary))
+    if not exhausted:
+        with store.connection() as connection:
+            connection.execute(
+                "UPDATE graph_runs SET error=? WHERE operation_id=?",
+                ("usage limit reached", record.operation_id),
+            )
+    settle_provider_login(
+        BackgroundAgentTasks(store, _unused_stream, launcher=AgentLauncher(accounts=accounts)),
+        record,
+    )
+    receipts = store.agent_task_receipts_by_category(record.operation_id, "provider_limit_reset")
+    assignment = store.provider_login_assignment(key)
+    if exhausted:
+        assert len(receipts) == 1
+        assert receipts[0].payload["source"] == "probe"
+        assert receipts[0].payload["estimated"] is False
+        assert datetime.fromisoformat(receipts[0].payload["resets_at"]) == reset_at
+        assert datetime.fromisoformat(assignment.limit_resets_at) == reset_at
+    else:
+        assert not receipts
+        assert assignment.limited_at is None
+
+
+@pytest.mark.parametrize("detail_size", [1, 40000])
+def test_probe_failure_records_text_fallback(accounts, tmp_path, monkeypatch, detail_size):
+    from rcp.agents import launcher as launcher_module
+    from rcp.agents.launcher import AgentLauncher
+
+    store = accounts.store
+    key = _login(accounts, "agy")
+    record = _turn(accounts, key)
+    binary = tmp_path / "fake-provider"
+    binary.write_text("#!/bin/sh\necho unavailable" + "x" * detail_size + " >&2\nexit 1\n")
+    binary.chmod(0o755)
+    monkeypatch.setattr(launcher_module, "_discover_local_provider", lambda _: str(binary))
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET error=? WHERE operation_id=?",
+            ("usage limit reached", record.operation_id),
+        )
+    settle_provider_login(
+        BackgroundAgentTasks(store, _unused_stream, launcher=AgentLauncher(accounts=accounts)),
+        record,
+    )
+    receipt = store.agent_task_receipts_by_category(record.operation_id, "provider_limit_reset")[0]
+    assert receipt.payload["source"] == "text"
+    assert "unavailable" in receipt.payload["probe_failure"]
+    assert receipt.payload["estimated"] is True
+
+
+def test_claude_nonexhausted_event_overrides_phrase(accounts):
+    store = accounts.store
+    key = _login(accounts, "claude")
+    record = _turn(accounts, key)
+    with store.connection() as connection:
+        connection.execute(
+            "UPDATE graph_runs SET error=? WHERE operation_id=?",
+            ("usage limit reached", record.operation_id),
+        )
+    execution = AgentTaskExecution(
+        record.operation_id,
+        store,
+        AgentProcessControl(),
+        rate_limit={
+            "status": "allowed",
+            "unifiedWindows": {"five_hour": {"utilization": 0.5, "status": "allowed"}},
+        },
+    )
+    settle_provider_login(BackgroundAgentTasks(store, _unused_stream), record, execution=execution)
+    assert not store.agent_task_receipts_by_category(record.operation_id, "provider_limit_reset")
+    assert store.provider_login_assignment(key).limited_at is None
+
+
+def test_recorded_negative_decision_is_authoritative_after_restart(accounts):
+    from rcp.runs.provider_limits import failure_classification, record_provider_limit_decision
+
+    store = accounts.store
+    key = _login(accounts, "claude")
+    record = _turn(accounts, key)
+    decision = record_provider_limit_decision(
+        store, None, record, snapshot={"status": "allowed"}, error="usage limit reached"
+    )
+    assert decision["classification"] == "provider_error"
+    reopened = AppStore(store.path)
+    assert (
+        failure_classification(reopened, record.operation_id, "usage limit reached")
+        == "provider_error"
+    )
+    assert (
+        record_provider_limit_decision(
+            reopened, None, record, snapshot={"status": "rejected"}, error="usage limit reached"
+        )
+        == decision
+    )
+    assert (
+        len(
+            reopened.agent_task_receipts_by_category(record.operation_id, "provider_terminal_error")
+        )
+        == 1
+    )
+
+
+def test_failure_classification_keeps_old_history_read_only(accounts):
+    from rcp.runs.provider_limits import failure_classification
+
+    record = _turn(accounts, _login(accounts, "claude"))
+    assert (
+        failure_classification(accounts.store, record.operation_id, "usage limit reached")
+        == "session_limit"
+    )
+    assert not accounts.store.agent_task_receipts_by_category(
+        record.operation_id, "provider_terminal_error"
+    )
+
+
+def test_failed_settlement_records_before_recovery_callback(accounts):
+    store = accounts.store
+    key = _login(accounts, "claude")
+    record = _turn(accounts, key)
+    seen = []
+
+    def callback(*args):
+        seen.extend(
+            store.agent_task_receipts_by_category(record.operation_id, "provider_terminal_error")
+        )
+
+    background = BackgroundAgentTasks(store, _unused_stream, on_task_settled=callback)
+    execution = AgentTaskExecution(
+        record.operation_id, store, AgentProcessControl(), rate_limit={"status": "allowed"}
+    )
+    from rcp.service import RunRequest
+
+    background._task_settled(record, RunRequest(provider="claude"), execution)
+    assert len(seen) == 1
+    assert seen[0].payload["classification"] == "provider_error"
+    assert seen[0].payload["source"] == "event"
+
+
+def test_missing_machine_falls_back_without_losing_failure(accounts):
+    from rcp.agents.launcher import AgentLauncher
+    from rcp.runs.provider_limits import record_provider_limit_decision
+
+    store = accounts.store
+    record = _turn(accounts, _login(accounts, "agy"))
+    record = record.model_copy(update={"stage_machine_id": "removed-machine"})
+    decision = record_provider_limit_decision(
+        store, AgentLauncher(accounts=accounts), record, error="usage limit reached"
+    )
+    assert decision["classification"] == "session_limit"
+    assert decision["source"] == "text"
+    assert "removed-machine" in decision["probe_failure"]
+    assert decision["estimated"] is True
+
+
+def test_legacy_settled_reset_remains_one_decision(accounts):
+    from rcp.runs.provider_limits import record_provider_limit_decision
+
+    store = accounts.store
+    key = _login(accounts, "codex")
+    record = _turn(accounts, key)
+    reset = (datetime.fromisoformat(store.now()) + timedelta(hours=1)).isoformat()
+    store.record_agent_task_receipt(
+        record.operation_id, "provider_terminal_error", {"classification": "session_limit"}
+    )
+    store.record_agent_task_receipt(
+        record.operation_id,
+        "provider_limit_reset",
+        {"resets_at": reset, "estimated": False, "snapshot": None},
+    )
+    decision = record_provider_limit_decision(
+        store, None, record, snapshot={"primary": {"usedPercent": 0}}
+    )
+    assert decision["classification"] == "session_limit"
+    assert decision["resets_at"] == reset
+    settle_provider_login(BackgroundAgentTasks(store, _unused_stream), record)
+    assert store.provider_login_assignment(key).limit_resets_at == reset
+
+
+def test_large_snapshot_does_not_erase_decision(accounts):
+    from rcp.runs.provider_limits import record_provider_limit_decision
+
+    store = accounts.store
+    record = _turn(accounts, _login(accounts, "claude"))
+    decision = record_provider_limit_decision(
+        store, None, record, snapshot={"status": "rejected", "detail": "x" * 40000}
+    )
+    stored = store.agent_task_receipts_by_category(record.operation_id, "provider_terminal_error")[
+        -1
+    ].payload
+    assert stored == decision
+    assert stored["classification"] == "session_limit"
+    assert stored["snapshot_omitted"] is True
+    assert stored["resets_at"]

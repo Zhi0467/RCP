@@ -9,6 +9,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, aclosing, suppress
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast, get_args
 
@@ -35,7 +36,7 @@ from rcp.limits import (
 )
 from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey, host_of
 from rcp.machine_sleep import seconds_until_automatic_launch
-from rcp.providers import classify_terminal_error, profile_for, require_runtime_id
+from rcp.providers import profile_for, require_runtime_id
 from rcp.providers.base import AgentStatusDelta
 from rcp.providers.live_status import AgentStatus, fold_agent_status
 from rcp.runs.auto_research import (
@@ -77,6 +78,7 @@ from rcp.runs.paper_turns import (
     is_paper_turn,
     paper_turn_waits,
 )
+from rcp.runs.provider_limits import failure_classification, record_provider_limit_decision
 from rcp.runs.provider_login import (
     AdmissionRefused,
     MachineDependenciesMissing,
@@ -123,6 +125,7 @@ from rcp.transport.state_transfer import warning_context
 from rcp.turn_outcomes import TurnOutcome
 
 if TYPE_CHECKING:
+    from rcp.agents.launcher import AgentLauncher
     from rcp.paper import PaperLive
 
 logger = logging.getLogger(__name__)
@@ -451,8 +454,10 @@ class BackgroundAgentTasks:
         experiment_resumer: WorkExperimentResumer | None = None,
         episode_controls: WorkEpisodeControls | None = None,
         paper_live: PaperLive | None = None,
+        launcher: AgentLauncher | None = None,
     ) -> None:
         self.store = store
+        self.launcher = launcher
         self.paper_live = paper_live
         self.experiment_card_raiser = experiment_card_raiser
         self.episode_controls = episode_controls
@@ -2435,18 +2440,14 @@ class BackgroundAgentTasks:
                     operation_id=operation_id,
                     diagnostic=str(exc),
                 )
-            elif (
-                isinstance(request, EpisodeReportRunRequest)
-                or (isinstance(request, AutoResearchRunRequest) and request.role == "orchestrator")
-            ) and isinstance(exc, TaskFailed):
-                self.store.record_agent_task_receipt(
-                    operation_id,
-                    "provider_terminal_error",
-                    {
-                        "provider": request.provider,
-                        "classification": classify_terminal_error(str(exc)),
-                    },
-                    tier="diagnostic",
+            if request.provider:
+                record_provider_limit_decision(
+                    self.store,
+                    self.launcher,
+                    self.store.agent_task(operation_id) or record,
+                    snapshot=execution.rate_limit,
+                    error=str(exc),
+                    failed_at=datetime.fromisoformat(self.store.now()),
                 )
             self.store.record_agent_task_receipt(
                 operation_id,
@@ -3274,6 +3275,11 @@ class BackgroundAgentTasks:
     ) -> None:
         from rcp.runs.provider_login import settle_provider_login
 
+        current = self.store.agent_task(record.operation_id) or record
+        if current.status == "failed" and request.provider:
+            record_provider_limit_decision(
+                self.store, self.launcher, current, snapshot=execution.rate_limit
+            )
         if isinstance(request, EpisodeReportRunRequest):
             settle_provider_login(self, record, execution=execution)
             return
@@ -3648,13 +3654,9 @@ class BackgroundAgentTasks:
         )
 
     def _failure_classified_as(self, record: AgentTaskRecord, classification: str) -> bool:
-        classified_receipt = any(
-            receipt.category == "provider_terminal_error"
-            and receipt.payload.get("classification") == classification
-            for receipt in self.store.agent_task_receipts(record.operation_id)
-        )
-        return classified_receipt or (
-            bool(record.error) and classify_terminal_error(record.error or "") == classification
+        return (
+            failure_classification(self.store, record.operation_id, record.error or "")
+            == classification
         )
 
     def _continuation_context_is_unavailable(self, record: AgentTaskRecord) -> bool:
