@@ -53,6 +53,8 @@ class UpdateTarget(Protocol):
 
     def discover(self, provider: ProviderId) -> str | None: ...
 
+    def resolve(self, path: str) -> str: ...
+
     def temp_dir(self) -> contextlib.AbstractContextManager[str]: ...
 
     def command_prefix(self, provider: ProviderId) -> tuple[str, ...]: ...
@@ -73,6 +75,9 @@ class LocalUpdateTarget:
     def discover(self, provider: ProviderId) -> str | None:
         binary = _discover_provider(self.account, provider)
         return str(binary) if binary is not None else None
+
+    def resolve(self, path: str) -> str:
+        return os.path.realpath(path)
 
     def command_prefix(self, provider: ProviderId) -> tuple[str, ...]:
         return profile_for(provider).authentication.unmanaged_environment("").command_prefix
@@ -156,6 +161,9 @@ class RemoteUpdateTarget:
                 return candidate
         return None
 
+    def resolve(self, path: str) -> str:
+        return self._checked(("readlink", "-f", "--", path))
+
     def command_prefix(self, provider: ProviderId) -> tuple[str, ...]:
         if provider == "agy":
             return ("env", "BROWSER=/bin/false")
@@ -203,7 +211,11 @@ def _require_temp_path(home: str, path: str) -> None:
 
 def _require_home(target: UpdateTarget, binary: str) -> None:
     path = PurePosixPath(binary)
-    if ".." in path.parts or not path.is_relative_to(target.home):
+    if (
+        ".." in path.parts
+        or not path.is_relative_to(target.home)
+        or not PurePosixPath(target.resolve(binary)).is_relative_to(target.resolve(target.home))
+    ):
         raise ProviderUpdateRefused(
             "The provider executable is outside the account home; update it with its system package manager."
         )

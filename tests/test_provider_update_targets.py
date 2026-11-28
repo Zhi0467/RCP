@@ -23,6 +23,7 @@ class Transport:
         self.calls: list[tuple[str, ...]] = []
         self.destinations: list[str] = []
         self.mode = "700"
+        self.links: dict[str, str] = {}
 
     def run(self, argv: tuple[str, ...], timeout: float) -> subprocess.CompletedProcess[str]:
         self.calls.append(argv)
@@ -36,6 +37,8 @@ class Transport:
             output = "Linux"
         elif argv[0] == "stat":
             output = f"1000:{self.mode}:directory"
+        elif argv[:3] == ("readlink", "-f", "--"):
+            output = self.links.get(argv[3], argv[3])
         elif argv[:2] == ("mktemp", "-d"):
             output = self.home + "/.rcp/tmp/rcp-provider-12345"
         elif argv[:2] == ("sh", "-lc"):
@@ -195,3 +198,28 @@ def test_update_verifies_the_selected_executable_when_discovery_differs(target):
     transport.run = run
     change = update_installed_provider(destination, "codex", binary)
     assert (change.before, change.after) == ("1.0", "1.0")
+
+
+@pytest.mark.parametrize("inside", [False, True])
+def test_symlinked_executable_must_resolve_inside_home(target, tmp_path, inside: bool) -> None:
+    destination, transport = target
+    binary = destination.home + "/.local/bin/opencode"
+    real = (
+        destination.home + "/.local/share/opencode/versions/1.0"
+        if inside
+        else str(tmp_path / "system/opencode")
+    )
+    if isinstance(destination, LocalUpdateTarget):
+        Path(real).parent.mkdir(parents=True)
+        Path(real).touch(mode=0o755)
+        Path(binary).parent.mkdir(parents=True)
+        Path(binary).symlink_to(real)
+    else:
+        transport.links[binary] = real
+    if inside:
+        change = update_installed_provider(destination, "opencode", binary)
+        assert (change.before, change.after) == ("1.0", "2.0")
+        return
+    with pytest.raises(ProviderUpdateRefused):
+        update_installed_provider(destination, "opencode", binary)
+    assert transport.version == "1.0"
