@@ -694,7 +694,7 @@
 .landing-refresh + .landing-space-settings {
   margin-left: 8px;
 }
-.landing-space-settings + .landing-identity-menu {
+.landing-space-settings ~ .landing-identity-menu {
   margin-left: 8px;
 }
 .device-notification-control {

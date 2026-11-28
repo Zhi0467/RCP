@@ -79,10 +79,11 @@ def update_provider(
             except (OSError, ProviderUpdateRefused) as exc:
                 launcher.set_update_warning(provider, machine_id, str(exc))
                 raise
-            launcher.set_update_warning(provider, machine_id, None)
-            login = LoginKey(provider, machine_id, MACHINE_LOGIN_ID)
+            launcher.record_update(provider, machine_id, change.before)
             launcher.invalidate_provider_readiness(provider, machine_id)
-    launcher.readiness(login, binary=configured, refresh=True)
+        launcher.readiness(
+            LoginKey(provider, machine_id, MACHINE_LOGIN_ID), binary=configured, refresh=True
+        )
     return change
 
 

@@ -4444,3 +4444,12 @@ button.agent-provider-label {
   color: var(--muted);
   cursor: help;
 }
+.machine-agent-clis {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px 12px;
+}
+.machine-agent-clis > strong {
+  font-size: var(--type-2xs);
+}

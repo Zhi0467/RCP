@@ -40,7 +40,7 @@ fresh personal sign-in.
 
 A machine is its space card: one `space_machines` row with `machine_id`,
 `name`, `host`, `os_account` and every setting configured on that machine
-(writable paths, hidden folders, provider limits, provider executables, job
+(writable paths, hidden folders, agent CLI limits, agent CLI executables, job
 manager, jobs root and access hint). The card is the only owner. Project manifests
 name a machine by `machine_id` and resolve its current host and account from the card
 ([machine_cards.py](../../src/rcp/machine_cards.py)). The UI shows the card's

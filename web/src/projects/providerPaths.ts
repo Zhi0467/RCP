@@ -18,9 +18,13 @@ export function providerPathPresentation(
     return { label: value ? "Recorded path missing" : "Executable missing", kind: "error" };
   }
   if (readiness?.path_state === "resolved") {
-    return readiness.update_warning
-      ? { label: "Update failed", kind: "warning", note: readiness.update_warning }
-      : { label: "Ready", kind: "ready" };
+    if (readiness.update_warning)
+      return { label: "Update failed", kind: "warning", note: readiness.update_warning };
+    const version = readiness.version ? ` · ${readiness.version}` : "";
+    if (readiness.updated_from == null) return { label: `Ready${version}`, kind: "ready" };
+    return readiness.updated_from === readiness.version
+      ? { label: `Up to date${version}`, kind: "ready" }
+      : { label: `Updated${version}`, kind: "ready", note: `From ${readiness.updated_from}` };
   }
   return { label: "Not recorded", kind: "warning" };
 }

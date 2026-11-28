@@ -1642,7 +1642,9 @@ context ring of tokens used against the window. Any of them opens one popover
 with Context, Subagents, Compactions, and This turn; at phone width the header
 keeps the ring and the popover opens as a bottom sheet. A window the current
 turn has not reported yet comes from the chat's latest earlier turn with the
-same provider and model. The chat route joins each assistant turn's status
+same provider and model. A provider that reports no window, such as
+Antigravity, is measured against the machine's auto-compact threshold instead.
+The chat route joins each assistant turn's status
 into the transcript, so an older turn outside the bounded task list still
 counts. A compaction also leaves a divider with its before and
 after tokens in the turn where it happened. A runtime that reports no context

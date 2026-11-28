@@ -3218,6 +3218,7 @@ export interface ProviderReadiness {
   reason?: string | null;
   /** Why the backend's last automatic update of this CLI failed; the old version stays in use. */
   update_warning?: string | null;
+  updated_from?: string | null;
   /** An in-app update of this CLI is running; absent from older servers. */
   updating?: boolean;
   /** Whether Work-like launches can run here. Null means it was not checked. */

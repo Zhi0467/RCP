@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -27,7 +28,7 @@ def test_update_hold_refuses_duplicate_and_is_scoped_to_machine() -> None:
 
 
 @pytest.mark.parametrize("cached", [False, True])
-def test_update_readiness_ignores_refresh_and_preserves_cache(monkeypatch, cached) -> None:
+def test_update_holds_other_readers_while_its_own_thread_refreshes(monkeypatch, cached) -> None:
     launcher = AgentLauncher()
     login = LoginKey("codex", BACKEND_MACHINE_ID, "")
     calls = []
@@ -41,11 +42,18 @@ def test_update_readiness_ignores_refresh_and_preserves_cache(monkeypatch, cache
         launcher.readiness(login)
     calls.clear()
     with launcher.provider_update("codex", BACKEND_MACHINE_ID):
-        ready = launcher.readiness(login, refresh=True)
+        with ThreadPoolExecutor(1) as other:
+            ready = other.submit(launcher.readiness, login, refresh=True).result()
+            member = other.submit(
+                launcher.member_readiness, "codex", machine_id=BACKEND_MACHINE_ID
+            ).result()
         assert ready.updating
         assert ready.version == ("1" if cached else None)
         assert not calls
-        assert launcher.member_readiness("codex", machine_id=BACKEND_MACHINE_ID).updating
+        assert member.updating
+        launcher.readiness(login, refresh=True)
+        assert calls
+        assert launcher.cached_readiness(login).updating
     assert not launcher.readiness(login).updating
 
 
