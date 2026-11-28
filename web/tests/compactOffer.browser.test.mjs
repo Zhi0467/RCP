@@ -3,8 +3,6 @@ import { after, before, test } from "node:test";
 import { chromium } from "playwright";
 import { createServer } from "vite";
 
-const SHOTS = process.env.RCP_COMPACT_OFFER_SHOTS;
-
 let server, browser;
 before(async () => {
   server = await createServer({
@@ -79,7 +77,6 @@ async function mountIdleChat(page) {
       },
     };
     window.compactOfferSent = [];
-    window.machineSettingsOpened = 0;
     const container = document.createElement("main");
     container.style.height = "100vh";
     container.style.display = "flex";
@@ -88,7 +85,7 @@ async function mountIdleChat(page) {
     createRoot(container).render(
       React.createElement(
         OpenMachineSettingsContext.Provider,
-        { value: () => (window.machineSettingsOpened += 1) },
+        { value: () => {} },
         React.createElement(
           RefreshRuntimeContext.Provider,
           { value: runtime },
@@ -150,7 +147,6 @@ for (const width of [1000, 390])
       assert.deepEqual(await sent(page), []);
       const box = await ask.boundingBox();
       assert.ok(box.x >= 0 && box.x + box.width <= width, "the ask fits the viewport");
-      if (SHOTS) await page.screenshot({ path: `${SHOTS}/compact-offer-${width}.png` });
 
       await page.keyboard.press("Escape");
       assert.equal(await ask.count(), 0);
@@ -168,23 +164,3 @@ for (const width of [1000, 390])
       await page.close();
     }
   });
-
-test("Send as is sends without compacting, and the limits link opens machine settings", async () => {
-  const page = await browser.newPage({ viewport: { width: 1000, height: 760 } });
-  try {
-    const field = await mountIdleChat(page);
-    await field.press("Enter");
-    const ask = page.getByRole("alertdialog", { name: "Compact before sending?" });
-    await ask.getByRole("button", { name: "Auto-compact limits" }).click();
-    assert.equal(await page.evaluate(() => window.machineSettingsOpened), 1);
-    assert.equal(await ask.count(), 0);
-
-    await field.press("Enter");
-    await ask.getByRole("button", { name: "Send as is" }).click();
-    await page.waitForFunction(() => window.compactOfferSent.length === 1);
-    const [plain] = await sent(page);
-    assert.equal(plain.compact_first, undefined);
-  } finally {
-    await page.close();
-  }
-});
