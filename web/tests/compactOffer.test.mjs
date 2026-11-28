@@ -84,4 +84,5 @@ test("a compact-first turn that failed before compacting never sent its message"
   };
   assert.equal(compactionUnsent(compacted), false);
   assert.equal(compactionUnsent(task({ failed: true })), false);
+  assert.equal(compactionUnsent({ ...failed, parent_operation_id: "root" }), false);
 });

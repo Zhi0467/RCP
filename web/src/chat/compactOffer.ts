@@ -46,10 +46,12 @@ export function compactOffer({
   return idleMs >= COMPACT_OFFER_IDLE_MS ? { contextTokens, idleMs } : null;
 }
 
-/** A compact-first turn that failed before its compaction finished never sent its message. */
+/** A compact-first turn that failed before its compaction finished never sent its message.
+ *  Only a first attempt compacts; a Resume or Retry already sent it. */
 export function compactionUnsent(task: AgentTask): boolean {
   return Boolean(
     task.request.compact_first &&
+    !task.parent_operation_id &&
     task.failed &&
     !(task.agent_status?.compactions ?? []).some((compaction) => compaction.trigger === "manual"),
   );

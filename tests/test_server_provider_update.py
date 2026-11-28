@@ -252,7 +252,7 @@ def _update_opencode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seed) -> t
     return exit_code, calls
 
 
-@pytest.mark.parametrize("status", ["running", "pausing"])
+@pytest.mark.parametrize("status", ["queued", "running", "pausing"])
 def test_provider_update_refuses_while_a_backend_turn_runs_that_provider(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str
 ) -> None:

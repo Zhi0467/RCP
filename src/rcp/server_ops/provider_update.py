@@ -404,7 +404,7 @@ def _installed_service_account(layout: ServerLayout) -> pwd.struct_passwd:
 
 
 def _refuse_while_turns_run(database: Path, provider: ProviderId) -> None:
-    """Refuse running backend turns; see runs.provider_auto_update.turns_using for admission.
+    """Refuse queued or running backend turns, as the daily pass counts them.
 
     An unreadable database does not block.
     """
@@ -417,7 +417,7 @@ def _refuse_while_turns_run(database: Path, provider: ProviderId) -> None:
             "SELECT COUNT(*) FROM graph_runs "
             "WHERE json_extract(request_json, '$.provider')=? "
             "AND COALESCE(NULLIF(stage_machine_id,''),?)=? "
-            "AND status IN ('running','pausing')",
+            "AND status IN ('queued','running','pausing')",
             (provider, BACKEND_MACHINE_ID, BACKEND_MACHINE_ID),
         ).fetchone()
     except sqlite3.Error:
@@ -426,7 +426,7 @@ def _refuse_while_turns_run(database: Path, provider: ProviderId) -> None:
         connection.close()
     if count:
         raise ProviderUpdateRefused(
-            f"{count} agent turn(s) are running {profile_for(provider).label} on the backend. "
+            f"{count} agent turn(s) are using {profile_for(provider).label} on the backend. "
             "Wait for them to finish or stop them, then rerun this update."
         )
 
