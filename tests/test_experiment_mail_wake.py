@@ -91,9 +91,9 @@ def test_idle_episode_wakes_once_and_the_wake_claims_the_mail(tmp_path, monkeypa
     task = store.agent_task(wake)
     assert task is not None and task.episode_id == episode_id
     assert task.native_session_id == "native-session"
-    assert experiment_loop_phase(RunRequest.model_validate(task.request), "message_wake") == (
-        "mail_wake"
-    )
+    cause = store.agent_task_continuation_cause(wake)
+    assert cause == "watcher_wake"
+    assert experiment_loop_phase(RunRequest.model_validate(task.request), cause) == "mail_wake"
     assert _used(store, episode_id) == 2
     assert [
         item.message_id for item in store.claim_episode_mail("episode", episode_id, [wake])
@@ -146,16 +146,13 @@ def test_mail_from_a_mail_woken_turn_does_not_wake(tmp_path, monkeypatch):
     assert launches == []
 
 
-def test_a_mention_wakes_the_idle_experiment_once(tmp_path, monkeypatch):
-    store, episode_id = _idle_episode(tmp_path)
-    launches: list[str] = []
-    tasks = _tasks(monkeypatch, store, launches)
+def _mention(store: AppStore) -> str:
     user_id = _identity(store).user_id
     store.on_wake_input = lambda *_args: None
     _project(store)
     if not store.is_project_member("project", user_id):
         store.seat_project_member("project", user_id)
-    post = store.mutate_bulletin_post(
+    return store.mutate_bulletin_post(
         "project",
         GraphTargetRef().key,
         user_id=user_id,
@@ -163,11 +160,20 @@ def test_a_mention_wakes_the_idle_experiment_once(tmp_path, monkeypatch):
         text="<@agent:chat:episode-chat> the data moved",
     )["post_id"]
 
+
+def test_a_mention_wakes_the_idle_experiment_once(tmp_path, monkeypatch):
+    store, episode_id = _idle_episode(tmp_path)
+    launches: list[str] = []
+    tasks = _tasks(monkeypatch, store, launches)
+    post = _mention(store)
+
     assert wake_bulletin_mentions(tasks, "project", post) == {"chat:episode-chat": "now"}
     [wake] = launches
     woken = store.agent_task(wake)
     assert woken is not None and woken.episode_id == episode_id
-    assert experiment_loop_phase(RunRequest.model_validate(woken.request), "message_wake") == (
+    cause = store.agent_task_continuation_cause(wake)
+    assert cause == "watcher_wake"
+    assert experiment_loop_phase(RunRequest.model_validate(woken.request), cause) == (
         "mention_wake"
     )
     assert wake_bulletin_mentions(tasks, "project", post) == {"chat:episode-chat": "next_turn"}
@@ -197,3 +203,23 @@ def test_a_sender_can_queue_mail_without_waking(tmp_path, monkeypatch):
     assert not queued.woke and launches == [] and _used(store, episode_id) == 1
     woken = send(wake=True)
     assert woken.woke and len(launches) == 1 and _used(store, episode_id) == 2
+
+
+def test_a_mention_refused_by_cooldown_is_retried_later(tmp_path, monkeypatch):
+    store, episode_id = _idle_episode(tmp_path, ceiling=4)
+    launches: list[str] = []
+    tasks = _tasks(monkeypatch, store, launches)
+    retries: list[str] = []
+    monkeypatch.setattr(tasks, "schedule_deferred_pass", lambda key, *_: retries.append(key))
+    _mail(store, episode_id)
+    assert wake_experiment_for_mail(tasks, episode_id, cause="mail") == "now"
+    for task_id in launches:
+        store.complete_agent_task(task_id, applied_revision=None, result={})
+
+    post = _mention(store)
+
+    assert wake_bulletin_mentions(tasks, "project", post) == {
+        "chat:episode-chat": "chat_wake_cooldown"
+    }
+    assert retries == ["bulletin:project:chat:episode-chat"]
+    assert len(launches) == 1

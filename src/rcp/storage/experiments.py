@@ -572,7 +572,7 @@ class ExperimentStoreMixin(StoreMixinBase):
             or record.request.get("node_id") != record.request.get("control_node_id")
             or not isinstance(agent_id, str)
             or not agent_id
-            or bool(ids) == isinstance(cause, dict)
+            or (bool(ids) and isinstance(cause, dict))
         ):
             raise ValueError("An Experiment watcher wake must be a queued paid root task.")
         self._validate_experiment_watcher_ids(record, ids)
@@ -615,13 +615,12 @@ class ExperimentStoreMixin(StoreMixinBase):
                 if self._has_active_chat_overlap(connection, record):
                     return None
                 posts: list[str] = []
-                if ids:
+                if not isinstance(cause, dict):
                     if not cast("AppStore", self).claim_watcher_wake(
                         connection, agent_id, ids, record.operation_id
                     ):
                         return None
                 else:
-                    assert isinstance(cause, dict)
                     claimed = self._experiment_mail_wake_posts(connection, record, agent_id, cause)
                     if claimed is None:
                         return None
@@ -637,7 +636,7 @@ class ExperimentStoreMixin(StoreMixinBase):
                 self._insert_agent_task(
                     connection,
                     record,
-                    continuation_cause="watcher_wake" if ids else "message_wake",
+                    continuation_cause="watcher_wake",
                 )
                 connection.executemany(
                     "INSERT INTO bulletin_mention_wakes"
@@ -685,40 +684,64 @@ class ExperimentStoreMixin(StoreMixinBase):
         return stored
 
     @staticmethod
+    def _experiment_wake_cooling(
+        connection: sqlite3.Connection, project_id: str, agent_id: str, now: str, *, mention: bool
+    ) -> str | None:
+        """The cooldown that refuses a mail or mention wake now, if any."""
+        from rcp.limits import BULLETIN_WAKE_MIN_SECONDS, CHAT_WAKE_MIN_SECONDS
+        from rcp.storage.agent_tasks import _within_seconds
+
+        last = connection.execute(
+            "SELECT MAX(created_at) FROM graph_runs WHERE project_id=? "
+            "AND json_extract(request_json,'$.chat_id')=? "
+            "AND json_extract(request_json,'$.chat_wake') IS NOT NULL",
+            (project_id, agent_id),
+        ).fetchone()[0]
+        if _within_seconds(last, now, CHAT_WAKE_MIN_SECONDS):
+            return "chat_wake_cooldown"
+        if not mention:
+            return None
+        last = connection.execute(
+            "SELECT MAX(created_at) FROM bulletin_mention_wakes WHERE project_id=? AND actor_id=?",
+            (project_id, f"chat:{agent_id}"),
+        ).fetchone()[0]
+        if _within_seconds(last, now, BULLETIN_WAKE_MIN_SECONDS):
+            return "bulletin_wake_cooldown"
+        return None
+
+    def experiment_wake_cooling(
+        self, project_id: str, chat_id: str, *, mention: bool
+    ) -> str | None:
+        """The cooldown that would refuse this Experiment agent's wake now, if any."""
+        with self.connection() as connection:
+            return self._experiment_wake_cooling(
+                connection, project_id, chat_id, self.now(), mention=mention
+            )
+
+    @classmethod
     def _experiment_mail_wake_posts(
+        cls,
         connection: sqlite3.Connection,
         record: AgentTaskRecord,
         agent_id: str,
         cause: dict[str, object],
     ) -> list[str] | None:
         """The mention posts a mail or mention wake claims; None while its cause cools down."""
-        from rcp.limits import BULLETIN_WAKE_MIN_SECONDS, CHAT_WAKE_MIN_SECONDS
-        from rcp.storage.agent_tasks import _within_seconds
         from rcp.storage.bulletin import bulletin_wake_posts
 
-        last = connection.execute(
-            "SELECT MAX(created_at) FROM graph_runs WHERE project_id=? "
-            "AND json_extract(request_json,'$.chat_id')=? "
-            "AND json_extract(request_json,'$.chat_wake') IS NOT NULL",
-            (record.project_id, agent_id),
-        ).fetchone()[0]
-        if _within_seconds(last, record.created_at, CHAT_WAKE_MIN_SECONDS):
+        mention = cause.get("kind") == "bulletin_mention"
+        if cls._experiment_wake_cooling(
+            connection, record.project_id, agent_id, record.created_at, mention=mention
+        ):
             return None
-        if cause.get("kind") != "bulletin_mention":
+        if not mention:
             return []
-        actor_id = f"chat:{agent_id}"
-        last = connection.execute(
-            "SELECT MAX(created_at) FROM bulletin_mention_wakes WHERE project_id=? AND actor_id=?",
-            (record.project_id, actor_id),
-        ).fetchone()[0]
-        if _within_seconds(last, record.created_at, BULLETIN_WAKE_MIN_SECONDS):
-            return None
         items = cause.get("item_ids")
         if not isinstance(items, list) or not items:
             return None
         return (
             bulletin_wake_posts(
-                connection, record.project_id, actor_id, [str(item) for item in items]
+                connection, record.project_id, f"chat:{agent_id}", [str(item) for item in items]
             )
             or None
         )

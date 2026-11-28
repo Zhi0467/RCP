@@ -414,7 +414,8 @@ def wake_experiment_for_mail(
     claims the pending mail. A busy, paused, Stop-fenced, spent, cooling or
     unbound episode is left alone and reads the mail at its next invocation.
     Mail a mailbox- or mention-woken turn wrote never wakes, so two agents
-    cannot keep waking each other.
+    cannot keep waking each other. A cooling mention wake raises its cooldown
+    code so the caller can retry it later.
     """
 
     store = tasks.store
@@ -457,6 +458,10 @@ def wake_experiment_for_mail(
         items = store.bulletin_wake_candidates(episode.project_id, f"chat:{runtime.chat_id}")
     if not items:
         return "next_turn"
+    if cause == "mention" and (
+        cooling := store.experiment_wake_cooling(episode.project_id, runtime.chat_id, mention=True)
+    ):
+        raise ValueError(cooling)
     preflight = preflight_episode_wake(runtime, experiment, store=store)
     if preflight.readiness != "ready":
         return "next_turn"
