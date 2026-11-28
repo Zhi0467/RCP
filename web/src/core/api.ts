@@ -46,7 +46,6 @@ import type {
   ProviderLoginSettings,
   ProviderLoginSettingValue,
   ProviderLoginState,
-  ProviderUpdateJob,
   ProviderSignInStatus,
   ProviderResumeSummary,
   ServerStatus,
@@ -535,18 +534,8 @@ const providerUpdatePath = (machineId: string, provider: ProviderId) =>
   `/api/space/machines/${encodeURIComponent(machineId)}/providers/${encodeURIComponent(provider)}/update`;
 
 /** Starts the in-app update of the provider's CLI on the machine. */
-export function startProviderUpdate(
-  machineId: string,
-  provider: ProviderId,
-): Promise<ProviderUpdateJob> {
+export function startProviderUpdate(machineId: string, provider: ProviderId): Promise<void> {
   return api(providerUpdatePath(machineId, provider), { method: "POST" });
-}
-
-export function loadProviderUpdate(
-  machineId: string,
-  provider: ProviderId,
-): Promise<ProviderUpdateJob> {
-  return api(providerUpdatePath(machineId, provider));
 }
 
 /** Re-runs the card's scheduler, helper, and reach probes now. */

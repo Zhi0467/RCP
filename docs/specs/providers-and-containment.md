@@ -1462,8 +1462,7 @@ only the human Switch provider does that.
 
 **Why:** Least-recently-used spreads load over shared accounts, and staying put
 keeps the provider's prompt cache. The limit mark orders choices until its
-[recorded reset](#login-state-and-failure); only a reset without usable evidence
-uses the five-hour estimate.
+[recorded reset](#login-state-and-failure).
 
 | Provider | Machine sign-in | Added login, local | Added login, remote |
 | --- | --- | --- | --- |
@@ -1577,7 +1576,8 @@ captured generation cannot authorize a new fence.
 Settlement marks a login limited from the turn's recorded `provider_terminal_error`
 decision. A later successful turn or Verify clears the mark; an overlapping older
 turn cannot clear newer evidence. The same decision supplies the failed turn's
-`provider_limit_reset` receipt and the login assignment's `limit_resets_at`.
+reset and the login assignment's `limit_resets_at`; login rows expose that
+decision's `estimated` value as `limit_reset_estimated`.
 Both fresh and continued admission stop treating the login as limited at that reset.
 Clearing the login never clears the turn's receipt.
 
@@ -1591,8 +1591,9 @@ directions, and the latest reset among exhausted windows governs. With no eviden
 error phrases classify the failure and Gemini's `Resets in` duration or Codex's
 explicit-zone `try again at` timestamp supplies the reset. Missing resets or resets
 less than `LIMIT_RESET_MIN_SECONDS` after failure use failure time plus
-`PROVIDER_LOGIN_LIMIT_HINT_SECONDS`, marked `estimated`; estimated resets show no
-clock time. The reset receipt records `source` as `event`, `probe`, or `text`, and
+`PROVIDER_LOGIN_LIMIT_HINT_SECONDS`, marked `estimated`. Waiting and stopped limit
+rows and limited sign-in cards show a clock time only when the reset is not
+estimated. The decision records `source` as `event`, `probe`, or `text`, and
 retains a failed probe's detail when text fallback was needed. All recovery readers
 use the recorded decision, with phrase fallback only for historical turns without
 one. Recorded-result recovery records the same decision when the failure handler

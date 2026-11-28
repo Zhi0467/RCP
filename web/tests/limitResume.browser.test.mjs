@@ -123,6 +123,10 @@ for (const width of [1440, 390]) {
       await page.reload();
       await page.locator('[data-limit-state="waiting"]').waitFor();
       assert.match(await row.textContent(), /Resumes later/);
+      await row.getByRole("button", { name: "Don't resume" }).click();
+      await page.locator('[data-limit-state="stopped"]').waitFor();
+      assert.doesNotMatch(await row.textContent(), /\d{1,2}:\d{2}/);
+      await checkLayout();
       assert.deepEqual(writes, [false, true]);
       assert.deepEqual(errors, []);
     });

@@ -111,17 +111,9 @@ def test_remote_refuses_unsafe_temporary_directory() -> None:
     transport = Transport("/home/worker")
     target = RemoteUpdateTarget("machine", "worker", runner=transport.ssh)
     transport.mode = "777"
-    with pytest.raises(ProviderUpdateRefused):
-        target.temp_dir()
+    with pytest.raises(ProviderUpdateRefused), target.temp_dir():
+        pass
     assert not any(call[0] == "mktemp" for call in transport.calls)
-
-
-def test_remote_remove_cannot_remove_arbitrary_paths() -> None:
-    transport = Transport("/home/worker")
-    target = RemoteUpdateTarget("machine", "worker", runner=transport.ssh)
-    with pytest.raises(ProviderUpdateRefused):
-        target.remove("/home/worker/.rcp/tmp")
-    assert not any(call[0] == "rm" for call in transport.calls)
 
 
 @pytest.mark.parametrize("mode", ["777", "755"])
@@ -136,20 +128,9 @@ def test_remote_installer_rejects_nonprivate_new_directory(mode: str) -> None:
 
     transport.run = run
     target = RemoteUpdateTarget("machine", "worker", runner=transport.ssh)
-    with pytest.raises(ProviderUpdateRefused):
-        target.temp_dir()
+    with pytest.raises(ProviderUpdateRefused), target.temp_dir():
+        pass
     assert any(call[0] == "rm" for call in transport.calls)
-
-
-def test_local_remove_cannot_remove_unowned_directory(tmp_path: Path) -> None:
-    account = _account(_layout(tmp_path))
-    transport = Transport(account.pw_dir)
-    target = LocalUpdateTarget(account, lambda _, argv, timeout: transport.run(argv, timeout))
-    other = Path(account.pw_dir) / ".rcp/tmp/rcp-provider-other"
-    other.mkdir(parents=True)
-    with pytest.raises(ProviderUpdateRefused):
-        target.remove(str(other))
-    assert other.exists()
 
 
 def test_remote_installer_failure_still_removes_staged_directory() -> None:

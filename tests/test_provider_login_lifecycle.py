@@ -152,7 +152,14 @@ def test_limit_retry_is_once_per_session_login_and_not_rearmed(
     _episode(store, mode="experiment_loop")
     record = _turn(accounts, own, episode_id="episode")
     store.record_agent_task_receipt(
-        record.operation_id, "provider_terminal_error", {"classification": "session_limit"}
+        record.operation_id,
+        "provider_terminal_error",
+        {
+            "classification": "session_limit",
+            "source": "text",
+            "estimated": True,
+            "resets_at": (datetime.fromisoformat(store.now()) + timedelta(hours=5)).isoformat(),
+        },
     )
     if alternative_lapsed:
         with store.connection() as connection:
@@ -331,3 +338,27 @@ def test_row_reports_bound_count_before_removal(accounts, kind):
     row = provider_login_row(accounts.store, accounts.credentials, None, key, viewer_id="member")
     assert row["draining_since"] is None
     assert row["bound_running"] == (1 if kind == "shared" else 0)
+
+
+@pytest.mark.parametrize("estimated", [False, True])
+def test_login_row_uses_settled_limit_decision(accounts, estimated):
+    from rcp.provider_login_rows import provider_login_row
+    from rcp.runs.provider_limits import record_provider_limit_decision
+
+    store = accounts.store
+    key = _login(accounts, "codex")
+    record = _turn(accounts, key)
+    reset = datetime.fromisoformat(store.now()) + timedelta(hours=2)
+    decision = record_provider_limit_decision(
+        store,
+        None,
+        record,
+        error="usage limit reached",
+        snapshot=None
+        if estimated
+        else {"primary": {"usedPercent": 100, "resetsAt": reset.timestamp()}},
+    )
+    settle_provider_login(BackgroundAgentTasks(store, _unused_stream), record)
+    row = provider_login_row(store, accounts.credentials, None, key, viewer_id="member")
+    assert row["limit_resets_at"] == decision["resets_at"]
+    assert row["limit_reset_estimated"] is estimated

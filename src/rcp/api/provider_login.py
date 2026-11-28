@@ -138,6 +138,7 @@ class ProviderLoginAccount(BaseModel):
     signed_in_by_display_name: str | None
     limited_at: str | None
     limit_resets_at: str | None
+    limit_reset_estimated: bool
     draining_since: str | None
     bound_running: int
     machines: list[str]

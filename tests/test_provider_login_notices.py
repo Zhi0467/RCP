@@ -197,12 +197,22 @@ def test_missing_own_login_notice_has_no_fabricated_login(manifest, tmp_path, ex
     assert row["state"] == "signed_out"
     assert row["machine_id"] == BACKEND_MACHINE_ID
     assert row["label"]
+    assert row["limit_reset_estimated"] is True
     if existing:
         return
     assert all(
         value in (None, [], 0)
         for field, value in row.items()
-        if field not in {"provider", "machine_id", "kind", "owner_user_id", "state", "label"}
+        if field
+        not in {
+            "provider",
+            "machine_id",
+            "kind",
+            "owner_user_id",
+            "state",
+            "label",
+            "limit_reset_estimated",
+        }
     )
     assert not any(
         row.member_id == "new-member" for row in store.provider_logins("codex", BACKEND_MACHINE_ID)

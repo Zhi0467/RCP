@@ -108,7 +108,6 @@ from rcp.runs.chat import (
 )
 from rcp.runs.operational_context import stage_operational_context_pointer
 from rcp.runs.patch_validator import command_rejection_recorder
-from rcp.runs.provider_limits import failure_classification
 from rcp.runs.recorded_settlement import (
     absorb_recorded_events,
     attach_retained_stage,
@@ -1021,7 +1020,7 @@ def _is_authorized_clean_actor_retry(
     ):
         return True
     receipts = execution.store.agent_task_receipts(parent.operation_id)
-    terminal = failure_classification(execution.store, parent.operation_id, parent.error or "")
+    terminal = execution.store.failure_classification(parent.operation_id, parent.error or "")
     session_limit = terminal == "session_limit"
     continuation_unavailable = any(
         receipt.category == "continuation_context_unavailable"

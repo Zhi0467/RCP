@@ -8,6 +8,7 @@ import re
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -19,6 +20,7 @@ from rcp.limits import (
     SHELL_TIMEOUT_MIN_MINUTES,
 )
 from rcp.providers.browser_grant import BrowserGrant
+from rcp.providers.usage_limits import LimitEvidence
 
 if TYPE_CHECKING:
     from rcp.agents.invocation_broker import ProviderInvocationGate
@@ -505,7 +507,14 @@ class ProviderProfile:
                     minimum=minimum,
                 )
 
-    def limit_probe(self, binary: str) -> ProviderLimitProbe | None:
+    def limit_evidence(self, snapshot: dict[str, object]) -> LimitEvidence:
+        return LimitEvidence(exhausted=False)
+
+    def limit_text_reset(self, error: str, failed_at: datetime) -> datetime | None:
+        return None
+
+    @property
+    def limit_probe(self) -> Callable[[str], ProviderLimitProbe] | None:
         return None
 
     def login_probe_command(self, binary: str) -> list[str] | None:

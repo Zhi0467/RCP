@@ -435,7 +435,14 @@ def refused_artifact_edit_request(request: RunRequest) -> RunRequest:
 
 
 def start_artifact_edit(
-    tasks, project_id, request, *, authorized_by, parent=None, continuation="fresh", marker=None
+    tasks,
+    project_id,
+    request,
+    *,
+    authorized_by,
+    parent=None,
+    continuation="fresh",
+    limit_auto_resume=False,
 ):
     """Reserve an edit without going through operational episode admission."""
     edit = request.artifact_edit
@@ -453,10 +460,10 @@ def start_artifact_edit(
             machine_id=edit.stage_machine_id if edit.stage_root else None,
             graph_target=origin.graph_target,
             authorized_by=authorized_by,
-            automatic=marker == "limit_auto_resume",
+            automatic=limit_auto_resume,
         )
     except ProviderSignedOut as exc:
-        if parent is None or marker == "limit_auto_resume":
+        if parent is None or limit_auto_resume:
             raise
         login_wait = str(exc)
     kind = (
@@ -497,7 +504,7 @@ def start_artifact_edit(
                 "The selected artifact version is no longer available. Send the comment again."
             ) from exc
         tasks.store.create_artifact_edit_task(
-            record, continuation_cause=continuation, marker=marker
+            record, continuation_cause=continuation, limit_auto_resume=limit_auto_resume
         )
     return tasks.launch_admitted(record.operation_id)
 

@@ -1,4 +1,4 @@
-"""Process-local provider update jobs with synchronous admission."""
+"""Process-local provider updates with synchronous admission."""
 
 from __future__ import annotations
 
@@ -7,9 +7,6 @@ import pwd
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
-from typing import Literal
-
-from pydantic import BaseModel, ConfigDict
 
 from rcp.agents import AgentLauncher
 from rcp.machine_cards import card
@@ -26,19 +23,6 @@ from rcp.storage import AppStore
 from rcp.storage.models import SpaceMachineRecord
 
 
-class ProviderUpdateJob(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    provider: str
-    machine_id: str
-    state: Literal["running", "succeeded", "failed"]
-    detail: str | None = None
-    before: str | None = None
-    after: str | None = None
-    started_at: str
-    finished_at: str | None = None
-
-
 class ProviderUpdateRunner:
     def __init__(
         self,
@@ -53,35 +37,17 @@ class ProviderUpdateRunner:
         self._stop = threading.Event()
         self._threads: set[threading.Thread] = set()
         self._lock = threading.Lock()
-        self._jobs: dict[tuple[str, str], ProviderUpdateJob] = {}
-
-    def status(self, provider: ProviderId, machine_id: str) -> ProviderUpdateJob | None:
-        with self._lock:
-            return self._jobs.get((provider, machine_id))
 
     def _target(self, machine: SpaceMachineRecord) -> UpdateTarget:
         if machine.host:
             return RemoteUpdateTarget(machine.host, machine.os_account)
         return LocalUpdateTarget(pwd.getpwuid(os.geteuid()), run_provider_process_as_self)
 
-    def start(self, provider: ProviderId, machine_id: str) -> ProviderUpdateJob:
+    def start(self, provider: ProviderId, machine_id: str) -> None:
         machine = card(self.store, machine_id)
-        key = (provider, machine_id)
-        with self._lock:
-            if self._stop.is_set():
-                raise ProviderUpdateRefused("Provider updates are stopping.")
-            previous = self._jobs.get(key)
-            if previous is not None and previous.state == "running":
-                raise ProviderUpdateRefused("Already updating.")
-            job = ProviderUpdateJob(
-                provider=provider,
-                machine_id=machine_id,
-                state="running",
-                started_at=self.store.now(),
-            )
-            self._jobs[key] = job
         settled = threading.Event()
         admitted = threading.Event()
+        updated = threading.Event()
         refusal: list[ProviderUpdateRefused] = []
 
         @contextmanager
@@ -90,13 +56,14 @@ class ProviderUpdateRunner:
                 admitted.set()
                 settled.set()
                 yield
+                updated.set()
 
         def run() -> None:
             target_created = False
             try:
                 target = self._target(machine)
                 target_created = True
-                change = update_provider(
+                update_provider(
                     self.store,
                     self.launcher,
                     provider,
@@ -105,14 +72,6 @@ class ProviderUpdateRunner:
                     stop=self._stop,
                     guard=guard,
                 )
-                result = job.model_copy(
-                    update={
-                        "state": "succeeded",
-                        "before": change.before,
-                        "after": change.after,
-                        "finished_at": self.store.now(),
-                    }
-                )
             except Exception as exc:
                 if (
                     target_created
@@ -120,13 +79,14 @@ class ProviderUpdateRunner:
                     and not admitted.is_set()
                 ):
                     refusal.append(exc)
-                else:
+                elif (
+                    updated.is_set()
+                    or not target_created
+                    or not admitted.is_set()
+                    or not isinstance(exc, (OSError, ProviderUpdateRefused))
+                ):
                     self.launcher.set_update_warning(provider, machine_id, str(exc))
-                result = job.model_copy(
-                    update={"state": "failed", "detail": str(exc), "finished_at": self.store.now()}
-                )
             with self._lock:
-                self._jobs[key] = result
                 self._threads.discard(threading.current_thread())
             settled.set()
 
@@ -139,13 +99,11 @@ class ProviderUpdateRunner:
                 thread.start()
         except Exception:
             with self._lock:
-                self._jobs.pop(key, None)
                 self._threads.discard(thread)
             raise
         settled.wait()
         if refusal:
             raise refusal[0]
-        return job
 
     def stop(self) -> None:
         with self._lock:

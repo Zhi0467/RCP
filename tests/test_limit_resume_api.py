@@ -44,9 +44,15 @@ def test_limit_row_requires_receipt_and_tracks_member_opt_out(tmp_path: Path) ->
     store = AppStore(tmp_path / "state.sqlite3")
     task = _limited(store)
     assert task_limit_reset(store, task) is None
+    store.record_agent_task_receipt(
+        task.operation_id, "provider_terminal_error", {"classification": "session_limit"}
+    )
+    assert task_limit_reset(store, task) is None
     reset = "2030-01-01T00:00:00+00:00"
     store.record_agent_task_receipt(
-        task.operation_id, "provider_limit_reset", {"resets_at": reset, "estimated": False}
+        task.operation_id,
+        "provider_terminal_error",
+        {"classification": "session_limit", "resets_at": reset, "estimated": False},
     )
     assert task_limit_reset(store, task) == {
         "resets_at": reset,
@@ -116,7 +122,7 @@ def test_resume_marker_is_present_before_worker_starts(
     if restart:
         fake_launch_admitted(monkeypatch, tasks)
     resumed = tasks.resume(
-        previous.operation_id, authorized_by=previous.authorized_by, marker="limit_auto_resume"
+        previous.operation_id, authorized_by=previous.authorized_by, limit_auto_resume=True
     )
     if restart:
         assert store.agent_task_dispatch_was_proven_not_started(resumed.operation_id)
@@ -161,8 +167,12 @@ def test_limit_decline_route_and_task_projection(
         )
         store.record_agent_task_receipt(
             task.operation_id,
-            "provider_limit_reset",
-            {"resets_at": "2030-01-01T00:00:00+00:00", "estimated": False},
+            "provider_terminal_error",
+            {
+                "classification": "session_limit",
+                "resets_at": "2030-01-01T00:00:00+00:00",
+                "estimated": False,
+            },
         )
         base = (
             f"/api/projects/{project_id}"
@@ -203,8 +213,12 @@ def test_limit_decline_route_and_task_projection(
         )
         store.record_agent_task_receipt(
             other.operation_id,
-            "provider_limit_reset",
-            {"resets_at": "2030-01-01T00:00:00+00:00", "estimated": False},
+            "provider_terminal_error",
+            {
+                "classification": "session_limit",
+                "resets_at": "2030-01-01T00:00:00+00:00",
+                "estimated": False,
+            },
         )
         assert (
             client.post(
@@ -250,6 +264,6 @@ def test_automatic_resume_does_not_create_turn_when_admission_refuses(
     monkeypatch.setattr(tasks, "admit_provider_task", refuse)
     with pytest.raises(error):
         tasks.resume(
-            previous.operation_id, authorized_by=previous.authorized_by, marker="limit_auto_resume"
+            previous.operation_id, authorized_by=previous.authorized_by, limit_auto_resume=True
         )
     assert not store.agent_task_has_continuation(previous.operation_id)

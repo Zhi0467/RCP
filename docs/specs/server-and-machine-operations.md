@@ -136,12 +136,11 @@ update on that machine; while it runs, the row's tag reads Updating and the menu
 becomes a spinner, and a failure shows as the row's Update failed tag. On a phone,
 the name, tag and menu share one line above the path. In a team
 space, the caller must be a member allowed to edit the machine card; in a personal
-space, the owner may update it. The update routes return the in-memory job defined
-by [ProviderUpdateJob](../../src/rcp/runs/provider_update.py): one live job per
-provider and machine, with running, succeeded, or failed state and before/after
-versions. A restart clears jobs.
+space, the owner may update it. The update POST acknowledges acceptance with 202.
+The row polls the machine card until
+`readiness.updating` is false, then displays the card's readiness and update warning.
 
-The daily backend pass and on-demand jobs share
+The daily backend pass and on-demand updates share
 [update_provider](../../src/rcp/runs/provider_auto_update.py). The daily pass runs
 once per `PROVIDER_AUTO_UPDATE_INTERVAL_SECONDS`, without root, and skips missing
 installations and executables outside the account home. On-demand updates report

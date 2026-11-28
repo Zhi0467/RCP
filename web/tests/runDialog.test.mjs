@@ -1392,3 +1392,22 @@ test("a provider update takes precedence over the previous update warning", () =
     { label: "Updating", kind: "pending" },
   );
 });
+
+test("waiting and stopped limit rows hide estimated reset clocks", async () => {
+  const { LimitTaskRow } = await server.ssrLoadModule("/src/agents/LimitTaskRow.tsx");
+  for (const state of ["waiting", "stopped"]) {
+    for (const estimated of [false, true]) {
+      const html = renderMarkup(
+        React.createElement(LimitTaskRow, {
+          task: { operation_id: "limited", provider_label: "Codex" },
+          limit: { state, estimated, resets_at: "2026-11-27T16:10:00Z" },
+          disabled: false,
+          onResume() {},
+          onRetry() {},
+          async onDecline() {},
+        }),
+      );
+      assert.equal(/\d{2}:\d{2}/.test(html), !estimated);
+    }
+  }
+});

@@ -69,6 +69,7 @@ const logins = [
     added_by_display_name: "Ana",
     limited_at: "2026-11-27T11:00:00Z",
     limit_resets_at: RESETS_AT,
+    limit_reset_estimated: false,
   }),
   loginRow({
     provider: "codex",
@@ -76,11 +77,12 @@ const logins = [
     login_id: "bo",
     added_by_display_name: "Bo",
     limited_at: "2026-11-27T11:00:00Z",
-    limit_resets_at: null,
+    limit_resets_at: RESETS_AT,
+    limit_reset_estimated: true,
   }),
 ];
 
-async function openCard(t, viewport, onUpdate) {
+async function openCard(t, viewport, onUpdate, onPoll = () => null) {
   const server = await createServer({
     root: new URL("..", import.meta.url).pathname,
     logLevel: "error",
@@ -103,7 +105,7 @@ async function openCard(t, viewport, onUpdate) {
   const state = { record: machine(), calls: [] };
   await page.route("**/api/**", (route) => route.fulfill({ status: 404, json: { detail: "no" } }));
   await page.route("**/api/space/machines", (route) =>
-    route.fulfill({ json: { machines: [state.record] } }),
+    route.fulfill(onPoll(state) ?? { json: { machines: [state.record] } }),
   );
   await page.route("**/api/providers/logins", (route) => route.fulfill({ json: logins }));
   await page.route("**/api/providers/logins/settings", (route) =>
@@ -124,18 +126,6 @@ async function openCard(t, viewport, onUpdate) {
   });
   return { page, state, errors };
 }
-
-const job = (provider, jobState, extra = {}) => ({
-  provider,
-  machine_id: MACHINE,
-  state: jobState,
-  detail: null,
-  before: "0.131.0",
-  after: null,
-  started_at: "2026-11-27T12:00:00Z",
-  finished_at: jobState === "running" ? null : "2026-11-27T12:00:05Z",
-  ...extra,
-});
 
 const row = (page, provider) => page.locator(`.provider-path-row[data-provider="${provider}"]`);
 
@@ -166,20 +156,23 @@ for (const [width, height] of [
         const readiness = current.record.provider_readiness[provider];
         if (provider === "codex")
           return { status: 409, json: { detail: "2 turns are using Codex here." } };
-        if (method === "POST") {
-          readiness.updating = true;
-          return { status: 202, json: job(provider, "running") };
-        }
+        assert.equal(method, "POST");
+        readiness.updating = true;
+        return { status: 202, json: { ok: true } };
+      },
+      (current) => {
+        const active = Object.entries(current.record.provider_readiness).find(
+          ([, readiness]) => readiness.updating,
+        );
+        if (!active) return null;
+        const [provider, readiness] = active;
         polls += 1;
-        if (polls === 1) return { status: 503, json: { detail: "Status temporarily unavailable" } };
-        if (polls < 3) return { json: job(provider, "running") };
+        if (polls === 1) return { status: 503, json: { detail: "Card temporarily unavailable" } };
+        if (polls < 3) return null;
         readiness.updating = false;
-        if (provider === "agy") {
-          readiness.update_warning = "npm ERR! EACCES";
-          return { json: job(provider, "failed", { detail: "npm ERR! EACCES" }) };
-        }
-        readiness.version = "0.132.0";
-        return { json: job(provider, "succeeded", { after: "0.132.0" }) };
+        if (provider === "agy") readiness.update_warning = "npm ERR! EACCES";
+        else readiness.version = "0.132.0";
+        return null;
       },
     );
     const claude = row(page, "claude");
@@ -216,10 +209,11 @@ for (const [width, height] of [
       await codex.locator(".provider-path-state").getAttribute("title"),
       "2 turns are using Codex here.",
     );
-    assert.deepEqual(
-      state.calls.filter(([method]) => method === "POST").map(([, provider]) => provider),
-      ["claude", "agy", "codex"],
-    );
+    assert.deepEqual(state.calls, [
+      ["POST", "claude"],
+      ["POST", "agy"],
+      ["POST", "codex"],
+    ]);
 
     if (width < 560) {
       const name = await claude.locator("strong").boundingBox();

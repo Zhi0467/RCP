@@ -13,7 +13,7 @@ from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.storage import AppStore
 
 
-def test_reset_time_expires_new_and_continued_logins(tmp_path, monkeypatch):
+def test_reset_time_expires_login(tmp_path, monkeypatch):
     store = AppStore(tmp_path / "state.sqlite3")
     monkeypatch.setattr(store, "now", lambda: "2026-01-01T03:00:00+00:00")
     key = LoginKey("codex", BACKEND_MACHINE_ID, "")
@@ -24,11 +24,8 @@ def test_reset_time_expires_new_and_continued_logins(tmp_path, monkeypatch):
         resets_at="2026-01-01T03:05:00+00:00",
     )
     assert store.provider_login_limit_lapses_in(key) == 300
-    for continued in (False, True):
-        assert store.provider_login_limited(key, continued=continued)
-        assert not store.provider_login_limited(
-            key, continued=continued, now="2026-01-01T03:05:00+00:00"
-        )
+    assert store.provider_login_limited(key)
+    assert not store.provider_login_limited(key, now="2026-01-01T03:05:00+00:00")
 
 
 @pytest.mark.parametrize("clear", ["success", "sign_in"])

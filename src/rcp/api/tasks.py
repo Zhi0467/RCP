@@ -221,9 +221,13 @@ def _agent_artifact_response_json(response: AgentArtifactResponse) -> dict[str, 
 def task_limit_reset(store: AppStore, record: AgentTaskRecord) -> dict[str, object] | None:
     if record.status != "failed":
         return None
-    resets = store.agent_task_receipts_by_category(record.operation_id, "provider_limit_reset")
+    resets = store.agent_task_receipts_by_category(record.operation_id, "provider_terminal_error")
     reset = resets[-1] if resets else None
-    if reset is None:
+    if (
+        reset is None
+        or reset.payload.get("classification") != "session_limit"
+        or not reset.payload.get("resets_at")
+    ):
         return None
     stops = store.agent_task_receipts_by_category(record.operation_id, "limit_auto_resume_stopped")
     stopped = stops[-1] if stops else None
@@ -1311,7 +1315,7 @@ def resume_task(
     catalog: ProjectCatalog,
     background_tasks: BackgroundAgentTasks,
     experiment_admission: ExperimentAdmission,
-    marker: str | None = None,
+    limit_auto_resume: bool = False,
 ) -> AgentTaskRecord:
     store = background_tasks.store
     owner = task_owner(store, previous, catalog=catalog)
@@ -1321,7 +1325,7 @@ def resume_task(
             previous.operation_id,
             skills=skills,
             authorized_by=authorized_by,
-            marker=marker,
+            limit_auto_resume=limit_auto_resume,
         )
 
 

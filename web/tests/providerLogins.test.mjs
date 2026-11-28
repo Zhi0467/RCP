@@ -353,3 +353,25 @@ test("paste-code form shows Google's link, protected input and cancel only to it
     assert.equal(count(mine, /data-sign-in-action="cancel"/g), 1);
     assert.doesNotMatch(draw("u-other"), /accounts.google.com|<form|type="password"/);
   }));
+
+test("limited sign-ins show a reset clock only for a known estimate flag", () =>
+  ssr(({ React, render, SignInCard }) => {
+    for (const estimated of [false, true, undefined]) {
+      const html = render(
+        React.createElement(SignInCard, {
+          row: loginRow({
+            limited_at: "2026-11-27T11:00:00Z",
+            limit_resets_at: "2026-11-27T16:10:00Z",
+            limit_reset_estimated: estimated,
+          }),
+          viewerUserId: "u-me",
+          writesDisabled: false,
+          entering: false,
+          onEntering() {},
+          async onChanged() {},
+        }),
+      );
+      const label = html.match(/class="sign-in-state"[^>]*>([^<]*)</)[1];
+      assert.equal(/\d{2}:\d{2}/.test(label), estimated === false);
+    }
+  }));

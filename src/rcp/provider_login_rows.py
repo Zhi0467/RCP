@@ -62,6 +62,11 @@ def provider_login_row(
         "signed_in_by_display_name": signed_in_by.display_name if signed_in_by else None,
         "limited_at": assignment.limited_at if limited else None,
         "limit_resets_at": assignment.limit_resets_at if limited else None,
+        "limit_reset_estimated": store.provider_login_limit_estimated(
+            key, assignment.limit_resets_at
+        )
+        if limited
+        else True,
         "draining_since": state.draining_since,
         "bound_running": provider_login.bound_running_count(store, key)
         if key.login_id and state.member_id is None
@@ -99,6 +104,7 @@ def missing_own_login_row(provider: str, machine_id: str, viewer_id: str) -> dic
         "signed_in_by_display_name": None,
         "limited_at": None,
         "limit_resets_at": None,
+        "limit_reset_estimated": True,
         "draining_since": None,
         "bound_running": 0,
         "machines": [],

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import uuid
+from collections.abc import Callable
 from dataclasses import replace
+from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -32,6 +35,7 @@ from rcp.providers.base import (
     _usage_int,
 )
 from rcp.providers.browser_grant import BrowserGrant
+from rcp.providers.usage_limits import LimitEvidence, _exhausted_windows, _iso_timestamp
 
 if TYPE_CHECKING:
     from rcp.agents.invocation_broker import ProviderInvocationGate
@@ -51,8 +55,6 @@ _FILE_TOOLS = (
     "notebook_edit",
 )
 _WEB_TOOLS = ("search_web", "read_url_content")
-_SHELL_TOOLS = ("run_command", "command_status", "send_command_input")
-_SUBAGENT_TOOLS = ("define_subagent", "invoke_subagent", "manage_subagents", "wait")
 _WORK = {"work_auto", "orchestrate"}
 
 
@@ -68,12 +70,12 @@ def _tools(capability: AgentCapability) -> tuple[str, ...] | None:
 
 
 def _policy_head(
-    binary: str, policy: dict[str, object], tools: tuple[str, ...] | None, *, probe: bool = False
+    binary: str, policy: dict[str, object], tools: tuple[str, ...] | None
 ) -> tuple[list[str], list[str]]:
     """The wrapper options before the provider flags, and the `--agent` pair if any."""
     head = [binary] + (["--rcp-agy-tools", json.dumps(tools)] if tools is not None else [])
     agent = ["--agent", agy_agent_name(policy, tools)] if tools is not None else []
-    return head + (["--rcp-agy-probe"] if probe else []), agent
+    return head, agent
 
 
 def _protected_write_denies(scope: ProviderWriteScope | None) -> list[str]:
@@ -303,6 +305,28 @@ class AgyProfile(ProviderProfile):
     )
     login_home_credentials = (".gemini/antigravity-cli/antigravity-oauth-token",)
 
+    def limit_text_reset(self, error: str, failed_at: datetime) -> datetime | None:
+        match = re.search(r"resets in\s+(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?", error, re.I)
+        if match and any(match.groups()):
+            hours, minutes, seconds = (int(value or 0) for value in match.groups())
+            return failed_at + timedelta(hours=hours, minutes=minutes, seconds=seconds)
+        return None
+
+    def limit_evidence(self, snapshot: dict[str, object]) -> LimitEvidence:
+        groups = snapshot.get("groups")
+        if not isinstance(groups, list):
+            raise ValueError("Antigravity usage has no groups list")
+        windows: list[tuple[bool, datetime | None]] = []
+        for group in groups:
+            if not isinstance(group, dict) or not isinstance(group.get("buckets"), list):
+                raise ValueError("Antigravity usage group has no buckets list")
+            for bucket in group["buckets"]:
+                remaining = bucket.get("remaining_fraction") if isinstance(bucket, dict) else None
+                if isinstance(remaining, bool) or not isinstance(remaining, (int, float)):
+                    raise ValueError("Antigravity usage bucket has no remaining_fraction")
+                windows.append((remaining <= 0, _iso_timestamp(bucket.get("reset_time"))))
+        return _exhausted_windows(windows)
+
     @property
     def authentication(self) -> AgyAuthentication:
         from rcp.providers.agy.auth import AgyAuthentication
@@ -328,10 +352,21 @@ class AgyProfile(ProviderProfile):
     def login_command(self, binary: str) -> list[str]:
         return [binary, "acp", "--login"]
 
-    def limit_probe(self, binary: str) -> ProviderLimitProbe:
-        from rcp.providers.usage_limits import parse_agy_usage
+    def parse_limit_usage(self, stdout: str) -> dict[str, object]:
+        payload = json.loads(stdout)
+        command = payload.get("command") if isinstance(payload, dict) else None
+        data = command.get("data") if isinstance(command, dict) else None
+        if not isinstance(data, dict):
+            raise ValueError("Antigravity usage has no command.data")
+        self.limit_evidence(data)
+        return data
 
-        return ProviderLimitProbe(self.login_probe_command(binary), "", parse_agy_usage)
+    @property
+    def limit_probe(self) -> Callable[[str], ProviderLimitProbe]:
+        return self._limit_probe
+
+    def _limit_probe(self, binary: str) -> ProviderLimitProbe:
+        return ProviderLimitProbe(self.login_probe_command(binary), "", self.parse_limit_usage)
 
     def login_probe_command(self, binary: str) -> list[str]:
         return [binary, "-p", "/usage", "--output-format", "json"]
@@ -372,14 +407,13 @@ class AgyProfile(ProviderProfile):
 
     def work_like_probe_command(self, binary: str) -> list[str]:
         policy = _policy("work_auto", Path.cwd(), [], None, None)
-        head, agent = _policy_head(binary, policy, _tools("work_auto"), probe=True)
         return [
-            *head,
+            binary,
+            "--rcp-agy-probe",
             "--input-format",
             "stream-json",
             "--output-format",
             "stream-json",
-            *agent,
             "--settings",
             json.dumps(policy),
             "--mode",

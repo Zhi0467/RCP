@@ -49,8 +49,9 @@ def limited(tmp_path, monkeypatch):
     store.create_agent_task(task)
     store.record_agent_task_receipt(
         task.operation_id,
-        "provider_limit_reset",
+        "provider_terminal_error",
         {
+            "classification": "session_limit",
             "resets_at": (clock[0] + timedelta(seconds=60)).isoformat(),
             "estimated": False,
         },
@@ -129,7 +130,7 @@ def test_ineligible_turns_stay_failed(limited, reason):
     with store.connection() as connection:
         if reason == "old":
             connection.execute(
-                "DELETE FROM graph_run_receipts WHERE category='provider_limit_reset'"
+                "DELETE FROM graph_run_receipts WHERE category='provider_terminal_error'"
             )
         elif reason == "switch":
             connection.execute("UPDATE space_users SET auto_resume_after_limits=0")
@@ -243,7 +244,7 @@ def test_restart_preserves_only_proven_unstarted_auto_resume(limited, monkeypatc
             }
         ),
         continuation_cause="resume",
-        marker="limit_auto_resume",
+        limit_auto_resume=True,
     )
     if attempted:
         store.record_agent_task_receipt(

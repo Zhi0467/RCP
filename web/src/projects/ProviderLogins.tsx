@@ -809,7 +809,7 @@ export function SignInCard({
         className="sign-in-state"
         title={`Hit a usage limit ${formatServerTimestamp(row.limited_at)}. Used when nothing else is free.`}
       >
-        {row.limit_resets_at
+        {row.limit_resets_at && row.limit_reset_estimated === false
           ? `Limit until ${askedLabel(row.limit_resets_at, new Date())}`
           : "Usage limit"}
       </span>

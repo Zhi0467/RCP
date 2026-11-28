@@ -171,7 +171,7 @@ def test_limit_marks_require_a_later_provider_start(tmp_path, monkeypatch):
         )
     assert store.provider_login_assignment(key).limited_at == store.now()
     assert not store.provider_login_limited(key, now="2026-01-01T09:00:00+00:00")
-    assert not store.provider_login_limited(key, now="2026-01-01T09:00:00+00:00", continued=True)
+    assert not store.provider_login_limited(key, now="2026-01-01T09:00:00+00:00")
     assert store.set_provider_login_limit(
         key, provider_started_at="2026-01-01T04:00:00+00:00", limited=False
     )

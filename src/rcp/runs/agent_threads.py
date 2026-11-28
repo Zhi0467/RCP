@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 
 from rcp.agents.agent_profile import OFFER, PRIVATE_PROJECT, SINGLE_ENTRY, resolve_agent_profile
 from rcp.machine_cards import BACKEND_MACHINE_ID
-from rcp.runs.provider_limits import failure_classification
 from rcp.runs.provider_usage import record_provider_usage
 from rcp.storage import AppStore
 from rcp.storage.agent_tasks import SESSION_TASK_KINDS
@@ -206,7 +205,7 @@ def _live_label(store: AppStore, state: str, task: sqlite3.Row, watchers: int) -
         if task["failure_kind"] == "provider_auth":
             return "Sign-in needed"
         if (
-            failure_classification(store, task["operation_id"], task["error"] or "")
+            store.failure_classification(task["operation_id"], task["error"] or "")
             == "session_limit"
         ):
             return "Session limit"
@@ -672,7 +671,7 @@ async def _summarize_thread_session(
                     if profile_for(request.provider).credential_failure(event.text):
                         raise _SessionSummaryUnavailable("sign_in")
                     if (
-                        failure_classification(execution.store, execution.operation_id, event.text)
+                        execution.store.failure_classification(execution.operation_id, event.text)
                         == "stale_session"
                     ):
                         raise _SessionSummaryUnavailable("session_missing")

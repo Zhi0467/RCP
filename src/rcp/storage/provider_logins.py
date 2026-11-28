@@ -91,14 +91,6 @@ def migrate_per_member_provider_logins(connection: sqlite3.Connection) -> None:
     install_provider_readiness_deadline(connection)
 
 
-def migrate_provider_limit_resets(connection: sqlite3.Connection) -> None:
-    columns = {
-        row[1] for row in connection.execute("PRAGMA table_info(provider_login_assignments)")
-    }
-    if "limit_resets_at" not in columns:
-        connection.execute("ALTER TABLE provider_login_assignments ADD COLUMN limit_resets_at TEXT")
-
-
 class ProviderLoginStoreMixin(StoreMixinBase):
     @contextmanager
     def _login_connection(
@@ -421,11 +413,26 @@ class ProviderLoginStoreMixin(StoreMixinBase):
             )
         )
 
+    def provider_login_limit_estimated(self, key: LoginKey, resets_at: str | None) -> bool:
+        with self.connection() as connection:
+            receipt = connection.execute(
+                "SELECT json_extract(receipt.payload_json, '$.estimated') "
+                "FROM graph_run_receipts receipt JOIN graph_runs task "
+                "ON task.operation_id=receipt.operation_id "
+                "WHERE receipt.category='provider_terminal_error' "
+                "AND json_extract(receipt.payload_json, '$.classification')='session_limit' "
+                "AND json_extract(receipt.payload_json, '$.resets_at')=? "
+                "AND json_extract(task.request_json, '$.provider')=? "
+                "AND COALESCE(task.stage_machine_id, '')=? AND task.login_id=? "
+                "ORDER BY receipt.receipt_id DESC LIMIT 1",
+                (resets_at, *key),
+            ).fetchone()
+        return receipt is None or receipt[0] != 0
+
     def provider_login_limited(
         self,
         key: LoginKey,
         *,
-        continued: bool = False,
         now: str | None = None,
         connection: sqlite3.Connection | None = None,
     ) -> bool:

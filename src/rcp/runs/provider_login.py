@@ -17,7 +17,6 @@ from rcp.core.models import AuthorizedHuman
 from rcp.limits import LIMIT_AUTO_RESUME_MAX, LIMIT_RESUME_DEFER_MAX, LIMIT_RESUME_RETRY_SECONDS
 from rcp.machine_cards import BACKEND_MACHINE_ID, LoginKey
 from rcp.providers import profile_for
-from rcp.runs.provider_limits import record_provider_limit_decision
 from rcp.server_ops.provider_cleanup import cleanup_provider_login_credential
 from rcp.storage.models import (
     AgentTaskAdmissionConflict,
@@ -28,7 +27,7 @@ from rcp.transport import StateUnavailable
 
 if TYPE_CHECKING:
     from rcp.agents.launcher import AgentLauncher
-    from rcp.background import AgentTaskExecution, BackgroundAgentTasks
+    from rcp.background import BackgroundAgentTasks
     from rcp.keyed_locks import ExperimentAdmission, KeyedLocks
     from rcp.projects import ProjectCatalog
     from rcp.storage import AppStore
@@ -401,8 +400,6 @@ def provider_login_changed(
 def settle_provider_login(
     background: BackgroundAgentTasks,
     record: AgentTaskRecord,
-    *,
-    execution: AgentTaskExecution | None = None,
 ) -> None:
     """Apply evidence and release only after the owner recorded its durable park."""
     store = background.store
@@ -410,31 +407,10 @@ def settle_provider_login(
     provider = str(record.request.get("provider") or "")
     if not provider:
         return
-    decision = (
-        record_provider_limit_decision(
-            store,
-            background.launcher,
-            record,
-            snapshot=execution.rate_limit if execution is not None else None,
-        )
-        if record.status == "failed"
-        else {}
-    )
+    receipts = store.agent_task_receipts_by_category(record.operation_id, "provider_terminal_error")
+    decision = receipts[-1].payload if receipts and record.status == "failed" else {}
     limited = decision.get("classification") == "session_limit"
-    resets_at = None
-    if limited:
-        resets = store.agent_task_receipts_by_category(record.operation_id, "provider_limit_reset")
-        if not resets:
-            store.record_agent_task_receipt(
-                record.operation_id,
-                "provider_limit_reset",
-                {
-                    key: value
-                    for key, value in decision.items()
-                    if key not in {"provider", "classification"}
-                },
-            )
-        resets_at = str(resets[-1].payload["resets_at"] if resets else decision["resets_at"])
+    resets_at = str(decision["resets_at"]) if limited else None
     if record.login_id is None:
         return
     key = LoginKey(provider, record.stage_machine_id or "", record.login_id)
@@ -457,7 +433,7 @@ def settle_provider_login(
         return
     if not limited or not record.episode_id or not record.native_session_id or chosen == key:
         return
-    if store.provider_login_limited(chosen, continued=True):
+    if store.provider_login_limited(chosen):
         return
     episode = store.episode(record.episode_id)
     if episode is None or episode.status != "running" or episode.stop_requested_at:
@@ -607,7 +583,8 @@ def limit_resume_candidates(store: AppStore) -> list[AgentTaskRecord]:
             "AND json_extract(failed.request_json, '$.chat_id') IS NOT NULL "
             "AND COALESCE(member.auto_resume_after_limits, 1)=1 "
             "AND EXISTS (SELECT 1 FROM graph_run_receipts reset "
-            "WHERE reset.operation_id=failed.operation_id AND reset.category='provider_limit_reset' "
+            "WHERE reset.operation_id=failed.operation_id AND reset.category='provider_terminal_error' "
+            "AND json_extract(reset.payload_json, '$.classification')='session_limit' "
             "AND julianday(json_extract(reset.payload_json, '$.resets_at'))<=julianday(?)) "
             "AND NOT EXISTS (SELECT 1 FROM graph_run_receipts stopped "
             "WHERE stopped.operation_id=failed.operation_id AND stopped.category='limit_auto_resume_stopped') "
@@ -701,7 +678,7 @@ def _resume_limited_turn(
                 catalog=catalog,
                 background_tasks=background,
                 experiment_admission=experiment_admission,
-                marker="limit_auto_resume",
+                limit_auto_resume=True,
             )
     except AgentTaskAlreadyContinued:
         return

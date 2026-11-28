@@ -369,7 +369,6 @@ class ProviderSignInRunner:
 
     @contextlib.contextmanager
     def _member_hold(self, login: LoginKey) -> Iterator[None]:
-        self._require_not_updating(login)
         with self._provider_sign_in(login), contextlib.ExitStack() as stack:
             try:
                 stack.enter_context(
@@ -643,7 +642,6 @@ class ProviderSignInRunner:
                 self._provider_sign_in(login),
                 self.launcher.credential_gate.hold_blocking(login),
             ):
-                self._require_not_updating(login)
                 # A member who cancels while this thread waits for the gate must
                 # stop the attempt, not start one: nothing has been fenced or
                 # launched yet, so the account keeps the state it already had.

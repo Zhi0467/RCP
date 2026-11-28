@@ -15,7 +15,9 @@ function limitText(task: AgentTask, limit: LimitReset): string {
     return limit.estimated
       ? `${provider} usage limit. Resumes later.`
       : `${provider} usage limit. Resumes at ${askedLabel(limit.resets_at, new Date())}.`;
-  return `${provider} usage limit until ${askedLabel(limit.resets_at, new Date())}.`;
+  return limit.estimated
+    ? `${provider} usage limit.`
+    : `${provider} usage limit until ${askedLabel(limit.resets_at, new Date())}.`;
 }
 
 /** A turn stopped by a provider usage limit: one line, its action at the end. */

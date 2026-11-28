@@ -12,6 +12,7 @@ import stat
 import subprocess
 import threading
 import time
+from collections import Counter
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
 from concurrent.futures import Future
 from contextlib import aclosing, contextmanager, suppress
@@ -756,8 +757,8 @@ class AgentLauncher:
         self._readiness_generations: dict[tuple[str, str, str | None, str], int] = {}
         self._update_warnings: dict[tuple[str, str], str] = {}
         self._updating_providers: set[tuple[str, str]] = set()
-        self._provider_sign_ins: dict[tuple[str, str], int] = {}
-        self._active_readiness_probes: dict[tuple[str, str], int] = {}
+        self._provider_sign_ins: Counter[tuple[str, str]] = Counter()
+        self._active_readiness_probes: Counter[tuple[str, str]] = Counter()
         #: Shared so every process that can rotate this login is staggered,
         #: not only task turns.
         self.credential_gate = ProviderCredentialGate()
@@ -838,16 +839,12 @@ class AgentLauncher:
         with self._readiness_lock:
             if key in self._updating_providers:
                 raise ProviderUpdateRefused("Updating.")
-            self._provider_sign_ins[key] = self._provider_sign_ins.get(key, 0) + 1
+            self._provider_sign_ins[key] += 1
         try:
             yield
         finally:
             with self._readiness_lock:
-                remaining = self._provider_sign_ins[key] - 1
-                if remaining:
-                    self._provider_sign_ins[key] = remaining
-                else:
-                    self._provider_sign_ins.pop(key)
+                self._provider_sign_ins[key] -= 1
 
     def provider_updating(self, provider: str, machine_id: str) -> bool:
         with self._readiness_lock:
@@ -909,7 +906,7 @@ class AgentLauncher:
         key = self._readiness_key(login, binary)
         provider_key = (login.provider, login.machine_id)
         with self._readiness_lock:
-            if (login.provider, login.machine_id) in self._updating_providers:
+            if provider_key in self._updating_providers:
                 return self._updating_readiness(login, key)
             if not refresh and (cached := self._readiness_cache.get(key)) is not None:
                 return self._with_login_state(cached.model_copy(deep=True), login)
@@ -927,9 +924,7 @@ class AgentLauncher:
                     self._readiness_cache.pop(key, None)
                     self._readiness_generations[key] = self._readiness_generations.get(key, 0) + 1
                 self._readiness_probes[probe_key] = probe
-                self._active_readiness_probes[provider_key] = (
-                    self._active_readiness_probes.get(provider_key, 0) + 1
-                )
+                self._active_readiness_probes[provider_key] += 1
             generation = self._readiness_generations.get(key, 0)
 
         if not owner:
@@ -952,11 +947,7 @@ class AgentLauncher:
             raise
         finally:
             with self._readiness_lock:
-                remaining = self._active_readiness_probes[provider_key] - 1
-                if remaining:
-                    self._active_readiness_probes[provider_key] = remaining
-                else:
-                    self._active_readiness_probes.pop(provider_key)
+                self._active_readiness_probes[provider_key] -= 1
 
         with self._readiness_lock:
             # A host that did not answer is a fact about one moment, not about

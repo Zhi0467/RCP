@@ -5,9 +5,12 @@ export function providerPathPresentation(
   readiness: ProviderReadiness | undefined,
   value: string,
   recorded: string,
+  update?: { updating: boolean; failure: string | null },
 ): { label: string; kind: "ready" | "warning" | "error" | "pending"; note?: string } {
+  if (update?.updating || (readiness?.updating && value === recorded))
+    return { label: "Updating", kind: "pending" };
+  if (update?.failure) return { label: "Update failed", kind: "warning", note: update.failure };
   if (value !== recorded) return { label: "Unsaved", kind: "pending" };
-  if (readiness?.updating) return { label: "Updating", kind: "pending" };
   if (readiness?.path_state === "unreachable")
     return { label: "Machine unreachable", kind: "error" };
   if (readiness?.path_state === "denied") return { label: "Recorded path unusable", kind: "error" };

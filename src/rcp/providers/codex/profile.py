@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
+from collections.abc import Callable
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -34,6 +37,7 @@ from rcp.providers.base import (
 from rcp.providers.browser_grant import BrowserGrant
 from rcp.providers.codex.remote import AppServerTurnFence, CodexSessionFormat
 from rcp.providers.turn_fence import TurnFence
+from rcp.providers.usage_limits import LimitEvidence, _exhausted_windows, _timestamp
 
 if TYPE_CHECKING:
     from rcp.agents.write_scope import ProviderWriteScope
@@ -77,6 +81,37 @@ def _codex_error_text(value: object) -> str:
 
 
 class CodexProfile(ProviderProfile):
+    def limit_text_reset(self, error: str, failed_at: datetime) -> datetime | None:
+        match = re.search(
+            r"try again at\s+(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:\d{2}| UTC))",
+            error,
+            re.I,
+        )
+        if match:
+            try:
+                return datetime.fromisoformat(
+                    match[1].replace(" UTC", "+00:00").replace("Z", "+00:00")
+                )
+            except ValueError:
+                return None
+        return None
+
+    def limit_evidence(self, snapshot: dict[str, object]) -> LimitEvidence:
+        windows: list[tuple[bool, datetime | None]] = []
+        for name in ("primary", "secondary"):
+            window = snapshot.get(name)
+            if isinstance(window, dict):
+                used = window.get("usedPercent")
+                windows.append(
+                    (
+                        isinstance(used, (int, float))
+                        and not isinstance(used, bool)
+                        and used >= 100,
+                        _timestamp(window.get("resetsAt")),
+                    )
+                )
+        return _exhausted_windows(windows)
+
     @property
     def authentication(self) -> ProviderAuthentication:
         from rcp.providers.codex.auth import CodexAuthentication
@@ -185,7 +220,11 @@ class CodexProfile(ProviderProfile):
             )
         )
 
-    def limit_probe(self, binary: str) -> ProviderLimitProbe:
+    @property
+    def limit_probe(self) -> Callable[[str], ProviderLimitProbe]:
+        return self._limit_probe
+
+    def _limit_probe(self, binary: str) -> ProviderLimitProbe:
         from rcp.providers.codex.app_server import limit_probe
 
         return limit_probe(binary)

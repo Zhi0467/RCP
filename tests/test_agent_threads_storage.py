@@ -649,7 +649,7 @@ def test_recorded_provider_decision_survives_age_pruning(tmp_path: Path) -> None
     from datetime import datetime, timedelta
 
     from rcp.limits import RUN_TRACE_RETENTION_DAYS
-    from rcp.runs.provider_limits import failure_classification, record_provider_limit_decision
+    from rcp.runs.provider_limits import record_provider_limit_decision
     from tests.test_storage import _task_record
 
     store = AppStore(tmp_path / "rcp.sqlite3")
@@ -665,4 +665,4 @@ def test_recorded_provider_decision_survives_age_pruning(tmp_path: Path) -> None
     store.prune_operational_storage(now=now + timedelta(days=RUN_TRACE_RETENTION_DAYS + 1))
 
     assert store.agent_task_receipts_by_category(record.operation_id, "provider_terminal_error")
-    assert failure_classification(store, record.operation_id, error) == "provider_error"
+    assert store.failure_classification(record.operation_id, error) == "provider_error"

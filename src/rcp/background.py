@@ -78,7 +78,7 @@ from rcp.runs.paper_turns import (
     is_paper_turn,
     paper_turn_waits,
 )
-from rcp.runs.provider_limits import failure_classification, record_provider_limit_decision
+from rcp.runs.provider_limits import record_provider_limit_decision
 from rcp.runs.provider_login import (
     AdmissionRefused,
     MachineDependenciesMissing,
@@ -852,7 +852,7 @@ class BackgroundAgentTasks:
         *,
         skills: SkillSelection | None = None,
         authorized_by: AuthorizedHuman | None = None,
-        marker: str | None = None,
+        limit_auto_resume: bool = False,
     ) -> AgentTaskRecord:
         self._require_startup_effects_open("provider task resume")
         previous = self._require_operation(operation_id)
@@ -886,7 +886,7 @@ class BackgroundAgentTasks:
                 authorized_by=authorized_by or previous.authorized_by,
                 parent=previous,
                 continuation="resume",
-                marker=marker,
+                limit_auto_resume=limit_auto_resume,
             )
         if isinstance(original, AutoResearchRunRequest):
             preflight_auto_research_task_resume(self, previous)
@@ -910,7 +910,7 @@ class BackgroundAgentTasks:
             stage_machine_id=previous.stage_machine_id,
             stage_root=previous.stage_root,
             authorized_by=authorized_by,
-            marker=marker,
+            limit_auto_resume=limit_auto_resume,
         )
         assert resumed is not None
         return resumed
@@ -1634,7 +1634,7 @@ class BackgroundAgentTasks:
         ensure_graph_target: Callable[[EpisodeRecord], None] | None = None,
         continues_episode_id: str | None = None,
         continuation_request_id: str | None = None,
-        marker: str | None = None,
+        limit_auto_resume: bool = False,
     ) -> AgentTaskRecord | None:
         """Insert one admitted task row and start it.
 
@@ -1704,10 +1704,10 @@ class BackgroundAgentTasks:
                 machine_id=(stage_machine_id or BACKEND_MACHINE_ID) if stage_root else None,
                 isolation_episode_id=parent.episode_id if parent else None,
                 graph_target=parent.graph_target if parent else graph_target,
-                automatic=marker == "limit_auto_resume",
+                automatic=limit_auto_resume,
             )
         except ProviderSignedOut as exc:
-            if parent is None or marker == "limit_auto_resume":
+            if parent is None or limit_auto_resume:
                 raise
             # The human already authorized this exact continuation. Keep its
             # durable admission queued so sign-in can launch it without Retry.
@@ -1888,7 +1888,7 @@ class BackgroundAgentTasks:
                     handoff_id=handoff_id,
                     handoff_wake_id=handoff_wake_id,
                     queue_id=queue_id,
-                    marker=marker,
+                    limit_auto_resume=limit_auto_resume,
                 )
         if claim_graph_repair_parent:
             assert parent is not None
@@ -3281,7 +3281,7 @@ class BackgroundAgentTasks:
                 self.store, self.launcher, current, snapshot=execution.rate_limit
             )
         if isinstance(request, EpisodeReportRunRequest):
-            settle_provider_login(self, record, execution=execution)
+            settle_provider_login(self, record)
             return
         from rcp.runs.codex_resume import retry_refused_resume
 
@@ -3336,7 +3336,7 @@ class BackgroundAgentTasks:
                         tier="diagnostic",
                     )
 
-        settle_provider_login(self, record, execution=execution)
+        settle_provider_login(self, record)
         self._after_settle(record)
 
     def _release_paper(self, record: AgentTaskRecord) -> None:
@@ -3655,7 +3655,7 @@ class BackgroundAgentTasks:
 
     def _failure_classified_as(self, record: AgentTaskRecord, classification: str) -> bool:
         return (
-            failure_classification(self.store, record.operation_id, record.error or "")
+            self.store.failure_classification(record.operation_id, record.error or "")
             == classification
         )
 

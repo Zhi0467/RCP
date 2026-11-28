@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from rcp.api.dependencies import get_identity_access, get_provider_updates, get_store
 from rcp.machine_cards import card
 from rcp.providers import ProviderId
-from rcp.runs.provider_update import ProviderUpdateJob, ProviderUpdateRunner
+from rcp.runs.provider_update import ProviderUpdateRunner
 from rcp.server_ops.provider_update import ProviderUpdateRefused
 from rcp.storage import AppStore
 
@@ -33,24 +33,9 @@ def start_provider_update(
     request: Request,
     store: StoreDependency,
     updates: UpdatesDependency,
-) -> ProviderUpdateJob:
+) -> None:
     _require_machine(request, store, machine_id)
     try:
-        return updates.start(provider, machine_id)
+        updates.start(provider, machine_id)
     except ProviderUpdateRefused as exc:
         raise HTTPException(409, str(exc)) from exc
-
-
-@router.get("/api/space/machines/{machine_id}/providers/{provider}/update")
-def provider_update_status(
-    machine_id: str,
-    provider: ProviderId,
-    request: Request,
-    store: StoreDependency,
-    updates: UpdatesDependency,
-) -> ProviderUpdateJob:
-    _require_machine(request, store, machine_id)
-    job = updates.status(provider, machine_id)
-    if job is None:
-        raise HTTPException(404, "No provider update.")
-    return job

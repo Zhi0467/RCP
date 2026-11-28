@@ -12,8 +12,8 @@ import sqlite3
 import stat
 import subprocess
 import tempfile
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO, Protocol
@@ -53,16 +53,15 @@ class UpdateTarget(Protocol):
 
     def discover(self, provider: ProviderId) -> str | None: ...
 
-    def temp_dir(self) -> str: ...
+    def temp_dir(self) -> contextlib.AbstractContextManager[str]: ...
 
-    def remove(self, path: str) -> None: ...
+    def command_prefix(self, provider: ProviderId) -> tuple[str, ...]: ...
 
 
 @dataclass
 class LocalUpdateTarget:
     account: pwd.struct_passwd
     runner: ProviderProcessRunner
-    _temporary: set[str] = field(default_factory=set, init=False, repr=False)
 
     @property
     def home(self) -> str:
@@ -75,30 +74,18 @@ class LocalUpdateTarget:
         binary = _discover_provider(self.account, provider)
         return str(binary) if binary is not None else None
 
-    def temp_dir(self) -> str:
+    def command_prefix(self, provider: ProviderId) -> tuple[str, ...]:
+        return profile_for(provider).authentication.unmanaged_environment("").command_prefix
+
+    @contextlib.contextmanager
+    def temp_dir(self) -> Iterator[str]:
         path = tempfile.mkdtemp(prefix="rcp-provider-", dir=_account_temp_dir(self.account))
-        self._temporary.add(path)
         try:
             os.chown(path, self.account.pw_uid, self.account.pw_gid)
             os.chmod(path, 0o700)
-            info = Path(path).lstat()
-            if (
-                not stat.S_ISDIR(info.st_mode)
-                or info.st_uid != self.account.pw_uid
-                or stat.S_IMODE(info.st_mode) != 0o700
-            ):
-                raise ProviderUpdateRefused(f"RCP's temporary directory is unsafe: {path}")
-        except (OSError, ProviderUpdateRefused):
-            self.remove(path)
-            raise
-        return path
-
-    def remove(self, path: str) -> None:
-        _require_temp_path(self.home, path)
-        if path not in self._temporary:
-            raise ProviderUpdateRefused("The directory does not belong to this update.")
-        shutil.rmtree(path)
-        self._temporary.remove(path)
+            yield path
+        finally:
+            shutil.rmtree(path)
 
 
 TransportRunner = Callable[[tuple[str, ...], float], subprocess.CompletedProcess[str]]
@@ -114,7 +101,6 @@ class RemoteUpdateTarget:
         self._account_resolved = bool(os_account)
         self._runner = runner
         self._home: str | None = None
-        self._temporary: set[str] = set()
 
     def run(self, argv: tuple[str, ...], timeout: float) -> subprocess.CompletedProcess[str]:
         if not self._account_resolved:
@@ -170,7 +156,13 @@ class RemoteUpdateTarget:
                 return candidate
         return None
 
-    def temp_dir(self) -> str:
+    def command_prefix(self, provider: ProviderId) -> tuple[str, ...]:
+        if provider == "agy":
+            return ("env", "BROWSER=/bin/false")
+        return profile_for(provider).authentication.unmanaged_environment("").command_prefix
+
+    @contextlib.contextmanager
+    def temp_dir(self) -> Iterator[str]:
         uid = self._checked(("id", "-u"))
         system = self._checked(("uname", "-s"))
         parent = PurePosixPath(self.home)
@@ -180,13 +172,11 @@ class RemoteUpdateTarget:
             self._check_directory(str(parent), uid, system)
         path = self._checked(("mktemp", "-d", str(parent / "rcp-provider-XXXXXXXX")))
         _require_temp_path(self.home, path)
-        self._temporary.add(path)
         try:
             self._check_directory(path, uid, system, private=True)
-        except ProviderUpdateRefused:
-            self.remove(path)
-            raise
-        return path
+            yield path
+        finally:
+            self._checked(("rm", "-rf", "--", path))
 
     def _check_directory(self, path: str, uid: str, system: str, *, private: bool = False) -> None:
         stat_args = (
@@ -201,13 +191,6 @@ class RemoteUpdateTarget:
             raise ProviderUpdateRefused(f"RCP's temporary directory is unsafe: {path}") from exc
         if mode & 0o022 or (private and mode != 0o700):
             raise ProviderUpdateRefused(f"RCP's temporary directory is unsafe: {path}")
-
-    def remove(self, path: str) -> None:
-        _require_temp_path(self.home, path)
-        if path not in self._temporary:
-            raise ProviderUpdateRefused("The directory does not belong to this update.")
-        self._checked(("rm", "-rf", "--", path))
-        self._temporary.remove(path)
 
 
 def _require_temp_path(home: str, path: str) -> None:
@@ -408,37 +391,30 @@ def _installed_service_account(layout: ServerLayout) -> pwd.struct_passwd:
         raise ProviderUpdateRefused("The installed rcp service account is missing.") from exc
 
 
-def backend_turns_using(database: Path, provider: ProviderId, *, queued: bool = False) -> int:
-    """Count backend turns running this provider, and with `queued` those waiting to start.
+def _refuse_while_turns_run(database: Path, provider: ProviderId) -> None:
+    """Refuse running backend turns; see runs.provider_auto_update.turns_using for admission.
 
-    An unreadable database counts none.
+    An unreadable database does not block.
     """
-    statuses = ("queued", "running", "pausing") if queued else ("running", "pausing")
     try:
         connection = sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)
     except sqlite3.Error:
-        return 0
+        return
     try:
         (count,) = connection.execute(
             "SELECT COUNT(*) FROM graph_runs "
             "WHERE json_extract(request_json, '$.provider')=? "
             "AND COALESCE(NULLIF(stage_machine_id,''),?)=? "
-            f"AND status IN ({','.join('?' * len(statuses))})",
-            (provider, BACKEND_MACHINE_ID, BACKEND_MACHINE_ID, *statuses),
+            "AND status IN ('running','pausing')",
+            (provider, BACKEND_MACHINE_ID, BACKEND_MACHINE_ID),
         ).fetchone()
     except sqlite3.Error:
-        return 0
+        return
     finally:
         connection.close()
-    return count
-
-
-def _refuse_while_turns_run(database: Path, provider: ProviderId) -> None:
-    """Refuse while a backend turn runs this provider; an unreadable database does not block."""
-    running = backend_turns_using(database, provider)
-    if running:
+    if count:
         raise ProviderUpdateRefused(
-            f"{running} agent turn(s) are running {profile_for(provider).label} on the backend. "
+            f"{count} agent turn(s) are running {profile_for(provider).label} on the backend. "
             "Wait for them to finish or stop them, then rerun this update."
         )
 
@@ -463,14 +439,8 @@ def _discover_provider(account: pwd.struct_passwd, provider: ProviderId) -> Path
     return None
 
 
-def _command_prefix(target: UpdateTarget, provider: ProviderId) -> tuple[str, ...]:
-    if isinstance(target, RemoteUpdateTarget) and provider == "agy":
-        return ("env", "BROWSER=/bin/false")
-    return profile_for(provider).authentication.unmanaged_environment("").command_prefix
-
-
 def _provider_version(target: UpdateTarget, provider: ProviderId, binary: str) -> str:
-    prefix = _command_prefix(target, provider)
+    prefix = target.command_prefix(provider)
     result = target.run((*prefix, binary, "--version"), PROVIDER_UPDATE_PROBE_TIMEOUT_SECONDS)
     if result.returncode != 0:
         raise ProviderUpdateRefused(
@@ -490,7 +460,7 @@ def _update_provider(target: UpdateTarget, provider: ProviderId, before_path: st
         _require_home(target, before_path)
     if update.self_update_args is not None:
         assert before_path is not None
-        prefix = _command_prefix(target, provider)
+        prefix = target.command_prefix(provider)
         result = target.run(
             (*prefix, before_path, *update.self_update_args), PROVIDER_UPDATE_TIMEOUT_SECONDS
         )
@@ -500,8 +470,7 @@ def _update_provider(target: UpdateTarget, provider: ProviderId, before_path: st
             )
         return
     assert update.installer_url is not None
-    temporary = target.temp_dir()
-    try:
+    with target.temp_dir() as temporary:
         installer = str(PurePosixPath(temporary) / "install.sh")
         downloaded = target.run(
             ("/usr/bin/curl", "-fsSL", update.installer_url, "-o", installer),
@@ -520,8 +489,6 @@ def _update_provider(target: UpdateTarget, provider: ProviderId, before_path: st
             raise ProviderUpdateRefused(
                 f"{profile.label}'s official installer failed: {_bounded_diagnostic(installed)}"
             )
-    finally:
-        target.remove(temporary)
 
 
 def _account_temp_dir(account: pwd.struct_passwd) -> Path:
@@ -580,7 +547,6 @@ __all__ = [
     "UpdateTarget",
     "LocalUpdateTarget",
     "RemoteUpdateTarget",
-    "backend_turns_using",
     "prepare_provider_update_command",
     "ProviderUpdateRefused",
     "ProviderVersionChange",

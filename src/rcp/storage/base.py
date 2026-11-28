@@ -3099,9 +3099,7 @@ class AppStoreBase:
 
     @classmethod
     def _migrate_provider_limit_resume(cls, connection: sqlite3.Connection) -> None:
-        from rcp.storage.provider_logins import migrate_provider_limit_resets
-
-        migrate_provider_limit_resets(connection)
+        cls._ensure_column(connection, "provider_login_assignments", "limit_resets_at", "TEXT")
         cls._ensure_column(
             connection, "space_users", "auto_resume_after_limits", "INTEGER NOT NULL DEFAULT 1"
         )

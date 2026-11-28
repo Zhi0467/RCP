@@ -34,7 +34,10 @@ logger = logging.getLogger(__name__)
 
 
 def turns_using(store: AppStore, provider: ProviderId, machine_id: str) -> int:
-    """Count active and admitted turns on the exact provider and machine."""
+    """Count active and admitted turns on the exact provider and machine.
+
+    The CLI counterpart is server_ops.provider_update._refuse_while_turns_run.
+    """
     with store.connection() as connection:
         rows = connection.execute(
             "SELECT project_id, stage_machine_id, json_extract(request_json, '$.run_on') AS run_on "

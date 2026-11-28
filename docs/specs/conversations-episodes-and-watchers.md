@@ -1227,22 +1227,17 @@ ceiling and may claim retained compatible completion as its invocation one, and
 
 ### Resume after provider usage limits
 
-Every failed provider turn records one limit decision in `provider_terminal_error`.
-The in-turn usage snapshot takes precedence; otherwise the turn's login is probed
-on its own machine when its provider supports that check. Structured evidence
-confirms a limit only when a window is exhausted and overrides error phrases in
-both directions. Only absent or failed evidence falls back to error phrases and a
-text reset or five-hour estimate. Recovery and login marking share this recorded
-decision and reset; old turns without a decision use the shared phrase fallback.
-See [provider limit evidence](providers-and-containment.md#login-state-and-failure)
-for probe and reset rules.
+Recovery and login marking share the failed turn's recorded decision and reset;
+[provider limit evidence](providers-and-containment.md#login-state-and-failure)
+owns the evidence, reset and display rules.
 
 The existing five-second watcher-poll completion pass resumes a failed member chat
-turn when its `provider_limit_reset` receipt is due. The receipt, rather than the
-login mark, survives another turn's success or re-sign-in. Old turns without this
-receipt never resume automatically. Startup reconciliation precedes the first
-poll. A committed automatic continuation with durable proof that dispatch never
-started stays queued through startup and the poll launches that same admitted
+turn when its `provider_terminal_error` decision is `session_limit` and its reset
+is due. The decision, rather than the login mark, survives another turn's success
+or re-sign-in. Old turns without this decision never resume automatically. Startup
+reconciliation precedes the first poll. A committed automatic continuation with
+durable proof that dispatch never started stays queued through startup and the
+poll launches that same admitted
 operation. Ambiguous dispatch attempts follow ordinary interruption handling.
 Episode turns retain their existing recovery owner.
 
@@ -1268,7 +1263,7 @@ queued continuation still needs dispatch through ordinary admitted-launch valida
 Limited logins, admission conflicts, active-task conflicts, operating-system
 errors and unavailable state defer with `limit_auto_resume_deferred`. Another
 attempt waits `LIMIT_RESUME_RETRY_SECONDS`. At `LIMIT_RESUME_DEFER_MAX` deferrals,
-recovery stops; receipts never exceed that cap. Reset, continuation, deferral and
+recovery stops; receipts never exceed that cap. Decision, continuation, deferral and
 stopped receipts are protected from ordinary receipt-count pruning. Other errors, including sign-out,
 missing dependencies, lost membership, invalid requests and missing native
 sessions, stop with their reason. Three consecutive automatically resumed turns
@@ -1278,12 +1273,11 @@ retry; one turn's error never ends the poll.
 
 Task rows expose the reset, its estimated flag, and `waiting` or `stopped` state.
 An explicit stopped receipt supplies its reason; otherwise a disabled member
-switch supplies `switch_off`. Login rows expose their independent `limit_resets_at`.
+switch supplies `switch_off`.
 
 The member's switch sits in the chat ⋯ menu below Browser use and reads the same in
-every chat. A limited turn shows one line with its action at the end: waiting shows
-when it resumes and Don't resume; stopped shows when the limit ends with Resume and
-Retry, and its reason on hover. A limited sign-in card shows when its limit ends.
+every chat. A limited turn shows one line with its action at the end: waiting offers
+Don't resume; stopped offers Resume and Retry, and its reason on hover.
 
 ## Watcher resources
 

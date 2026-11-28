@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 import pytest
 
 from rcp.agents import AgentLauncher
@@ -103,7 +105,14 @@ async def test_switched_turn_accounts_limits_usage_and_drain_on_its_login(
     assert len(store.agent_usage("project")) == 2
     store.record_agent_task_receipt("current", "provider_runtime_selected", {})
     store.record_agent_task_receipt(
-        "current", "provider_terminal_error", {"classification": "session_limit"}
+        "current",
+        "provider_terminal_error",
+        {
+            "classification": "session_limit",
+            "source": "text",
+            "estimated": True,
+            "resets_at": (datetime.fromisoformat(store.now()) + timedelta(hours=5)).isoformat(),
+        },
     )
     with store.connection() as connection:
         connection.execute("UPDATE graph_runs SET status='failed' WHERE operation_id='current'")

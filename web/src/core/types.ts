@@ -3799,18 +3799,7 @@ export interface ProviderLoginAccount extends ProviderLoginState {
   sign_in: ProviderSignInStatus | null;
   /** When the active usage limit ends; absent from older servers. */
   limit_resets_at?: string | null;
-}
-
-/** One in-app update of a provider CLI on one machine. */
-export interface ProviderUpdateJob {
-  provider: string;
-  machine_id: string;
-  state: "running" | "succeeded" | "failed";
-  detail: string | null;
-  before: string | null;
-  after: string | null;
-  started_at: string;
-  finished_at: string | null;
+  limit_reset_estimated?: boolean;
 }
 
 /** Coarse count of episode, queued-task, and watcher inputs checked after sign-in. */

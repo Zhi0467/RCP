@@ -550,8 +550,8 @@ def test_space_retry_and_resume_honour_the_request_key(manifest, tmp_path, monke
     tasks = app.state.background_tasks
     fake_launch_admitted(monkeypatch, tasks)
 
-    def resume(operation_id, *, skills=None, authorized_by=None, marker=None):
-        assert marker is None
+    def resume(operation_id, *, skills=None, authorized_by=None, limit_auto_resume=False):
+        assert not limit_auto_resume
         return tasks.retry(operation_id, skills=skills, authorized_by=authorized_by)
 
     monkeypatch.setattr(tasks, "resume", resume)

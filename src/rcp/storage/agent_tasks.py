@@ -57,7 +57,7 @@ from rcp.limits import (
     WRITING_SESSIONS_PER_PROJECT,
 )
 from rcp.machine_cards import BACKEND_MACHINE_ID
-from rcp.providers import ProviderUsage, require_runtime_id
+from rcp.providers import ProviderUsage, classify_terminal_error, require_runtime_id
 from rcp.providers.live_status import AgentStatus
 from rcp.storage.agents import AgentSessionRecord, bind_session, ensure_turn_agent
 from rcp.storage.branch_names import _chain_root
@@ -193,7 +193,6 @@ _PROTECTED_AGENT_TASK_RECEIPT_CATEGORIES = (
     "provider_runtime_selected",
     "provider_login_lineage",
     "provider_login_limit_retry",
-    "provider_limit_reset",
     "provider_terminal_error",
     "limit_auto_resume",
     "limit_auto_resume_deferred",
@@ -303,7 +302,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         handoff_id: str | None = None,
         handoff_wake_id: str | None = None,
         queue_id: str | None = None,
-        marker: str | None = None,
+        limit_auto_resume: bool = False,
     ) -> AgentTaskRecord:
         if record.kind == "episode_report":
             raise ValueError("episode report tasks must use their episode wrap-up allocation")
@@ -349,11 +348,11 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     record,
                     continuation_cause=continuation_cause,
                 )
-                if marker is not None:
+                if limit_auto_resume:
                     self._insert_agent_task_receipt(
                         connection,
                         record.operation_id,
-                        marker,
+                        "limit_auto_resume",
                         "{}",
                         tier="summary",
                         created_at=record.created_at,
@@ -366,7 +365,6 @@ class AgentTaskStoreMixin(StoreMixinBase):
 
     def admit_chat_question_followup(self, question_id: str) -> AgentTaskRecord | None:
         """Claim and insert atomically; unresolved remote liveness still defers."""
-        from rcp.runs.provider_limits import failure_classification
         from rcp.service import RunRequest
         from rcp.storage.question_models import question_followup_operation_id
         from rcp.storage.questions import _question_record
@@ -419,8 +417,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     if origin.capability == "discuss"
                     else task.request.get("patch_kind", "work") != "work"
                 )
-                or failure_classification(
-                    cast("AppStore", self),
+                or self.failure_classification(
                     task.operation_id,
                     task.error or "",
                     connection=connection,
@@ -489,8 +486,6 @@ class AgentTaskStoreMixin(StoreMixinBase):
     def _require_chat_wake_binding(
         self, connection: sqlite3.Connection, task: AgentTaskRecord
     ) -> None:
-        from rcp.runs.provider_limits import failure_classification
-
         chat_id = task.request.get("chat_id")
         if (
             task.status not in {"succeeded", "failed"}
@@ -502,8 +497,8 @@ class AgentTaskStoreMixin(StoreMixinBase):
             or not task.native_session_id
             or not task.stage_root
             or task.dispatch_authority is None
-            or failure_classification(
-                cast("AppStore", self), task.operation_id, task.error or "", connection=connection
+            or self.failure_classification(
+                task.operation_id, task.error or "", connection=connection
             )
             == "stale_session"
         ):
@@ -872,7 +867,7 @@ class AgentTaskStoreMixin(StoreMixinBase):
         record: AgentTaskRecord,
         *,
         continuation_cause: str = "fresh",
-        marker: str | None = None,
+        limit_auto_resume: bool = False,
     ) -> AgentTaskRecord:
         """Admit a file edit without spending or changing its episode."""
 
@@ -891,11 +886,11 @@ class AgentTaskStoreMixin(StoreMixinBase):
                     "Another task is already active in this conversation."
                 )
             self._insert_agent_task(connection, record, continuation_cause=continuation_cause)
-            if marker is not None:
+            if limit_auto_resume:
                 self._insert_agent_task_receipt(
                     connection,
                     record.operation_id,
-                    marker,
+                    "limit_auto_resume",
                     "{}",
                     tier="summary",
                     created_at=record.created_at,
@@ -2227,10 +2222,8 @@ class AgentTaskStoreMixin(StoreMixinBase):
         itself can still continue.
         """
 
-        from rcp.runs.provider_limits import failure_classification
-
-        classification = failure_classification(
-            cast("AppStore", self), row["operation_id"], row["error"] or "", connection=connection
+        classification = self.failure_classification(
+            row["operation_id"], row["error"] or "", connection=connection
         )
         if classification == "stale_session":
             return "session_stale"
@@ -4680,6 +4673,25 @@ class AgentTaskStoreMixin(StoreMixinBase):
             """,
             (operation_id, operation_id, AGENT_TASK_EVENT_RETENTION_COUNT),
         )
+
+    def failure_classification(
+        self,
+        operation_id: str,
+        error: str = "",
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> str:
+        if connection is None:
+            with self.connection() as active:
+                return self.failure_classification(operation_id, error, connection=active)
+        receipt = connection.execute(
+            "SELECT payload_json FROM graph_run_receipts WHERE operation_id=? "
+            "AND category='provider_terminal_error' ORDER BY receipt_id DESC LIMIT 1",
+            (operation_id,),
+        ).fetchone()
+        if receipt is not None:
+            return str(json.loads(receipt[0]).get("classification", "provider_error"))
+        return classify_terminal_error(error)
 
     def agent_task_receipts(
         self, operation_id: str, *, limit: int = AGENT_TASK_RECEIPT_LIST_LIMIT

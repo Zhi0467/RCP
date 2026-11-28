@@ -8,6 +8,7 @@ import shlex
 import subprocess
 import uuid
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Literal
 
@@ -45,6 +46,7 @@ from rcp.providers.claude.remote import (
     attributed_ids,
     is_claude_task_notice,
 )
+from rcp.providers.usage_limits import LimitEvidence, _exhausted_windows, _timestamp
 
 if TYPE_CHECKING:
     from rcp.agents.invocation_broker import ProviderInvocationGate
@@ -333,6 +335,21 @@ _CLAUDE_TOOLS: dict[AgentCapability, tuple[str, ...]] = {
 
 
 class ClaudeProfile(ProviderProfile):
+    def limit_evidence(self, snapshot: dict[str, object]) -> LimitEvidence:
+        windows = snapshot.get("unifiedWindows")
+        values = list(windows.values()) if isinstance(windows, dict) else []
+        values.append(snapshot)
+        exhausted_windows: list[tuple[bool, datetime | None]] = []
+        for window in values:
+            if not isinstance(window, dict):
+                continue
+            used = window.get("utilization")
+            exhausted = window.get("status") == "rejected" or (
+                isinstance(used, (int, float)) and not isinstance(used, bool) and used >= 1
+            )
+            exhausted_windows.append((exhausted, _timestamp(window.get("resetsAt"))))
+        return _exhausted_windows(exhausted_windows)
+
     @property
     def authentication(self) -> ProviderAuthentication:
         from rcp.providers.claude.auth import ClaudeAuthentication

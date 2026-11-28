@@ -17,7 +17,6 @@ import {
   ApiError,
   checkSpaceMachineCompute,
   createSpaceMachine,
-  loadProviderUpdate,
   loadSpaceMachines,
   resolveSpaceMachineProvider,
   startProviderUpdate,
@@ -474,6 +473,7 @@ function ProviderExecutables(props: MachineFoldProps) {
         (machine) => machine.machine_id === record.machine_id,
       );
       if (fresh) onRecordChange(fresh);
+      return fresh;
     });
   return (
     <Fold
@@ -510,14 +510,9 @@ function ProviderExecutables(props: MachineFoldProps) {
 }
 
 /** Polls a running CLI update until the refreshed card confirms it ended. */
-function useProviderUpdateWatch(
-  machineId: string,
-  provider: ProviderId,
-  watching: boolean,
-  onEnded: () => Promise<void>,
-) {
-  const ended = useRef(onEnded);
-  ended.current = onEnded;
+function useProviderUpdateWatch(watching: boolean, onPoll: () => Promise<boolean>) {
+  const pollCard = useRef(onPoll);
+  pollCard.current = onPoll;
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     if (!watching) return;
@@ -525,16 +520,9 @@ function useProviderUpdateWatch(
     let timer: number | undefined;
     const poll = async () => {
       try {
-        let running: boolean;
-        try {
-          running = (await loadProviderUpdate(machineId, provider)).state === "running";
-        } catch (failure) {
-          if (!(failure instanceof ApiError) || failure.status !== 404) throw failure;
-          running = false;
-        }
+        const running = await pollCard.current();
         if (cancelled) return;
         if (!running) {
-          await ended.current();
           setError(null);
           return;
         }
@@ -550,7 +538,7 @@ function useProviderUpdateWatch(
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [machineId, provider, watching]);
+  }, [watching]);
   return error;
 }
 
@@ -576,7 +564,7 @@ function ProviderPathRow({
   onResolve: () => void;
   /** Resolves true once the backend accepted the update. */
   onUpdate: () => Promise<boolean>;
-  onRefresh: () => Promise<void>;
+  onRefresh: () => Promise<SpaceMachine | undefined>;
 }) {
   const recorded = record.provider_paths[provider] ?? "";
   const path = useSavedText(recorded, onSave);
@@ -585,18 +573,22 @@ function ProviderPathRow({
   const [starting, setStarting] = useState(false);
   const watching = started || readiness?.updating === true;
   const updating = starting || watching;
-  const pollError = useProviderUpdateWatch(record.machine_id, provider, watching, async () => {
-    await onRefresh();
-    setStarted(false);
+  const pollError = useProviderUpdateWatch(watching, async () => {
+    const fresh = await onRefresh();
+    const running = !fresh || fresh.provider_readiness[provider]?.updating === true;
+    if (!running) setStarted(false);
+    return running;
   });
-  const presented = providerPathPresentation(readiness, path.draft.trim(), recorded);
   const updateFailure = failure?.key === `update:${provider}` ? failure.message : null;
   const resolveFailure = failure?.key === `resolve:${provider}` ? failure.message : null;
-  const state = updating
-    ? { label: "Updating", kind: "pending" as const, note: pollError ?? undefined }
-    : updateFailure
-      ? { label: "Update failed", kind: "warning" as const, note: updateFailure }
-      : { ...presented, note: resolveFailure ?? presented.note };
+  const presented = providerPathPresentation(readiness, path.draft.trim(), recorded, {
+    updating,
+    failure: updateFailure,
+  });
+  const state = {
+    ...presented,
+    note: updating ? (pollError ?? undefined) : (updateFailure ?? resolveFailure ?? presented.note),
+  };
   return (
     <div
       className="provider-path-row"
