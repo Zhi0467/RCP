@@ -118,10 +118,11 @@ def reconcile_settled_chat_mail(background: BackgroundAgentTasks, operation_id: 
 
 
 def wake_bulletin_actor(background: BackgroundAgentTasks, project_id: str, actor_id: str) -> str:
-    """Wake an idle Work chat or orchestrator once for its open mentions.
+    """Wake an idle Work chat, Experiment, or orchestrator once for its open mentions.
 
-    Chats go through the shared chat admission; orchestrators get one lifecycle
-    notice and wake through the Auto-research lifecycle path.
+    Chats go through the shared chat admission and Experiments through their own
+    wake; orchestrators get one lifecycle notice and wake through the
+    Auto-research lifecycle path.
     """
     from rcp.runs.auto_research_delivery import reconcile_pending_auto_research_lifecycle
     from rcp.storage.bulletin import BulletinError
@@ -135,6 +136,11 @@ def wake_bulletin_actor(background: BackgroundAgentTasks, project_id: str, actor
             reconcile_pending_auto_research_lifecycle(background, episode_id=episode_id)
             return "bulletin_wake_notice"
         chat_id = actor_id.removeprefix("chat:")
+        experiment = store.experiment_episode_for_chat(project_id, chat_id)
+        if experiment is not None:
+            from rcp.runs.experiment_loop import wake_experiment_for_mail
+
+            return wake_experiment_for_mail(background, experiment, cause="mention")
         posts = store.bulletin_wake_candidates(project_id, actor_id)
         if not posts:
             return "bulletin_wake_ineligible"

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import uuid
 from functools import partial
-from typing import Annotated, Any, Literal, cast
+from typing import Annotated, Any, Literal, NamedTuple, cast
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -84,6 +84,7 @@ from rcp.runs.episodes.merge import (
     merge_preview,
     reconcile_episode_merge,
 )
+from rcp.runs.experiment_loop import wake_experiment_for_mail
 from rcp.runs.graph_forks import create_graph_fork
 from rcp.service import ProjectService, RunRequest
 from rcp.storage import AppStore, AutoResearchMessageRecord, EpisodeNotRunning
@@ -1129,7 +1130,7 @@ def send_episode_message(
         authorized_by=authorized_by,
         catalog=catalog,
         background_tasks=background_tasks,
-    )
+    ).record
 
 
 def send_episode_message_as(
@@ -1139,9 +1140,10 @@ def send_episode_message_as(
     authorized_by: AuthorizedHuman,
     catalog: ProjectCatalog,
     background_tasks: BackgroundAgentTasks,
-) -> AutoResearchMessageRecord:
-    """Mail the newest member of a chain: a running Experiment's next invocation, or the
-    orchestrator of an Auto-research chain, continuing an ended one.
+) -> EpisodeMessageSent:
+    """Mail the newest member of a chain: a running Experiment or the orchestrator of an
+    Auto-research chain, continuing an ended one. An idle recipient wakes unless the
+    body opts out.
 
     The caller holds the project's write admission. Raises the HTTP refusal.
     """
@@ -1168,11 +1170,11 @@ def send_episode_message_as(
                     "message": "This request id already carries a different message or turn allowance.",
                 },
             )
-        return saved
+        return EpisodeMessageSent(saved, woke=False)
     episode = _newest_chain_member(store, episode)
     if episode.mode == "experiment_loop":
         try:
-            return store.record_episode_message(
+            saved = store.record_episode_message(
                 AutoResearchMessageRecord(
                     message_id=message_id,
                     episode_id=episode.episode_id,
@@ -1191,6 +1193,10 @@ def send_episode_message_as(
                     "message": "This Experiment has ended. Add turns, with a note, to continue it.",
                 },
             ) from exc
+        woke = body.wake and (
+            wake_experiment_for_mail(background_tasks, saved.episode_id, cause="mail") == "now"
+        )
+        return EpisodeMessageSent(saved, woke=woke)
     refusal = auto_research_message_refusal(store, episode)
     if refusal is not None:
         raise HTTPException(
@@ -1241,13 +1247,15 @@ def send_episode_message_as(
             saved = mail(episode)
         except (EpisodeNotRunning, StateUnavailable, ValueError) as mail_exc:
             raise _message_refusal(store, episode, None, mail_exc) from mail_exc
+    started: str | None = None
     try:
-        started = deliver_pending_auto_research_lifecycle(
-            background_tasks,
-            episode_id=episode.episode_id,
-        )
-        if started is None and saved.recipient_task_id is not None:
-            deliver_pending_auto_research_mail(
+        if body.wake:
+            started = deliver_pending_auto_research_lifecycle(
+                background_tasks,
+                episode_id=episode.episode_id,
+            )
+        if body.wake and started is None and saved.recipient_task_id is not None:
+            started = deliver_pending_auto_research_mail(
                 background_tasks,
                 episode_id=episode.episode_id,
                 recipient_task_id=saved.recipient_task_id,
@@ -1261,7 +1269,12 @@ def send_episode_message_as(
     current = store.auto_research_message(saved.message_id)
     if current is None:
         raise RuntimeError("The durable episode message could not be reloaded.")
-    return current
+    return EpisodeMessageSent(current, woke=started is not None)
+
+
+class EpisodeMessageSent(NamedTuple):
+    record: AutoResearchMessageRecord
+    woke: bool
 
 
 @router.get("/api/projects/{project_id}/episodes/{episode_id}/report/content")

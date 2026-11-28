@@ -36,6 +36,7 @@ from rcp.agents.continuation_prompt import (
 from rcp.agents.experiment_loop_prompt import (
     EXPERIMENT_LOOP_POLICY_VERSION,
     experiment_loop_continuation_contract,
+    experiment_loop_mail_wake_message,
     experiment_loop_patch_correction_contract,
     experiment_loop_read_context,
     experiment_loop_task_contract,
@@ -1077,6 +1078,26 @@ def _compose_wake_prompt(
         or not prepared.watcher_state_path
     ):
         raise ValueError("Experiment-loop wake inputs are incomplete after staging.")
+    cause = (turn.request.chat_wake or {}).get("kind")
+    if cause in {"episode_mail", "bulletin_mention"}:
+        return _compose_continuation(
+            turn,
+            staged,
+            prepared,
+            "wake",
+            [
+                *experiment_loop_mail_wake_message(
+                    focused_experiment_id=turn.request.control_node_id,
+                    invocation=turn.request.control_invocation,
+                    invocation_ceiling=turn.request.control_invocation_ceiling,
+                    cause="episode_mail" if cause == "episode_mail" else "bulletin_mention",
+                ),
+                *_turn_invocations(turn, staged),
+            ],
+            label=f"task-{staged.token}-mail-wake.md",
+            role="experiment_loop_wake",
+            browser_grant=browser_grant,
+        )
     if turn.continuation == "message_wake":
         return _compose_human_turn_prompt(
             turn, staged, prepared, retry_diagnostics_path=None, browser_grant=browser_grant

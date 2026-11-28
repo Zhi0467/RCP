@@ -1061,9 +1061,11 @@ wait for its human is also open to the chat the Experiment runs in, as before.
   the same branch. The optional note reaches the continued agent first: an
   Experiment reads it in its first continued turn, and an orchestrator receives it
   as the member's mail.
-- `episode --message <id> --body-file <file>` mails a running episode, read at its
-  next turn. The result's `read_at` is `next_turn`, `after_added_turns` when the
-  episode is on its final turn, so the chat adds turns with a note instead, or
+- `episode --message <id> --body-file <file> [--no-wake]` mails a running episode.
+  An idle episode with turns left wakes once to read it, spending one turn; a busy
+  one reads it at its next turn; `--no-wake` always waits for the next turn. The
+  result's `read_at` is `now` when it woke, `next_turn`, `after_added_turns` when
+  the episode is on its final turn, so the chat adds turns with a note instead, or
   `delivered` once the mail was claimed. An older form that continued an ended
   orchestrator with `--invocation-limit` is still accepted but no longer offered.
 
@@ -1143,9 +1145,13 @@ reply. A copy an older parent linked with `relays_question_id` still becomes
 withdrawn and read-only when anyone resolves the child question.
 
 `episode --message <id> --body-file <file>` also accepts a running Experiment
-chain. Its mail waits for the next invocation, which claims it in the episode's
-saved session and stage under the Stop fence. It never steers an active provider
-invocation. An ended or stopping Experiment refuses with `episode_not_running`
+chain. An idle Experiment wakes once for new mail or a Bulletin mention through
+the same paid invocation path as a watcher wake, with phase `mail_wake` or
+`mention_wake`, unless the sender passed `--no-wake`. Mail written by a turn that
+a mail or mention woke never wakes it, and wakes share the chat wake cooldown;
+mention wakes also keep the Bulletin cooldown. The invocation claims the mail in
+the episode's saved session and stage under the Stop fence. Mail never steers an
+active provider invocation. An ended or stopping Experiment refuses with `episode_not_running`
 and points to adding turns with a note.
 
 Add-turns and message requests derive their request ids from the turn and key,

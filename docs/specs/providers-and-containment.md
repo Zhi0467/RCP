@@ -2051,8 +2051,8 @@ records which turn added each new mention; the post keeps its original author.
 Each actor wakes at most once per `BULLETIN_WAKE_MIN_SECONDS`; a refused wake
 arms one later pass, after the cooldown that remains. Startup rebuilds those
 passes: it pages through mentions without a wake row and retries each actor
-once. Mentions older than mention wakes count as handled. Experiment loops and
-workers see mentions in their next delta.
+once. Mentions older than mention wakes count as handled. An idle Experiment loop wakes
+for a mention through its own mail wake; workers see mentions in their next delta.
 
 Launch deltas and `bulletin --read` include a mentions section first, newest
 first within the render budget, followed by member ids and names, agents/roster,

@@ -96,6 +96,7 @@ EPISODE_MESSAGE = ("message", "--message", "<episode-id>")
 EPISODE_ANSWER = ("answer", "--answer", "<question-id>")
 EPISODE_ANSWER_FILE = ("answer_file", "--answer-file", "<filename>")
 EPISODE_BODY = ("body_file", "--body-file", "<filename>")
+EPISODE_NO_WAKE = ("no_wake", "--no-wake", "")
 EPISODE_CONTROLS = (
     EPISODE_STOP,
     EPISODE_RESUME,
@@ -476,6 +477,7 @@ def _parser():
     for dest, flag, value in (EPISODE_BODY, EPISODE_ANSWER_FILE):
         episode.add_argument(flag, dest=dest, metavar=value)
     episode.add_argument("--choice", action="append", default=[])
+    episode.add_argument(EPISODE_NO_WAKE[1], dest=EPISODE_NO_WAKE[0], action="store_true")
     _add_profile_pick_arguments(episode)
     _add_child_target_arguments(episode)
 
@@ -804,6 +806,8 @@ def _request_arguments(namespace, workspace):
                 raise ClientInputError("--message needs --body-file")
             if body_file is not None and action not in ("message", "add_turns"):
                 raise ClientInputError("--body-file goes with --message or --add-turns")
+            if namespace.no_wake and action != "message":
+                raise ClientInputError("--no-wake goes with --message")
             if action == "answer":
                 if namespace.answer_file is None:
                     raise ClientInputError("--answer requires --answer-file")
@@ -820,6 +824,7 @@ def _request_arguments(namespace, workspace):
                     "action": action,
                     "episode_id": _nonblank(getattr(namespace, action), "episode id"),
                     **({} if invocation_limit is None else {"invocation_limit": invocation_limit}),
+                    **({"no_wake": True} if namespace.no_wake else {}),
                     **(
                         {}
                         if body_file is None

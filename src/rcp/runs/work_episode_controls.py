@@ -24,6 +24,7 @@ from rcp.agents.staged_command_client import (
     EPISODE_ADD_TURNS,
     EPISODE_BODY,
     EPISODE_MESSAGE,
+    EPISODE_NO_WAKE,
     EPISODE_PAUSE,
     EPISODE_RESUME,
     EPISODE_STOP,
@@ -33,8 +34,9 @@ from rcp.agents.staged_command_client import (
 from rcp.limits import AUTO_RESEARCH_PROMPT_FILE_MAX_BYTES
 
 if TYPE_CHECKING:
+    from rcp.api.episode_routes import EpisodeMessageSent
     from rcp.background import AgentTaskExecution
-    from rcp.storage import AgentTaskRecord, AppStore, AutoResearchMessageRecord, EpisodeRecord
+    from rcp.storage import AgentTaskRecord, AppStore, EpisodeRecord
     from rcp.transport.workspace_mailbox import RunStageMailbox
 
 _AUTO_RESEARCH_RECEIPT = "work_auto_research_kickoff"
@@ -103,7 +105,8 @@ class WorkEpisodeControls(Protocol):
         body: str,
         invocation_ceiling: int | None,
         request_id: str,
-    ) -> AutoResearchMessageRecord: ...
+        wake: bool,
+    ) -> EpisodeMessageSent: ...
 
 
 def chat_started_episode(store: AppStore, task: AgentTaskRecord, episode_id: str) -> bool:
@@ -415,11 +418,12 @@ def handle_work_episode_controls(
         return _refuse(request, str(exc), None)
 
     def message() -> CommandResponse:
-        sent = controls.message(
+        sent, woke = controls.message(
             act,
             body=body,
             invocation_ceiling=arguments.invocation_limit,
             request_id=request_id,
+            wake=not arguments.no_wake,
         )
         recipient = execution.store.episode(sent.episode_id)
         last_turn = (
@@ -432,7 +436,9 @@ def handle_work_episode_controls(
             episode_id=sent.episode_id,
             delivered=sent.delivered_at is not None,
             read_at=(
-                "delivered"
+                "now"
+                if woke
+                else "delivered"
                 if sent.delivered_at is not None
                 else "after_added_turns"
                 if last_turn
@@ -465,12 +471,14 @@ def work_auto_research_command_usage(orchestrator_profiles: str) -> str:
 def work_episode_control_usage(client: str) -> str:
     """Controls a Work turn has over Experiment and Auto-research episodes it started."""
 
-    from rcp.agents.prompts import EPISODE_MAILBOX_RULES
+    from rcp.agents.prompts import EPISODE_MAILBOX_RULES, MAIL_SEND_RULE
 
     add_turns = episode_control_usage(
         EPISODE_ADD_TURNS, required=(KICKOFF_LIMIT,), optional=(EPISODE_BODY,)
     )
-    message = episode_control_usage(EPISODE_MESSAGE, required=(EPISODE_BODY,))
+    message = episode_control_usage(
+        EPISODE_MESSAGE, required=(EPISODE_BODY,), optional=(EPISODE_NO_WAKE,)
+    )
     return (
         "Episode controls (Experiments and Auto-research alike):\n"
         f"{EPISODE_MAILBOX_RULES}\n"
@@ -479,9 +487,8 @@ def work_episode_control_usage(client: str) -> str:
         "Episode controls act only on episodes this chat started, as the human's Runs card "
         "would; tell the human to use Runs for any other. Pick the control from the "
         "episode's state:\n"
-        f"- Running: `{client} {message}` mails it; it reads the mail at its next turn, and "
-        "the result's read_at says when. "
-        f"`{client} {episode_control_usage(EPISODE_PAUSE)}` pauses its running turn. "
+        f"- Any state: `{client} {message}` mails it direction. {MAIL_SEND_RULE}\n"
+        f"- Running: `{client} {episode_control_usage(EPISODE_PAUSE)}` pauses its running turn. "
         f"`{client} {episode_control_usage(EPISODE_STOP)}` stops it gracefully: the running "
         "turn finishes, then it ends.\n"
         f"- Paused: `{client} {episode_control_usage(EPISODE_RESUME)}` resumes the paused "
@@ -496,6 +503,5 @@ def work_episode_control_usage(client: str) -> str:
         "`--resume` may share the Patch's turn because it waits for the Patch to land. If the "
         "run must not start another turn on the old design, stop it; once it has ended, add "
         "turns with a note. The Bulletin is for everyone on the branch, never for steering one "
-        "run. The "
-        "same key replays the same action after a Resume or Retry."
+        "run. The same key replays the same action after a Resume or Retry."
     )
