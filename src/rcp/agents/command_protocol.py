@@ -432,6 +432,7 @@ class WorkEpisodeControlArguments(_EpisodeTargetArguments):
         pattern=_SAFE_WORKSPACE_FILENAME,
         exclude_if=lambda value: value is None,
     )
+    no_wake: bool = Field(default=False, exclude_if=lambda value: not value)
 
     @model_validator(mode="after")
     def action_options(self) -> WorkEpisodeControlArguments:
@@ -443,6 +444,8 @@ class WorkEpisodeControlArguments(_EpisodeTargetArguments):
             raise ValueError("message takes a body file")
         if self.action == "pause" and self.body_file is not None:
             raise ValueError("pause takes no body file")
+        if self.no_wake and self.action != "message":
+            raise ValueError("only message takes no_wake")
         return self
 
 

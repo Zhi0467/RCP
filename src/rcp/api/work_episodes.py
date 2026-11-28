@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from rcp.api.episode_routes import (
+    EpisodeMessageSent,
     _newest_chain_member,
     _resolved_auto_research_start_request,
     continue_episode_once,
@@ -39,7 +40,7 @@ from rcp.runs.work_episode_controls import (
     WorkEpisodeAct,
 )
 from rcp.service import ProjectService
-from rcp.storage import AgentTaskRecord, AutoResearchMessageRecord, EpisodeRecord
+from rcp.storage import AgentTaskRecord, EpisodeRecord
 from rcp.storage.branch_names import BranchNameInvalid, BranchNameTaken
 
 
@@ -302,11 +303,12 @@ class MemberEpisodeControls:
         body: str,
         invocation_ceiling: int | None,
         request_id: str,
-    ) -> AutoResearchMessageRecord:
+        wake: bool,
+    ) -> EpisodeMessageSent:
         episode, authorizer = self._episode(act)
         try:
             message = EpisodeMessageBody(
-                body=body, invocation_ceiling=invocation_ceiling, request_id=request_id
+                body=body, invocation_ceiling=invocation_ceiling, request_id=request_id, wake=wake
             )
         except ValidationError as exc:
             raise EpisodeRefused("episode_message_refused", str(exc)) from exc

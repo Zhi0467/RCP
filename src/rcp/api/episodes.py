@@ -147,6 +147,7 @@ class EpisodeMessageBody(BaseModel):
     # Null or omitted is ordinary-mail-only consent; an ended orchestrator needs an explicit N.
     invocation_ceiling: int | None = Field(default=None, ge=1)
     request_id: str = Field(default_factory=lambda: str(uuid.uuid4()), min_length=1, max_length=120)
+    wake: bool = True
 
     body: str = Field(min_length=1, max_length=EPISODE_TEXT_MAX_LENGTH)
 

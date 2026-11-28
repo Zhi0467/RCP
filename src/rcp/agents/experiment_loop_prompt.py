@@ -34,7 +34,7 @@ from rcp.loop_status import LoopOverlap
 
 # Bumped by hand whenever the Experiment-loop policy prose in this module changes, so a live
 # session re-opens its master contract once instead of keeping the old policy.
-EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v28"
+EXPERIMENT_LOOP_POLICY_VERSION = "experiment-loop-v29"
 
 
 def experiment_loop_read_context(context: ChatContext, loops: LoopOverlap) -> str:
@@ -240,7 +240,8 @@ Context protocol:
 - Each later message in this session names every path, command, write root, or pointer that
   differs from this contract. Use those in place of the ones given here; anything it does not name
   is as given here.
-- Read loop control first. `phase` distinguishes a human-started episode from a watcher wake.
+- Read loop control first. `phase` names what started this turn: a human, a watcher, new mail,
+  or an open Bulletin mention.
   `invocation`, `invocation_ceiling`, and `remaining_invocations` are the operational budget; they
   do not count or limit semantic attempts. `human_reauthorization` means a human started this
   new episode at invocation 1 as a continuation of the same session with more turns after the
@@ -425,6 +426,26 @@ RCP accepted the previous turn's handoff:
 - graph update: {previous_graph_result}
 - watchers armed: {previous_watcher_ids_or_none}
 This turn was triggered by: {delivered}"""
+    ]
+
+
+def experiment_loop_mail_wake_message(
+    *,
+    focused_experiment_id: str,
+    invocation: int,
+    invocation_ceiling: int,
+    cause: Literal["episode_mail", "bulletin_mention"],
+) -> list[str]:
+    """Wake one bounded episode's native session for new mail or an open mention."""
+
+    news = (
+        "New mail in your episode mailbox."
+        if cause == "episode_mail"
+        else "You have open Bulletin mentions."
+    )
+    return [
+        f"""{news} This is turn {invocation} of {invocation_ceiling} of the same bounded loop for
+Experiment `{focused_experiment_id}`. Read the new loop control first."""
     ]
 
 

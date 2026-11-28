@@ -83,6 +83,8 @@ ExperimentLoopPhase = Literal[
     "initial_run",
     "human_reauthorization",
     "watcher_wake",
+    "mail_wake",
+    "mention_wake",
     "resume",
     "retry",
 ]
@@ -340,7 +342,8 @@ def _start_experiment_wake(
     *,
     preflight: EpisodeWakePreflight,
     fence: AdmissionFence | None,
-) -> None:
+) -> bool:
+    """Claim and launch one wake; True when it was admitted now (never under a fence)."""
     store = tasks.store
     project_id = episode.project_id
     request_data = request.model_dump(mode="json")
@@ -356,7 +359,9 @@ def _start_experiment_wake(
         request=request_data,
         created_at=now,
         updated_at=now,
-        status_message="Waiting to deliver a watcher update.",
+        status_message="Waiting to deliver a watcher update."
+        if watcher_ids
+        else "Queued mailbox wake",
         native_session_id=request.session_id,
         stage_machine_id=preflight.stage_machine_id,
         stage_root=preflight.stage_root,
@@ -370,7 +375,10 @@ def _start_experiment_wake(
         ),
     )
 
+    admitted = False
+
     def claim_and_launch() -> None:
+        nonlocal admitted
         with tasks._watcher_delivery_lock:
             if not tasks._accepting_watcher_deliveries:
                 return
@@ -388,11 +396,99 @@ def _start_experiment_wake(
                 return
             if stored is not None and stored.status == "queued":
                 tasks.launch_admitted(stored.operation_id)
+                admitted = True
 
     if fence is not None:
         fence(claim_and_launch)
     else:
         claim_and_launch()
+    return admitted
+
+
+def wake_experiment_for_mail(
+    tasks: BackgroundAgentTasks, episode_id: str, *, cause: Literal["mail", "mention"]
+) -> Literal["now", "next_turn"]:
+    """Wake an idle Experiment chain once to read its mailbox or open mentions.
+
+    The wake is an ordinary paid invocation of the bound session, so its staging
+    claims the pending mail. A busy, paused, Stop-fenced, spent, cooling or
+    unbound episode is left alone and reads the mail at its next invocation.
+    Mail a mailbox- or mention-woken turn wrote never wakes, so two agents
+    cannot keep waking each other.
+    """
+
+    store = tasks.store
+    episode = store.episode(episode_id)
+    while episode is not None and (newer := store.episode_continuation(episode.episode_id)):
+        episode = newer
+    if (
+        episode is None
+        or episode.mode != "experiment_loop"
+        or episode.control_node_id is None
+        or episode.authorized_by is None
+    ):
+        return "next_turn"
+    runtime = store.experiment_loop_runtime(
+        episode.project_id, episode.control_node_id, graph_target=episode.graph_target
+    )
+    experiment = store.experiment_episode(episode.episode_id)
+    if (
+        runtime.episode_id != episode.episode_id
+        or runtime.chat_id is None
+        or runtime.paused
+        or runtime.task_active
+        or runtime.episode_exited
+        or runtime.stop_requested
+        or runtime.invocation_ceiling is None
+        or runtime.invocations_used >= runtime.invocation_ceiling
+        or runtime.run_on is None
+        or experiment is None
+        or experiment.machine_id != runtime.run_on
+        or experiment.stage_machine_id != runtime.run_on
+    ):
+        return "next_turn"
+    if cause == "mail":
+        items = [
+            item.message_id
+            for item in store.pending_episode_mail("episode", episode.episode_id)
+            if not _sent_by_mail_woken_turn(store, item.sender_task_id)
+        ]
+    else:
+        items = store.bulletin_wake_candidates(episode.project_id, f"chat:{runtime.chat_id}")
+    if not items:
+        return "next_turn"
+    preflight = preflight_episode_wake(runtime, experiment, store=store)
+    if preflight.readiness != "ready":
+        return "next_turn"
+    assert preflight.session_id is not None
+    admission = ExperimentInvocationAdmission(
+        episode_id=episode.episode_id,
+        invocation=runtime.invocations_used + 1,
+        invocation_ceiling=runtime.invocation_ceiling,
+        decision_bundle=[
+            ExperimentDecisionPin.model_validate(item) for item in runtime.decision_bundle
+        ],
+    )
+    kind = "episode_mail" if cause == "mail" else "bulletin_mention"
+    request = experiment_watcher_delivery_request(
+        [], episode=episode, runtime=runtime, admission=admission, session_id=preflight.session_id
+    ).model_copy(
+        update={
+            "message": "New mail in your episode mailbox."
+            if cause == "mail"
+            else "You have open Bulletin mentions.",
+            "chat_wake": {"kind": kind, "item_ids": items, "chains": []},
+        }
+    )
+    started = _start_experiment_wake(
+        tasks, episode, request, [], episode.authorized_by, preflight=preflight, fence=None
+    )
+    return "now" if started else "next_turn"
+
+
+def _sent_by_mail_woken_turn(store: AppStore, sender_task_id: str | None) -> bool:
+    sender = store.agent_task(sender_task_id) if sender_task_id else None
+    return sender is not None and sender.request.get("chat_wake") is not None
 
 
 def _completion_problem(operations: list[object], control_node_id: str) -> str | None:
@@ -900,6 +996,8 @@ def experiment_loop_phase(request: RunRequest, continuation: str) -> ExperimentL
         return "retry"
     if request.trigger == "experiment_run" and request.session_id:
         return "human_reauthorization"
+    if request.chat_wake is not None:
+        return "mail_wake" if request.chat_wake.get("kind") == "episode_mail" else "mention_wake"
     if request.trigger == "watcher":
         return "watcher_wake"
     return "initial_run"

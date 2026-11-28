@@ -57,6 +57,7 @@ from rcp.runs.auto_research_experiments import (
     AutoResearchExperimentLimitInvalid,
     AutoResearchMessageConflict,
 )
+from rcp.runs.experiment_loop import wake_experiment_for_mail
 from rcp.service import GraphUpdateResult, RunRequest
 from rcp.storage import (
     AgentTaskRecord,
@@ -632,15 +633,26 @@ def auto_research_command_effects(
                 message=f"{exc} Only your own child Experiments take episode mail.",
                 result={"code": "episode_not_owned_child", "episode_id": arguments.episode_id},
             )
+        woken = (
+            saved.delivered_at is None
+            and not arguments.no_wake
+            and wake_experiment_for_mail(
+                experiment_coordinator.background, saved.episode_id, cause="mail"
+            )
+            == "now"
+        )
         child = store.episode(saved.episode_id)
         final_turn = (
-            child is not None
+            not woken
+            and child is not None
             and child.control_node_id is not None
             and child.invocations_used >= child.invocation_ceiling
         )
         return AutoResearchCommandEffectResult(
             message=(
-                "The child Experiment is on its final turn, so it reads this message only "
+                "The child Experiment wakes now to read this message."
+                if woken
+                else "The child Experiment is on its final turn, so it reads this message only "
                 "after a human adds turns; you cannot add them."
                 if final_turn
                 else "The message waits for the child Experiment's next turn."
@@ -653,6 +665,8 @@ def auto_research_command_effects(
                 "read_at": (
                     "delivered"
                     if saved.delivered_at is not None
+                    else "now"
+                    if woken
                     else "after_added_turns"
                     if final_turn
                     else "next_turn"

@@ -553,11 +553,14 @@ class ExperimentStoreMixin(StoreMixinBase):
     ) -> AgentTaskRecord | None:
         """Check Stop, ending and budget, spend one invocation, and claim the wake at once.
 
-        None means the episode is ending or the claim lost: nothing was written.
+        A wake with no watcher ids carries its mail or mention cause in ``chat_wake``.
+        None means the episode is ending, the cause is cooling down, or the claim
+        lost: nothing was written.
         """
 
         ids = list(watcher_ids)
         agent_id = record.request.get("chat_id")
+        cause = record.request.get("chat_wake")
         if (
             record.status != "queued"
             or not record.visible
@@ -569,6 +572,7 @@ class ExperimentStoreMixin(StoreMixinBase):
             or record.request.get("node_id") != record.request.get("control_node_id")
             or not isinstance(agent_id, str)
             or not agent_id
+            or bool(ids) == isinstance(cause, dict)
         ):
             raise ValueError("An Experiment watcher wake must be a queued paid root task.")
         self._validate_experiment_watcher_ids(record, ids)
@@ -610,10 +614,18 @@ class ExperimentStoreMixin(StoreMixinBase):
                     raise ValueError("The watcher wake belongs to another agent.")
                 if self._has_active_chat_overlap(connection, record):
                     return None
-                if not cast("AppStore", self).claim_watcher_wake(
-                    connection, agent_id, ids, record.operation_id
-                ):
-                    return None
+                posts: list[str] = []
+                if ids:
+                    if not cast("AppStore", self).claim_watcher_wake(
+                        connection, agent_id, ids, record.operation_id
+                    ):
+                        return None
+                else:
+                    assert isinstance(cause, dict)
+                    claimed = self._experiment_mail_wake_posts(connection, record, agent_id, cause)
+                    if claimed is None:
+                        return None
+                    posts = claimed
                 route = connection.execute(
                     """
                     SELECT auto_research_episode_id
@@ -622,7 +634,26 @@ class ExperimentStoreMixin(StoreMixinBase):
                     """,
                     (episode_id,),
                 ).fetchone()
-                self._insert_agent_task(connection, record, continuation_cause="watcher_wake")
+                self._insert_agent_task(
+                    connection,
+                    record,
+                    continuation_cause="watcher_wake" if ids else "message_wake",
+                )
+                connection.executemany(
+                    "INSERT INTO bulletin_mention_wakes"
+                    "(project_id,post_id,actor_id,operation_id,notice_id,created_at) "
+                    "VALUES(?,?,?,?,NULL,?)",
+                    [
+                        (
+                            record.project_id,
+                            post_id,
+                            f"chat:{agent_id}",
+                            record.operation_id,
+                            record.created_at,
+                        )
+                        for post_id in posts
+                    ],
+                )
                 if route is not None:
                     self._claim_auto_research_experiment_allowance(
                         connection,
@@ -652,6 +683,57 @@ class ExperimentStoreMixin(StoreMixinBase):
         stored = self.agent_task(record.operation_id)
         assert stored is not None
         return stored
+
+    @staticmethod
+    def _experiment_mail_wake_posts(
+        connection: sqlite3.Connection,
+        record: AgentTaskRecord,
+        agent_id: str,
+        cause: dict[str, object],
+    ) -> list[str] | None:
+        """The mention posts a mail or mention wake claims; None while its cause cools down."""
+        from rcp.limits import BULLETIN_WAKE_MIN_SECONDS, CHAT_WAKE_MIN_SECONDS
+        from rcp.storage.agent_tasks import _within_seconds
+        from rcp.storage.bulletin import bulletin_wake_posts
+
+        last = connection.execute(
+            "SELECT MAX(created_at) FROM graph_runs WHERE project_id=? "
+            "AND json_extract(request_json,'$.chat_id')=? "
+            "AND json_extract(request_json,'$.chat_wake') IS NOT NULL",
+            (record.project_id, agent_id),
+        ).fetchone()[0]
+        if _within_seconds(last, record.created_at, CHAT_WAKE_MIN_SECONDS):
+            return None
+        if cause.get("kind") != "bulletin_mention":
+            return []
+        actor_id = f"chat:{agent_id}"
+        last = connection.execute(
+            "SELECT MAX(created_at) FROM bulletin_mention_wakes WHERE project_id=? AND actor_id=?",
+            (record.project_id, actor_id),
+        ).fetchone()[0]
+        if _within_seconds(last, record.created_at, BULLETIN_WAKE_MIN_SECONDS):
+            return None
+        items = cause.get("item_ids")
+        if not isinstance(items, list) or not items:
+            return None
+        return (
+            bulletin_wake_posts(
+                connection, record.project_id, actor_id, [str(item) for item in items]
+            )
+            or None
+        )
+
+    def experiment_episode_for_chat(self, project_id: str, chat_id: str) -> str | None:
+        """The Experiment episode whose agent speaks in this conversation, if any."""
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT state.episode_id FROM experiment_episode_state AS state "
+                "JOIN episodes AS episode ON episode.episode_id=state.episode_id "
+                "WHERE episode.project_id=? AND state.chat_id=? "
+                "ORDER BY episode.created_at DESC LIMIT 1",
+                (project_id, chat_id),
+            ).fetchone()
+        return None if row is None else str(row[0])
 
     def create_experiment_recovery_task(
         self,
