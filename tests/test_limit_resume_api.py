@@ -72,6 +72,20 @@ def test_limit_row_requires_receipt_and_tracks_member_opt_out(tmp_path: Path) ->
     assert task_limit_reset(store, task.model_copy(update={"status": "succeeded"})) is None
 
 
+def test_limit_row_for_turn_that_never_auto_resumes_is_stopped(tmp_path: Path) -> None:
+    store = AppStore(tmp_path / "state.sqlite3")
+    task = _limited(store)
+    store.record_agent_task_receipt(
+        task.operation_id,
+        "provider_limit_reset",
+        {"resets_at": "2030-01-01T00:00:00+00:00", "estimated": False},
+    )
+    edit = task.model_copy(update={"kind": "artifact_edit"})
+    limit = task_limit_reset(store, edit)
+    assert limit is not None
+    assert (limit["state"], limit["reason"]) == ("stopped", "not_resumable")
+
+
 def test_request_free_admission_requires_current_member(tmp_path: Path) -> None:
     store = AppStore(tmp_path / "state.sqlite3")
     task = _limited(store)

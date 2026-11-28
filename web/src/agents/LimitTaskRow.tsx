@@ -7,6 +7,7 @@ import { TaskActionButton } from "./taskActions";
 const STOP_REASONS: Record<string, string> = {
   declined: "Don't resume was pressed",
   switch_off: "Resume after usage limits is off",
+  not_resumable: "This turn does not resume automatically",
 };
 
 function limitText(task: AgentTask, limit: LimitReset): string {
