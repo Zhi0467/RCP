@@ -1384,28 +1384,25 @@ preserves them.
 Prompt guidance lets short jobs finish inline and recommends a watcher for
 roughly more than ten minutes of waiting. This is not a runtime cutoff.
 
-Experiment watchers may form immutable groups of at least two new observations.
-A group wakes once when no member remains active and every nonretired member is
-either complete or persistently unobservable at the capped tier. The latter is
-diagnostic readiness, not scientific success. Stop/disposition items may retire
-any staged compatible watcher after the agent has settled its work, external
-observer or graph condition alike, and always travel in the `external` list.
-Retiring a condition discards only a future graph delivery, so the agent that
-armed one withdraws it the same way it withdraws an observer; a watcher it has
-stopped needing otherwise holds the loop open and spends an invocation when it
-fires. A stop still never claims RCP cancelled the process.
+A watcher file with several checks is a group. A group wakes once when no check
+remains active and every remaining check is either complete or persistently
+unobservable at the capped tier. The latter is diagnostic readiness, not
+scientific success. Editing a file keeps the checks that still match, retires the
+rest, and adds new ones. An agent retires any staged watcher, external checks or
+graph condition alike, by deleting its `watchers/<id>.json` file. Retiring a
+condition discards only a future graph delivery, so the agent that armed one
+withdraws it the same way it withdraws an observer; a watcher it has stopped
+needing otherwise holds the loop open and spends an invocation when it fires. A
+retirement still never claims RCP cancelled the process.
 
 Initial validation, grouping, retirement, replacement, and insert commit
-atomically. One invalid item arms none. An Experiment observer repeating an
-ungrouped one already armed for that node, graph target, execution machine,
-directory, check command, and log path is one such invalid item: identity jitter
-keeps the pair out of a shared delivery pass, so each spends a wake on one
-completion. An unnotified completion counts as already armed, being a wake the
-episode has not spent yet, and grouping exempts neither side: one group wakes
-once, but two are two delivery units that coalesce only when they become ready
-in a single poll. Retiring one member does not strand its siblings, because a
-group's readiness ignores agent-retired members. Generic Work and child Work
-arming is unchanged. Observing one
+atomically. One invalid file arms none. A check may not repeat another check or
+graph condition across the agent's staged watcher files; a check's identity is
+its machine, check command, log path, directory, and cancel command. Only live
+(watching or failing) watchers are staged, so a finished watcher is never
+compared. Retiring one check does not strand its siblings, because a group's
+readiness ignores retired checks. Generic Work and child Work arming is
+unchanged. Observing one
 job through genuinely different commands cannot be told apart mechanically, so
 the staged watcher state is what every surface that arms an Experiment observer
 reconciles against first. An empty final watcher declaration is

@@ -120,8 +120,9 @@ state remains in that account's home, outside protected backups. The random
 installation identity is distinct from space and member identities.
 
 Provider updates run the native updater as the service account. They refuse,
-before changing anything, while a backend agent turn using that provider is
-queued, running or pausing. An unreadable database does not block them. They never
+before changing anything, while an agent turn using that provider is
+queued, running or pausing on the backend. A turn not yet staged counts as a
+backend turn. An unreadable database does not block them. They never
 collect credentials. They verify the updated executable and version. Login
 readiness is checked separately in Settings Sign-ins and provider readiness.
 Discovery saves stable command paths rather than resolved versioned symlinks.
@@ -158,8 +159,8 @@ and creates and verifies a private directory under `~/.rcp/tmp`. Removal is limi
 to that created directory. Provider profiles stay on the backend: only plain
 command argv crosses SSH for maintenance. Remote agy maintenance disables browser
 opening directly, without its ordinary RCP launch wrapper. An executable is refused
-unless both its path and its resolved symlink target lie inside the target account's
-resolved home.
+unless its path, with no `..`, lies inside the target account's home and its
+resolved symlink target lies inside the resolved home.
 
 A try-acquire hold is keyed by provider and machine. A second update is refused;
 inside the hold, queued, running and pausing turns on that pair are counted and

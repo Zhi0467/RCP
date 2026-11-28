@@ -698,8 +698,9 @@ the profile does not support that capability. agy's auto-compact is the
 30000 runs (agy 1.5.18). agy has no shell-timeout lever; `NotificationTimeoutSeconds`
 only wakes the agent and never ends a command, so the machine card shows no
 timeout field for it. Usage is read from each
-completed `agent_response` step, never from `result.usage`, which is cumulative
-over the whole conversation.
+completed `agent_response` or compaction `checkpoint` step, never from
+`result.usage`, which is cumulative over the whole conversation. Only an
+`agent_response` step sets the context reading.
 
 ### Version failure
 
@@ -1460,8 +1461,7 @@ The resolver in `agents/provider_accounts.py` picks one login, first match wins:
    priority setting and drain do not interrupt this lineage.
 3. Otherwise walk both sources in the member's chosen order and take the
    first with an assignable login (usable and not draining) without the limit
-   mark. For a continued session, a mark on another login that lapsed without
-   evidence still counts, so a running session never moves on a lapse. When every
+   mark. When every
    allowed login is limited, a continued session keeps its previous login while
    it is assignable within these sources. Otherwise take the first source with
    any assignable login.

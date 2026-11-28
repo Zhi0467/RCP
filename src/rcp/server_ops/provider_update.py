@@ -404,7 +404,7 @@ def _installed_service_account(layout: ServerLayout) -> pwd.struct_passwd:
 
 
 def _refuse_while_turns_run(database: Path, provider: ProviderId) -> None:
-    """Refuse queued or running backend turns, as the daily pass counts them.
+    """Refuse queued, running or pausing backend turns; an unstaged turn counts as one.
 
     An unreadable database does not block.
     """
