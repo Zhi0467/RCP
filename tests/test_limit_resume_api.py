@@ -77,8 +77,12 @@ def test_limit_row_for_turn_that_never_auto_resumes_is_stopped(tmp_path: Path) -
     task = _limited(store)
     store.record_agent_task_receipt(
         task.operation_id,
-        "provider_limit_reset",
-        {"resets_at": "2030-01-01T00:00:00+00:00", "estimated": False},
+        "provider_terminal_error",
+        {
+            "classification": "session_limit",
+            "resets_at": "2030-01-01T00:00:00+00:00",
+            "estimated": False,
+        },
     )
     edit = task.model_copy(update={"kind": "artifact_edit"})
     limit = task_limit_reset(store, edit)
